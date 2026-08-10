@@ -62,7 +62,8 @@ kapt {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.19.0")
+    // 1.17.0 remains on compileSdk 36; Core 1.18+ moves to 36.1/37 and would force an unrelated AGP 9 migration.
+    implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.webkit:webkit:1.15.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
