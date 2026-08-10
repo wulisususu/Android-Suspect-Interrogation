@@ -22,7 +22,7 @@ class ZhipuAiProvider(private val settingsStore: AiSettingsStore) : AiProvider {
 
     override suspend fun inquiry(messages: List<AiMessage>, settings: AiSettings): AiResponse = withContext(Dispatchers.IO) {
         val apiKey = settingsStore.getApiKey().trim()
-        if (apiKey.isBlank()) throw@withContext BusinessException("AI_CLOUD_KEY_MISSING", "智谱 API Key 尚未配置")
+        if (apiKey.isBlank()) throw BusinessException("AI_CLOUD_KEY_MISSING", "智谱 API Key 尚未配置")
 
         val connection = (URL(settings.cloudBaseUrl).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
