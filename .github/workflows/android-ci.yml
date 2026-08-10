@@ -59,11 +59,24 @@ jobs:
           from pathlib import Path
 
           lines = Path('/tmp/android-unit-tests.log').read_text(errors='replace').splitlines()
-          pattern = re.compile(r'(^e: |error:|FAILURE:|Compilation error|Could not resolve|What went wrong|Caused by:)', re.I)
-          selected = [line.strip() for line in lines if pattern.search(line)]
+          selected = []
+          for index, line in enumerate(lines):
+              if 'issues were found when checking AAR metadata' in line:
+                  selected.extend(lines[index:index + 45])
+                  break
+          pattern = re.compile(r'(^e: |error:|FAILURE:|Compilation error|Could not resolve|What went wrong|Caused by:|requires |Dependency |compileSdk|Android Gradle plugin)', re.I)
+          selected.extend(line for line in lines if pattern.search(line))
           if not selected:
-              selected = lines[-30:]
-          for line in selected[:30]:
+              selected = lines[-50:]
+          seen = set()
+          clean = []
+          for line in selected:
+              line = line.strip()
+              if not line or line in seen:
+                  continue
+              seen.add(line)
+              clean.append(line)
+          for line in clean[:45]:
               line = line.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
               print(f'::error title=Android build::{line}')
           raise SystemExit(1)
