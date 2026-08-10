@@ -1,0 +1,86 @@
+name: Android M0-M1 CI
+
+on:
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'webapp/**'
+      - '.github/workflows/android-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build Vue assets
+        working-directory: webapp
+        run: |
+          npm install
+          npm run build
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+
+      - name: Android unit tests
+        id: android_unit_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle -p android testDebugUnitTest --stacktrace --console=plain 2>&1 | tee /tmp/android-unit-tests.log
+
+      - name: Report Android diagnostics
+        if: steps.android_unit_tests.outcome == 'failure'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          lines = Path('/tmp/android-unit-tests.log').read_text(errors='replace').splitlines()
+          selected = []
+          for index, line in enumerate(lines):
+              if 'issues were found when checking AAR metadata' in line:
+                  selected.extend(lines[index:index + 45])
+                  break
+          pattern = re.compile(r'(^e: |error:|FAILURE:|Compilation error|Could not resolve|What went wrong|Caused by:|requires |Dependency |compileSdk|Android Gradle plugin)', re.I)
+          selected.extend(line for line in lines if pattern.search(line))
+          if not selected:
+              selected = lines[-50:]
+          seen = set()
+          clean = []
+          for line in selected:
+              line = line.strip()
+              if not line or line in seen:
+                  continue
+              seen.add(line)
+              clean.append(line)
+          for line in clean[:45]:
+              line = line.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::error title=Android build::{line}')
+          raise SystemExit(1)
+          PY
+
+      - name: Assemble debug APK
+        run: gradle -p android assembleDebug --stacktrace --console=plain
