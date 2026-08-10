@@ -1,7 +1,7 @@
 import type { AxiosError } from 'axios'
 import { getAuthorizationValue, runtimeConfig } from '../config/runtime'
 import { callNative, isNativeBusinessRuntime } from '../native/rpcBridge'
-import type { BackendEnvelope, CaseSummary, DeviceActionResult, FactItem, InquirySsePayload, InterrogationStage, RecordMark, RecordRevision, SessionState, TimelineEvent, TranscriptMessage } from '../types/interrogation'
+import type { AiRuntimeStatus, AiSettingsPatch, BackendEnvelope, CaseSummary, DeviceActionResult, FactItem, InquirySsePayload, InterrogationStage, RecordMark, RecordRevision, SessionState, TimelineEvent, TranscriptMessage } from '../types/interrogation'
 import { http } from './http'
 import { streamSse } from './sse'
 
@@ -26,8 +26,22 @@ export const finishSession = (caseId: string) => sessionAction(caseId, 'finish')
 export async function changeSessionStage(caseId: string, stage: InterrogationStage) { if (isNativeBusinessRuntime()) return callNative<SessionState>('session.stage', { caseId, stage }); const { data } = await http.post(`/api/cases/${encodeURIComponent(caseId)}/session/stage`, { stage }); return unwrap<SessionState>(data) }
 export async function invokeDeviceAction(type: 'identity' | 'fingerprint' | 'signature') { if (isNativeBusinessRuntime()) return callNative<DeviceActionResult>('device.action', { type }); const { data } = await http.post('/api/device/action', { type }); return unwrap<DeviceActionResult>(data) }
 
+export async function fetchAiSettings(): Promise<AiRuntimeStatus> {
+  if (!isNativeBusinessRuntime()) throw new Error('AI 运行时切换仅在构建后的 Android APK 中可用')
+  return callNative<AiRuntimeStatus>('ai.settings.get')
+}
+
+export async function updateAiSettings(patch: AiSettingsPatch): Promise<AiRuntimeStatus> {
+  if (!isNativeBusinessRuntime()) throw new Error('AI 运行时切换仅在构建后的 Android APK 中可用')
+  return callNative<AiRuntimeStatus>('ai.settings.update', patch as Record<string, unknown>)
+}
+
 export async function streamInquiry(caseId: string, message: string, onPayload: (payload: InquirySsePayload) => void, signal?: AbortSignal) {
-  if (isNativeBusinessRuntime()) { const result = await callNative<{ text?: string }>('ai.inquiry', { caseId, message }); if (result?.text) onPayload({ text_chunk: result.text }); return }
+  if (isNativeBusinessRuntime()) {
+    const result = await callNative<{ text?: string; provider?: string; model?: string }>('ai.inquiry', { caseId, message })
+    if (result?.text) onPayload({ text_chunk: result.text })
+    return
+  }
   const endpoint = new URL(`/work/case/${encodeURIComponent(caseId)}/session/message/inquiry`, runtimeConfig.apiBaseUrl); endpoint.searchParams.set('message', message)
   const authorization = getAuthorizationValue()
   await streamSse(endpoint.toString(), { method: 'GET', credentials: 'include', signal, headers: authorization ? { Authorization: authorization } : {} }, ({ data }) => { if (data === '[DONE]') return; try { onPayload(JSON.parse(data) as InquirySsePayload) } catch { onPayload({ text_chunk: data }) } })

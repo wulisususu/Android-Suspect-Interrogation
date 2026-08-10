@@ -44,7 +44,19 @@ class RpcRouter(
         "timeline.list" -> timeline.list(payload.requiredString("caseId")).toJsonArray { it.toJson() }
         "audit.list" -> audit.list(payload.requiredString("caseId")).toJsonArray { it.toJson() }
         "device.action" -> devices.invoke(payload.requiredString("type"))
-        "ai.inquiry" -> ai.inquiry()
+        "ai.settings.get" -> ai.status().toJson()
+        "ai.settings.update" -> ai.updateSettings(
+            mode = payload.nullableString("mode"),
+            cloudBaseUrl = payload.nullableString("cloudBaseUrl"),
+            cloudModel = payload.nullableString("cloudModel"),
+            stream = payload.nullableBoolean("stream"),
+            thinkingEnabled = payload.nullableBoolean("thinkingEnabled"),
+            maxTokens = payload.nullableInt("maxTokens"),
+            temperature = payload.nullableDouble("temperature"),
+            apiKey = payload.nullableString("apiKey"),
+            clearApiKey = payload.optBoolean("clearApiKey", false),
+        ).toJson()
+        "ai.inquiry" -> ai.inquiry(payload.requiredString("message")).toJson()
         else -> throw BusinessException("ACTION_NOT_SUPPORTED", "未支持的 NativeBridge action: $action")
     }
 
@@ -54,6 +66,9 @@ class RpcRouter(
 
 private fun JSONObject.requiredString(key: String): String { val value = optString(key).trim(); if (value.isEmpty()) throw BusinessException("INVALID_ARGUMENT", "缺少参数: $key"); return value }
 private fun JSONObject.nullableString(key: String): String? { if (!has(key) || isNull(key)) return null; return optString(key).takeIf { it.isNotBlank() } }
+private fun JSONObject.nullableBoolean(key: String): Boolean? = if (!has(key) || isNull(key)) null else optBoolean(key)
+private fun JSONObject.nullableInt(key: String): Int? = if (!has(key) || isNull(key)) null else optInt(key)
+private fun JSONObject.nullableDouble(key: String): Double? = if (!has(key) || isNull(key)) null else optDouble(key)
 private fun stageFromWire(value: String): InterrogationStage = runCatching { InterrogationStage.valueOf(value) }.getOrElse { throw BusinessException("INVALID_STAGE", "无效审讯阶段") }
 private inline fun <T> List<T>.toJsonArray(mapper: (T) -> Any?): JSONArray = JSONArray().also { array -> forEach { array.put(mapper(it)) } }
 private fun CaseSummary.toJson() = JSONObject().put("id", id).put("suspectName", suspectName).put("gender", gender).put("age", age).put("officerName", officerName).put("state", state).put("stage", stage.name).put("createdAt", createdAt).put("updatedAt", updatedAt)
@@ -63,3 +78,19 @@ private fun RecordRevision.toJson() = JSONObject().put("id", id).put("qaId", qaI
 private fun FactItem.toJson() = JSONObject().put("key", key).put("label", label).put("value", value).put("status", status).put("suggestion", suggestion ?: JSONObject.NULL)
 private fun TimelineEvent.toJson() = JSONObject().put("id", id).put("time", time).put("title", title).put("detail", detail).put("evidence", JSONArray(evidence))
 private fun AuditRecord.toJson() = JSONObject().put("id", id).put("caseId", caseId ?: JSONObject.NULL).put("action", action).put("targetType", targetType ?: JSONObject.NULL).put("targetId", targetId ?: JSONObject.NULL).put("detail", JSONObject(detailJson)).put("createdAt", createdAt)
+private fun AiSettings.toJson() = JSONObject()
+    .put("mode", mode.name)
+    .put("cloudBaseUrl", cloudBaseUrl)
+    .put("cloudModel", cloudModel)
+    .put("stream", stream)
+    .put("thinkingEnabled", thinkingEnabled)
+    .put("maxTokens", maxTokens)
+    .put("temperature", temperature)
+    .put("apiKeyConfigured", apiKeyConfigured)
+private fun AiRuntimeStatus.toJson() = JSONObject()
+    .put("settings", settings.toJson())
+    .put("activeProvider", activeProvider.name)
+    .put("cloudConfigured", cloudConfigured)
+    .put("localAvailable", localAvailable)
+    .put("localModel", localModel ?: JSONObject.NULL)
+private fun AiResponse.toJson() = JSONObject().put("text", text).put("provider", provider.name).put("model", model)

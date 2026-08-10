@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
+import AiSettingsPanel from '../components/AiSettingsPanel.vue'
 import DeviceStatusBar from '../components/DeviceStatusBar.vue'
 import FactMatrix from '../components/FactMatrix.vue'
 import RevisionDrawer from '../components/RevisionDrawer.vue'
@@ -28,6 +29,7 @@ onMounted(() => store.initialize())
         <span class="state-chip">{{ store.stateText }}</span>
       </div>
       <div class="operator-meta">
+        <AiSettingsPanel />
         <DeviceStatusBar />
         <span>主审：{{ store.caseSummary.officerName }}</span>
         <span class="recording" :class="{ muted: store.session.status !== 'RUNNING' }">● {{ store.session.status === 'RUNNING' ? '审讯中' : '未录入' }}</span>
