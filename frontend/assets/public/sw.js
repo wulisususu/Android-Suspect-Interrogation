@@ -1,0 +1,1 @@
+/* SW disabled for inquiry system */ self.skipWaiting(); self.clientsClaim();

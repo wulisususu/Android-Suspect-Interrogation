@@ -1,0 +1,56 @@
+.class public abstract Lcom/aliyun/emas/apm/crash/internal/model/CrashAnalysisReport$Session$Event$RolloutAssignment;
+.super Ljava/lang/Object;
+.source "SourceFile"
+
+
+# annotations
+.annotation system Ldalvik/annotation/EnclosingClass;
+    value = Lcom/aliyun/emas/apm/crash/internal/model/CrashAnalysisReport$Session$Event;
+.end annotation
+
+.annotation system Ldalvik/annotation/InnerClass;
+    accessFlags = 0x409
+    name = "RolloutAssignment"
+.end annotation
+
+.annotation system Ldalvik/annotation/MemberClasses;
+    value = {
+        Lcom/aliyun/emas/apm/crash/internal/model/CrashAnalysisReport$Session$Event$RolloutAssignment$RolloutVariant;,
+        Lcom/aliyun/emas/apm/crash/internal/model/CrashAnalysisReport$Session$Event$RolloutAssignment$Builder;
+    }
+.end annotation
+
+
+# direct methods
+.method public constructor <init>()V
+    .locals 0
+
+    invoke-direct {p0}, Ljava/lang/Object;-><init>()V
+
+    return-void
+.end method
+
+.method public static builder()Lcom/aliyun/emas/apm/crash/internal/model/CrashAnalysisReport$Session$Event$RolloutAssignment$Builder;
+    .locals 1
+
+    .line 1
+    new-instance v0, Lcom/aliyun/emas/apm/crash/internal/model/v$b;
+
+    invoke-direct {v0}, Lcom/aliyun/emas/apm/crash/internal/model/v$b;-><init>()V
+
+    return-object v0
+.end method
+
+
+# virtual methods
+.method public abstract getParameterKey()Ljava/lang/String;
+.end method
+
+.method public abstract getParameterValue()Ljava/lang/String;
+.end method
+
+.method public abstract getRolloutVariant()Lcom/aliyun/emas/apm/crash/internal/model/CrashAnalysisReport$Session$Event$RolloutAssignment$RolloutVariant;
+.end method
+
+.method public abstract getTemplateVersion()J
+.end method

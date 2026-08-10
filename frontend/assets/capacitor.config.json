@@ -1,0 +1,14 @@
+{
+	"appId": "com.fb.doctor.assistant",
+	"appName": "AI基层儿科医生",
+	"webDir": "dist",
+	"bundledWebRuntime": false,
+	"server": {
+		"androidScheme": "http",
+		"cleartext": true
+	},
+	"android": {
+		"flavor": "uat",
+		"webContentsDebuggingEnabled": true
+	}
+}
