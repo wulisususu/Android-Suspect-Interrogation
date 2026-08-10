@@ -2,6 +2,7 @@
 import type { FactItem } from '../types/interrogation'
 
 defineProps<{ items: FactItem[]; completion: number }>()
+defineEmits<{ useSuggestion: [text: string] }>()
 
 const statusText: Record<FactItem['status'], string> = {
   confirmed: '已核对',
@@ -24,7 +25,9 @@ const statusText: Record<FactItem['status'], string> = {
           <span class="fact-status" :data-status="item.status">{{ statusText[item.status] }}</span>
         </div>
         <p>{{ item.value }}</p>
-        <button v-if="item.suggestion" class="suggestion">建议追问：{{ item.suggestion }}</button>
+        <button v-if="item.suggestion" class="suggestion" @click="$emit('useSuggestion', item.suggestion)">
+          采用追问：{{ item.suggestion }}
+        </button>
       </article>
     </div>
   </section>

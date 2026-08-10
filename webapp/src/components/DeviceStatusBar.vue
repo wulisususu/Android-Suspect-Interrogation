@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { deviceBridge } from '../native/deviceBridge'
+import { backendErrorMessage, invokeDeviceAction } from '../api/interrogation'
+import { deviceBridge, isNativeDeviceRuntime } from '../native/deviceBridge'
 
 const message = ref('')
 const pending = ref('')
@@ -9,18 +10,24 @@ async function invoke(type: 'identity' | 'fingerprint' | 'signature') {
   pending.value = type
   message.value = ''
   try {
-    if (type === 'identity') {
-      const result = await deviceBridge.readIdentity()
-      message.value = result.name ? `身份证：${result.name}` : '身份证读取完成'
-    } else if (type === 'fingerprint') {
-      const result = await deviceBridge.captureFingerprint()
-      message.value = result.success ? '指纹采集完成' : '指纹采集未完成'
-    } else {
-      const result = await deviceBridge.captureSignature()
-      message.value = result.success ? '签名采集完成' : '签名采集未完成'
+    if (isNativeDeviceRuntime()) {
+      if (type === 'identity') {
+        const result = await deviceBridge.readIdentity()
+        message.value = result.name ? `身份证：${result.name}` : '身份证读取完成'
+      } else if (type === 'fingerprint') {
+        const result = await deviceBridge.captureFingerprint()
+        message.value = result.success ? '指纹采集完成' : '指纹采集未完成'
+      } else {
+        const result = await deviceBridge.captureSignature()
+        message.value = result.success ? '签名采集完成' : '签名采集未完成'
+      }
+      return
     }
+
+    const result = await invokeDeviceAction(type)
+    message.value = result.message || (result.simulated ? '设备模拟联调完成' : '设备操作完成')
   } catch (error) {
-    message.value = error instanceof Error ? error.message : String(error)
+    message.value = backendErrorMessage(error)
   } finally {
     pending.value = ''
   }

@@ -2,20 +2,38 @@
 
 嫌疑人审讯 / 案件细节核对项目。
 
-## 目录说明
+## 当前目录
 
-- `frontend/`：当前可运行 APK 的 Apktool 展开产物，暂时保留，用于兼容现有 Android 壳、MultiScreen 和已验证的远端接口链路。
-- `webapp/`：新增的 **Vue 3 + TypeScript + Vite** 原生源码工程，作为后续正式前端的维护入口。
+- `frontend/`：原 APK 的 Apktool 展开产物，继续保留用于 Android 壳、MultiScreen 和历史兼容。
+- `webapp/`：Vue 3 + TypeScript + Vite 可维护前端，当前正式业务交互入口。
+- `backend/`：根据 `webapp` 实际页面和点击行为反推出来的专属本地业务后端（Node 22 + SQLite，业务联调版）。
 
-## 当前重构原则
+## 当前主链路
 
-1. **审讯是主链路**：实时问答、SSE 输出、时间线、案件事实核对优先。
-2. **不提前切后端**：`webapp` 默认仍指向当前 UAT API，先保证 SSE 能稳定接收。
-3. **结论模块轻量化**：原“拟诊建议 / 案情结论”不作为当前重构阻塞项。
-4. **渐进迁移**：不删除 `frontend/`，新 Vue 页面验证通过后逐页替换反编译 bundle。
-5. **原生设备解耦**：身份证、指纹、签名通过 Capacitor Plugin 契约调用，具体硬件 SDK 留在 Android Kotlin/Java 层。
+```text
+警官点击
+  -> Vue API adapter
+  -> localhost:8080
+  -> 案件 / 审讯状态 / 问答 / Revision / Audit / 设备反馈
+  -> 需要 AI 时再代理到现有 DeepSeek / SSE 上游
+```
 
-## 新源码启动
+当前优先完成“业务逻辑 + 真实点击反馈”，不替换已有 DeepSeek API。
+
+## 为什么仓库里先有 Node 后端
+
+这是前端驱动的业务联调层：不依赖厂商 Android SDK 即可先把页面每个关键点击、状态约束、SQLite 持久化、版本和审计链路验收掉。
+
+正式一体机仍按技术设计迁移/落地为 Kotlin Domain/Service/Repository + Room/SQLCipher + Keystore + Native Device/AI Runtime。当前 HTTP API 和业务状态规则应保持稳定，从而降低前端二次改造成本。
+
+## 启动
+
+```bash
+cd backend
+npm start
+```
+
+另开终端：
 
 ```bash
 cd webapp
@@ -24,10 +42,10 @@ cp .env.example .env
 npm run dev
 ```
 
-不传 `caseId` 时为 UI 演示模式；测试当前远端 SSE：
+后端自测：
 
-```text
-http://localhost:5173/?caseId=<真实案件ID>
+```bash
+cd backend
+npm run check
+npm run smoke
 ```
-
-详细说明见 `webapp/README.md`。

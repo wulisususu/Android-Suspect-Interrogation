@@ -43,9 +43,11 @@ const FingerprintDevice = registerPlugin<FingerprintDevicePlugin>('FingerprintDe
 const SignaturePad = registerPlugin<SignaturePadPlugin>('SignaturePad')
 
 function ensureNative() {
-  if (!Capacitor.isNativePlatform()) {
-    throw new Error('当前运行在浏览器中，未连接 Android 原生设备插件')
-  }
+  if (!Capacitor.isNativePlatform()) throw new Error('当前不是 Android 原生运行环境')
+}
+
+export function isNativeDeviceRuntime() {
+  return Capacitor.isNativePlatform()
 }
 
 export const deviceBridge = {

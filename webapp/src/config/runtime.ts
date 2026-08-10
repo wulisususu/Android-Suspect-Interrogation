@@ -1,9 +1,7 @@
 const ensureTrailingSlash = (value: string) => (value.endsWith('/') ? value : `${value}/`)
 
 export const runtimeConfig = {
-  apiBaseUrl: ensureTrailingSlash(
-    import.meta.env.VITE_API_BASE_URL || 'https://uat.pediatrician-ai.fb.jnpinno.com/',
-  ),
+  apiBaseUrl: ensureTrailingSlash(import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8080/'),
   authMode: import.meta.env.VITE_AUTH_MODE || 'raw',
   explicitToken: import.meta.env.VITE_AUTH_TOKEN || '',
 }

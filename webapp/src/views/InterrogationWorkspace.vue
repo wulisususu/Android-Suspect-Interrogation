@@ -1,11 +1,15 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import DeviceStatusBar from '../components/DeviceStatusBar.vue'
 import FactMatrix from '../components/FactMatrix.vue'
+import RevisionDrawer from '../components/RevisionDrawer.vue'
+import SessionControls from '../components/SessionControls.vue'
 import TimelinePanel from '../components/TimelinePanel.vue'
 import TranscriptPanel from '../components/TranscriptPanel.vue'
 import { useInterrogationStore } from '../stores/interrogation'
 
 const store = useInterrogationStore()
+onMounted(() => store.initialize())
 </script>
 
 <template>
@@ -15,32 +19,50 @@ const store = useInterrogationStore()
         <div>
           <h1>案件审讯工作台</h1>
           <p>
-            案件：{{ store.caseSummary.id }}　｜　对象：{{ store.caseSummary.suspectName }}
-            {{ store.caseSummary.gender }} {{ store.caseSummary.age }}岁
+            案件：{{ store.caseSummary.id || '加载中' }}　｜　对象：{{ store.caseSummary.suspectName }}
+            <template v-if="store.caseSummary.gender || store.caseSummary.age">
+              {{ store.caseSummary.gender }} {{ store.caseSummary.age ? `${store.caseSummary.age}岁` : '' }}
+            </template>
           </p>
         </div>
-        <span class="state-chip">{{ store.caseSummary.state }}</span>
+        <span class="state-chip">{{ store.stateText }}</span>
       </div>
       <div class="operator-meta">
         <DeviceStatusBar />
         <span>主审：{{ store.caseSummary.officerName }}</span>
-        <span class="recording">● 录音</span>
+        <span class="recording" :class="{ muted: store.session.status !== 'RUNNING' }">● {{ store.session.status === 'RUNNING' ? '审讯中' : '未录入' }}</span>
       </div>
     </header>
 
-    <div v-if="!store.caseId" class="demo-banner">
-      当前是新 Vue 源码演示模式。要直连现有 SSE：在地址后追加 <code>?caseId=真实案件ID</code>，并提供现有登录 token。
-    </div>
+    <div v-if="store.loading" class="demo-banner">正在连接专属后端并加载案件状态…</div>
+    <div v-else-if="store.actionError" class="feedback-banner error">{{ store.actionError }}</div>
+    <div v-else-if="store.actionMessage" class="feedback-banner success">{{ store.actionMessage }}</div>
+
+    <SessionControls
+      :session="store.session"
+      :stage-text="store.stageText"
+      @start="store.startSession"
+      @toggle-pause="store.togglePause"
+      @finish="store.finishSession"
+      @next-stage="store.nextStage"
+    />
 
     <section class="workspace-grid">
       <TimelinePanel :items="store.timeline" />
       <TranscriptPanel
         :messages="store.transcript"
         :streaming="store.streaming"
+        :can-record="store.canRecord"
         :error="store.error"
         @send="store.ask"
+        @edit="store.editMessage"
+        @mark="store.markMessage"
+        @mark-latest="store.markLatestConflict"
+        @versions="store.openRevisions"
       />
-      <FactMatrix :items="store.facts" :completion="store.completion" />
+      <FactMatrix :items="store.facts" :completion="store.completion" @use-suggestion="store.useSuggestion" />
     </section>
+
+    <RevisionDrawer v-if="store.revisionsOpen" :revisions="store.revisions" @close="store.closeRevisions" />
   </main>
 </template>
