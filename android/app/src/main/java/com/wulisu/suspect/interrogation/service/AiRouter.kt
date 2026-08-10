@@ -75,7 +75,7 @@ class AiService(
         clearApiKey: Boolean = false,
     ): AiRuntimeStatus {
         settingsStore.update(
-            mode = mode?.let(AiMode::fromWire),
+            mode = mode?.let { AiMode.fromWire(it) },
             cloudBaseUrl = cloudBaseUrl,
             cloudModel = cloudModel,
             stream = stream,
