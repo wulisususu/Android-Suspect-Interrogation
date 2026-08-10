@@ -14,7 +14,12 @@ class AppContainer(context: Context) {
     private val facts = FactService(database.factDao(), cases)
     private val timeline = TimelineService(database.timelineDao(), cases, audit)
     private val devices = DeviceService()
-    private val ai = AiService()
+
+    private val aiSettings = AiSettingsStore(context)
+    private val cloudAi = ZhipuAiProvider(aiSettings)
+    private val localAi = LocalAiProvider()
+    private val aiRouter = AiRouter(aiSettings, cloudAi, localAi)
+    private val ai = AiService(aiSettings, aiRouter)
 
     val rpcRouter = RpcRouter(cases, sessions, records, facts, timeline, audit, devices, ai)
 }
