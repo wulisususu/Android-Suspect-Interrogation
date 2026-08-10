@@ -22,14 +22,16 @@ Android APK
   ├─ Android Keystore
   │
   ├─ Device SDK / USB / Camera / Audio
-  └─ JNI / C++ / RKNN / Local AI Runtime
+  └─ AI Router
+       ├─ Cloud Provider：智谱 GLM
+       └─ Local Provider：JNI / C++ / RKNN / llama.cpp
 ```
 
 **正式 APK 不依赖 `localhost:8080`、Node、Termux 或外部 Linux 主机完成审讯主流程。**
 
-## 当前阶段：M0/M1 Android 化
+## 当前阶段：Android M0/M1 + AI Provider Router
 
-已经开始把前一阶段 Node 中验证过的业务规则迁入 Kotlin：
+已完成：
 
 - Case
 - Session：开始 / 暂停 / 恢复 / 结束
@@ -43,8 +45,38 @@ Android APK
 - SQLCipher
 - Android Keystore
 - NativeBridge RPC
+- AI Provider / Router
+- APP 内运行时切换 AI 模式，无需重新构建 APK
 
-设备和本地 AI 还未接入时返回明确错误，不制造模拟成功。
+### AI 模式
+
+```text
+CLOUD        -> 强制智谱 API
+LOCAL        -> 强制本地模型
+AUTO         -> 本地优先；本地不可用或运行失败时允许回退智谱
+OFFLINE_ONLY -> 强制本地；绝不回退云端
+```
+
+### 当前智谱 Provider 默认参数
+
+```text
+POST https://open.bigmodel.cn/api/paas/v4/chat/completions
+model = glm-4.7
+thinking.type = enabled
+stream = true
+max_tokens = 65536
+temperature = 1.0
+```
+
+这些参数都可以在构建好的 Android APP 内通过“AI 设置”修改并立即生效。
+
+智谱 API Key 不写死在源码或 APK 配置中：用户在 APP 内录入后，使用 Android Keystore + AES-GCM 加密保存；设置页面只返回“已配置 / 未配置”，不会回显 Key 明文。
+
+目前本地模型 Provider 接口已经存在，但 JNI / RKNN / llama.cpp Runtime 尚未接入，所以：
+
+- `LOCAL` 当前会明确返回本地模型未配置；
+- `OFFLINE_ONLY` 当前会明确失败且不会访问云端；
+- `AUTO` 当前在本地不可用时会走已配置的智谱 Provider。
 
 ## 浏览器联调
 
@@ -64,7 +96,7 @@ cp .env.example .env
 npm run dev
 ```
 
-这里的 HTTP/云端 AI 只是开发辅助路径。
+这里的 HTTP/云端 AI 只是开发辅助路径。APK 内 AI 路由设置只通过 NativeBridge/Kotlin 生效。
 
 ## APK 构建
 
