@@ -1,6 +1,7 @@
 package com.wulisu.suspect.interrogation.service
 
 import com.wulisu.suspect.interrogation.domain.BusinessException
+import kotlinx.coroutines.CancellationException
 
 class AiRouter(
     private val settingsStore: AiSettingsStore,
@@ -40,12 +41,22 @@ class AiRouter(
                 }
                 local.inquiry(messages, settings)
             }
-            AiMode.AUTO -> when {
-                local.isAvailable(settings) -> local.inquiry(messages, settings)
-                cloud.isAvailable(settings) -> cloud.inquiry(messages, settings)
-                else -> throw BusinessException("AI_PROVIDER_UNAVAILABLE", "自动模式下本地模型不可用，智谱 API Key 也未配置")
+            AiMode.AUTO -> autoInquiry(messages, settings)
+        }
+    }
+
+    private suspend fun autoInquiry(messages: List<AiMessage>, settings: AiSettings): AiResponse {
+        if (local.isAvailable(settings)) {
+            try {
+                return local.inquiry(messages, settings)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (!cloud.isAvailable(settings)) throw error
             }
         }
+        if (cloud.isAvailable(settings)) return cloud.inquiry(messages, settings)
+        throw BusinessException("AI_PROVIDER_UNAVAILABLE", "自动模式下本地模型不可用，智谱 API Key 也未配置")
     }
 
     private fun requireAvailable(provider: AiProvider, settings: AiSettings): AiProvider {
