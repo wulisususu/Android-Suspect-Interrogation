@@ -6,7 +6,6 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -35,32 +34,39 @@ class ZhipuAiProvider(private val settingsStore: AiSettingsStore) : AiProvider {
             setRequestProperty("Authorization", "Bearer $apiKey")
         }
 
-        val body = JSONObject()
-            .put("model", settings.cloudModel)
-            .put("messages", JSONArray().also { array ->
-                messages.forEach { message ->
-                    array.put(JSONObject().put("role", message.role).put("content", message.content))
+        try {
+            val body = JSONObject()
+                .put("model", settings.cloudModel)
+                .put("messages", JSONArray().also { array ->
+                    messages.forEach { message ->
+                        array.put(JSONObject().put("role", message.role).put("content", message.content))
+                    }
+                })
+                .put("thinking", JSONObject().put("type", if (settings.thinkingEnabled) "enabled" else "disabled"))
+                .put("stream", settings.stream)
+                .put("max_tokens", settings.maxTokens)
+                .put("temperature", settings.temperature)
+                .toString()
+
+            connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val status = connection.responseCode
+            val source = if (status in 200..299) connection.inputStream else connection.errorStream
+            val responseBody = source?.bufferedReader(Charsets.UTF_8)
+                ?: throw BusinessException("AI_CLOUD_EMPTY_RESPONSE", "智谱 API 未返回响应体")
+
+            val text = responseBody.use { reader ->
+                if (status !in 200..299) {
+                    val errorBody = reader.readText()
+                    throw BusinessException("AI_CLOUD_HTTP_$status", parseCloudError(errorBody, status))
                 }
-            })
-            .put("thinking", JSONObject().put("type", if (settings.thinkingEnabled) "enabled" else "disabled"))
-            .put("stream", settings.stream)
-            .put("max_tokens", settings.maxTokens)
-            .put("temperature", settings.temperature)
-            .toString()
-
-        connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-        val status = connection.responseCode
-        val source = if (status in 200..299) connection.inputStream else connection.errorStream
-        val text = source?.bufferedReader(Charsets.UTF_8)?.use { reader ->
-            if (status !in 200..299) {
-                val errorBody = reader.readText()
-                throw@use BusinessException("AI_CLOUD_HTTP_$status", parseCloudError(errorBody, status))
+                if (settings.stream) readStreamedContent(reader) else readJsonContent(reader.readText())
             }
-            if (settings.stream) readStreamedContent(reader) else readJsonContent(reader.readText())
-        } ?: throw@withContext BusinessException("AI_CLOUD_EMPTY_RESPONSE", "智谱 API 未返回响应体")
 
-        if (text.isBlank()) throw@withContext BusinessException("AI_CLOUD_EMPTY_CONTENT", "智谱 API 返回成功，但回答内容为空")
-        AiResponse(text = text, provider = kind, model = settings.cloudModel)
+            if (text.isBlank()) throw BusinessException("AI_CLOUD_EMPTY_CONTENT", "智谱 API 返回成功，但回答内容为空")
+            AiResponse(text = text, provider = kind, model = settings.cloudModel)
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun readStreamedContent(reader: BufferedReader): String {
