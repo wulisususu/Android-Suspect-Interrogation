@@ -27,6 +27,7 @@ class RpcRouter(
 
     private suspend fun dispatch(action: String, payload: JSONObject): Any? = when (action) {
         "case.create" -> cases.create(payload.nullableString("id"), payload.nullableString("suspectName"), payload.nullableString("gender"), payload.nullableString("age"), payload.nullableString("officerName")).toJson()
+        "case.list" -> cases.list(payload.optInt("limit", 100)).toJsonArray { it.toJson() }
         "case.get" -> cases.get(payload.requiredString("caseId")).toJson()
         "case.update" -> cases.update(payload.requiredString("caseId"), payload.nullableString("suspectName"), payload.nullableString("gender"), payload.nullableString("age"), payload.nullableString("officerName"), payload.nullableString("state"), payload.nullableString("stage")?.let(::stageFromWire)).toJson()
         "session.get" -> sessions.state(payload.requiredString("caseId")).toJson()

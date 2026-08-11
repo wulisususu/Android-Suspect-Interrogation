@@ -1,10 +1,8 @@
 frontend/build/
 *.log
-
 webapp/node_modules/
 webapp/dist/
 backend-dev/data/
-
 android/.gradle/
 android/local.properties
 android/**/build/

@@ -17,6 +17,7 @@ onMounted(() => store.initialize())
   <main class="workspace">
     <header class="topbar">
       <div class="case-meta">
+        <button class="back-btn" @click="$emit('back')">‹ 返回</button>
         <div>
           <h1>案件审讯工作台</h1>
           <p>

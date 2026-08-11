@@ -4,6 +4,7 @@ import android.content.Context
 import com.wulisu.suspect.interrogation.bridge.RpcRouter
 import com.wulisu.suspect.interrogation.data.AppDatabase
 import com.wulisu.suspect.interrogation.service.*
+import kotlinx.coroutines.runBlocking
 
 class AppContainer(context: Context) {
     private val database = AppDatabase.build(context)
@@ -22,4 +23,8 @@ class AppContainer(context: Context) {
     private val ai = AiService(aiSettings, aiRouter)
 
     val rpcRouter = RpcRouter(cases, sessions, records, facts, timeline, audit, devices, ai)
+
+    init {
+        runBlocking { SeedData(cases, sessions, records).seedIfEmpty() }
+    }
 }
