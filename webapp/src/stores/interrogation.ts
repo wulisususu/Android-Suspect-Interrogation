@@ -3,7 +3,11 @@ import { defineStore } from 'pinia'
 import {
   backendErrorMessage,
   changeSessionStage,
+  confirmAsrFragment,
+  confirmAsrFragmentBatch,
   createCase,
+  discardAsrFragment,
+  fetchAsrCaptureStatus,
   fetchCase,
   fetchFacts,
   fetchMessages,
@@ -15,16 +19,22 @@ import {
   pauseSession as pauseSessionApi,
   persistQuestionOrAnswer,
   resumeSession as resumeSessionApi,
+  startAsrCapture,
   startSession as startSessionApi,
+  stopAsrCapture,
   streamInquiry,
+  updateAsrFragment,
   updateTranscriptMessage,
 } from '../api/interrogation'
+import { isNativeBusinessRuntime, onNativeEvent } from '../native/rpcBridge'
 import type {
+  AsrCaptureStatus,
   CaseSummary,
   FactItem,
   InterrogationStage,
   RecordRevision,
   SessionState,
+  TemporaryAsrSpeaker,
   TimelineEvent,
   TranscriptMessage,
 } from '../types/interrogation'
@@ -60,6 +70,24 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   const actionError = ref('')
   const revisions = ref<RecordRevision[]>([])
   const revisionsOpen = ref(false)
+  const nativeCaptureAvailable = isNativeBusinessRuntime()
+  const captureBusy = ref(false)
+  const captureClock = ref(Date.now())
+  const selectedFragmentIds = ref<string[]>([])
+  const capture = ref<AsrCaptureStatus>({
+    caseId: caseId.value,
+    captureSessionId: null,
+    running: false,
+    startedAt: null,
+    endedAt: null,
+    sampleRate: 16_000,
+    partialText: '',
+    fragments: [],
+    error: null,
+  })
+  let feedbackTimer: ReturnType<typeof setTimeout> | undefined
+  let captureTimer: ReturnType<typeof setInterval> | undefined
+  let removeCaptureListener: (() => void) | undefined
 
   const caseSummary = ref<CaseSummary>({
     id: caseId.value,
@@ -92,8 +120,30 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   const stateText = computed(() => stateTextMap[caseSummary.value.state] || caseSummary.value.state)
   const stageText = computed(() => stageTextMap[session.value.stage])
   const canRecord = computed(() => session.value.status === 'RUNNING')
+  const captureElapsedMs = computed(() => capture.value.running && capture.value.startedAt
+    ? Math.max(0, captureClock.value - capture.value.startedAt)
+    : 0)
+
+  function applyCaptureStatus(status: AsrCaptureStatus) {
+    if (status.caseId && status.caseId !== caseId.value) return
+    capture.value = status
+    const visibleIds = new Set(status.fragments.map((fragment) => fragment.id))
+    selectedFragmentIds.value = selectedFragmentIds.value.filter((id) => visibleIds.has(id))
+    if (status.running && !captureTimer) {
+      captureTimer = setInterval(() => { captureClock.value = Date.now() }, 500)
+    } else if (!status.running && captureTimer) {
+      clearInterval(captureTimer)
+      captureTimer = undefined
+    }
+  }
+
+  function initializeCaptureEvents() {
+    if (!nativeCaptureAvailable || removeCaptureListener) return
+    removeCaptureListener = onNativeEvent<AsrCaptureStatus>('asr.capture.status', applyCaptureStatus)
+  }
 
   function feedback(message: string, isError = false) {
+    if (feedbackTimer) clearTimeout(feedbackTimer)
     if (isError) {
       actionError.value = message
       actionMessage.value = ''
@@ -101,6 +151,10 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       actionMessage.value = message
       actionError.value = ''
     }
+    feedbackTimer = setTimeout(() => {
+      actionMessage.value = ''
+      actionError.value = ''
+    }, isError ? 5000 : 3000)
   }
 
   async function ensureCurrentCase() {
@@ -125,23 +179,124 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     error.value = ''
     try {
       caseSummary.value = await ensureCurrentCase()
-      const [messages, factItems, timelineItems, sessionState] = await Promise.all([
+      initializeCaptureEvents()
+      const [messages, factItems, timelineItems, sessionState, captureStatus] = await Promise.all([
         fetchMessages(caseId.value),
         fetchFacts(caseId.value),
         fetchTimeline(caseId.value),
         fetchSessionState(caseId.value),
+        nativeCaptureAvailable ? fetchAsrCaptureStatus(caseId.value) : Promise.resolve(null),
       ])
       transcript.value = messages
       facts.value = factItems
       timeline.value = timelineItems
       session.value = sessionState
-      feedback('专属后端已连接，当前案件状态已加载')
+      if (captureStatus) applyCaptureStatus(captureStatus)
     } catch (err) {
       error.value = backendErrorMessage(err)
       feedback(`后端初始化失败：${error.value}`, true)
     } finally {
       loading.value = false
     }
+  }
+
+  function mergeConfirmedRecord(record: TranscriptMessage) {
+    const index = transcript.value.findIndex((item) => item.id === record.id)
+    if (index >= 0) transcript.value[index] = record
+    else transcript.value.push(record)
+    transcript.value.sort((left, right) => (left.seq || Number.MAX_SAFE_INTEGER) - (right.seq || Number.MAX_SAFE_INTEGER))
+  }
+
+  async function startCapture() {
+    if (!nativeCaptureAvailable) return feedback('连续离线录音仅在 Android APK 中可用', true)
+    if (!canRecord.value) return feedback('请先开始审讯再录音', true)
+    if (captureBusy.value || capture.value.running) return
+    captureBusy.value = true
+    try {
+      applyCaptureStatus(await startAsrCapture(caseId.value))
+      feedback('连续录音已开始，识别结果将先进入临时片段')
+    } catch (err) {
+      feedback(backendErrorMessage(err), true)
+    } finally {
+      captureBusy.value = false
+    }
+  }
+
+  async function stopCapture(showFeedback = true) {
+    if (!nativeCaptureAvailable || captureBusy.value || !capture.value.running) return
+    captureBusy.value = true
+    try {
+      applyCaptureStatus(await stopAsrCapture(caseId.value))
+      if (showFeedback) feedback('录音已停止，待确认片段仍保留')
+    } catch (err) {
+      feedback(backendErrorMessage(err), true)
+    } finally {
+      captureBusy.value = false
+    }
+  }
+
+  async function updatePendingFragment(fragmentId: string, editedText: string, speaker: TemporaryAsrSpeaker) {
+    try {
+      const updated = await updateAsrFragment(fragmentId, editedText, speaker)
+      const index = capture.value.fragments.findIndex((item) => item.id === fragmentId)
+      if (index >= 0) capture.value.fragments[index] = updated
+    } catch (err) {
+      feedback(backendErrorMessage(err), true)
+    }
+  }
+
+  async function confirmPendingFragment(fragmentId: string) {
+    try {
+      const result = await confirmAsrFragment(fragmentId)
+      mergeConfirmedRecord(result.record)
+      capture.value.fragments = capture.value.fragments.filter((fragment) => fragment.id !== fragmentId)
+      selectedFragmentIds.value = selectedFragmentIds.value.filter((id) => id !== fragmentId)
+      feedback(`片段已确认并保存为第 ${result.record.seq} 条正式记录`)
+    } catch (err) {
+      feedback(backendErrorMessage(err), true)
+    }
+  }
+
+  async function confirmSelectedFragments() {
+    if (!selectedFragmentIds.value.length) return
+    try {
+      const result = await confirmAsrFragmentBatch(selectedFragmentIds.value)
+      result.confirmed.forEach((item) => mergeConfirmedRecord(item.record))
+      const confirmedIds = new Set(result.confirmed.map((item) => item.fragment.id))
+      capture.value.fragments = capture.value.fragments.filter((fragment) => !confirmedIds.has(fragment.id))
+      selectedFragmentIds.value = result.failures.map((item) => item.fragmentId)
+      if (result.failures.length) {
+        feedback(`已确认 ${result.confirmed.length} 条，${result.failures.length} 条需补充说话人或文本`, true)
+      } else {
+        feedback(`已确认并入库 ${result.confirmed.length} 条片段`)
+      }
+    } catch (err) {
+      feedback(backendErrorMessage(err), true)
+    }
+  }
+
+  async function discardPendingFragment(fragmentId: string) {
+    try {
+      await discardAsrFragment(fragmentId)
+      capture.value.fragments = capture.value.fragments.filter((fragment) => fragment.id !== fragmentId)
+      selectedFragmentIds.value = selectedFragmentIds.value.filter((id) => id !== fragmentId)
+      feedback('临时片段已丢弃')
+    } catch (err) {
+      feedback(backendErrorMessage(err), true)
+    }
+  }
+
+  function toggleFragmentSelection(fragmentId: string) {
+    selectedFragmentIds.value = selectedFragmentIds.value.includes(fragmentId)
+      ? selectedFragmentIds.value.filter((id) => id !== fragmentId)
+      : [...selectedFragmentIds.value, fragmentId]
+  }
+
+  function disposeCaptureEvents() {
+    removeCaptureListener?.()
+    removeCaptureListener = undefined
+    if (captureTimer) clearInterval(captureTimer)
+    captureTimer = undefined
   }
 
   async function refreshCase() {
@@ -161,7 +316,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     try {
       const persisted = await persistQuestionOrAnswer(caseId.value, clean, '民警')
       transcript.value.push(persisted)
-      feedback(`Q${persisted.seq || transcript.value.length} 已落库`)
+      feedback(`Q${persisted.seq || transcript.value.length} 已保存`)
     } catch (err) {
       feedback(backendErrorMessage(err), true)
       return
@@ -241,6 +396,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   async function togglePause() {
     try {
       if (session.value.status === 'RUNNING') {
+        if (capture.value.running) await stopCapture(false)
         session.value = await pauseSessionApi(caseId.value)
         feedback('审讯已暂停，新的正式问答将被后端拒绝')
       } else if (session.value.status === 'PAUSED') {
@@ -254,6 +410,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   async function finishSession() {
     try {
+      if (capture.value.running) await stopCapture(false)
       session.value = await finishSessionApi(caseId.value)
       await refreshCase()
       feedback('本次审讯已结束并进入复核状态')
@@ -297,6 +454,11 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     actionError,
     revisions,
     revisionsOpen,
+    nativeCaptureAvailable,
+    capture,
+    captureBusy,
+    captureElapsedMs,
+    selectedFragmentIds,
     initialize,
     ask,
     editMessage,
@@ -309,6 +471,14 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     finishSession,
     nextStage,
     useSuggestion,
+    startCapture,
+    stopCapture,
+    updatePendingFragment,
+    confirmPendingFragment,
+    confirmSelectedFragments,
+    discardPendingFragment,
+    toggleFragmentSelection,
+    disposeCaptureEvents,
     feedback,
   }
 })

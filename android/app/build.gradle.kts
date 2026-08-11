@@ -23,10 +23,14 @@ android {
 
     defaultConfig {
         applicationId = "com.wulisu.suspect.interrogation"
-        minSdk = 23
+        minSdk = 24
         targetSdk = 36
         versionCode = 1
         versionName = "0.2.0"
+
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -52,6 +56,17 @@ android {
 
     sourceSets {
         getByName("main").assets.srcDir(generatedWebAssets)
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
+
+    androidResources {
+        noCompress += listOf("onnx", "rknn", "pdiparams", "pdmodel", "tar")
+    }
+
+    packaging {
+        jniLibs {
+            pickFirsts += "lib/arm64-v8a/libonnxruntime.so"
+        }
     }
 }
 
@@ -64,8 +79,11 @@ kapt {
 dependencies {
     // 1.17.0 remains on compileSdk 36; Core 1.18+ moves to 36.1/37 and would force an unrelated AGP 9 migration.
     implementation("androidx.core:core-ktx:1.17.0")
+    implementation("androidx.documentfile:documentfile:1.1.0")
+    implementation("androidx.exifinterface:exifinterface:1.4.1")
     implementation("androidx.webkit:webkit:1.15.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.27.0")
 
     val roomVersion = "2.8.4"
     implementation("androidx.room:room-runtime:$roomVersion")
@@ -76,6 +94,10 @@ dependencies {
     implementation("androidx.sqlite:sqlite:2.6.2")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20250517")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.room:room-testing:$roomVersion")
 }
 
 tasks.named("preBuild").configure { dependsOn(syncWebapp) }

@@ -6,3 +6,6 @@ backend-dev/data/
 android/.gradle/
 android/local.properties
 android/**/build/
+output/
+webapp/.playwright-cli/
+*.wav

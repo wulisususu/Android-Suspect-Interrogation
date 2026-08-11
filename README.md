@@ -96,7 +96,7 @@ cp .env.example .env
 npm run dev
 ```
 
-这里的 HTTP/云端 AI 只是开发辅助路径。APK 内 AI 路由设置只通过 NativeBridge/Kotlin 生效。
+浏览器中的“AI 设置”通过 `backend-dev` 保存到本机开发数据库，并可直接联调智谱 API；API Key 不会回显到页面。Vite 将同源的 `/api` 和 `/work` 请求转发到仅本机监听的后端，因此从局域网设备打开 `5173` 时不需要直接访问 `8080`。Windows 未接本地模型 Runtime 时，`LOCAL` / `OFFLINE_ONLY` 会明确提示不可用。APK 内仍通过 NativeBridge/Kotlin 使用独立的 AI 路由设置。
 
 ## APK 构建
 

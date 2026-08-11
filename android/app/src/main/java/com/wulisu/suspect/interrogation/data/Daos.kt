@@ -57,3 +57,25 @@ interface AuditDao {
     @Insert(onConflict = OnConflictStrategy.ABORT) suspend fun insert(entity: AuditLogEntity)
     @Query("SELECT * FROM audit_logs WHERE caseId = :caseId ORDER BY createdAt DESC LIMIT :limit") suspend fun list(caseId: String, limit: Int = 500): List<AuditLogEntity>
 }
+
+@Dao
+interface AsrCaptureSessionDao {
+    @Query("SELECT * FROM asr_capture_sessions WHERE id = :id LIMIT 1") suspend fun get(id: String): AsrCaptureSessionEntity?
+    @Query("SELECT * FROM asr_capture_sessions WHERE caseId = :caseId AND state = 'RECORDING' ORDER BY startedAt DESC LIMIT 1") suspend fun active(caseId: String): AsrCaptureSessionEntity?
+    @Query("SELECT * FROM asr_capture_sessions WHERE caseId = :caseId ORDER BY startedAt DESC LIMIT 1") suspend fun latest(caseId: String): AsrCaptureSessionEntity?
+    @Insert(onConflict = OnConflictStrategy.ABORT) suspend fun insert(entity: AsrCaptureSessionEntity)
+    @Update suspend fun update(entity: AsrCaptureSessionEntity)
+}
+
+@Dao
+interface AsrTemporaryFragmentDao {
+    @Query("SELECT * FROM asr_temporary_fragments WHERE id = :id LIMIT 1") suspend fun get(id: String): AsrTemporaryFragmentEntity?
+    @Query("SELECT * FROM asr_temporary_fragments WHERE caseId = :caseId AND (state = 'PENDING' OR (:includeConfirmed = 1 AND state = 'CONFIRMED')) ORDER BY createdAt ASC, ordinal ASC")
+    suspend fun list(caseId: String, includeConfirmed: Boolean): List<AsrTemporaryFragmentEntity>
+    @Query("SELECT * FROM asr_temporary_fragments WHERE captureSessionId = :captureSessionId AND state = 'PENDING' ORDER BY ordinal ASC")
+    suspend fun listPending(captureSessionId: String): List<AsrTemporaryFragmentEntity>
+    @Query("SELECT COALESCE(MAX(ordinal), 0) FROM asr_temporary_fragments WHERE captureSessionId = :captureSessionId")
+    suspend fun maxOrdinal(captureSessionId: String): Int
+    @Insert(onConflict = OnConflictStrategy.ABORT) suspend fun insert(entity: AsrTemporaryFragmentEntity)
+    @Update suspend fun update(entity: AsrTemporaryFragmentEntity)
+}

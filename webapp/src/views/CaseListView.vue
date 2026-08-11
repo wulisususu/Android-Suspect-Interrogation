@@ -122,6 +122,10 @@ onMounted(load)
   max-width: 960px;
   margin: 0 auto;
   padding: 16px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .topbar {
   display: flex;
@@ -133,7 +137,7 @@ onMounted(load)
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
   margin-bottom: 16px;
 }
-.topbar h1 { margin: 0; font-size: 20px; }
+.topbar h1 { margin: 0; font-size: 20px; color: #1f2c38; }
 .topbar p { margin: 2px 0 0; color: #888; font-size: 13px; }
 .state-chip {
   background: #e8f0fe; color: #1a56db; border-radius: 999px;
@@ -149,7 +153,7 @@ onMounted(load)
   background: #f2f6ff; color: #555; margin-bottom: 12px;
 }
 .feedback-banner.error { background: #fdecec; color: #c0392b; }
-.case-list { display: flex; flex-direction: column; gap: 10px; }
+.case-list { display: flex; flex-direction: column; gap: 10px; overflow: auto; min-height: 0; }
 .case-card {
   display: flex; justify-content: space-between; align-items: center;
   background: #fff; border-radius: 12px; padding: 14px 16px;

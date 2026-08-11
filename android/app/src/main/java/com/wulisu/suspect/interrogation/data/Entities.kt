@@ -115,3 +115,62 @@ data class AuditLogEntity(
     val detailJson: String,
     val createdAt: Long,
 )
+
+@Entity(
+    tableName = "asr_capture_sessions",
+    foreignKeys = [
+        ForeignKey(entity = CaseEntity::class, parentColumns = ["id"], childColumns = ["caseId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = SessionEntity::class, parentColumns = ["id"], childColumns = ["interrogationSessionId"], onDelete = ForeignKey.CASCADE),
+    ],
+    indices = [Index("caseId"), Index("interrogationSessionId"), Index(value = ["caseId", "startedAt"])],
+)
+data class AsrCaptureSessionEntity(
+    @androidx.room.PrimaryKey val id: String,
+    val caseId: String,
+    val interrogationSessionId: String,
+    val modelId: String,
+    val modelName: String,
+    val provider: String,
+    val sherpaVersion: String,
+    val sampleRate: Int,
+    val audioRelativePath: String,
+    val startedAt: Long,
+    val endedAt: Long?,
+    val state: String,
+    val error: String?,
+)
+
+@Entity(
+    tableName = "asr_temporary_fragments",
+    foreignKeys = [
+        ForeignKey(entity = AsrCaptureSessionEntity::class, parentColumns = ["id"], childColumns = ["captureSessionId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = CaseEntity::class, parentColumns = ["id"], childColumns = ["caseId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = QaRecordEntity::class, parentColumns = ["id"], childColumns = ["confirmedQaId"], onDelete = ForeignKey.SET_NULL),
+    ],
+    indices = [
+        Index("captureSessionId"),
+        Index("caseId"),
+        Index("confirmedQaId"),
+        Index(value = ["captureSessionId", "ordinal"], unique = true),
+    ],
+)
+data class AsrTemporaryFragmentEntity(
+    @androidx.room.PrimaryKey val id: String,
+    val captureSessionId: String,
+    val caseId: String,
+    val ordinal: Int,
+    val startedAtMs: Long,
+    val endedAtMs: Long,
+    val audioStartOffsetMs: Long,
+    val audioEndOffsetMs: Long,
+    val rawText: String,
+    val editedText: String,
+    val speaker: String,
+    val speakerSource: String,
+    val confidence: Double?,
+    val confidenceSource: String,
+    val state: String,
+    val confirmedQaId: String?,
+    val createdAt: Long,
+    val updatedAt: Long,
+)

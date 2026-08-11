@@ -14,3 +14,5 @@ webapp -> window.NativeBridge -> android/Kotlin -> Room/SQLCipher
 ```
 
 默认监听 `127.0.0.1:8080`，仅用于研发联调。设备模拟默认关闭，未接真实设备时返回 `DEVICE_NOT_CONNECTED`。
+
+浏览器 AI 设置通过 `/api/ai/settings` 读写，并保存在本机开发数据库中。AI 询问使用当前设置直连兼容 OpenAI Chat Completions 的云端接口；Windows 未接本地 Runtime 时，本地模式会返回明确错误。

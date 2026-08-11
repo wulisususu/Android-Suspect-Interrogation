@@ -1,7 +1,8 @@
 const ensureTrailingSlash = (value: string) => (value.endsWith('/') ? value : `${value}/`)
+const browserOrigin = typeof window === 'undefined' ? 'http://127.0.0.1:8080' : window.location.origin
 
 export const runtimeConfig = {
-  apiBaseUrl: ensureTrailingSlash(import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8080/'),
+  apiBaseUrl: ensureTrailingSlash(import.meta.env.VITE_API_BASE_URL || browserOrigin),
   authMode: import.meta.env.VITE_AUTH_MODE || 'raw',
   explicitToken: import.meta.env.VITE_AUTH_TOKEN || '',
 }

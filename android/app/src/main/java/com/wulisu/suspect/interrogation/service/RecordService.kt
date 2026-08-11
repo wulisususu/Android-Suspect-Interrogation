@@ -19,6 +19,10 @@ class RecordService(private val db: AppDatabase, private val cases: CaseService,
     suspend fun list(caseId: String): List<TranscriptMessage> { cases.ensure(caseId); return qaDao.list(caseId).map { it.toDomain() } }
 
     suspend fun add(caseId: String, text: String, speakerValue: String): TranscriptMessage = db.withTransaction {
+        addWithinTransaction(caseId, text, speakerValue)
+    }
+
+    internal suspend fun addWithinTransaction(caseId: String, text: String, speakerValue: String): TranscriptMessage {
         cases.ensure(caseId)
         val clean = InterrogationRules.requireNonBlankMessage(text)
         val speaker = Speaker.fromWire(speakerValue)
@@ -27,8 +31,11 @@ class RecordService(private val db: AppDatabase, private val cases: CaseService,
         val entity = QaRecordEntity(UUID.randomUUID().toString(), caseId, session.id, qaDao.maxSeq(caseId) + 1, speaker.wireValue, clean, RecordMark.NONE.wireValue, true, now, now)
         qaDao.insert(entity)
         audit.append(caseId, "QA_CREATE", "QA", entity.id, JSONObject().put("seq", entity.seq).put("speaker", entity.speaker))
-        entity.toDomain()
+        return entity.toDomain()
     }
+
+    internal suspend fun getWithinTransaction(caseId: String, messageId: String): TranscriptMessage? =
+        qaDao.get(caseId, messageId)?.toDomain()
 
     suspend fun update(caseId: String, messageId: String, text: String, reason: String): TranscriptMessage = db.withTransaction {
         val current = qaDao.get(caseId, messageId) ?: throw BusinessException("QA_NOT_FOUND", "问答记录不存在")

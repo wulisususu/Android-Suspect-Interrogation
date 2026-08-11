@@ -12,6 +12,7 @@ import java.net.URL
 interface AiProvider {
     val kind: AiProviderKind
     fun isAvailable(settings: AiSettings): Boolean
+    fun currentModel(settings: AiSettings): String? = null
     suspend fun inquiry(messages: List<AiMessage>, settings: AiSettings): AiResponse
 }
 
@@ -103,11 +104,43 @@ class ZhipuAiProvider(private val settingsStore: AiSettingsStore) : AiProvider {
     }.getOrDefault("智谱 API 请求失败（HTTP $status）")
 }
 
-class LocalAiProvider : AiProvider {
+interface LocalLlmRuntime {
+    fun isAvailable(model: LocalModelDescriptor): Boolean
+    suspend fun inquiry(model: LocalModelDescriptor, messages: List<AiMessage>, settings: AiSettings): AiResponse
+}
+
+class UnavailableLocalLlmRuntime : LocalLlmRuntime {
+    override fun isAvailable(model: LocalModelDescriptor): Boolean = false
+
+    override suspend fun inquiry(
+        model: LocalModelDescriptor,
+        messages: List<AiMessage>,
+        settings: AiSettings,
+    ): AiResponse {
+        throw BusinessException(
+            "LOCAL_AI_RUNTIME_UNAVAILABLE",
+            "已选择本地模型 ${model.name}，但 JNI / RKNN / ONNX / llama.cpp Runtime 尚未接入",
+        )
+    }
+}
+
+class LocalAiProvider(
+    private val modelManager: ModelManager,
+    private val runtime: LocalLlmRuntime = UnavailableLocalLlmRuntime(),
+) : AiProvider {
     override val kind = AiProviderKind.LOCAL
-    override fun isAvailable(settings: AiSettings): Boolean = false
+    override fun isAvailable(settings: AiSettings): Boolean =
+        modelManager.selected(ModelCategory.LLM)?.let(runtime::isAvailable) == true
+
+    override fun currentModel(settings: AiSettings): String? =
+        modelManager.selected(ModelCategory.LLM)?.name
 
     override suspend fun inquiry(messages: List<AiMessage>, settings: AiSettings): AiResponse {
-        throw BusinessException("LOCAL_AI_NOT_CONFIGURED", "本地模型 Provider 接口已就绪，但 JNI / RKNN / llama.cpp Runtime 尚未接入")
+        val model = modelManager.selected(ModelCategory.LLM)
+            ?: throw BusinessException("LOCAL_MODEL_NOT_SELECTED", "尚未导入并选择 LLM 模型")
+        if (!runtime.isAvailable(model)) {
+            throw BusinessException("LOCAL_AI_RUNTIME_UNAVAILABLE", "本地模型 ${model.name} 已选择，但推理 Runtime 尚未接入")
+        }
+        return runtime.inquiry(model, messages, settings)
     }
 }

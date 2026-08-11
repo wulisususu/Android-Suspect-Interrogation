@@ -1,6 +1,20 @@
 package com.wulisu.suspect.interrogation.bridge
 
+import android.net.Uri
+import com.wulisu.suspect.interrogation.asr.AsrCaptureSessionManager
+import com.wulisu.suspect.interrogation.asr.AsrCaptureStatus
+import com.wulisu.suspect.interrogation.asr.AsrController
+import com.wulisu.suspect.interrogation.asr.AsrFinalResult
+import com.wulisu.suspect.interrogation.asr.AsrRuntimeStatus
+import com.wulisu.suspect.interrogation.asr.BatchFragmentConfirmation
+import com.wulisu.suspect.interrogation.asr.CaptureFragmentRules
+import com.wulisu.suspect.interrogation.asr.FragmentConfirmation
+import com.wulisu.suspect.interrogation.asr.TemporaryAsrFragment
 import com.wulisu.suspect.interrogation.domain.*
+import com.wulisu.suspect.interrogation.ocr.OcrController
+import com.wulisu.suspect.interrogation.ocr.OcrResult
+import com.wulisu.suspect.interrogation.ocr.OcrRuntimeStatus
+import com.wulisu.suspect.interrogation.ocr.toJson
 import com.wulisu.suspect.interrogation.service.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -14,6 +28,10 @@ class RpcRouter(
     private val audit: AuditService,
     private val devices: DeviceService,
     private val ai: AiService,
+    private val models: ModelManager,
+    private val asr: AsrController,
+    private val asrCapture: AsrCaptureSessionManager,
+    private val ocr: OcrController,
 ) {
     suspend fun handle(raw: String): String {
         val request = runCatching { JSONObject(raw) }.getOrElse { return error("", "INVALID_REQUEST", "NativeBridge 请求不是合法 JSON") }
@@ -58,6 +76,42 @@ class RpcRouter(
             clearApiKey = payload.optBoolean("clearApiKey", false),
         ).toJson()
         "ai.inquiry" -> ai.inquiry(payload.requiredString("message")).toJson()
+        "asr.status" -> asr.status().toJson()
+        "asr.start" -> asr.start().toJson()
+        "asr.stop" -> asr.stop().toJson()
+        "asr.capture.status" -> asrCapture.status(payload.requiredString("caseId")).toJson()
+        "asr.capture.start" -> asrCapture.start(payload.requiredString("caseId")).toJson()
+        "asr.capture.stop" -> asrCapture.stop(payload.requiredString("caseId")).toJson()
+        "asr.fragment.list" -> asrCapture.listFragments(payload.requiredString("caseId"), payload.optBoolean("includeConfirmed", false)).toJsonArray { it.toJson() }
+        "asr.fragment.update" -> asrCapture.updateFragment(payload.requiredString("fragmentId"), payload.requiredString("editedText"), payload.requiredString("speaker")).toJson()
+        "asr.fragment.confirm" -> asrCapture.confirmFragment(payload.requiredString("fragmentId")).toJson()
+        "asr.fragment.confirmBatch" -> asrCapture.confirmBatch(payload.requiredStringList("fragmentIds")).toJson()
+        "asr.fragment.discard" -> asrCapture.discardFragment(payload.requiredString("fragmentId")).toJson()
+        "ocr.status" -> ocr.status().toJson()
+        "ocr.model.list" -> models.list().toJson()
+        "ocr.model.select" -> ocr.selectModel(payload.nullableString("modelId")).toJson()
+        "ocr.image.use" -> ocr.useImage(Uri.parse(payload.requiredString("uri"))).toJson()
+        "ocr.camera.use" -> ocr.useCapturedImage(
+            file = java.io.File(payload.requiredString("path")),
+            uri = Uri.parse(payload.requiredString("uri")),
+        ).toJson()
+        "ocr.recognize" -> ocr.recognize().toJson()
+        "ocr.release" -> ocr.release().toJson()
+        "model.scan" -> models.scan().toJson()
+        "model.list" -> models.list().toJson()
+        "model.select" -> {
+            val category = payload.requiredModelCategory()
+            when (category) {
+                ModelCategory.ASR -> asr.selectModel(payload.nullableString("modelId")).toJson()
+                ModelCategory.OCR -> ocr.selectModel(payload.nullableString("modelId")).toJson()
+                else -> models.select(category, payload.nullableString("modelId")).toJson()
+            }
+        }
+        "model.import" -> models.importFromUri(
+            category = payload.requiredModelCategory(),
+            source = payload.requiredModelImportSource(),
+            uri = Uri.parse(payload.requiredString("uri")),
+        ).toJson()
         else -> throw BusinessException("ACTION_NOT_SUPPORTED", "未支持的 NativeBridge action: $action")
     }
 
@@ -70,6 +124,20 @@ private fun JSONObject.nullableString(key: String): String? { if (!has(key) || i
 private fun JSONObject.nullableBoolean(key: String): Boolean? = if (!has(key) || isNull(key)) null else optBoolean(key)
 private fun JSONObject.nullableInt(key: String): Int? = if (!has(key) || isNull(key)) null else optInt(key)
 private fun JSONObject.nullableDouble(key: String): Double? = if (!has(key) || isNull(key)) null else optDouble(key)
+private fun JSONObject.requiredStringList(key: String): List<String> {
+    val array = optJSONArray(key) ?: throw BusinessException("INVALID_ARGUMENT", "缺少参数: $key")
+    return buildList {
+        for (index in 0 until array.length()) {
+            array.optString(index).trim().takeIf { it.isNotEmpty() }?.let(::add)
+        }
+    }.ifEmpty { throw BusinessException("INVALID_ARGUMENT", "$key 不能为空") }
+}
+private fun JSONObject.requiredModelCategory(): ModelCategory =
+    ModelCategory.fromWire(requiredString("category"))
+        ?: throw BusinessException("INVALID_MODEL_CATEGORY", "无效的模型分类")
+private fun JSONObject.requiredModelImportSource(): ModelImportSource =
+    ModelImportSource.fromWire(requiredString("source"))
+        ?: throw BusinessException("INVALID_MODEL_IMPORT_SOURCE", "无效的模型导入方式")
 private fun stageFromWire(value: String): InterrogationStage = runCatching { InterrogationStage.valueOf(value) }.getOrElse { throw BusinessException("INVALID_STAGE", "无效审讯阶段") }
 private inline fun <T> List<T>.toJsonArray(mapper: (T) -> Any?): JSONArray = JSONArray().also { array -> forEach { array.put(mapper(it)) } }
 private fun CaseSummary.toJson() = JSONObject().put("id", id).put("suspectName", suspectName).put("gender", gender).put("age", age).put("officerName", officerName).put("state", state).put("stage", stage.name).put("createdAt", createdAt).put("updatedAt", updatedAt)
@@ -95,3 +163,102 @@ private fun AiRuntimeStatus.toJson() = JSONObject()
     .put("localAvailable", localAvailable)
     .put("localModel", localModel ?: JSONObject.NULL)
 private fun AiResponse.toJson() = JSONObject().put("text", text).put("provider", provider.name).put("model", model)
+internal fun AsrRuntimeStatus.toJson() = JSONObject()
+    .put("selectedModelId", selectedModelId)
+    .put("selectedModelName", selectedModelName)
+    .put("activeModelId", activeModelId ?: JSONObject.NULL)
+    .put("provider", provider)
+    .put("running", running)
+    .put("initialized", initialized)
+    .put("initializationMs", initializationMs ?: JSONObject.NULL)
+    .put("firstTokenLatencyMs", firstTokenLatencyMs ?: JSONObject.NULL)
+    .put("utteranceLatencyMs", utteranceLatencyMs ?: JSONObject.NULL)
+    .put("partialText", partialText)
+    .put("finalText", finalText)
+    .put("finalResults", finalResults.toJsonArray { it.toJson() })
+    .put("error", error ?: JSONObject.NULL)
+    .put("sherpaVersion", sherpaVersion)
+    .put("sampleRate", sampleRate)
+private fun AsrFinalResult.toJson() = JSONObject()
+    .put("text", text)
+    .put("startedAtMs", startedAtMs)
+    .put("endedAtMs", endedAtMs)
+    .put("latencyMs", latencyMs)
+    .put("confidence", confidence ?: JSONObject.NULL)
+internal fun OcrRuntimeStatus.toJson() = JSONObject()
+    .put("selectedModelId", selectedModelId ?: JSONObject.NULL)
+    .put("selectedModelName", selectedModelName ?: JSONObject.NULL)
+    .put("activeModelId", activeModelId ?: JSONObject.NULL)
+    .put("provider", provider ?: JSONObject.NULL)
+    .put("modelFormat", modelFormat ?: JSONObject.NULL)
+    .put("initialized", initialized)
+    .put("busy", busy)
+    .put("imageReady", imageReady)
+    .put("previewUri", previewUri ?: JSONObject.NULL)
+    .put("initializationMs", initializationMs ?: JSONObject.NULL)
+    .put("recognitionMs", recognitionMs ?: JSONObject.NULL)
+    .put("lastResult", lastResult?.toJson() ?: JSONObject.NULL)
+    .put("error", error ?: JSONObject.NULL)
+internal fun AsrCaptureStatus.toJson() = JSONObject()
+    .put("caseId", caseId)
+    .put("captureSessionId", captureSessionId ?: JSONObject.NULL)
+    .put("running", running)
+    .put("startedAt", startedAt ?: JSONObject.NULL)
+    .put("endedAt", endedAt ?: JSONObject.NULL)
+    .put("modelId", modelId ?: JSONObject.NULL)
+    .put("modelName", modelName ?: JSONObject.NULL)
+    .put("provider", provider ?: JSONObject.NULL)
+    .put("sampleRate", sampleRate)
+    .put("partialText", partialText)
+    .put("fragments", fragments.toJsonArray { it.toJson() })
+    .put("error", error ?: JSONObject.NULL)
+private fun TemporaryAsrFragment.toJson() = JSONObject()
+    .put("id", id)
+    .put("captureSessionId", captureSessionId)
+    .put("caseId", caseId)
+    .put("ordinal", ordinal)
+    .put("startedAtMs", startedAtMs)
+    .put("endedAtMs", endedAtMs)
+    .put("rawText", rawText)
+    .put("editedText", editedText)
+    .put("speaker", speaker.name)
+    .put("speakerSource", speakerSource.name)
+    .put("confidence", confidence ?: JSONObject.NULL)
+    .put("confidenceSource", confidenceSource.name)
+    .put("lowConfidence", CaptureFragmentRules.isLowConfidence(confidence))
+    .put("state", state.name)
+    .put("confirmedQaId", confirmedQaId ?: JSONObject.NULL)
+    .put(
+        "audio",
+        JSONObject()
+            .put("captureSessionId", audio.captureSessionId)
+            .put("startOffsetMs", audio.startOffsetMs)
+            .put("endOffsetMs", audio.endOffsetMs)
+            .put("available", audio.available),
+    )
+    .put("createdAt", createdAt)
+    .put("updatedAt", updatedAt)
+private fun FragmentConfirmation.toJson() = JSONObject().put("fragment", fragment.toJson()).put("record", record.toJson())
+private fun BatchFragmentConfirmation.toJson() = JSONObject()
+    .put("confirmed", confirmed.toJsonArray { it.toJson() })
+    .put("failures", failures.toJsonArray { JSONObject().put("fragmentId", it.fragmentId).put("code", it.code).put("message", it.message) })
+private fun LocalModelCatalog.toJson() = JSONObject()
+    .put("rootPath", JSONObject.NULL)
+    .put("models", models.toJsonArray { it.toJson() })
+private fun LocalModelDescriptor.toJson() = JSONObject()
+    .put("id", id)
+    .put("category", category.name)
+    .put("name", name)
+    .put("storageName", storageName)
+    .put("absolutePath", JSONObject.NULL)
+    .put("relativePath", relativePath)
+    .put("sizeBytes", sizeBytes)
+    .put("modifiedAt", modifiedAt)
+    .put("sourceKind", sourceKind.name)
+    .put("archive", archive)
+    .put("selected", selected)
+    .put("runtimeReady", runtimeReady)
+    .put("version", version ?: JSONObject.NULL)
+    .put("modelFormat", modelFormat ?: JSONObject.NULL)
+    .put("provider", provider ?: JSONObject.NULL)
+    .put("complete", complete)

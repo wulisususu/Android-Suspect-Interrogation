@@ -1,12 +1,12 @@
 import type { AxiosError } from 'axios'
 import { getAuthorizationValue, runtimeConfig } from '../config/runtime'
 import { callNative, isNativeBusinessRuntime } from '../native/rpcBridge'
-import type { AiRuntimeStatus, AiSettingsPatch, BackendEnvelope, CaseSummary, DeviceActionResult, FactItem, InquirySsePayload, InterrogationStage, RecordMark, RecordRevision, SessionState, TimelineEvent, TranscriptMessage } from '../types/interrogation'
+import type { AiRuntimeStatus, AiSettingsPatch, AsrCaptureStatus, AsrRuntimeStatus, BackendEnvelope, BatchFragmentConfirmation, CaseSummary, DeviceActionResult, FactItem, FragmentConfirmation, InquirySsePayload, InterrogationStage, LocalModelCatalog, ModelCategory, ModelImportSource, OcrResult, OcrRuntimeStatus, RecordMark, RecordRevision, SessionState, TemporaryAsrFragment, TemporaryAsrSpeaker, TimelineEvent, TranscriptMessage } from '../types/interrogation'
 import { http } from './http'
 import { streamSse } from './sse'
 
 function unwrap<T>(payload: BackendEnvelope<T> | T): T { if (payload && typeof payload === 'object' && 'ok' in payload && 'data' in payload) { const envelope = payload as BackendEnvelope<T>; if (!envelope.ok) throw new Error(envelope.message || envelope.code); return envelope.data } return payload as T }
-export function backendErrorMessage(error: unknown): string { const axiosError = error as AxiosError<{ message?: string; code?: string }>; const responseMessage = axiosError?.response?.data?.message; if (responseMessage) return responseMessage; if (error instanceof Error) return error.message; return String(error) }
+export function backendErrorMessage(error: unknown): string { const axiosError = error as AxiosError<{ message?: string; code?: string }>; const responseMessage = axiosError?.response?.data?.message; if (responseMessage) return responseMessage; if (axiosError?.code === 'ERR_NETWORK' || (error instanceof TypeError && /fetch/i.test(error.message))) return '无法连接本机联调后端，请确认 backend-dev 已启动'; if (error instanceof Error) return error.message; return String(error) }
 
 export async function createCase(payload: Partial<CaseSummary> = {}) { if (isNativeBusinessRuntime()) return callNative<CaseSummary>('case.create', payload as Record<string, unknown>); const { data } = await http.post('/api/cases/create', payload); return unwrap<CaseSummary>(data) }
 export async function fetchCases(limit = 50) { if (isNativeBusinessRuntime()) return callNative<CaseSummary[]>('case.list', { limit }); const { data } = await http.get('/api/cases', { params: { limit } }); return unwrap<CaseSummary[]>(data) }
@@ -28,13 +28,123 @@ export async function changeSessionStage(caseId: string, stage: InterrogationSta
 export async function invokeDeviceAction(type: 'identity' | 'fingerprint' | 'signature') { if (isNativeBusinessRuntime()) return callNative<DeviceActionResult>('device.action', { type }); const { data } = await http.post('/api/device/action', { type }); return unwrap<DeviceActionResult>(data) }
 
 export async function fetchAiSettings(): Promise<AiRuntimeStatus> {
-  if (!isNativeBusinessRuntime()) throw new Error('AI 运行时切换仅在构建后的 Android APK 中可用')
-  return callNative<AiRuntimeStatus>('ai.settings.get')
+  if (isNativeBusinessRuntime()) return callNative<AiRuntimeStatus>('ai.settings.get')
+  const { data } = await http.get('/api/ai/settings')
+  return unwrap<AiRuntimeStatus>(data)
 }
 
 export async function updateAiSettings(patch: AiSettingsPatch): Promise<AiRuntimeStatus> {
-  if (!isNativeBusinessRuntime()) throw new Error('AI 运行时切换仅在构建后的 Android APK 中可用')
-  return callNative<AiRuntimeStatus>('ai.settings.update', patch as Record<string, unknown>)
+  if (isNativeBusinessRuntime()) return callNative<AiRuntimeStatus>('ai.settings.update', patch as Record<string, unknown>)
+  const { data } = await http.patch('/api/ai/settings', patch)
+  return unwrap<AiRuntimeStatus>(data)
+}
+
+const browserModelCatalog: LocalModelCatalog = {
+  rootPath: 'Android APK 私有模型目录',
+  models: [],
+}
+
+export async function fetchLocalModels(rescan = false): Promise<LocalModelCatalog> {
+  if (!isNativeBusinessRuntime()) return browserModelCatalog
+  return callNative<LocalModelCatalog>(rescan ? 'model.scan' : 'model.list')
+}
+
+export async function selectLocalModel(category: ModelCategory, modelId?: string): Promise<LocalModelCatalog> {
+  if (!isNativeBusinessRuntime()) throw new Error('本地模型只能在 Android APK 中选择')
+  return callNative<LocalModelCatalog>('model.select', { category, modelId })
+}
+
+export async function importLocalModel(category: ModelCategory, source: ModelImportSource): Promise<LocalModelCatalog> {
+  if (!isNativeBusinessRuntime()) throw new Error('请在 Android APK 中使用系统文件管理器导入模型')
+  return callNative<LocalModelCatalog>('model.import.request', { category, source }, 15 * 60_000)
+}
+
+export function fetchAsrStatus(): Promise<AsrRuntimeStatus> {
+  if (!isNativeBusinessRuntime()) return Promise.reject(new Error('离线实时识别仅在 Android APK 中运行'))
+  return callNative<AsrRuntimeStatus>('asr.status')
+}
+
+export function startAsr(): Promise<AsrRuntimeStatus> {
+  if (!isNativeBusinessRuntime()) return Promise.reject(new Error('离线实时识别仅在 Android APK 中运行'))
+  return callNative<AsrRuntimeStatus>('asr.start', {}, 120_000)
+}
+
+export function stopAsr(): Promise<AsrRuntimeStatus> {
+  if (!isNativeBusinessRuntime()) return Promise.reject(new Error('离线实时识别仅在 Android APK 中运行'))
+  return callNative<AsrRuntimeStatus>('asr.stop', {}, 30_000)
+}
+
+function requireNativeOcr() {
+  if (!isNativeBusinessRuntime()) throw new Error('离线 OCR 仅在 Android APK 中运行')
+}
+
+export function fetchOcrStatus(): Promise<OcrRuntimeStatus> {
+  requireNativeOcr()
+  return callNative<OcrRuntimeStatus>('ocr.status')
+}
+
+export function pickOcrImage(): Promise<OcrRuntimeStatus> {
+  requireNativeOcr()
+  return callNative<OcrRuntimeStatus>('ocr.image.pick', {}, 5 * 60_000)
+}
+
+export function captureOcrImage(): Promise<OcrRuntimeStatus> {
+  requireNativeOcr()
+  return callNative<OcrRuntimeStatus>('ocr.camera.capture', {}, 5 * 60_000)
+}
+
+export function recognizeOcrImage(): Promise<OcrResult> {
+  requireNativeOcr()
+  return callNative<OcrResult>('ocr.recognize', {}, 5 * 60_000)
+}
+
+export function releaseOcr(): Promise<OcrRuntimeStatus> {
+  requireNativeOcr()
+  return callNative<OcrRuntimeStatus>('ocr.release', {}, 30_000)
+}
+
+function requireNativeCapture() {
+  if (!isNativeBusinessRuntime()) throw new Error('连续离线录音仅在 Android APK 中运行')
+}
+
+export function fetchAsrCaptureStatus(caseId: string): Promise<AsrCaptureStatus> {
+  requireNativeCapture()
+  return callNative<AsrCaptureStatus>('asr.capture.status', { caseId })
+}
+
+export function startAsrCapture(caseId: string): Promise<AsrCaptureStatus> {
+  requireNativeCapture()
+  return callNative<AsrCaptureStatus>('asr.capture.start', { caseId }, 120_000)
+}
+
+export function stopAsrCapture(caseId: string): Promise<AsrCaptureStatus> {
+  requireNativeCapture()
+  return callNative<AsrCaptureStatus>('asr.capture.stop', { caseId }, 30_000)
+}
+
+export function listAsrFragments(caseId: string, includeConfirmed = false): Promise<TemporaryAsrFragment[]> {
+  requireNativeCapture()
+  return callNative<TemporaryAsrFragment[]>('asr.fragment.list', { caseId, includeConfirmed })
+}
+
+export function updateAsrFragment(fragmentId: string, editedText: string, speaker: TemporaryAsrSpeaker): Promise<TemporaryAsrFragment> {
+  requireNativeCapture()
+  return callNative<TemporaryAsrFragment>('asr.fragment.update', { fragmentId, editedText, speaker })
+}
+
+export function confirmAsrFragment(fragmentId: string): Promise<FragmentConfirmation> {
+  requireNativeCapture()
+  return callNative<FragmentConfirmation>('asr.fragment.confirm', { fragmentId })
+}
+
+export function confirmAsrFragmentBatch(fragmentIds: string[]): Promise<BatchFragmentConfirmation> {
+  requireNativeCapture()
+  return callNative<BatchFragmentConfirmation>('asr.fragment.confirmBatch', { fragmentIds })
+}
+
+export function discardAsrFragment(fragmentId: string): Promise<TemporaryAsrFragment> {
+  requireNativeCapture()
+  return callNative<TemporaryAsrFragment>('asr.fragment.discard', { fragmentId })
 }
 
 export async function streamInquiry(caseId: string, message: string, onPayload: (payload: InquirySsePayload) => void, signal?: AbortSignal) {

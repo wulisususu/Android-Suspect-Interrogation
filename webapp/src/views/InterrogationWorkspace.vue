@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import AiSettingsPanel from '../components/AiSettingsPanel.vue'
 import DeviceStatusBar from '../components/DeviceStatusBar.vue'
 import FactMatrix from '../components/FactMatrix.vue'
@@ -11,6 +11,7 @@ import { useInterrogationStore } from '../stores/interrogation'
 
 const store = useInterrogationStore()
 onMounted(() => store.initialize())
+onUnmounted(() => store.disposeCaptureEvents())
 </script>
 
 <template>
@@ -37,9 +38,11 @@ onMounted(() => store.initialize())
       </div>
     </header>
 
-    <div v-if="store.loading" class="demo-banner">正在连接专属后端并加载案件状态…</div>
-    <div v-else-if="store.actionError" class="feedback-banner error">{{ store.actionError }}</div>
-    <div v-else-if="store.actionMessage" class="feedback-banner success">{{ store.actionMessage }}</div>
+    <div class="workspace-toast-region" aria-live="polite">
+      <div v-if="store.loading" class="workspace-toast info">正在加载案件状态…</div>
+      <div v-else-if="store.actionError" class="workspace-toast error">{{ store.actionError }}</div>
+      <div v-else-if="store.actionMessage" class="workspace-toast success">{{ store.actionMessage }}</div>
+    </div>
 
     <SessionControls
       :session="store.session"
@@ -56,12 +59,24 @@ onMounted(() => store.initialize())
         :messages="store.transcript"
         :streaming="store.streaming"
         :can-record="store.canRecord"
+        :native-capture-available="store.nativeCaptureAvailable"
+        :capture="store.capture"
+        :capture-busy="store.captureBusy"
+        :capture-elapsed-ms="store.captureElapsedMs"
+        :selected-fragment-ids="store.selectedFragmentIds"
         :error="store.error"
         @send="store.ask"
         @edit="store.editMessage"
         @mark="store.markMessage"
         @mark-latest="store.markLatestConflict"
         @versions="store.openRevisions"
+        @capture-start="store.startCapture"
+        @capture-stop="store.stopCapture"
+        @update-fragment="store.updatePendingFragment"
+        @confirm-fragment="store.confirmPendingFragment"
+        @discard-fragment="store.discardPendingFragment"
+        @toggle-fragment="store.toggleFragmentSelection"
+        @confirm-selected="store.confirmSelectedFragments"
       />
       <FactMatrix :items="store.facts" :completion="store.completion" @use-suggestion="store.useSuggestion" />
     </section>

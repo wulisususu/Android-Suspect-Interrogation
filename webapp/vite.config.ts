@@ -4,6 +4,13 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   base: './',
   plugins: [vue()],
-  server: { host: '0.0.0.0', port: 5173 },
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    proxy: {
+      '/api': 'http://127.0.0.1:8080',
+      '/work': 'http://127.0.0.1:8080',
+    },
+  },
   build: { target: 'es2022', sourcemap: true },
 })

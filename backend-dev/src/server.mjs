@@ -24,6 +24,7 @@ import {
   updateMessage,
 } from './store.mjs'
 import { proxyInquiry } from './aiProxy.mjs'
+import { getAiSettingsStatus, updateAiSettings } from './aiSettings.mjs'
 
 const host = process.env.HOST || '127.0.0.1'
 const port = Number(process.env.PORT || 8080)
@@ -94,6 +95,10 @@ async function handle(req, res) {
   if (req.method === 'GET' && p === '/api/health') {
     return ok(res, req, { service: 'suspect-interrogation-backend', status: 'ready', timestamp: Date.now() })
   }
+  if (req.method === 'GET' && p === '/api/ai/settings') return ok(res, req, getAiSettingsStatus())
+  if (req.method === 'PATCH' && p === '/api/ai/settings') {
+    return ok(res, req, updateAiSettings(await body(req)), 'AI 设置已保存')
+  }
   if (req.method === 'GET' && p === '/api/cases') return ok(res, req, listCases(Number(url.searchParams.get('limit') || 100)))
   if (req.method === 'POST' && p === '/api/cases/create') return ok(res, req, createCase(await body(req)), '案件已创建')
 
@@ -111,7 +116,7 @@ async function handle(req, res) {
     if (req.method === 'GET') return ok(res, req, listMessages(params.caseId, Number(url.searchParams.get('limit') || 1000)))
     if (req.method === 'POST') {
       const payload = await body(req)
-      return ok(res, req, addMessage(params.caseId, payload.profile || payload), '问答已落库')
+      return ok(res, req, addMessage(params.caseId, payload.profile || payload), '问答已保存')
     }
   }
 

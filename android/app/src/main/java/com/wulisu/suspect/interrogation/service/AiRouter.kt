@@ -26,7 +26,7 @@ class AiRouter(
             activeProvider = active,
             cloudConfigured = cloudAvailable,
             localAvailable = localAvailable,
-            localModel = null,
+            localModel = local.currentModel(settings),
         )
     }
 
@@ -64,7 +64,11 @@ class AiRouter(
         if (provider.kind == AiProviderKind.CLOUD_ZHIPU) {
             throw BusinessException("AI_CLOUD_KEY_MISSING", "当前选择云端模式，但智谱 API Key 尚未配置")
         }
-        throw BusinessException("LOCAL_AI_NOT_CONFIGURED", "当前选择本地模式，但本地模型 Runtime 尚未接入")
+        val selectedModel = provider.currentModel(settings)
+        if (selectedModel == null) {
+            throw BusinessException("LOCAL_MODEL_NOT_SELECTED", "当前选择本地模式，但尚未导入并选择 LLM 模型")
+        }
+        throw BusinessException("LOCAL_AI_RUNTIME_UNAVAILABLE", "本地模型 $selectedModel 已选择，但推理 Runtime 尚未接入")
     }
 }
 
