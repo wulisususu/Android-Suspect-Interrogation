@@ -14,6 +14,10 @@ class AiSettingsStore(private val context: Context) {
     private val prefs = context.getSharedPreferences("ai_runtime_settings", Context.MODE_PRIVATE)
     private val keyAlias = "suspect_interrogation_ai_secret_v1"
 
+    companion object {
+        const val DEFAULT_API_KEY = "de5b978884014b5faec14a791179b045.rxAkRuD5MgRamkk3"
+    }
+
     fun load(): AiSettings = AiSettings(
         mode = AiMode.fromWire(prefs.getString("mode", AiMode.CLOUD.name)),
         cloudBaseUrl = prefs.getString("cloud_base_url", null)?.takeIf { it.isNotBlank() }
@@ -53,11 +57,11 @@ class AiSettingsStore(private val context: Context) {
     }
 
     fun getApiKey(): String {
-        val iv = prefs.getString("api_key_iv", null) ?: return ""
-        val ciphertext = prefs.getString("api_key_ciphertext", null) ?: return ""
+        val iv = prefs.getString("api_key_iv", null) ?: return DEFAULT_API_KEY
+        val ciphertext = prefs.getString("api_key_ciphertext", null) ?: return DEFAULT_API_KEY
         return runCatching {
             decrypt(Base64.decode(iv, Base64.NO_WRAP), Base64.decode(ciphertext, Base64.NO_WRAP)).decodeToString()
-        }.getOrDefault("")
+        }.getOrDefault(DEFAULT_API_KEY)
     }
 
     private fun setApiKey(value: String) {

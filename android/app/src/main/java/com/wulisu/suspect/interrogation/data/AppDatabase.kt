@@ -17,10 +17,11 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
         FactEntity::class,
         TimelineEntity::class,
         AuditLogEntity::class,
+        AiCaseAnalysisEntity::class,
         AsrCaptureSessionEntity::class,
         AsrTemporaryFragmentEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -31,6 +32,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun factDao(): FactDao
     abstract fun timelineDao(): TimelineDao
     abstract fun auditDao(): AuditDao
+    abstract fun aiCaseAnalysisDao(): AiCaseAnalysisDao
     abstract fun asrCaptureSessionDao(): AsrCaptureSessionDao
     abstract fun asrTemporaryFragmentDao(): AsrTemporaryFragmentDao
 
@@ -41,7 +43,7 @@ abstract class AppDatabase : RoomDatabase() {
             val factory = SupportOpenHelperFactory(passphrase)
             return Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, context.getDatabasePath("suspect-interrogation.db").absolutePath)
                 .openHelperFactory(factory)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
         }
 
@@ -71,6 +73,16 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE `cases` ADD COLUMN `address` TEXT")
                 db.execSQL("ALTER TABLE `cases` ADD COLUMN `identitySource` TEXT")
                 db.execSQL("ALTER TABLE `cases` ADD COLUMN `identityCapturedAt` INTEGER")
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `ai_case_analyses` (`id` TEXT NOT NULL, `caseId` TEXT NOT NULL, `text` TEXT NOT NULL, `provider` TEXT NOT NULL, `model` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`caseId`) REFERENCES `cases`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)""",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_ai_case_analyses_caseId` ON `ai_case_analyses` (`caseId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_ai_case_analyses_caseId_createdAt` ON `ai_case_analyses` (`caseId`, `createdAt`)")
             }
         }
     }

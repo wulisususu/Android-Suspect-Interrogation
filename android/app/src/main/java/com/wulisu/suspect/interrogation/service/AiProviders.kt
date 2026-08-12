@@ -1,6 +1,9 @@
 package com.wulisu.suspect.interrogation.service
 
 import com.wulisu.suspect.interrogation.domain.BusinessException
+import com.wulisu.suspect.interrogation.llm.LlmController
+import com.wulisu.suspect.interrogation.llm.LlmGenerationConfig
+import com.wulisu.suspect.interrogation.llm.LlmInput
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -8,6 +11,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 
 interface AiProvider {
     val kind: AiProviderKind
@@ -121,6 +125,33 @@ class UnavailableLocalLlmRuntime : LocalLlmRuntime {
             "LOCAL_AI_RUNTIME_UNAVAILABLE",
             "已选择本地模型 ${model.name}，但 JNI / RKNN / ONNX / llama.cpp Runtime 尚未接入",
         )
+    }
+}
+
+class ControllerLocalLlmRuntime(
+    private val controller: LlmController,
+) : LocalLlmRuntime {
+    override fun isAvailable(model: LocalModelDescriptor): Boolean =
+        model.runtimeReady && controller.status().storagePermissionGranted
+
+    override suspend fun inquiry(
+        model: LocalModelDescriptor,
+        messages: List<AiMessage>,
+        settings: AiSettings,
+    ): AiResponse {
+        val prompt = messages.joinToString("\n") { message -> "${message.role}: ${message.content}" }.trim()
+        val currentConfig = controller.status().config
+        val result = controller.generate(
+            LlmInput(
+                generationId = UUID.randomUUID().toString(),
+                prompt = prompt,
+                config = LlmGenerationConfig(
+                    maxNewTokens = settings.maxTokens.coerceIn(1, 4096),
+                    maxContextLen = currentConfig.maxContextLen,
+                ),
+            ),
+        )
+        return AiResponse(result.outputText, AiProviderKind.LOCAL, result.modelName)
     }
 }
 

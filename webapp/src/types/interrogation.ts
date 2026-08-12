@@ -131,7 +131,6 @@ export interface LocalModelDescriptor {
   category: ModelCategory
   name: string
   storageName: string
-  absolutePath: string
   relativePath: string
   sizeBytes: number
   modifiedAt: number
@@ -143,6 +142,17 @@ export interface LocalModelDescriptor {
   modelFormat?: string | null
   provider?: string | null
   complete?: boolean
+  targetPlatform?: 'RK3576' | 'RK3588' | 'UNKNOWN' | string | null
+  compatibility?: 'READY' | 'INCOMPLETE' | 'UNREADABLE' | 'PLATFORM_MISMATCH' | 'UNSUPPORTED' | string | null
+}
+
+export interface CaseAiAnalysis {
+  id: string
+  caseId: string
+  text: string
+  provider: AiProviderKind
+  model: string
+  createdAt: number
 }
 
 export interface LocalModelCatalog {
@@ -250,6 +260,55 @@ export interface OcrRuntimeStatus {
   initializationMs?: number | null
   recognitionMs?: number | null
   lastResult?: OcrResult | null
+  error?: string | null
+}
+
+export interface LlmGenerationConfig {
+  maxNewTokens: number
+  maxContextLen: number
+}
+
+export interface LlmGenerateRequest extends LlmGenerationConfig {
+  generationId: string
+  prompt: string
+}
+
+export interface LlmFragment {
+  generationId: string
+  text: string
+  accumulatedText: string
+  tokenId?: number | null
+  elapsedMs: number
+}
+
+export interface LlmResult {
+  outputText: string
+  finished: boolean
+  fragments: string[]
+  tokenIds?: number[] | null
+  modelName: string
+  provider: string
+  maxNewTokens: number
+  maxContextLen: number
+  initializationMs: number
+  firstTokenLatencyMs?: number | null
+  totalInferenceMs: number
+  error?: string | null
+}
+
+export interface LlmRuntimeStatus {
+  selectedModelId?: string | null
+  selectedModelName?: string | null
+  activeModelId?: string | null
+  provider: string
+  storagePermissionGranted: boolean
+  initialized: boolean
+  busy: boolean
+  generationId?: string | null
+  config: LlmGenerationConfig
+  initializationMs?: number | null
+  firstTokenLatencyMs?: number | null
+  totalInferenceMs?: number | null
   error?: string | null
 }
 

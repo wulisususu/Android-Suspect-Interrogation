@@ -15,6 +15,7 @@ const status = ref<OcrRuntimeStatus | null>(null)
 const result = ref<OcrResult | null>(null)
 const busy = ref('')
 const error = ref('')
+const previewError = ref('')
 let unsubscribe: (() => void) | undefined
 
 const native = computed(() => isNativeBusinessRuntime())
@@ -45,6 +46,10 @@ async function runAction(action: 'pick' | 'camera' | 'recognize' | 'release') {
   try {
     if (action === 'pick') status.value = await pickOcrImage()
     if (action === 'camera') status.value = await captureOcrImage()
+    if (action === 'pick' || action === 'camera') {
+      result.value = null
+      previewError.value = ''
+    }
     if (action === 'release') status.value = await releaseOcr()
     if (action === 'recognize') {
       result.value = await recognizeOcrImage()
@@ -62,7 +67,7 @@ async function runAction(action: 'pick' | 'camera' | 'recognize' | 'release') {
 onMounted(() => {
   unsubscribe = onNativeEvent<OcrRuntimeStatus>('ocr.status', (next) => {
     status.value = next
-    if (next.lastResult) result.value = next.lastResult
+    result.value = next.lastResult || null
   })
   void load()
 })
@@ -98,13 +103,21 @@ onUnmounted(() => unsubscribe?.())
 
     <div class="ocr-workbench">
       <div class="ocr-preview">
-        <img v-if="status?.previewUri" :src="status.previewUri" alt="OCR image preview" />
+        <img
+          v-if="status?.previewUri"
+          :src="status.previewUri"
+          alt="OCR 图片预览"
+          @load="previewError = ''"
+          @error="previewError = '图片预览加载失败，请重新选择图片或拍照。'"
+        />
         <span v-else>暂无图片</span>
+        <span v-if="previewError" class="error">{{ previewError }}</span>
       </div>
       <div class="ocr-result-pane">
         <section>
           <span>OCR 文本</span>
-          <p :class="{ empty: !result?.text }">{{ result?.text || '暂无识别结果' }}</p>
+          <p v-if="result && !result.text" class="ai-settings-note warning">识别已完成，但未检测到文字。请确认图片方向、清晰度和文字区域后重试。</p>
+          <p v-else :class="{ empty: !result?.text }">{{ result?.text || '尚未开始识别' }}</p>
         </section>
         <section>
           <span>文本块</span>
@@ -114,7 +127,7 @@ onUnmounted(() => unsubscribe?.())
               <small>置信度 {{ confidence(block.confidence) }}</small>
             </article>
           </div>
-          <p v-else class="empty">暂无文本块</p>
+          <p v-else class="empty">{{ result ? '未检测到文本块' : '尚未开始识别' }}</p>
         </section>
       </div>
     </div>

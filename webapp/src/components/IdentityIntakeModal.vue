@@ -20,6 +20,7 @@ const native = computed(() => isNativeBusinessRuntime())
 const method = ref<'manual' | 'ocr'>('manual')
 const busy = ref('')
 const error = ref('')
+const previewError = ref('')
 const ocrModels = ref<LocalModelDescriptor[]>([])
 const selectedOcrModelId = ref('')
 const previewUri = ref('')
@@ -116,6 +117,7 @@ async function runOcr(source: 'camera' | 'pick') {
     await selectLocalModel('OCR', selectedOcrModelId.value)
     const status = source === 'camera' ? await captureOcrImage() : await pickOcrImage()
     previewUri.value = status.previewUri || ''
+    previewError.value = ''
     busy.value = 'recognize'
     const result = await recognizeOcrImage()
     applyOcr(result)
@@ -202,8 +204,15 @@ onMounted(loadOcrModels)
           <p v-if="!usableOcrModels.length" class="identity-note warning">检测到 OCR 模型配置，但当前没有 `runtimeReady` 的模型。PP-OCRv6 Paddle PIR 若仍未接 Paddle Android Runtime，会在这里保持不可选。</p>
           <div v-if="previewUri || rawOcrText" class="ocr-review">
             <div class="id-preview">
-              <img v-if="previewUri" :src="previewUri" alt="身份证拍照预览" />
+              <img
+                v-if="previewUri"
+                :src="previewUri"
+                alt="身份证拍照预览"
+                @load="previewError = ''"
+                @error="previewError = '身份证图片预览加载失败，请重新拍照或选择。'"
+              />
               <span v-else>暂无身份证图片</span>
+              <span v-if="previewError" class="identity-note error">{{ previewError }}</span>
             </div>
             <div class="ocr-raw">
               <span>OCR 原文</span>

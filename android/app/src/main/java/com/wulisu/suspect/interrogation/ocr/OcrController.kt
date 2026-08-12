@@ -11,7 +11,9 @@ import com.wulisu.suspect.interrogation.service.LocalModelDescriptor
 import com.wulisu.suspect.interrogation.service.ModelCategory
 import com.wulisu.suspect.interrogation.service.ModelManager
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.util.UUID
 
 data class OcrRuntimeStatus(
@@ -28,6 +30,11 @@ data class OcrRuntimeStatus(
     val recognitionMs: Long?,
     val lastResult: OcrResult?,
     val error: String?,
+)
+
+data class OcrPreviewResource(
+    val mimeType: String,
+    val stream: InputStream,
 )
 
 class OcrController(
@@ -59,6 +66,8 @@ class OcrController(
     private var currentImage: File? = null
     @Volatile
     private var currentPreviewUri: String? = null
+    @Volatile
+    private var currentPreviewMimeType: String = "image/jpeg"
     @Volatile
     private var state = initialStatus()
 
@@ -110,8 +119,17 @@ class OcrController(
         synchronized(controlLock) {
             currentImage?.takeIf { it != file }?.delete()
             currentImage = file
-            currentPreviewUri = uri.toString()
-            state = state.copy(imageReady = true, previewUri = currentPreviewUri, error = null)
+            currentPreviewMimeType = context.contentResolver.getType(uri)
+                ?.takeIf { it.startsWith("image/") }
+                ?: "image/jpeg"
+            currentPreviewUri = previewUrl()
+            state = state.copy(
+                imageReady = true,
+                previewUri = currentPreviewUri,
+                recognitionMs = null,
+                lastResult = null,
+                error = null,
+            )
             emitState()
             state
         }
@@ -131,11 +149,23 @@ class OcrController(
         synchronized(controlLock) {
             currentImage?.takeIf { it != file }?.delete()
             currentImage = file
-            currentPreviewUri = uri.toString()
-            state = state.copy(imageReady = true, previewUri = currentPreviewUri, error = null)
+            currentPreviewMimeType = "image/jpeg"
+            currentPreviewUri = previewUrl()
+            state = state.copy(
+                imageReady = true,
+                previewUri = currentPreviewUri,
+                recognitionMs = null,
+                lastResult = null,
+                error = null,
+            )
             emitState()
             state
         }
+    }
+
+    fun openPreview(): OcrPreviewResource? = synchronized(operationLock) {
+        val image = currentImage?.takeIf { it.isFile } ?: return@synchronized null
+        OcrPreviewResource(currentPreviewMimeType, FileInputStream(image))
     }
 
     fun recognize(): OcrResult = synchronized(operationLock) {
@@ -210,6 +240,9 @@ class OcrController(
 
     private fun resolveSelectedDescriptor(): LocalModelDescriptor? =
         modelManager.selected(ModelCategory.OCR)
+
+    private fun previewUrl(): String =
+        "https://appassets.androidplatform.net/ocr-preview/current?version=${SystemClock.elapsedRealtime()}"
 
     private fun specFromDescriptor(descriptor: LocalModelDescriptor): OcrModelSpec {
         val known = when (descriptor.modelFormat) {

@@ -11,10 +11,12 @@ import {
 import { isNativeBusinessRuntime, NativeRpcError } from '../native/rpcBridge'
 import AsrConsole from './AsrConsole.vue'
 import OcrConsole from './OcrConsole.vue'
+import LlmConsole from './LlmConsole.vue'
 import type {
   AiMode,
   AiRuntimeStatus,
   LocalModelCatalog,
+  LocalModelDescriptor,
   ModelCategory,
   ModelImportSource,
 } from '../types/interrogation'
@@ -71,6 +73,15 @@ function modelsFor(category: ModelCategory) {
 
 function selectedFor(category: ModelCategory) {
   return catalog.value.models.find((model) => model.category === category && model.selected)
+}
+
+function modelState(model: LocalModelDescriptor) {
+  if (model.runtimeReady) return '可运行'
+  if (model.complete === false || model.compatibility === 'INCOMPLETE') return '文件不完整'
+  if (model.compatibility === 'PLATFORM_MISMATCH') return '平台不匹配'
+  if (model.compatibility === 'UNREADABLE') return '文件不可读'
+  if (model.compatibility === 'UNSUPPORTED') return '平台未知'
+  return model.selected ? '已选择 · Runtime 不可用' : 'Runtime 不可用'
 }
 
 function formatBytes(value: number) {
@@ -311,7 +322,7 @@ onMounted(() => Promise.all([load(), loadModels()]))
                 @click="chooseModel(category.id)"
               >取消选择</button>
               <button :disabled="!native || !!modelAction" @click="importModel(category.id, 'FILE')">导入文件</button>
-              <button :disabled="!native || !!modelAction" @click="importModel(category.id, 'DIRECTORY')">导入目录</button>
+               <button v-if="category.id !== 'LLM'" :disabled="!native || !!modelAction" @click="importModel(category.id, 'DIRECTORY')">导入目录</button>
             </div>
           </header>
 
@@ -328,7 +339,7 @@ onMounted(() => Promise.all([load(), loadModels()]))
               type="radio"
               :name="`model-${category.id}`"
               :checked="model.selected"
-              :disabled="!native || !!modelAction || ((category.id === 'ASR' || category.id === 'OCR') && !model.runtimeReady)"
+              :disabled="!native || !!modelAction || ((category.id === 'ASR' || category.id === 'OCR' || category.id === 'LLM') && !model.runtimeReady)"
               @change="chooseModel(category.id, model.id)"
             />
             <span class="model-row-main">
@@ -338,16 +349,18 @@ onMounted(() => Promise.all([load(), loadModels()]))
                 <template v-if="model.archive"> · 压缩包未解压</template>
                 <template v-if="model.modelFormat"> · {{ model.modelFormat }}</template>
                 <template v-if="model.provider"> · {{ model.provider }}</template>
-                <template v-if="model.version"> · {{ model.version }}</template>
+                 <template v-if="model.version"> · {{ model.version }}</template>
+                 <template v-if="model.targetPlatform"> · {{ model.targetPlatform }}</template>
               </span>
               <code>{{ model.relativePath }}</code>
             </span>
             <span class="model-state" :class="{ ready: model.runtimeReady }">
-              {{ model.runtimeReady ? '可运行' : model.complete === false ? '文件不完整' : model.selected ? '已选择 · Runtime 待接入' : 'Runtime 未接入' }}
+               {{ modelState(model) }}
             </span>
           </label>
           <AsrConsole v-if="category.id === 'ASR'" />
-          <OcrConsole v-if="category.id === 'OCR'" />
+           <OcrConsole v-if="category.id === 'OCR'" />
+           <LlmConsole v-if="category.id === 'LLM'" @rescan="loadModels(true)" />
         </section>
       </div>
     </section>

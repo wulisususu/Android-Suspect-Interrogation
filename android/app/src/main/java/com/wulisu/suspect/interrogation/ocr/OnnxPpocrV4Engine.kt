@@ -137,6 +137,33 @@ class OnnxPpocrV4Engine(
     }
 
     private fun runRecognition(bitmap: Bitmap): Recognition {
+        val candidates = mutableListOf(runRecognitionSingle(bitmap))
+        if (bitmap.height > bitmap.width * VERTICAL_CROP_RATIO) {
+            listOf(90f, 270f).forEach { degrees ->
+                val rotated = Bitmap.createBitmap(
+                    bitmap,
+                    0,
+                    0,
+                    bitmap.width,
+                    bitmap.height,
+                    Matrix().apply { postRotate(degrees) },
+                    true,
+                )
+                try {
+                    candidates += runRecognitionSingle(rotated)
+                } finally {
+                    if (!rotated.isRecycled) rotated.recycle()
+                }
+            }
+        }
+        return candidates.maxWithOrNull(
+            compareBy<Recognition> { it.text.isNotBlank() }
+                .thenBy { it.confidence ?: Float.NEGATIVE_INFINITY }
+                .thenBy { it.text.length },
+        ) ?: Recognition("", null)
+    }
+
+    private fun runRecognitionSingle(bitmap: Bitmap): Recognition {
         val env = requireNotNull(environment)
         val session = requireNotNull(recSession)
         val input = preprocessRecognition(bitmap)
@@ -162,7 +189,7 @@ class OnnxPpocrV4Engine(
             postTranslate(transform.padX, transform.padY)
         }
         canvas.drawBitmap(bitmap, matrix, Paint(Paint.FILTER_BITMAP_FLAG))
-        return target.toBgrChw(mean = DET_MEAN, std = DET_STD).also { target.recycle() }
+        return target.toRgbChw(mean = DET_MEAN, std = DET_STD).also { target.recycle() }
     }
 
     private fun preprocessRecognition(bitmap: Bitmap): FloatArray {
@@ -172,23 +199,13 @@ class OnnxPpocrV4Engine(
         canvas.drawColor(Color.WHITE)
         val matrix = Matrix().apply { postScale(scale, scale) }
         canvas.drawBitmap(bitmap, matrix, Paint(Paint.FILTER_BITMAP_FLAG))
-        return target.toBgrChw(mean = REC_MEAN, std = REC_STD).also { target.recycle() }
+        return target.toRgbChw(mean = REC_MEAN, std = REC_STD).also { target.recycle() }
     }
 
-    private fun Bitmap.toBgrChw(mean: FloatArray, std: FloatArray): FloatArray {
+    private fun Bitmap.toRgbChw(mean: FloatArray, std: FloatArray): FloatArray {
         val pixels = IntArray(width * height)
         getPixels(pixels, 0, width, 0, 0, width, height)
-        val output = FloatArray(3 * width * height)
-        val plane = width * height
-        pixels.forEachIndexed { index, color ->
-            val r = Color.red(color) / 255f
-            val g = Color.green(color) / 255f
-            val b = Color.blue(color) / 255f
-            output[index] = (b - mean[0]) / std[0]
-            output[plane + index] = (g - mean[1]) / std[1]
-            output[plane * 2 + index] = (r - mean[2]) / std[2]
-        }
-        return output
+        return OcrTensorPreprocessor.rgbChw(pixels, width, height, mean, std)
     }
 
     private fun connectedBoxes(probability: Array<FloatArray>, transform: OcrImageTransform): List<DetectedBox> {
@@ -324,6 +341,7 @@ class OnnxPpocrV4Engine(
         private const val BOX_THRESHOLD = 0.45f
         private const val MIN_DET_AREA = 16
         private const val MAX_BOXES = 80
+        private const val VERTICAL_CROP_RATIO = 1.2f
         private val DET_MEAN = floatArrayOf(0.485f, 0.456f, 0.406f)
         private val DET_STD = floatArrayOf(0.229f, 0.224f, 0.225f)
         private val REC_MEAN = floatArrayOf(0.5f, 0.5f, 0.5f)

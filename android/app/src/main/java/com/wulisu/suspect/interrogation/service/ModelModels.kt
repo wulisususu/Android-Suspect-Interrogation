@@ -1,5 +1,8 @@
 package com.wulisu.suspect.interrogation.service
 
+import org.json.JSONArray
+import org.json.JSONObject
+
 enum class ModelCategory(val directoryName: String, val displayName: String) {
     ASR("asr", "ASR"),
     OCR("ocr", "OCR"),
@@ -35,6 +38,8 @@ data class LocalModelDescriptor(
     val modelFormat: String? = null,
     val provider: String? = null,
     val complete: Boolean = true,
+    val targetPlatform: String? = null,
+    val compatibility: String? = null,
 )
 
 data class LocalModelCatalog(
@@ -53,3 +58,28 @@ enum class ModelImportSource {
         fun fromWire(value: String?): ModelImportSource? = entries.firstOrNull { it.name == value?.uppercase() }
     }
 }
+
+fun LocalModelCatalog.llmOnly() = copy(models = models.filter { it.category == ModelCategory.LLM })
+
+fun LocalModelCatalog.toWireJson() = JSONObject()
+    .put("rootPath", "Android 设备模型目录")
+    .put("models", JSONArray().also { array -> models.forEach { array.put(it.toWireJson()) } })
+
+private fun LocalModelDescriptor.toWireJson() = JSONObject()
+    .put("id", id)
+    .put("category", category.name)
+    .put("name", name)
+    .put("storageName", storageName)
+    .put("relativePath", relativePath)
+    .put("sizeBytes", sizeBytes)
+    .put("modifiedAt", modifiedAt)
+    .put("sourceKind", sourceKind.name)
+    .put("archive", archive)
+    .put("selected", selected)
+    .put("runtimeReady", runtimeReady)
+    .put("version", version ?: JSONObject.NULL)
+    .put("modelFormat", modelFormat ?: JSONObject.NULL)
+    .put("provider", provider ?: JSONObject.NULL)
+    .put("complete", complete)
+    .put("targetPlatform", targetPlatform ?: JSONObject.NULL)
+    .put("compatibility", compatibility ?: JSONObject.NULL)

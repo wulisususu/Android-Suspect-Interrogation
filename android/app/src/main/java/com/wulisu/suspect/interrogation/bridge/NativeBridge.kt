@@ -6,6 +6,8 @@ import android.webkit.WebView
 import com.wulisu.suspect.interrogation.asr.AsrCaptureSessionManager
 import com.wulisu.suspect.interrogation.asr.AsrController
 import com.wulisu.suspect.interrogation.ocr.OcrController
+import com.wulisu.suspect.interrogation.llm.LlmController
+import com.wulisu.suspect.interrogation.llm.toJson
 import com.wulisu.suspect.interrogation.service.ModelCategory
 import com.wulisu.suspect.interrogation.service.ModelImportSource
 import kotlinx.coroutines.*
@@ -17,10 +19,12 @@ class NativeBridge(
     private val asr: AsrController,
     private val asrCapture: AsrCaptureSessionManager,
     private val ocr: OcrController,
+    private val llm: LlmController,
     private val modelImportLauncher: ((String, ModelCategory, ModelImportSource) -> Unit)? = null,
     private val ocrImagePickLauncher: ((String) -> Unit)? = null,
     private val ocrCameraCaptureLauncher: ((String) -> Unit)? = null,
     private val microphonePermissionLauncher: ((String) -> Unit)? = null,
+    private val llmStoragePermissionLauncher: ((String) -> Unit)? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -28,6 +32,8 @@ class NativeBridge(
         asr.setStatusListener { status -> deliverEvent("asr.status", status.toJson().toString()) }
         asrCapture.setStatusListener { status -> deliverEvent("asr.capture.status", status.toJson().toString()) }
         ocr.setStatusListener { status -> deliverEvent("ocr.status", status.toJson().toString()) }
+        llm.setStatusListener { status -> deliverEvent("llm.status", status.toJson().toString()) }
+        llm.setFragmentListener { fragment -> deliverEvent("llm.fragment", fragment.toJson().toString()) }
     }
 
     @JavascriptInterface
@@ -39,6 +45,10 @@ class NativeBridge(
         }
         if (request?.optString("action") == "ocr.image.pick") {
             requestOcrImagePick(request)
+            return
+        }
+        if (request?.optString("action") == "llm.storage.permission.request") {
+            requestLlmStoragePermission(request)
             return
         }
         if (request != null && NativeExternalCaptureRequest.isDocumentCameraCapture(request)) {
@@ -116,6 +126,18 @@ class NativeBridge(
         failRequest(requestId, code, message)
     }
 
+    fun completeLlmStoragePermission(requestId: String) {
+        deliver(
+            JSONObject()
+                .put("id", requestId)
+                .put("ok", true)
+                .put("code", "OK")
+                .put("message", "")
+                .put("data", llm.status().toJson())
+                .toString(),
+        )
+    }
+
     private fun requestModelImport(request: JSONObject) {
         val requestId = request.optString("id")
         val payload = request.optJSONObject("payload") ?: JSONObject()
@@ -131,6 +153,12 @@ class NativeBridge(
     private fun requestOcrImagePick(request: JSONObject) {
         val launcher = ocrImagePickLauncher
             ?: return failOcrImage(request.optString("id"), "OCR_IMAGE_PICK_UNAVAILABLE", "当前 Android 页面未配置图片选择器")
+        scope.launch(Dispatchers.Main) { launcher(request.optString("id")) }
+    }
+
+    private fun requestLlmStoragePermission(request: JSONObject) {
+        val launcher = llmStoragePermissionLauncher
+            ?: return failRequest(request.optString("id"), "LLM_STORAGE_PERMISSION_UNAVAILABLE", "当前 Android 页面无法申请模型目录权限")
         scope.launch(Dispatchers.Main) { launcher(request.optString("id")) }
     }
 
@@ -164,6 +192,8 @@ class NativeBridge(
         asr.setStatusListener(null)
         asrCapture.setStatusListener(null)
         ocr.setStatusListener(null)
+        llm.setStatusListener(null)
+        llm.setFragmentListener(null)
         scope.cancel()
     }
 }

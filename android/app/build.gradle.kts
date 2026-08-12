@@ -32,6 +32,12 @@ android {
             abiFilters += "arm64-v8a"
         }
 
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf("-std=c++17")
+            }
+        }
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -60,12 +66,19 @@ android {
     }
 
     androidResources {
-        noCompress += listOf("onnx", "rknn", "pdiparams", "pdmodel", "tar")
+        noCompress += listOf("onnx", "rknn", "rkllm", "pdiparams", "pdmodel", "tar")
     }
 
     packaging {
         jniLibs {
             pickFirsts += "lib/arm64-v8a/libonnxruntime.so"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 }

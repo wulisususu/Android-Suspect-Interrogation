@@ -7,7 +7,10 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import android.view.ViewGroup
 import android.webkit.*
 import androidx.webkit.WebViewAssetLoader
@@ -24,44 +27,83 @@ class MainActivity : Activity() {
     private var pendingModelImport: PendingModelImport? = null
     private var pendingAsrRequest: String? = null
     private var pendingOcrImage: PendingOcrImage? = null
+    private var pendingLlmStoragePermission: String? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val assetLoader = WebViewAssetLoader.Builder().addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this)).build()
+        appContainer = (application as SuspectApplication).container
+        val assetLoader = WebViewAssetLoader.Builder()
+            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .addPathHandler("/ocr-preview/", WebViewAssetLoader.PathHandler {
+                val preview = appContainer.ocrController.openPreview()
+                if (preview == null) {
+                    WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                } else {
+                    WebResourceResponse(preview.mimeType, null, preview.stream)
+                }
+            })
+            .build()
         webView = WebView(this).apply {
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.cacheMode = WebSettings.LOAD_DEFAULT
             settings.allowFileAccess = false
-            settings.allowContentAccess = true
+            settings.allowContentAccess = false
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             settings.setSupportMultipleWindows(false)
             webViewClient = object : WebViewClient() {
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                    if (request.url.scheme == "content") return null
                     if (request.url.host != "appassets.androidplatform.net") return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                     return assetLoader.shouldInterceptRequest(request.url)
                 }
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = request.url.host != "appassets.androidplatform.net"
             }
         }
-        appContainer = (application as SuspectApplication).container
         nativeBridge = NativeBridge(
             webView,
             appContainer.rpcRouter,
             appContainer.asrController,
             appContainer.asrCapture,
             appContainer.ocrController,
+            appContainer.llmController,
             ::launchModelImport,
             ::launchOcrImagePick,
             ::launchOcrCameraCapture,
             ::ensureMicrophonePermission,
+            ::launchLlmStoragePermission,
         )
         webView.addJavascriptInterface(nativeBridge, "NativeBridge")
         setContentView(webView)
         webView.loadUrl("https://appassets.androidplatform.net/assets/webapp/index.html")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val requestId = pendingLlmStoragePermission ?: return
+        pendingLlmStoragePermission = null
+        appContainer.modelManager.scanAsync()
+        nativeBridge.completeLlmStoragePermission(requestId)
+    }
+
+    private fun launchLlmStoragePermission(requestId: String) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()) {
+            appContainer.modelManager.scanAsync()
+            nativeBridge.completeLlmStoragePermission(requestId)
+            return
+        }
+        pendingLlmStoragePermission = requestId
+        val intent = Intent(
+            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+            Uri.parse("package:$packageName"),
+        )
+        try {
+            startActivity(intent)
+        } catch (error: ActivityNotFoundException) {
+            pendingLlmStoragePermission = null
+            nativeBridge.failRequest(requestId, "LLM_STORAGE_PERMISSION_UNAVAILABLE", "设备无法打开模型目录授权页面")
+        }
     }
 
     private fun ensureMicrophonePermission(requestJson: String) {
@@ -205,9 +247,11 @@ class MainActivity : Activity() {
             nativeBridge.failOcrImage(it.requestId, "OCR_IMAGE_CANCELLED", "页面已关闭，OCR 图片操作已取消")
         }
         pendingOcrImage = null
+        pendingLlmStoragePermission = null
         runBlocking { appContainer.asrCapture.stopActive() }
         appContainer.asrController.release()
         appContainer.ocrController.release()
+        runBlocking { appContainer.llmController.release() }
         nativeBridge.close(); webView.removeJavascriptInterface("NativeBridge"); webView.destroy(); super.onDestroy()
     }
 

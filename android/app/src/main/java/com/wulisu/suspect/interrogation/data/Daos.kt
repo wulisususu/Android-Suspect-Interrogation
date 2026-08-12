@@ -59,6 +59,14 @@ interface AuditDao {
 }
 
 @Dao
+interface AiCaseAnalysisDao {
+    @Query("SELECT * FROM ai_case_analyses WHERE caseId = :caseId ORDER BY createdAt DESC")
+    suspend fun list(caseId: String): List<AiCaseAnalysisEntity>
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(entity: AiCaseAnalysisEntity)
+}
+
+@Dao
 interface AsrCaptureSessionDao {
     @Query("SELECT * FROM asr_capture_sessions WHERE id = :id LIMIT 1") suspend fun get(id: String): AsrCaptureSessionEntity?
     @Query("SELECT * FROM asr_capture_sessions WHERE caseId = :caseId AND state = 'RECORDING' ORDER BY startedAt DESC LIMIT 1") suspend fun active(caseId: String): AsrCaptureSessionEntity?
@@ -69,7 +77,7 @@ interface AsrCaptureSessionDao {
 
 @Dao
 interface AsrTemporaryFragmentDao {
-    @Query("SELECT * FROM asr_temporary_fragments WHERE id = :id LIMIT 1") suspend fun get(id: String): AsrTemporaryFragmentEntity?
+    @Query("SELECT * FROM asr_temporary_fragments WHERE id = :id AND caseId = :caseId LIMIT 1") suspend fun get(caseId: String, id: String): AsrTemporaryFragmentEntity?
     @Query("SELECT * FROM asr_temporary_fragments WHERE caseId = :caseId AND (state = 'PENDING' OR (:includeConfirmed = 1 AND state = 'CONFIRMED')) ORDER BY createdAt ASC, ordinal ASC")
     suspend fun list(caseId: String, includeConfirmed: Boolean): List<AsrTemporaryFragmentEntity>
     @Query("SELECT * FROM asr_temporary_fragments WHERE captureSessionId = :captureSessionId AND state = 'PENDING' ORDER BY ordinal ASC")

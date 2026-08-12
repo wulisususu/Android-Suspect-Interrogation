@@ -1,7 +1,7 @@
 import type { AxiosError } from 'axios'
 import { getAuthorizationValue, runtimeConfig } from '../config/runtime'
 import { callNative, isNativeBusinessRuntime } from '../native/rpcBridge'
-import type { AiRuntimeStatus, AiSettingsPatch, AsrCaptureStatus, AsrRuntimeStatus, BackendEnvelope, BatchFragmentConfirmation, CaseSummary, DeviceActionResult, FactItem, FragmentConfirmation, InquirySsePayload, InterrogationStage, LocalModelCatalog, ModelCategory, ModelImportSource, OcrResult, OcrRuntimeStatus, RecordMark, RecordRevision, SessionState, TemporaryAsrFragment, TemporaryAsrSpeaker, TimelineEvent, TranscriptMessage } from '../types/interrogation'
+import type { AiRuntimeStatus, AiSettingsPatch, AsrCaptureStatus, AsrRuntimeStatus, BackendEnvelope, BatchFragmentConfirmation, CaseAiAnalysis, CaseSummary, DeviceActionResult, FactItem, FragmentConfirmation, InquirySsePayload, InterrogationStage, LlmGenerateRequest, LlmResult, LlmRuntimeStatus, LocalModelCatalog, ModelCategory, ModelImportSource, OcrResult, OcrRuntimeStatus, RecordMark, RecordRevision, SessionState, TemporaryAsrFragment, TemporaryAsrSpeaker, TimelineEvent, TranscriptMessage } from '../types/interrogation'
 import { http } from './http'
 import { streamSse } from './sse'
 
@@ -15,6 +15,8 @@ export async function fetchMessages(caseId: string) { if (isNativeBusinessRuntim
 export async function fetchFacts(caseId: string) { if (isNativeBusinessRuntime()) return callNative<FactItem[]>('fact.list', { caseId }); const { data } = await http.get(`/api/cases/${encodeURIComponent(caseId)}/facts`); return unwrap<FactItem[]>(data) }
 export async function fetchTimeline(caseId: string) { if (isNativeBusinessRuntime()) return callNative<TimelineEvent[]>('timeline.list', { caseId }); const { data } = await http.get(`/api/cases/${encodeURIComponent(caseId)}/timeline`); return unwrap<TimelineEvent[]>(data) }
 export async function fetchSessionState(caseId: string) { if (isNativeBusinessRuntime()) return callNative<SessionState>('session.get', { caseId }); const { data } = await http.get(`/api/cases/${encodeURIComponent(caseId)}/session`); return unwrap<SessionState>(data) }
+export async function fetchCaseAiAnalyses(caseId: string): Promise<CaseAiAnalysis[]> { if (isNativeBusinessRuntime()) return callNative<CaseAiAnalysis[]>('case.ai.list', { caseId }); return [] }
+export async function generateCaseAiAnalysis(caseId: string): Promise<CaseAiAnalysis> { if (isNativeBusinessRuntime()) return callNative<CaseAiAnalysis>('case.ai.generate', { caseId }, 15 * 60_000); throw new Error('本案 AI 推理仅在 Android APK 中运行') }
 export async function persistQuestionOrAnswer(caseId: string, text: string, from: '民警' | '嫌疑人') { if (isNativeBusinessRuntime()) return callNative<TranscriptMessage>('record.add', { caseId, text, from }); const { data } = await http.post(`/work/case/${encodeURIComponent(caseId)}/message`, { profile: { text, from } }); return unwrap<TranscriptMessage>(data) }
 export async function updateTranscriptMessage(caseId: string, messageId: string, text: string) { if (isNativeBusinessRuntime()) return callNative<TranscriptMessage>('record.update', { caseId, messageId, text, reason: '警官在审讯工作台修订' }); const { data } = await http.put(`/api/cases/${encodeURIComponent(caseId)}/messages/${encodeURIComponent(messageId)}`, { text, reason: '警官在审讯工作台修订' }); return unwrap<TranscriptMessage>(data) }
 export async function markTranscriptMessage(caseId: string, messageId: string, mark: RecordMark) { if (isNativeBusinessRuntime()) return callNative<TranscriptMessage>('record.mark', { caseId, messageId, mark }); const { data } = await http.post(`/api/cases/${encodeURIComponent(caseId)}/messages/${encodeURIComponent(messageId)}/mark`, { mark }); return unwrap<TranscriptMessage>(data) }
@@ -57,6 +59,35 @@ export async function selectLocalModel(category: ModelCategory, modelId?: string
 export async function importLocalModel(category: ModelCategory, source: ModelImportSource): Promise<LocalModelCatalog> {
   if (!isNativeBusinessRuntime()) throw new Error('请在 Android APK 中使用系统文件管理器导入模型')
   return callNative<LocalModelCatalog>('model.import.request', { category, source }, 15 * 60_000)
+}
+
+function requireNativeLlm() {
+  if (!isNativeBusinessRuntime()) throw new Error('完全离线 LLM 仅在 Android APK 中运行')
+}
+
+export function fetchLlmStatus(): Promise<LlmRuntimeStatus> {
+  requireNativeLlm()
+  return callNative<LlmRuntimeStatus>('llm.status')
+}
+
+export function requestLlmStoragePermission(): Promise<LlmRuntimeStatus> {
+  requireNativeLlm()
+  return callNative<LlmRuntimeStatus>('llm.storage.permission.request', {}, 5 * 60_000)
+}
+
+export function generateLlm(request: LlmGenerateRequest): Promise<LlmResult> {
+  requireNativeLlm()
+  return callNative<LlmResult>('llm.generate', request as unknown as Record<string, unknown>, 15 * 60_000)
+}
+
+export function cancelLlm(): Promise<LlmRuntimeStatus> {
+  requireNativeLlm()
+  return callNative<LlmRuntimeStatus>('llm.cancel', {}, 30_000)
+}
+
+export function releaseLlm(): Promise<LlmRuntimeStatus> {
+  requireNativeLlm()
+  return callNative<LlmRuntimeStatus>('llm.release', {}, 30_000)
 }
 
 export function fetchAsrStatus(): Promise<AsrRuntimeStatus> {
@@ -127,24 +158,24 @@ export function listAsrFragments(caseId: string, includeConfirmed = false): Prom
   return callNative<TemporaryAsrFragment[]>('asr.fragment.list', { caseId, includeConfirmed })
 }
 
-export function updateAsrFragment(fragmentId: string, editedText: string, speaker: TemporaryAsrSpeaker): Promise<TemporaryAsrFragment> {
+export function updateAsrFragment(caseId: string, fragmentId: string, editedText: string, speaker: TemporaryAsrSpeaker): Promise<TemporaryAsrFragment> {
   requireNativeCapture()
-  return callNative<TemporaryAsrFragment>('asr.fragment.update', { fragmentId, editedText, speaker })
+  return callNative<TemporaryAsrFragment>('asr.fragment.update', { caseId, fragmentId, editedText, speaker })
 }
 
-export function confirmAsrFragment(fragmentId: string): Promise<FragmentConfirmation> {
+export function confirmAsrFragment(caseId: string, fragmentId: string): Promise<FragmentConfirmation> {
   requireNativeCapture()
-  return callNative<FragmentConfirmation>('asr.fragment.confirm', { fragmentId })
+  return callNative<FragmentConfirmation>('asr.fragment.confirm', { caseId, fragmentId })
 }
 
-export function confirmAsrFragmentBatch(fragmentIds: string[]): Promise<BatchFragmentConfirmation> {
+export function confirmAsrFragmentBatch(caseId: string, fragmentIds: string[]): Promise<BatchFragmentConfirmation> {
   requireNativeCapture()
-  return callNative<BatchFragmentConfirmation>('asr.fragment.confirmBatch', { fragmentIds })
+  return callNative<BatchFragmentConfirmation>('asr.fragment.confirmBatch', { caseId, fragmentIds })
 }
 
-export function discardAsrFragment(fragmentId: string): Promise<TemporaryAsrFragment> {
+export function discardAsrFragment(caseId: string, fragmentId: string): Promise<TemporaryAsrFragment> {
   requireNativeCapture()
-  return callNative<TemporaryAsrFragment>('asr.fragment.discard', { fragmentId })
+  return callNative<TemporaryAsrFragment>('asr.fragment.discard', { caseId, fragmentId })
 }
 
 export async function streamInquiry(caseId: string, message: string, onPayload: (payload: InquirySsePayload) => void, signal?: AbortSignal) {

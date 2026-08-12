@@ -58,8 +58,6 @@ class CaseService(private val db: AppDatabase, private val audit: AuditService) 
 
     suspend fun get(caseId: String): CaseSummary = caseDao.get(caseId)?.toDomain() ?: throw BusinessException("CASE_NOT_FOUND", "案件不存在")
     suspend fun list(limit: Int = 100): List<CaseSummary> = caseDao.list(limit.coerceIn(1, 500)).map { it.toDomain() }
-    suspend fun ensure(caseId: String): CaseSummary = caseDao.get(caseId)?.toDomain() ?: create(requestedId = caseId)
-
     suspend fun update(
         caseId: String,
         suspectName: String? = null,

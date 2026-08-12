@@ -2,10 +2,17 @@ package com.wulisu.suspect.interrogation.service
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import androidx.documentfile.provider.DocumentFile
 import com.wulisu.suspect.interrogation.asr.AsrModelSpecs
 import com.wulisu.suspect.interrogation.asr.BundledAsrModels
 import com.wulisu.suspect.interrogation.domain.BusinessException
+import com.wulisu.suspect.interrogation.llm.LlmCompatibility
+import com.wulisu.suspect.interrogation.llm.LlmDevicePlatform
+import com.wulisu.suspect.interrogation.llm.LlmModelRepository
+import com.wulisu.suspect.interrogation.llm.LlmModelSpec
+import com.wulisu.suspect.interrogation.llm.LlmTargetPlatform
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,12 +26,13 @@ import java.util.UUID
 class ModelManager(
     private val context: Context,
     private val scanner: ModelCatalogScanner = ModelCatalogScanner(),
-) {
+) : LlmModelRepository {
     private val root = File(context.filesDir, "models")
     private val prefs = context.getSharedPreferences("local_model_settings", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val bundledAsrModels = BundledAsrModels(context)
-    private val externalModelRoots = listOf(File("/sdcard/models"))
+    private val llmRoot = File("/sdcard/models")
+    private val externalModelRoots = listOf(llmRoot)
 
     @Volatile
     private var cachedCatalog = LocalModelCatalog(root.absolutePath, emptyList())
@@ -45,7 +53,12 @@ class ModelManager(
             prefs.edit().putString(selectionKey(ModelCategory.ASR), AsrModelSpecs.default.id.catalogId).apply()
         }
 
-        val fileCatalog = scanner.scan(root, selectedIds, externalRoots = externalModelRoots)
+        val fileCatalog = scanner.scan(
+            root,
+            selectedIds,
+            externalRoots = externalModelRoots,
+            devicePlatform = devicePlatform(),
+        )
         var models = fileCatalog.models + bundledAsrModels.descriptors(selectedIds[ModelCategory.ASR])
         if (models.none { it.category == ModelCategory.ASR && it.selected }) {
             val defaultId = AsrModelSpecs.default.id.catalogId
@@ -54,7 +67,11 @@ class ModelManager(
             models = fileCatalog.models.map { it.copy(selected = false) } + bundledAsrModels.descriptors(defaultId)
         }
         val catalog = LocalModelCatalog(fileCatalog.rootPath, models)
-        clearMissingSelections(catalog, selectedIds)
+        clearMissingSelections(
+            catalog,
+            selectedIds,
+            preserveMissingCategories = if (storagePermissionGranted()) emptySet() else setOf(ModelCategory.LLM),
+        )
         cachedCatalog = catalog
         hasScanned = true
         return catalog
@@ -84,6 +101,9 @@ class ModelManager(
         source: ModelImportSource,
         uri: Uri,
     ): LocalModelCatalog = withContext(Dispatchers.IO) {
+        if (category == ModelCategory.LLM) {
+            return@withContext importLlmFromUri(source, uri)
+        }
         val document = when (source) {
             ModelImportSource.FILE -> DocumentFile.fromSingleUri(context, uri)
             ModelImportSource.DIRECTORY -> DocumentFile.fromTreeUri(context, uri)
@@ -120,6 +140,74 @@ class ModelManager(
         } catch (error: Throwable) {
             temporary.deleteRecursively()
             throw BusinessException("MODEL_IMPORT_FAILED", error.message ?: "模型导入失败")
+        }
+    }
+
+    override fun selected(): LlmModelSpec? = selected(ModelCategory.LLM)?.toLlmModelSpec()
+
+    override fun find(modelId: String): LlmModelSpec? =
+        scan().models.firstOrNull { it.category == ModelCategory.LLM && it.id == modelId }?.toLlmModelSpec()
+
+    override fun persistSelection(modelId: String?) {
+        select(ModelCategory.LLM, modelId)
+    }
+
+    override fun storagePermissionGranted(): Boolean = when {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> Environment.isExternalStorageManager()
+        else -> llmRoot.canRead() && llmRoot.canWrite()
+    }
+
+    private fun importLlmFromUri(source: ModelImportSource, uri: Uri): LocalModelCatalog {
+        if (!storagePermissionGranted()) {
+            throw BusinessException("LLM_STORAGE_PERMISSION_REQUIRED", "请先授权 App 访问 Android 设备模型目录")
+        }
+        if (source != ModelImportSource.FILE) {
+            throw BusinessException("MODEL_IMPORT_SOURCE_INVALID", "LLM 只能导入单个 .rkllm 文件")
+        }
+        val document = DocumentFile.fromSingleUri(context, uri)
+            ?: throw BusinessException("MODEL_IMPORT_SOURCE_INVALID", "无法读取所选 LLM 模型")
+        if (!document.isFile) throw BusinessException("MODEL_IMPORT_SOURCE_INVALID", "请选择 .rkllm 模型文件")
+        val sourceName = safeStorageName(document.name ?: "model.rkllm")
+        if (!sourceName.endsWith(".rkllm", ignoreCase = true)) {
+            throw BusinessException("LLM_MODEL_UNSUPPORTED", "请选择 .rkllm 模型文件")
+        }
+        if (!llmRoot.exists() && !llmRoot.mkdirs()) {
+            throw BusinessException("MODEL_IMPORT_WRITE_FAILED", "无法创建 Android 设备模型目录")
+        }
+        val destination = File(llmRoot, sourceName)
+        val expectedSize = document.length()
+        if (destination.exists()) {
+            if (expectedSize > 0 && destination.length() == expectedSize) return scan()
+            throw BusinessException("MODEL_IMPORT_NAME_CONFLICT", "同名 LLM 模型已存在且大小不同")
+        }
+        if (expectedSize > 0 && expectedSize > llmRoot.usableSpace) {
+            throw BusinessException("MODEL_STORAGE_INSUFFICIENT", "设备存储空间不足，无法导入该 LLM 模型")
+        }
+        val temporary = File(llmRoot, ".importing-${UUID.randomUUID()}.part")
+        try {
+            val input = context.contentResolver.openInputStream(document.uri)
+                ?: throw BusinessException("MODEL_IMPORT_READ_FAILED", "无法打开所选 LLM 模型")
+            input.use { sourceStream ->
+                FileOutputStream(temporary).use { destinationStream ->
+                    sourceStream.copyTo(destinationStream, DEFAULT_BUFFER_SIZE)
+                }
+            }
+            if (expectedSize > 0 && temporary.length() != expectedSize) {
+                throw BusinessException("MODEL_IMPORT_INCOMPLETE", "LLM 模型复制不完整")
+            }
+            if (!temporary.renameTo(destination)) {
+                throw BusinessException("MODEL_IMPORT_COMMIT_FAILED", "LLM 模型复制完成，但无法写入设备模型目录")
+            }
+            return scan()
+        } catch (error: CancellationException) {
+            temporary.delete()
+            throw error
+        } catch (error: BusinessException) {
+            temporary.delete()
+            throw error
+        } catch (error: Throwable) {
+            temporary.delete()
+            throw BusinessException("MODEL_IMPORT_FAILED", error.message ?: "LLM 模型导入失败")
         }
     }
 
@@ -169,17 +257,39 @@ class ModelManager(
     private fun clearMissingSelections(
         catalog: LocalModelCatalog,
         selectedIds: Map<ModelCategory, String>,
+        preserveMissingCategories: Set<ModelCategory> = emptySet(),
     ) {
         val editor = prefs.edit()
         var changed = false
         selectedIds.forEach { (category, selectedId) ->
-            if (catalog.models.none { it.category == category && it.id == selectedId }) {
+            if (category !in preserveMissingCategories && catalog.models.none { it.category == category && it.id == selectedId }) {
                 editor.remove(selectionKey(category))
                 changed = true
             }
         }
         if (changed) editor.apply()
     }
+
+    private fun devicePlatform(): String = LlmDevicePlatform.fromProperties(
+        socModel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MODEL else "",
+        device = Build.DEVICE.orEmpty(),
+        board = Build.BOARD.orEmpty(),
+    )
+
+    private fun LocalModelDescriptor.toLlmModelSpec(): LlmModelSpec = LlmModelSpec(
+        id = id,
+        name = name,
+        absolutePath = absolutePath,
+        sizeBytes = sizeBytes,
+        targetPlatform = runCatching { LlmTargetPlatform.valueOf(targetPlatform.orEmpty()) }
+            .getOrDefault(LlmTargetPlatform.UNKNOWN),
+        complete = complete,
+        compatibility = runCatching { LlmCompatibility.valueOf(compatibility.orEmpty()) }
+            .getOrDefault(LlmCompatibility.UNSUPPORTED),
+        provider = provider ?: com.wulisu.suspect.interrogation.llm.RKLLM_PROVIDER,
+        modelFormat = modelFormat ?: "RKLLM",
+        runtimeVersion = version ?: com.wulisu.suspect.interrogation.llm.RKLLM_RUNTIME_VERSION,
+    )
 
     private fun selectionKey(category: ModelCategory) = "selected_${category.name.lowercase()}"
 }

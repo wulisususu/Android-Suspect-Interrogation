@@ -87,6 +87,24 @@ h1 { font-size: 21px; margin: 0 0 5px; }
 .session-buttons .danger-button { color: #b42318; border-color: #f0c5c2; background: #fff8f7; }
 .completed-chip { background: #e8f7ee; color: #16744b; border-radius: 999px; padding: 6px 10px; font-size: 12px; }
 
+.case-ai-panel {
+  flex: 0 0 auto;
+  margin: 10px 16px 0;
+  padding: 12px 16px;
+  border: 1px solid #d8e4ee;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(20, 50, 80, .06);
+}
+.case-ai-panel header, .case-ai-result > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.case-ai-panel h2 { margin: 0; font-size: 16px; }
+.case-ai-panel header p, .case-ai-empty { margin: 4px 0 0; color: #6b7b88; font-size: 12px; }
+.case-ai-panel .session-primary { border: 0; border-radius: 8px; padding: 9px 14px; background: #2f80ed; color: #fff; font-weight: 700; }
+.case-ai-error { margin: 9px 0 0; color: #a32626; font-size: 13px; }
+.case-ai-result { margin-top: 10px; padding-top: 9px; border-top: 1px solid #edf1f4; }
+.case-ai-result span { color: #74828e; font-size: 11px; }
+.case-ai-result p { max-height: 72px; margin: 6px 0 0; overflow: auto; white-space: pre-wrap; color: #344553; font-size: 13px; line-height: 1.55; }
+
 .workspace-grid {
   flex: 1 1 auto;
   min-height: 0;

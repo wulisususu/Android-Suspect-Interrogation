@@ -142,8 +142,8 @@ class AsrCaptureSessionManager(
         fragmentDao.list(caseId, includeConfirmed).map(::toDomain)
     }
 
-    suspend fun updateFragment(fragmentId: String, editedText: String, speakerValue: String): TemporaryAsrFragment = withContext(dispatcher) {
-        val current = fragmentDao.get(fragmentId)
+    suspend fun updateFragment(caseId: String, fragmentId: String, editedText: String, speakerValue: String): TemporaryAsrFragment = withContext(dispatcher) {
+        val current = fragmentDao.get(caseId, fragmentId)
             ?: throw BusinessException("ASR_FRAGMENT_NOT_FOUND", "临时片段不存在")
         if (current.state != TemporaryFragmentState.PENDING.name) {
             throw BusinessException("ASR_FRAGMENT_NOT_PENDING", "只有待确认片段可以修改")
@@ -160,28 +160,28 @@ class AsrCaptureSessionManager(
         toDomain(next).also { emitActive() }
     }
 
-    suspend fun confirmFragment(fragmentId: String): FragmentConfirmation = withContext(dispatcher) {
-        confirmInternal(fragmentId).also { emitForCase(it.fragment.caseId) }
+    suspend fun confirmFragment(caseId: String, fragmentId: String): FragmentConfirmation = withContext(dispatcher) {
+        confirmInternal(caseId, fragmentId).also { emitForCase(caseId) }
     }
 
-    suspend fun confirmBatch(fragmentIds: List<String>): BatchFragmentConfirmation = withContext(dispatcher) {
+    suspend fun confirmBatch(caseId: String, fragmentIds: List<String>): BatchFragmentConfirmation = withContext(dispatcher) {
         val confirmed = mutableListOf<FragmentConfirmation>()
         val failures = mutableListOf<FragmentConfirmationFailure>()
         fragmentIds.distinct().forEach { fragmentId ->
             try {
-                confirmed += confirmInternal(fragmentId)
+                confirmed += confirmInternal(caseId, fragmentId)
             } catch (error: BusinessException) {
                 failures += FragmentConfirmationFailure(fragmentId, error.code, error.message)
             } catch (error: Throwable) {
                 failures += FragmentConfirmationFailure(fragmentId, "INTERNAL_ERROR", error.message ?: "临时片段确认失败")
             }
         }
-        (confirmed.firstOrNull()?.fragment?.caseId ?: active?.entity?.caseId)?.let { emitForCase(it) }
+        emitForCase(caseId)
         BatchFragmentConfirmation(confirmed, failures)
     }
 
-    suspend fun discardFragment(fragmentId: String): TemporaryAsrFragment = withContext(dispatcher) {
-        val current = fragmentDao.get(fragmentId)
+    suspend fun discardFragment(caseId: String, fragmentId: String): TemporaryAsrFragment = withContext(dispatcher) {
+        val current = fragmentDao.get(caseId, fragmentId)
             ?: throw BusinessException("ASR_FRAGMENT_NOT_FOUND", "临时片段不存在")
         if (current.state != TemporaryFragmentState.PENDING.name) {
             throw BusinessException("ASR_FRAGMENT_NOT_PENDING", "只有待确认片段可以丢弃")
@@ -257,8 +257,8 @@ class AsrCaptureSessionManager(
         active?.let { failFromCallback(it, code, message) }
     }
 
-    private suspend fun confirmInternal(fragmentId: String): FragmentConfirmation = db.withTransaction {
-        val current = fragmentDao.get(fragmentId)
+    private suspend fun confirmInternal(caseId: String, fragmentId: String): FragmentConfirmation = db.withTransaction {
+        val current = fragmentDao.get(caseId, fragmentId)
             ?: throw BusinessException("ASR_FRAGMENT_NOT_FOUND", "临时片段不存在")
         if (current.state == TemporaryFragmentState.CONFIRMED.name) {
             val qaId = current.confirmedQaId
