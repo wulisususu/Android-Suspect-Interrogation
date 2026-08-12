@@ -41,7 +41,7 @@ class NativeBridge(
             requestOcrImagePick(request)
             return
         }
-        if (request?.optString("action") == "ocr.camera.capture") {
+        if (request != null && NativeExternalCaptureRequest.isDocumentCameraCapture(request)) {
             requestOcrCameraCapture(request)
             return
         }
