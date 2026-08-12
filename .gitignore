@@ -3,6 +3,7 @@ frontend/build/
 webapp/node_modules/
 webapp/dist/
 backend-dev/data/
+backend-dev/.env
 android/.gradle/
 android/local.properties
 android/**/build/

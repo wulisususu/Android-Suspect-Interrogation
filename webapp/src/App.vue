@@ -18,5 +18,5 @@ function backToList() {
 
 <template>
   <CaseListView v-if="!caseId" @open="openCase" />
-  <InterrogationWorkspace v-else :key="caseId" @back="backToList" />
+  <InterrogationWorkspace v-else :key="caseId" :case-id="caseId" @back="backToList" />
 </template>

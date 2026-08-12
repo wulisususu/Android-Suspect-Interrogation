@@ -12,7 +12,6 @@ import com.wulisu.suspect.interrogation.asr.FragmentConfirmation
 import com.wulisu.suspect.interrogation.asr.TemporaryAsrFragment
 import com.wulisu.suspect.interrogation.domain.*
 import com.wulisu.suspect.interrogation.ocr.OcrController
-import com.wulisu.suspect.interrogation.ocr.OcrResult
 import com.wulisu.suspect.interrogation.ocr.OcrRuntimeStatus
 import com.wulisu.suspect.interrogation.ocr.toJson
 import com.wulisu.suspect.interrogation.service.*
@@ -44,10 +43,36 @@ class RpcRouter(
     }
 
     private suspend fun dispatch(action: String, payload: JSONObject): Any? = when (action) {
-        "case.create" -> cases.create(payload.nullableString("id"), payload.nullableString("suspectName"), payload.nullableString("gender"), payload.nullableString("age"), payload.nullableString("officerName")).toJson()
+        "case.create" -> cases.create(
+            requestedId = payload.nullableString("id"),
+            suspectName = payload.nullableString("suspectName"),
+            gender = payload.nullableString("gender"),
+            age = payload.nullableString("age"),
+            officerName = payload.nullableString("officerName"),
+            idNumber = payload.nullableString("idNumber"),
+            nation = payload.nullableString("nation"),
+            birthDate = payload.nullableString("birthDate"),
+            address = payload.nullableString("address"),
+            identitySource = payload.nullableString("identitySource"),
+            identityCapturedAt = payload.nullableLong("identityCapturedAt"),
+        ).toJson()
         "case.list" -> cases.list(payload.optInt("limit", 100)).toJsonArray { it.toJson() }
         "case.get" -> cases.get(payload.requiredString("caseId")).toJson()
-        "case.update" -> cases.update(payload.requiredString("caseId"), payload.nullableString("suspectName"), payload.nullableString("gender"), payload.nullableString("age"), payload.nullableString("officerName"), payload.nullableString("state"), payload.nullableString("stage")?.let(::stageFromWire)).toJson()
+        "case.update" -> cases.update(
+            caseId = payload.requiredString("caseId"),
+            suspectName = payload.nullableString("suspectName"),
+            gender = payload.nullableString("gender"),
+            age = payload.nullableString("age"),
+            officerName = payload.nullableString("officerName"),
+            state = payload.nullableString("state"),
+            stage = payload.nullableString("stage")?.let(::stageFromWire),
+            idNumber = payload.nullableString("idNumber"),
+            nation = payload.nullableString("nation"),
+            birthDate = payload.nullableString("birthDate"),
+            address = payload.nullableString("address"),
+            identitySource = payload.nullableString("identitySource"),
+            identityCapturedAt = payload.nullableLong("identityCapturedAt"),
+        ).toJson()
         "session.get" -> sessions.state(payload.requiredString("caseId")).toJson()
         "session.start" -> sessions.start(payload.requiredString("caseId")).toJson()
         "session.pause" -> sessions.pause(payload.requiredString("caseId")).toJson()
@@ -123,6 +148,7 @@ private fun JSONObject.requiredString(key: String): String { val value = optStri
 private fun JSONObject.nullableString(key: String): String? { if (!has(key) || isNull(key)) return null; return optString(key).takeIf { it.isNotBlank() } }
 private fun JSONObject.nullableBoolean(key: String): Boolean? = if (!has(key) || isNull(key)) null else optBoolean(key)
 private fun JSONObject.nullableInt(key: String): Int? = if (!has(key) || isNull(key)) null else optInt(key)
+private fun JSONObject.nullableLong(key: String): Long? = if (!has(key) || isNull(key)) null else optLong(key)
 private fun JSONObject.nullableDouble(key: String): Double? = if (!has(key) || isNull(key)) null else optDouble(key)
 private fun JSONObject.requiredStringList(key: String): List<String> {
     val array = optJSONArray(key) ?: throw BusinessException("INVALID_ARGUMENT", "缺少参数: $key")
@@ -140,7 +166,22 @@ private fun JSONObject.requiredModelImportSource(): ModelImportSource =
         ?: throw BusinessException("INVALID_MODEL_IMPORT_SOURCE", "无效的模型导入方式")
 private fun stageFromWire(value: String): InterrogationStage = runCatching { InterrogationStage.valueOf(value) }.getOrElse { throw BusinessException("INVALID_STAGE", "无效审讯阶段") }
 private inline fun <T> List<T>.toJsonArray(mapper: (T) -> Any?): JSONArray = JSONArray().also { array -> forEach { array.put(mapper(it)) } }
-private fun CaseSummary.toJson() = JSONObject().put("id", id).put("suspectName", suspectName).put("gender", gender).put("age", age).put("officerName", officerName).put("state", state).put("stage", stage.name).put("createdAt", createdAt).put("updatedAt", updatedAt)
+private fun CaseSummary.toJson() = JSONObject()
+    .put("id", id)
+    .put("suspectName", suspectName)
+    .put("gender", gender)
+    .put("age", age)
+    .put("idNumber", idNumber)
+    .put("nation", nation)
+    .put("birthDate", birthDate)
+    .put("address", address)
+    .put("identitySource", identitySource)
+    .put("identityCapturedAt", identityCapturedAt ?: JSONObject.NULL)
+    .put("officerName", officerName)
+    .put("state", state)
+    .put("stage", stage.name)
+    .put("createdAt", createdAt)
+    .put("updatedAt", updatedAt)
 private fun SessionState.toJson() = JSONObject().put("id", id ?: JSONObject.NULL).put("caseId", caseId).put("status", status.name).put("stage", stage.name).put("startedAt", startedAt ?: JSONObject.NULL).put("pausedAt", pausedAt ?: JSONObject.NULL).put("endedAt", endedAt ?: JSONObject.NULL).put("updatedAt", updatedAt)
 private fun TranscriptMessage.toJson() = JSONObject().put("id", id).put("seq", seq).put("speaker", speaker).put("text", text).put("mark", mark).put("confirmed", confirmed).put("createdAt", createdAt).put("updatedAt", updatedAt)
 private fun RecordRevision.toJson() = JSONObject().put("id", id).put("qaId", qaId).put("version", version).put("oldText", oldText).put("newText", newText).put("reason", reason).put("createdAt", createdAt)

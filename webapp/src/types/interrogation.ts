@@ -43,6 +43,12 @@ export interface CaseSummary {
   suspectName: string
   gender?: string
   age?: string
+  idNumber?: string
+  nation?: string
+  birthDate?: string
+  address?: string
+  identitySource?: 'MANUAL' | 'OCR' | string
+  identityCapturedAt?: number | null
   officerName: string
   state: string
   stage: InterrogationStage
@@ -217,25 +223,9 @@ export interface AsrCaptureStatus {
   error?: string | null
 }
 
-export interface OcrPoint {
-  x: number
-  y: number
-}
-
-export interface OcrRect {
-  left: number
-  top: number
-  right: number
-  bottom: number
-}
-
-export interface OcrTextBlock {
-  text: string
-  confidence?: number | null
-  rect?: OcrRect | null
-  points?: OcrPoint[] | null
-}
-
+export interface OcrPoint { x: number; y: number }
+export interface OcrRect { left: number; top: number; right: number; bottom: number }
+export interface OcrTextBlock { text: string; confidence?: number | null; rect?: OcrRect | null; points?: OcrPoint[] | null }
 export interface OcrResult {
   text: string
   blocks: OcrTextBlock[]
@@ -247,7 +237,6 @@ export interface OcrResult {
   recognitionMs: number
   previewUri?: string | null
 }
-
 export interface OcrRuntimeStatus {
   selectedModelId?: string | null
   selectedModelName?: string | null
@@ -264,11 +253,7 @@ export interface OcrRuntimeStatus {
   error?: string | null
 }
 
-export interface FragmentConfirmation {
-  fragment: TemporaryAsrFragment
-  record: TranscriptMessage
-}
-
+export interface FragmentConfirmation { fragment: TemporaryAsrFragment; record: TranscriptMessage }
 export interface BatchFragmentConfirmation {
   confirmed: FragmentConfirmation[]
   failures: Array<{ fragmentId: string; code: string; message: string }>

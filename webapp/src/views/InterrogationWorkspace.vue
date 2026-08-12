@@ -9,9 +9,27 @@ import TimelinePanel from '../components/TimelinePanel.vue'
 import TranscriptPanel from '../components/TranscriptPanel.vue'
 import { useInterrogationStore } from '../stores/interrogation'
 
+const props = defineProps<{ caseId: string }>()
+defineEmits<{ back: [] }>()
 const store = useInterrogationStore()
-onMounted(() => store.initialize())
+
+onMounted(async () => {
+  store.disposeCaptureEvents()
+  store.caseId = props.caseId
+  store.transcript = []
+  store.timeline = []
+  store.facts = []
+  store.revisions = []
+  store.revisionsOpen = false
+  store.error = ''
+  await store.initialize()
+})
 onUnmounted(() => store.disposeCaptureEvents())
+
+function maskedId(idNumber?: string) {
+  if (!idNumber) return ''
+  return idNumber.length >= 8 ? `${idNumber.slice(0, 3)}***********${idNumber.slice(-4)}` : idNumber
+}
 </script>
 
 <template>
@@ -23,9 +41,8 @@ onUnmounted(() => store.disposeCaptureEvents())
           <h1>案件审讯工作台</h1>
           <p>
             案件：{{ store.caseSummary.id || '加载中' }}　｜　对象：{{ store.caseSummary.suspectName }}
-            <template v-if="store.caseSummary.gender || store.caseSummary.age">
-              {{ store.caseSummary.gender }} {{ store.caseSummary.age ? `${store.caseSummary.age}岁` : '' }}
-            </template>
+            <template v-if="store.caseSummary.gender || store.caseSummary.age">　{{ store.caseSummary.gender }} {{ store.caseSummary.age ? `${store.caseSummary.age}岁` : '' }}</template>
+            <template v-if="store.caseSummary.idNumber">　｜　身份证：{{ maskedId(store.caseSummary.idNumber) }}</template>
           </p>
         </div>
         <span class="state-chip">{{ store.stateText }}</span>
@@ -44,14 +61,7 @@ onUnmounted(() => store.disposeCaptureEvents())
       <div v-else-if="store.actionMessage" class="workspace-toast success">{{ store.actionMessage }}</div>
     </div>
 
-    <SessionControls
-      :session="store.session"
-      :stage-text="store.stageText"
-      @start="store.startSession"
-      @toggle-pause="store.togglePause"
-      @finish="store.finishSession"
-      @next-stage="store.nextStage"
-    />
+    <SessionControls :session="store.session" :stage-text="store.stageText" @start="store.startSession" @toggle-pause="store.togglePause" @finish="store.finishSession" @next-stage="store.nextStage" />
 
     <section class="workspace-grid">
       <TimelinePanel :items="store.timeline" />

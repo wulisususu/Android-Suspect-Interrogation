@@ -20,7 +20,7 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
         AsrCaptureSessionEntity::class,
         AsrTemporaryFragmentEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -41,7 +41,7 @@ abstract class AppDatabase : RoomDatabase() {
             val factory = SupportOpenHelperFactory(passphrase)
             return Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, context.getDatabasePath("suspect-interrogation.db").absolutePath)
                 .openHelperFactory(factory)
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
         }
 
@@ -60,6 +60,17 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_asr_temporary_fragments_caseId` ON `asr_temporary_fragments` (`caseId`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_asr_temporary_fragments_confirmedQaId` ON `asr_temporary_fragments` (`confirmedQaId`)")
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_asr_temporary_fragments_captureSessionId_ordinal` ON `asr_temporary_fragments` (`captureSessionId`, `ordinal`)")
+            }
+        }
+
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `cases` ADD COLUMN `idNumber` TEXT")
+                db.execSQL("ALTER TABLE `cases` ADD COLUMN `nation` TEXT")
+                db.execSQL("ALTER TABLE `cases` ADD COLUMN `birthDate` TEXT")
+                db.execSQL("ALTER TABLE `cases` ADD COLUMN `address` TEXT")
+                db.execSQL("ALTER TABLE `cases` ADD COLUMN `identitySource` TEXT")
+                db.execSQL("ALTER TABLE `cases` ADD COLUMN `identityCapturedAt` INTEGER")
             }
         }
     }
