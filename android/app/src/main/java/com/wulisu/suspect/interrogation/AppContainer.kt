@@ -7,7 +7,6 @@ import com.wulisu.suspect.interrogation.bridge.RpcRouter
 import com.wulisu.suspect.interrogation.data.AppDatabase
 import com.wulisu.suspect.interrogation.ocr.OcrController
 import com.wulisu.suspect.interrogation.service.*
-import kotlinx.coroutines.runBlocking
 
 class AppContainer(context: Context) {
     private val database = AppDatabase.build(context)
@@ -35,6 +34,5 @@ class AppContainer(context: Context) {
         asrController.setCaptureListener(asrCapture)
         asrController.setCaptureRunningProvider(asrCapture::isRunning)
         modelManager.scanAsync()
-        runBlocking { SeedData(cases, sessions, records).seedIfEmpty() }
     }
 }

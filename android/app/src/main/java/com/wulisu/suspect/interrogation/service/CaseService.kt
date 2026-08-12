@@ -15,11 +15,41 @@ class CaseService(private val db: AppDatabase, private val audit: AuditService) 
     private val caseDao = db.caseDao()
     private val factDao = db.factDao()
 
-    suspend fun create(requestedId: String? = null, suspectName: String? = null, gender: String? = null, age: String? = null, officerName: String? = null): CaseSummary = db.withTransaction {
+    suspend fun create(
+        requestedId: String? = null,
+        suspectName: String? = null,
+        gender: String? = null,
+        age: String? = null,
+        officerName: String? = null,
+        idNumber: String? = null,
+        nation: String? = null,
+        birthDate: String? = null,
+        address: String? = null,
+        identitySource: String? = null,
+        identityCapturedAt: Long? = null,
+    ): CaseSummary = db.withTransaction {
         val now = System.currentTimeMillis()
         val caseId = requestedId?.takeIf { it.isNotBlank() } ?: generateCaseId(now)
         if (caseDao.get(caseId) != null) throw BusinessException("CASE_EXISTS", "案件已存在")
-        val entity = CaseEntity(caseId, suspectName?.takeIf { it.isNotBlank() } ?: "待录入", gender?.takeIf { it.isNotBlank() }, age?.takeIf { it.isNotBlank() }, officerName?.takeIf { it.isNotBlank() } ?: "当前警官", "DRAFT", InterrogationStage.IDENTITY.name, now, now)
+        val source = normalizeIdentitySource(identitySource)
+        val hasIdentity = listOf(idNumber, nation, birthDate, address).any { !it.isNullOrBlank() } || !suspectName.isNullOrBlank()
+        val entity = CaseEntity(
+            id = caseId,
+            suspectName = suspectName?.trim()?.takeIf { it.isNotBlank() } ?: "待录入",
+            gender = gender?.trim()?.takeIf { it.isNotBlank() },
+            age = age?.trim()?.takeIf { it.isNotBlank() },
+            idNumber = idNumber?.trim()?.uppercase(Locale.ROOT)?.takeIf { it.isNotBlank() },
+            nation = nation?.trim()?.takeIf { it.isNotBlank() },
+            birthDate = birthDate?.trim()?.takeIf { it.isNotBlank() },
+            address = address?.trim()?.takeIf { it.isNotBlank() },
+            identitySource = source,
+            identityCapturedAt = identityCapturedAt ?: if (hasIdentity) now else null,
+            officerName = officerName?.trim()?.takeIf { it.isNotBlank() } ?: "当前警官",
+            state = "DRAFT",
+            stage = InterrogationStage.IDENTITY.name,
+            createdAt = now,
+            updatedAt = now,
+        )
         caseDao.insert(entity)
         seedFacts(caseId, now)
         audit.append(caseId, "CASE_CREATE", "CASE", caseId)
@@ -30,9 +60,37 @@ class CaseService(private val db: AppDatabase, private val audit: AuditService) 
     suspend fun list(limit: Int = 100): List<CaseSummary> = caseDao.list(limit.coerceIn(1, 500)).map { it.toDomain() }
     suspend fun ensure(caseId: String): CaseSummary = caseDao.get(caseId)?.toDomain() ?: create(requestedId = caseId)
 
-    suspend fun update(caseId: String, suspectName: String? = null, gender: String? = null, age: String? = null, officerName: String? = null, state: String? = null, stage: InterrogationStage? = null): CaseSummary = db.withTransaction {
+    suspend fun update(
+        caseId: String,
+        suspectName: String? = null,
+        gender: String? = null,
+        age: String? = null,
+        officerName: String? = null,
+        state: String? = null,
+        stage: InterrogationStage? = null,
+        idNumber: String? = null,
+        nation: String? = null,
+        birthDate: String? = null,
+        address: String? = null,
+        identitySource: String? = null,
+        identityCapturedAt: Long? = null,
+    ): CaseSummary = db.withTransaction {
         val current = caseDao.get(caseId) ?: throw BusinessException("CASE_NOT_FOUND", "案件不存在")
-        val next = current.copy(suspectName = suspectName ?: current.suspectName, gender = gender ?: current.gender, age = age ?: current.age, officerName = officerName ?: current.officerName, state = state ?: current.state, stage = stage?.name ?: current.stage, updatedAt = System.currentTimeMillis())
+        val next = current.copy(
+            suspectName = suspectName ?: current.suspectName,
+            gender = gender ?: current.gender,
+            age = age ?: current.age,
+            idNumber = idNumber?.uppercase(Locale.ROOT) ?: current.idNumber,
+            nation = nation ?: current.nation,
+            birthDate = birthDate ?: current.birthDate,
+            address = address ?: current.address,
+            identitySource = identitySource?.let(::normalizeIdentitySource) ?: current.identitySource,
+            identityCapturedAt = identityCapturedAt ?: current.identityCapturedAt,
+            officerName = officerName ?: current.officerName,
+            state = state ?: current.state,
+            stage = stage?.name ?: current.stage,
+            updatedAt = System.currentTimeMillis(),
+        )
         caseDao.update(next)
         audit.append(caseId, "CASE_UPDATE", "CASE", caseId)
         next.toDomain()
@@ -57,6 +115,14 @@ class CaseService(private val db: AppDatabase, private val audit: AuditService) 
         factDao.insertAll(defaults.mapIndexed { index, row -> FactEntity(caseId, row[0], index, row[1], row[2], row[3], row[4], now) })
     }
 
+    private fun normalizeIdentitySource(value: String?): String? {
+        val normalized = value?.trim()?.uppercase(Locale.ROOT)?.takeIf { it.isNotBlank() } ?: return null
+        if (normalized !in setOf("MANUAL", "OCR")) {
+            throw BusinessException("INVALID_IDENTITY_SOURCE", "身份录入来源仅支持 MANUAL 或 OCR")
+        }
+        return normalized
+    }
+
     private fun generateCaseId(now: Long): String {
         val date = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date(now))
         val suffix = java.util.UUID.randomUUID().toString().replace("-", "").take(5).uppercase(Locale.US)
@@ -64,4 +130,20 @@ class CaseService(private val db: AppDatabase, private val audit: AuditService) 
     }
 }
 
-fun CaseEntity.toDomain() = CaseSummary(id, suspectName, gender.orEmpty(), age.orEmpty(), officerName, state, InterrogationStage.valueOf(stage), createdAt, updatedAt)
+fun CaseEntity.toDomain() = CaseSummary(
+    id = id,
+    suspectName = suspectName,
+    gender = gender.orEmpty(),
+    age = age.orEmpty(),
+    idNumber = idNumber.orEmpty(),
+    nation = nation.orEmpty(),
+    birthDate = birthDate.orEmpty(),
+    address = address.orEmpty(),
+    identitySource = identitySource.orEmpty(),
+    identityCapturedAt = identityCapturedAt,
+    officerName = officerName,
+    state = state,
+    stage = InterrogationStage.valueOf(stage),
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+)
