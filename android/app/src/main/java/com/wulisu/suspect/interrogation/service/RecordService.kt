@@ -16,14 +16,14 @@ import java.util.UUID
 class RecordService(private val db: AppDatabase, private val cases: CaseService, private val sessions: InterrogationService, private val audit: AuditService) {
     private val qaDao = db.qaDao(); private val revisionDao = db.revisionDao()
 
-    suspend fun list(caseId: String): List<TranscriptMessage> { cases.ensure(caseId); return qaDao.list(caseId).map { it.toDomain() } }
+    suspend fun list(caseId: String): List<TranscriptMessage> { cases.get(caseId); return qaDao.list(caseId).map { it.toDomain() } }
 
     suspend fun add(caseId: String, text: String, speakerValue: String): TranscriptMessage = db.withTransaction {
         addWithinTransaction(caseId, text, speakerValue)
     }
 
     internal suspend fun addWithinTransaction(caseId: String, text: String, speakerValue: String): TranscriptMessage {
-        cases.ensure(caseId)
+        cases.get(caseId)
         val clean = InterrogationRules.requireNonBlankMessage(text)
         val speaker = Speaker.fromWire(speakerValue)
         val session = sessions.activeRunning(caseId)
@@ -57,7 +57,7 @@ class RecordService(private val db: AppDatabase, private val cases: CaseService,
     }
 
     suspend fun revisions(caseId: String, messageId: String?): List<RecordRevision> {
-        cases.ensure(caseId)
+        cases.get(caseId)
         val rows = if (messageId.isNullOrBlank()) revisionDao.listForCase(caseId) else revisionDao.listForQa(caseId, messageId)
         return rows.map { RecordRevision(it.id, it.qaId, it.version, it.oldText, it.newText, it.reason, it.createdAt) }
     }

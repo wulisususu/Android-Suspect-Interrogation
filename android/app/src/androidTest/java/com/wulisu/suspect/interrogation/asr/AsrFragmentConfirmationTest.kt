@@ -38,7 +38,25 @@ class AsrFragmentConfirmationTest {
         asr = AsrController(context, ModelManager(context))
         manager = AsrCaptureSessionManager(context, db, sessions, records, audit, asr)
 
-        db.caseDao().insert(CaseEntity(CASE_ID, "测试对象", null, null, "测试警官", "INTERROGATING", "IDENTITY", 1L, 1L))
+        db.caseDao().insert(
+            CaseEntity(
+                id = CASE_ID,
+                suspectName = "测试对象",
+                gender = null,
+                age = null,
+                idNumber = null,
+                nation = null,
+                birthDate = null,
+                address = null,
+                identitySource = null,
+                identityCapturedAt = null,
+                officerName = "测试警官",
+                state = "INTERROGATING",
+                stage = "IDENTITY",
+                createdAt = 1L,
+                updatedAt = 1L,
+            ),
+        )
         db.sessionDao().insert(SessionEntity(SESSION_ID, CASE_ID, "RUNNING", "IDENTITY", 1L, null, null, 1L))
         db.asrCaptureSessionDao().insert(
             AsrCaptureSessionEntity(CAPTURE_ID, CASE_ID, SESSION_ID, "model", "Zipformer", "rknn", SHERPA_ONNX_VERSION, 16_000, "missing.wav", 1L, 2L, "STOPPED", null),
@@ -56,14 +74,14 @@ class AsrFragmentConfirmationTest {
     fun confirmationIsIdempotentAndPreservesRawText() = runBlocking {
         insertFragment("fragment-1", 1, "原始 文本", "人工修订文本", "OFFICER")
 
-        val first = manager.confirmFragment("fragment-1")
-        val second = manager.confirmFragment("fragment-1")
+        val first = manager.confirmFragment(CASE_ID, "fragment-1")
+        val second = manager.confirmFragment(CASE_ID, "fragment-1")
 
         assertEquals(first.record.id, second.record.id)
         assertEquals("人工修订文本", first.record.text)
         assertEquals("民警", first.record.speaker)
         assertEquals(1, db.qaDao().list(CASE_ID).size)
-        val stored = db.asrTemporaryFragmentDao().get("fragment-1")!!
+        val stored = db.asrTemporaryFragmentDao().get(CASE_ID, "fragment-1")!!
         assertEquals("原始 文本", stored.rawText)
         assertEquals("CONFIRMED", stored.state)
         assertEquals(first.record.id, stored.confirmedQaId)
@@ -74,14 +92,25 @@ class AsrFragmentConfirmationTest {
         insertFragment("fragment-valid", 1, "有效回答", "有效回答", "SUSPECT")
         insertFragment("fragment-invalid", 2, "待指定", "待指定", "UNKNOWN")
 
-        val result = manager.confirmBatch(listOf("fragment-valid", "fragment-invalid"))
+        val result = manager.confirmBatch(CASE_ID, listOf("fragment-valid", "fragment-invalid"))
 
         assertEquals(1, result.confirmed.size)
         assertEquals(1, result.failures.size)
         assertEquals("fragment-invalid", result.failures.single().fragmentId)
         assertNotEquals("", result.failures.single().code)
         assertEquals(1, db.qaDao().list(CASE_ID).size)
-        assertEquals("PENDING", db.asrTemporaryFragmentDao().get("fragment-invalid")!!.state)
+        assertEquals("PENDING", db.asrTemporaryFragmentDao().get(CASE_ID, "fragment-invalid")!!.state)
+    }
+
+    @Test
+    fun fragmentFromAnotherCaseCannotBeConfirmed() = runBlocking {
+        insertFragment("fragment-foreign", 1, "A案回答", "A案回答", "SUSPECT")
+
+        val error = runCatching { manager.confirmFragment("case-b", "fragment-foreign") }.exceptionOrNull() as com.wulisu.suspect.interrogation.domain.BusinessException
+
+        assertEquals("ASR_FRAGMENT_NOT_FOUND", error.code)
+        assertEquals("PENDING", db.asrTemporaryFragmentDao().get(CASE_ID, "fragment-foreign")!!.state)
+        assertEquals(0, db.qaDao().list(CASE_ID).size)
     }
 
     private suspend fun insertFragment(id: String, ordinal: Int, rawText: String, editedText: String, speaker: String) {

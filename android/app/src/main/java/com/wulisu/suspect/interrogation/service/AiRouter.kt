@@ -103,9 +103,4 @@ class AiService(
         return router.status()
     }
 
-    suspend fun inquiry(message: String): AiResponse {
-        val clean = message.trim()
-        if (clean.isEmpty()) throw BusinessException("EMPTY_AI_MESSAGE", "AI 请求内容不能为空")
-        return router.inquiry(listOf(AiMessage(role = "user", content = clean)))
-    }
 }

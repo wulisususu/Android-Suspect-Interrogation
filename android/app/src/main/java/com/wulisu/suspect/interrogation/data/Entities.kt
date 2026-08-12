@@ -123,6 +123,20 @@ data class AuditLogEntity(
 )
 
 @Entity(
+    tableName = "ai_case_analyses",
+    foreignKeys = [ForeignKey(entity = CaseEntity::class, parentColumns = ["id"], childColumns = ["caseId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("caseId"), Index(value = ["caseId", "createdAt"])],
+)
+data class AiCaseAnalysisEntity(
+    @androidx.room.PrimaryKey val id: String,
+    val caseId: String,
+    val text: String,
+    val provider: String,
+    val model: String,
+    val createdAt: Long,
+)
+
+@Entity(
     tableName = "asr_capture_sessions",
     foreignKeys = [
         ForeignKey(entity = CaseEntity::class, parentColumns = ["id"], childColumns = ["caseId"], onDelete = ForeignKey.CASCADE),

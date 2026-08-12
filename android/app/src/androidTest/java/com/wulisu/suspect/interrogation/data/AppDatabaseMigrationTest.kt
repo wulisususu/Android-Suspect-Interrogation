@@ -45,7 +45,26 @@ class AppDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migrate3To4CreatesCaseScopedAiAnalysisTable() {
+        helper.createDatabase(TEST_DB_V4, 3).apply {
+            execSQL("INSERT INTO cases VALUES ('case-a','对象A',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'警官','ACTIVE','IDENTITY',1,1)")
+            close()
+        }
+
+        helper.runMigrationsAndValidate(TEST_DB_V4, 4, true, AppDatabase.MIGRATION_3_4).apply {
+            execSQL("INSERT INTO ai_case_analyses VALUES ('analysis-a','case-a','结果','LOCAL','LegalOne',2)")
+            query("SELECT caseId, text FROM ai_case_analyses WHERE caseId = 'case-a'").use {
+                it.moveToFirst()
+                assertEquals("case-a", it.getString(0))
+                assertEquals("结果", it.getString(1))
+            }
+            close()
+        }
+    }
+
     companion object {
         private const val TEST_DB = "asr-migration-test"
+        private const val TEST_DB_V4 = "case-ai-migration-test"
     }
 }

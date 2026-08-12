@@ -14,12 +14,12 @@ class InterrogationService(private val db: AppDatabase, private val cases: CaseS
     private val dao = db.sessionDao()
 
     suspend fun state(caseId: String): SessionState {
-        val case = cases.ensure(caseId)
+        val case = cases.get(caseId)
         return (dao.active(caseId) ?: dao.latest(caseId))?.toDomain() ?: SessionState(null, case.id, SessionStatus.READY, case.stage, null, null, null, case.updatedAt)
     }
 
     suspend fun start(caseId: String): SessionState = db.withTransaction {
-        cases.ensure(caseId)
+        cases.get(caseId)
         dao.active(caseId)?.let { return@withTransaction it.toDomain() }
         val now = System.currentTimeMillis()
         val entity = SessionEntity(UUID.randomUUID().toString(), caseId, SessionStatus.RUNNING.name, InterrogationStage.IDENTITY.name, now, null, null, now)

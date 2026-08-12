@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 import AiSettingsPanel from '../components/AiSettingsPanel.vue'
+import CaseAiAnalysisPanel from '../components/CaseAiAnalysisPanel.vue'
 import DeviceStatusBar from '../components/DeviceStatusBar.vue'
 import FactMatrix from '../components/FactMatrix.vue'
 import RevisionDrawer from '../components/RevisionDrawer.vue'
@@ -62,6 +63,14 @@ function maskedId(idNumber?: string) {
     </div>
 
     <SessionControls :session="store.session" :stage-text="store.stageText" @start="store.startSession" @toggle-pause="store.togglePause" @finish="store.finishSession" @next-stage="store.nextStage" />
+
+    <CaseAiAnalysisPanel
+      :case-id="store.caseId"
+      :analyses="store.caseAiAnalyses"
+      :busy="store.caseAiBusy"
+      :error="store.caseAiError"
+      @generate="store.generateCaseAnalysis"
+    />
 
     <section class="workspace-grid">
       <TimelinePanel :items="store.timeline" />

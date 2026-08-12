@@ -6,7 +6,7 @@ import com.wulisu.suspect.interrogation.service.LocalModelCatalog
 import com.wulisu.suspect.interrogation.service.ModelCategory
 import com.wulisu.suspect.interrogation.service.ModelManager
 
-const val SHERPA_ONNX_VERSION = "1.13.5"
+const val SHERPA_ONNX_VERSION = "1.13.4"
 
 data class AsrRuntimeStatus(
     val selectedModelId: String,

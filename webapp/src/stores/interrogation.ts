@@ -9,12 +9,14 @@ import {
   discardAsrFragment,
   fetchAsrCaptureStatus,
   fetchCase,
+  fetchCaseAiAnalyses,
   fetchFacts,
   fetchMessages,
   fetchRevisions,
   fetchSessionState,
   fetchTimeline,
   finishSession as finishSessionApi,
+  generateCaseAiAnalysis,
   markTranscriptMessage,
   pauseSession as pauseSessionApi,
   persistQuestionOrAnswer,
@@ -29,6 +31,7 @@ import {
 import { isNativeBusinessRuntime, onNativeEvent } from '../native/rpcBridge'
 import type {
   AsrCaptureStatus,
+  CaseAiAnalysis,
   CaseSummary,
   FactItem,
   InterrogationStage,
@@ -111,6 +114,9 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   const transcript = ref<TranscriptMessage[]>([])
   const timeline = ref<TimelineEvent[]>([])
   const facts = ref<FactItem[]>([])
+  const caseAiAnalyses = ref<CaseAiAnalysis[]>([])
+  const caseAiBusy = ref(false)
+  const caseAiError = ref('')
 
   const completion = computed(() => {
     if (!facts.value.length) return 0
@@ -167,11 +173,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       return created
     }
 
-    try {
-      return await fetchCase(caseId.value)
-    } catch {
-      return createCase({ id: caseId.value, officerName: '当前警官' })
-    }
+    return fetchCase(caseId.value)
   }
 
   async function initialize() {
@@ -180,18 +182,20 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     try {
       caseSummary.value = await ensureCurrentCase()
       initializeCaptureEvents()
-      const [messages, factItems, timelineItems, sessionState, captureStatus] = await Promise.all([
+      const [messages, factItems, timelineItems, sessionState, captureStatus, analyses] = await Promise.all([
         fetchMessages(caseId.value),
         fetchFacts(caseId.value),
         fetchTimeline(caseId.value),
         fetchSessionState(caseId.value),
         nativeCaptureAvailable ? fetchAsrCaptureStatus(caseId.value) : Promise.resolve(null),
+        fetchCaseAiAnalyses(caseId.value),
       ])
       transcript.value = messages
       facts.value = factItems
       timeline.value = timelineItems
       session.value = sessionState
       if (captureStatus) applyCaptureStatus(captureStatus)
+      caseAiAnalyses.value = analyses
     } catch (err) {
       error.value = backendErrorMessage(err)
       feedback(`后端初始化失败：${error.value}`, true)
@@ -237,7 +241,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   async function updatePendingFragment(fragmentId: string, editedText: string, speaker: TemporaryAsrSpeaker) {
     try {
-      const updated = await updateAsrFragment(fragmentId, editedText, speaker)
+      const updated = await updateAsrFragment(caseId.value, fragmentId, editedText, speaker)
       const index = capture.value.fragments.findIndex((item) => item.id === fragmentId)
       if (index >= 0) capture.value.fragments[index] = updated
     } catch (err) {
@@ -247,7 +251,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   async function confirmPendingFragment(fragmentId: string) {
     try {
-      const result = await confirmAsrFragment(fragmentId)
+      const result = await confirmAsrFragment(caseId.value, fragmentId)
       mergeConfirmedRecord(result.record)
       capture.value.fragments = capture.value.fragments.filter((fragment) => fragment.id !== fragmentId)
       selectedFragmentIds.value = selectedFragmentIds.value.filter((id) => id !== fragmentId)
@@ -260,7 +264,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   async function confirmSelectedFragments() {
     if (!selectedFragmentIds.value.length) return
     try {
-      const result = await confirmAsrFragmentBatch(selectedFragmentIds.value)
+      const result = await confirmAsrFragmentBatch(caseId.value, selectedFragmentIds.value)
       result.confirmed.forEach((item) => mergeConfirmedRecord(item.record))
       const confirmedIds = new Set(result.confirmed.map((item) => item.fragment.id))
       capture.value.fragments = capture.value.fragments.filter((fragment) => !confirmedIds.has(fragment.id))
@@ -277,7 +281,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   async function discardPendingFragment(fragmentId: string) {
     try {
-      await discardAsrFragment(fragmentId)
+      await discardAsrFragment(caseId.value, fragmentId)
       capture.value.fragments = capture.value.fragments.filter((fragment) => fragment.id !== fragmentId)
       selectedFragmentIds.value = selectedFragmentIds.value.filter((id) => id !== fragmentId)
       feedback('临时片段已丢弃')
@@ -338,6 +342,22 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     } finally {
       aiMessage.streaming = false
       streaming.value = false
+    }
+  }
+
+  async function generateCaseAnalysis() {
+    if (caseAiBusy.value) return
+    caseAiBusy.value = true
+    caseAiError.value = ''
+    try {
+      const analysis = await generateCaseAiAnalysis(caseId.value)
+      caseAiAnalyses.value = [analysis, ...caseAiAnalyses.value.filter((item) => item.id !== analysis.id)]
+      feedback('本案 AI 推理已生成并保存到当前案件')
+    } catch (err) {
+      caseAiError.value = backendErrorMessage(err)
+      feedback(caseAiError.value, true)
+    } finally {
+      caseAiBusy.value = false
     }
   }
 
@@ -444,6 +464,9 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     transcript,
     timeline,
     facts,
+    caseAiAnalyses,
+    caseAiBusy,
+    caseAiError,
     completion,
     stateText,
     stageText,
@@ -461,6 +484,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     selectedFragmentIds,
     initialize,
     ask,
+    generateCaseAnalysis,
     editMessage,
     markMessage,
     markLatestConflict,

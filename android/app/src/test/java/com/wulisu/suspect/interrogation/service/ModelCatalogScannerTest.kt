@@ -7,6 +7,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.io.RandomAccessFile
 
 class ModelCatalogScannerTest {
     @get:Rule
@@ -49,15 +50,48 @@ class ModelCatalogScannerTest {
     @Test
     fun `scan marks only the persisted model selection`() {
         val root = temporaryFolder.newFolder("models")
-        val llmRoot = File(root, "llm").apply { mkdirs() }
-        File(llmRoot, "first.gguf").writeBytes(ByteArray(1))
-        File(llmRoot, "second.gguf").writeBytes(ByteArray(1))
-        val selectedId = "LLM:llm/second.gguf"
+        val vadRoot = File(root, "vad").apply { mkdirs() }
+        File(vadRoot, "first.onnx").writeBytes(ByteArray(1))
+        File(vadRoot, "second.onnx").writeBytes(ByteArray(1))
+        val selectedId = "VAD:vad/second.onnx"
 
-        val catalog = scanner.scan(root, mapOf(ModelCategory.LLM to selectedId))
+        val catalog = scanner.scan(root, mapOf(ModelCategory.VAD to selectedId))
 
-        assertEquals("second", catalog.selected(ModelCategory.LLM)?.name)
+        assertEquals("second", catalog.selected(ModelCategory.VAD)?.name)
         assertEquals(1, catalog.models.count { it.selected })
+    }
+
+    @Test
+    fun `scan reads rkllm files from external root without unrelated files`() {
+        val privateRoot = temporaryFolder.newFolder("private")
+        val sharedRoot = temporaryFolder.newFolder("shared")
+        val model = File(sharedRoot, "LegalOne-4B_W8A8_RK3576.rkllm")
+        RandomAccessFile(model, "rw").use { it.setLength(4_862_583_588L) }
+        File(sharedRoot, "notes.txt").writeText("ignore")
+
+        val models = scanner.scan(
+            root = privateRoot,
+            externalRoots = listOf(sharedRoot),
+            devicePlatform = "rk3576",
+        ).models.filter { it.category == ModelCategory.LLM }
+
+        assertEquals(1, models.size)
+        assertEquals("RKLLM", models.single().modelFormat)
+        assertEquals("RKLLM / RK3576 NPU", models.single().provider)
+        assertEquals("RK3576", models.single().targetPlatform)
+        assertEquals("READY", models.single().compatibility)
+        assertTrue(models.single().complete)
+        assertTrue(models.single().runtimeReady)
+    }
+
+    @Test
+    fun `private llm directory is not used`() {
+        val root = temporaryFolder.newFolder("models")
+        File(File(root, "llm").apply { mkdirs() }, "private.rkllm").writeBytes(byteArrayOf(1))
+
+        val models = scanner.scan(root, devicePlatform = "rk3576").models
+
+        assertTrue(models.none { it.category == ModelCategory.LLM })
     }
 
     @Test
@@ -75,4 +109,3 @@ class ModelCatalogScannerTest {
         assertFalse(models.single().selected)
     }
 }
-
