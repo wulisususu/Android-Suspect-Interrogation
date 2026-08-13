@@ -63,8 +63,37 @@ class AppDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migrate4To5PreservesCasesAndLegacyAiAnalysis() {
+        helper.createDatabase(TEST_DB_V5, 4).apply {
+            execSQL("INSERT INTO cases VALUES ('case-a','对象A',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'警官','ACTIVE','IDENTITY',1,1)")
+            execSQL(
+                "INSERT INTO ai_case_analyses (id, caseId, text, provider, model, createdAt) " +
+                    "VALUES ('analysis-old','case-a','旧分析','LOCAL','LegalOne',2)",
+            )
+            close()
+        }
+
+        helper.runMigrationsAndValidate(TEST_DB_V5, 5, true, AppDatabase.MIGRATION_4_5).apply {
+            query("SELECT suspectName FROM cases WHERE id = 'case-a'").use {
+                it.moveToFirst()
+                assertEquals("对象A", it.getString(0))
+            }
+            query("SELECT caseId, text, provider, model, metadataJson FROM ai_case_analyses WHERE id = 'analysis-old'").use {
+                it.moveToFirst()
+                assertEquals("case-a", it.getString(0))
+                assertEquals("旧分析", it.getString(1))
+                assertEquals("LOCAL", it.getString(2))
+                assertEquals("LegalOne", it.getString(3))
+                assertEquals("{}", it.getString(4))
+            }
+            close()
+        }
+    }
+
     companion object {
         private const val TEST_DB = "asr-migration-test"
         private const val TEST_DB_V4 = "case-ai-migration-test"
+        private const val TEST_DB_V5 = "case-ai-metadata-migration-test"
     }
 }
