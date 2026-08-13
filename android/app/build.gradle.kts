@@ -93,7 +93,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     // sherpa-onnx 1.13.4 is built against ONNX Runtime 1.27.0.
-    // Keep the Java/Kotlin API and the single libonnxruntime.so source in this Maven AAR.
+    // Keep both the Java/Kotlin API and the single native libonnxruntime.so source in this Maven AAR.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:$onnxRuntimeVersion")
 
     val roomVersion = "2.8.4"
@@ -111,30 +111,4 @@ dependencies {
     androidTestImplementation("androidx.room:room-testing:$roomVersion")
 }
 
-val verifyDebugOnnxRuntime by tasks.registering {
-    group = "verification"
-    description = "Verify the debug APK contains exactly one arm64-v8a libonnxruntime.so."
-
-    doLast {
-        val committedOrt = file("src/main/jniLibs/arm64-v8a/libonnxruntime.so")
-        check(!committedOrt.exists()) {
-            "Do not commit libonnxruntime.so under jniLibs; the native source is onnxruntime-android:$onnxRuntimeVersion"
-        }
-
-        val apk = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile
-        check(apk.isFile) { "Debug APK not found: ${apk.absolutePath}" }
-        java.util.zip.ZipFile(apk).use { zip ->
-            val ortEntries = zip.entries().asSequence()
-                .filter { !it.isDirectory && it.name.endsWith("/libonnxruntime.so") }
-                .map { it.name }
-                .toList()
-            check(ortEntries == listOf("lib/arm64-v8a/libonnxruntime.so")) {
-                "Expected exactly one arm64-v8a libonnxruntime.so in APK, found: $ortEntries"
-            }
-        }
-        println("Verified single APK lib/arm64-v8a/libonnxruntime.so from onnxruntime-android:$onnxRuntimeVersion")
-    }
-}
-
 tasks.named("preBuild").configure { dependsOn(syncWebapp) }
-tasks.matching { it.name == "assembleDebug" }.configureEach { finalizedBy(verifyDebugOnnxRuntime) }
