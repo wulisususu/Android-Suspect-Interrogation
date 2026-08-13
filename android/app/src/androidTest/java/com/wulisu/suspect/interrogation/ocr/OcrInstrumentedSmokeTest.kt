@@ -44,18 +44,30 @@ class OcrInstrumentedSmokeTest {
             val wallMs = SystemClock.elapsedRealtime() - wallStarted
             val cpuMs = (Debug.threadCpuTimeNanos() - cpuStarted) / 1_000_000
             val afterMemory = Debug.MemoryInfo().also { Debug.getMemoryInfo(it) }
-            Log.i(
-                "OcrInstrumentedSmokeTest",
-                "model=${result.modelName} provider=${result.provider} initMs=${init.initializationMs} " +
-                    "recognitionMs=${result.recognitionMs} wallMs=$wallMs threadCpuMs=$cpuMs " +
-                    "pssBeforeKb=${beforeMemory.totalPss} pssAfterKb=${afterMemory.totalPss} " +
-                    "nativeHeapKb=${Debug.getNativeHeapAllocatedSize() / 1024} blocks=${result.blocks.size} text=${result.text}",
-            )
+            val diagnostic = buildString {
+                append("model=${result.modelName} provider=${result.provider} initMs=${init.initializationMs} ")
+                append("recognitionMs=${result.recognitionMs} wallMs=$wallMs threadCpuMs=$cpuMs ")
+                append("pssBeforeKb=${beforeMemory.totalPss} pssAfterKb=${afterMemory.totalPss} ")
+                append("nativeHeapKb=${Debug.getNativeHeapAllocatedSize() / 1024} ")
+                append("text=${result.text} blocks=${result.blocks}")
+            }
+            Log.i("OcrInstrumentedSmokeTest", diagnostic)
+
             assertEquals("onnxruntime-cpu", result.provider)
             assertTrue(init.initializationMs >= 0)
             assertTrue(result.recognitionMs >= 0)
             assertEquals(960, result.imageWidth)
             assertEquals(360, result.imageHeight)
+            assertTrue("OCR text must not be blank. $diagnostic", result.text.isNotBlank())
+            assertTrue("OCR blocks must not be empty. $diagnostic", result.blocks.isNotEmpty())
+
+            val normalized = result.text.replace(Regex("\\s+"), "")
+            assertTrue("OCR must recognize key digits 123. $diagnostic", "123" in normalized)
+            val chineseKeywords = listOf("公安", "讯问", "测试", "完全", "离线", "识别")
+            assertTrue(
+                "OCR must recognize at least one expected Chinese keyword $chineseKeywords. $diagnostic",
+                chineseKeywords.any(normalized::contains),
+            )
         } finally {
             engine.release()
         }

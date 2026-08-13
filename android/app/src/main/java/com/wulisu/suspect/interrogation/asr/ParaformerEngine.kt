@@ -9,7 +9,7 @@ import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
 class ParaformerEngine(context: Context) : SherpaOnlineAsrEngine(
     context = context,
     spec = AsrModelSpecs.PARAFORMER_INT8,
-) {
+), PcmTranscriptionEngine {
     override fun recognizerConfig() = OnlineRecognizerConfig(
         featConfig = FeatureConfig(sampleRate = 16_000, featureDim = 80),
         modelConfig = OnlineModelConfig(
@@ -28,5 +28,13 @@ class ParaformerEngine(context: Context) : SherpaOnlineAsrEngine(
         decodingMethod = "greedy_search",
         maxActivePaths = 4,
     )
-}
 
+    override fun transcribePcm16Mono(samples: ShortArray, sampleRate: Int): AsrFinalResult =
+        SherpaPcmTranscriber.transcribe(
+            context = context,
+            spec = spec,
+            config = recognizerConfig(),
+            samples = samples,
+            sampleRate = sampleRate,
+        )
+}

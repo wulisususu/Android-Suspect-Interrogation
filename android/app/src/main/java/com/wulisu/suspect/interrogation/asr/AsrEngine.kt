@@ -33,6 +33,14 @@ interface AsrEngine {
     fun release()
 }
 
+/**
+ * Diagnostic/test entry point for feeding recorded PCM through the real streaming recognizer.
+ * Production microphone capture continues to use [AsrEngine.start].
+ */
+interface PcmTranscriptionEngine {
+    fun transcribePcm16Mono(samples: ShortArray, sampleRate: Int): AsrFinalResult
+}
+
 class AsrEngineSwitcher(
     private val factory: (AsrModelSpec) -> AsrEngine,
 ) {
