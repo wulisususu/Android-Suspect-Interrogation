@@ -6,6 +6,15 @@ on:
       - 'android/**'
       - 'webapp/**'
       - '.github/workflows/android-ci.yml'
+      - '.gitattributes'
+  push:
+    branches:
+      - main
+    paths:
+      - 'android/**'
+      - 'webapp/**'
+      - '.github/workflows/android-ci.yml'
+      - '.gitattributes'
   workflow_dispatch:
 
 jobs:
@@ -13,6 +22,65 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Verify Git LFS model payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          model_root='android/app/src/main/assets/models'
+          lfs_signature='version https://git-lfs.github.com/spec/v1'
+          required_models=(
+            'zipformer_rk3576/encoder.rknn'
+            'zipformer_rk3576/decoder.rknn'
+            'zipformer_rk3576/joiner.rknn'
+            'paraformer_int8/encoder.int8.onnx'
+            'paraformer_int8/decoder.int8.onnx'
+          )
+
+          for relative_path in "${required_models[@]}"; do
+            model="$model_root/$relative_path"
+            if [[ ! -f "$model" ]]; then
+              echo "::error file=$model::Required bundled ASR model is missing"
+              exit 1
+            fi
+          done
+
+          mapfile -d '' model_files < <(
+            find "$model_root" -type f \( -name '*.onnx' -o -name '*.rknn' \) -print0
+          )
+          if (( ${#model_files[@]} == 0 )); then
+            echo "::error::No .onnx or .rknn model files found under $model_root"
+            exit 1
+          fi
+
+          for model in "${model_files[@]}"; do
+            filter_attr="$(git check-attr filter -- "$model" | awk -F': ' '{print $3}')"
+            if [[ "$filter_attr" != 'lfs' ]]; then
+              echo "::error file=$model::Model is not covered by Git LFS attributes"
+              exit 1
+            fi
+
+            if head -c 512 "$model" | grep -aFq "$lfs_signature"; then
+              echo "::error file=$model::Git LFS pointer detected; real model payload was not materialized"
+              exit 1
+            fi
+
+            size="$(stat -c '%s' "$model")"
+            case "$size" in
+              132|133|134)
+                echo "::error file=$model::Suspicious Git LFS pointer-sized model payload: $size bytes"
+                exit 1
+                ;;
+            esac
+            if (( size < 1024 )); then
+              echo "::error file=$model::Model payload is implausibly small: $size bytes"
+              exit 1
+            fi
+            echo "Verified model payload: $model ($size bytes)"
+          done
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -84,3 +152,90 @@ jobs:
 
       - name: Assemble debug APK
         run: gradle -p android assembleDebug --stacktrace --console=plain
+
+      - name: Verify APK model and native library integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          apk_dir = Path("android/app/build/outputs/apk/debug")
+          apks = sorted(apk_dir.glob("*.apk"))
+          if not apks:
+              raise SystemExit(f"No debug APK found under {apk_dir}")
+          apk = apks[-1]
+
+          lfs_signature = b"version https://git-lfs.github.com/spec/v1"
+          suspicious_pointer_sizes = {132, 133, 134}
+          required_assets = [
+              "assets/models/zipformer_rk3576/encoder.rknn",
+              "assets/models/zipformer_rk3576/decoder.rknn",
+              "assets/models/zipformer_rk3576/joiner.rknn",
+              "assets/models/zipformer_rk3576/tokens.txt",
+              "assets/models/paraformer_int8/encoder.int8.onnx",
+              "assets/models/paraformer_int8/decoder.int8.onnx",
+              "assets/models/paraformer_int8/tokens.txt",
+          ]
+          required_native_libraries = [
+              "lib/arm64-v8a/librkllmrt.so",
+              "lib/arm64-v8a/librkllm_jni.so",
+              "lib/arm64-v8a/librknnrt.so",
+              "lib/arm64-v8a/libsherpa-onnx-jni.so",
+          ]
+
+          with ZipFile(apk) as archive:
+              names = set(archive.namelist())
+
+              missing_assets = [entry for entry in required_assets if entry not in names]
+              if missing_assets:
+                  raise SystemExit(
+                      "Required bundled ASR assets are missing from APK: " + ", ".join(missing_assets)
+                  )
+
+              model_entries = sorted(
+                  entry
+                  for entry in names
+                  if entry.startswith("assets/models/")
+                  and entry.lower().endswith((".onnx", ".rknn"))
+              )
+              if not model_entries:
+                  raise SystemExit("APK contains no bundled .onnx/.rknn ASR model payloads")
+
+              for entry in model_entries:
+                  info = archive.getinfo(entry)
+                  with archive.open(entry) as stream:
+                      header = stream.read(512)
+                  if lfs_signature in header:
+                      raise SystemExit(f"Git LFS pointer detected inside APK: {entry}")
+                  if info.file_size in suspicious_pointer_sizes:
+                      raise SystemExit(
+                          f"Suspicious Git LFS pointer-sized APK model: {entry} ({info.file_size} bytes)"
+                      )
+                  if info.file_size < 1024:
+                      raise SystemExit(
+                          f"APK model payload is implausibly small: {entry} ({info.file_size} bytes)"
+                      )
+                  print(f"Verified APK model: {entry} ({info.file_size} bytes)")
+
+              arm64_libraries = sorted(
+                  entry
+                  for entry in names
+                  if entry.startswith("lib/arm64-v8a/") and entry.endswith(".so")
+              )
+              if not arm64_libraries:
+                  raise SystemExit("APK contains no arm64-v8a native libraries")
+
+              missing_libraries = [
+                  entry for entry in required_native_libraries if entry not in names
+              ]
+              if missing_libraries:
+                  raise SystemExit(
+                      "Required arm64-v8a native libraries are missing from APK: "
+                      + ", ".join(missing_libraries)
+                  )
+
+              print(f"Verified APK: {apk}")
+              print(f"arm64-v8a native libraries: {len(arm64_libraries)}")
+          PY
