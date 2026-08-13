@@ -63,6 +63,50 @@ const stageTextMap: Record<InterrogationStage, string> = {
   SIGNING: '确认签名',
 }
 
+interface CaseScope {
+  caseId: string
+  generation: number
+}
+
+function emptyCaseSummary(caseId = ''): CaseSummary {
+  return {
+    id: caseId,
+    suspectName: '',
+    gender: '',
+    age: '',
+    officerName: '',
+    state: 'DRAFT',
+    stage: 'IDENTITY',
+  }
+}
+
+function emptySession(caseId = ''): SessionState {
+  return {
+    id: null,
+    caseId,
+    status: 'READY',
+    stage: 'IDENTITY',
+    startedAt: null,
+    pausedAt: null,
+    endedAt: null,
+    updatedAt: Date.now(),
+  }
+}
+
+function emptyCapture(caseId = ''): AsrCaptureStatus {
+  return {
+    caseId,
+    captureSessionId: null,
+    running: false,
+    startedAt: null,
+    endedAt: null,
+    sampleRate: 16_000,
+    partialText: '',
+    fragments: [],
+    error: null,
+  }
+}
+
 export const useInterrogationStore = defineStore('interrogation', () => {
   const params = new URLSearchParams(location.search)
   const caseId = ref(params.get('caseId') || '')
@@ -77,46 +121,21 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   const captureBusy = ref(false)
   const captureClock = ref(Date.now())
   const selectedFragmentIds = ref<string[]>([])
-  const capture = ref<AsrCaptureStatus>({
-    caseId: caseId.value,
-    captureSessionId: null,
-    running: false,
-    startedAt: null,
-    endedAt: null,
-    sampleRate: 16_000,
-    partialText: '',
-    fragments: [],
-    error: null,
-  })
-  let feedbackTimer: ReturnType<typeof setTimeout> | undefined
-  let captureTimer: ReturnType<typeof setInterval> | undefined
-  let removeCaptureListener: (() => void) | undefined
-
-  const caseSummary = ref<CaseSummary>({
-    id: caseId.value,
-    suspectName: '待录入',
-    gender: '',
-    age: '',
-    officerName: '当前警官',
-    state: 'DRAFT',
-    stage: 'IDENTITY',
-  })
-  const session = ref<SessionState>({
-    id: null,
-    caseId: caseId.value,
-    status: 'READY',
-    stage: 'IDENTITY',
-    startedAt: null,
-    pausedAt: null,
-    endedAt: null,
-    updatedAt: Date.now(),
-  })
+  const capture = ref<AsrCaptureStatus>(emptyCapture(caseId.value))
+  const caseSummary = ref<CaseSummary>(emptyCaseSummary(caseId.value))
+  const session = ref<SessionState>(emptySession(caseId.value))
   const transcript = ref<TranscriptMessage[]>([])
   const timeline = ref<TimelineEvent[]>([])
   const facts = ref<FactItem[]>([])
   const caseAiAnalyses = ref<CaseAiAnalysis[]>([])
   const caseAiBusy = ref(false)
   const caseAiError = ref('')
+
+  let caseGeneration = 0
+  let feedbackTimer: ReturnType<typeof setTimeout> | undefined
+  let captureTimer: ReturnType<typeof setInterval> | undefined
+  let removeCaptureListener: (() => void) | undefined
+  let inquiryController: AbortController | undefined
 
   const completion = computed(() => {
     if (!facts.value.length) return 0
@@ -130,22 +149,49 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     ? Math.max(0, captureClock.value - capture.value.startedAt)
     : 0)
 
-  function applyCaptureStatus(status: AsrCaptureStatus) {
-    if (status.caseId && status.caseId !== caseId.value) return
-    capture.value = status
-    const visibleIds = new Set(status.fragments.map((fragment) => fragment.id))
-    selectedFragmentIds.value = selectedFragmentIds.value.filter((id) => visibleIds.has(id))
-    if (status.running && !captureTimer) {
-      captureTimer = setInterval(() => { captureClock.value = Date.now() }, 500)
-    } else if (!status.running && captureTimer) {
-      clearInterval(captureTimer)
-      captureTimer = undefined
-    }
+  function currentScope(): CaseScope {
+    return { caseId: caseId.value, generation: caseGeneration }
   }
 
-  function initializeCaptureEvents() {
-    if (!nativeCaptureAvailable || removeCaptureListener) return
-    removeCaptureListener = onNativeEvent<AsrCaptureStatus>('asr.capture.status', applyCaptureStatus)
+  function isCurrentScope(scope: CaseScope) {
+    return scope.generation === caseGeneration && scope.caseId === caseId.value
+  }
+
+  function disposeCaptureEvents() {
+    removeCaptureListener?.()
+    removeCaptureListener = undefined
+    if (captureTimer) clearInterval(captureTimer)
+    captureTimer = undefined
+  }
+
+  function resetCaseContext(nextCaseId = '') {
+    caseGeneration += 1
+    inquiryController?.abort()
+    inquiryController = undefined
+    disposeCaptureEvents()
+    if (feedbackTimer) clearTimeout(feedbackTimer)
+    feedbackTimer = undefined
+
+    caseId.value = nextCaseId
+    loading.value = true
+    streaming.value = false
+    error.value = ''
+    actionMessage.value = ''
+    actionError.value = ''
+    revisions.value = []
+    revisionsOpen.value = false
+    captureBusy.value = false
+    captureClock.value = Date.now()
+    selectedFragmentIds.value = []
+    capture.value = emptyCapture(nextCaseId)
+    caseSummary.value = emptyCaseSummary(nextCaseId)
+    session.value = emptySession(nextCaseId)
+    transcript.value = []
+    timeline.value = []
+    facts.value = []
+    caseAiAnalyses.value = []
+    caseAiBusy.value = false
+    caseAiError.value = ''
   }
 
   function feedback(message: string, isError = false) {
@@ -163,48 +209,88 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     }, isError ? 5000 : 3000)
   }
 
-  async function ensureCurrentCase() {
-    if (!caseId.value) {
-      const created = await createCase({ officerName: '当前警官' })
-      caseId.value = created.id
-      const next = new URL(location.href)
-      next.searchParams.set('caseId', created.id)
-      history.replaceState(null, '', next)
-      return created
-    }
+  function feedbackIfCurrent(scope: CaseScope, message: string, isError = false) {
+    if (isCurrentScope(scope)) feedback(message, isError)
+  }
 
-    return fetchCase(caseId.value)
+  function applyCaptureStatus(status: AsrCaptureStatus, scope = currentScope()) {
+    if (!isCurrentScope(scope) || status.caseId !== scope.caseId) return
+    capture.value = status
+    const visibleIds = new Set(status.fragments.map((fragment) => fragment.id))
+    selectedFragmentIds.value = selectedFragmentIds.value.filter((id) => visibleIds.has(id))
+    if (status.running && !captureTimer) {
+      captureTimer = setInterval(() => { captureClock.value = Date.now() }, 500)
+    } else if (!status.running && captureTimer) {
+      clearInterval(captureTimer)
+      captureTimer = undefined
+    }
+  }
+
+  function initializeCaptureEvents(scope: CaseScope) {
+    if (!nativeCaptureAvailable || removeCaptureListener || !scope.caseId) return
+    removeCaptureListener = onNativeEvent<AsrCaptureStatus>('asr.capture.status', (status) => {
+      applyCaptureStatus(status, scope)
+    })
   }
 
   async function initialize() {
+    const generation = caseGeneration
+    let requestedCaseId = caseId.value
     loading.value = true
     error.value = ''
+
     try {
-      caseSummary.value = await ensureCurrentCase()
-      initializeCaptureEvents()
+      let summary: CaseSummary
+      if (!requestedCaseId) {
+        const created = await createCase({ officerName: '当前警官' })
+        if (generation !== caseGeneration || caseId.value !== '') return
+        requestedCaseId = created.id
+        caseId.value = requestedCaseId
+        const next = new URL(location.href)
+        next.searchParams.set('caseId', requestedCaseId)
+        history.replaceState(null, '', next)
+        summary = created
+      } else {
+        summary = await fetchCase(requestedCaseId)
+      }
+
+      const scope: CaseScope = { caseId: requestedCaseId, generation }
+      if (!isCurrentScope(scope) || summary.id !== requestedCaseId) return
+
+      initializeCaptureEvents(scope)
       const [messages, factItems, timelineItems, sessionState, captureStatus, analyses] = await Promise.all([
-        fetchMessages(caseId.value),
-        fetchFacts(caseId.value),
-        fetchTimeline(caseId.value),
-        fetchSessionState(caseId.value),
-        nativeCaptureAvailable ? fetchAsrCaptureStatus(caseId.value) : Promise.resolve(null),
-        fetchCaseAiAnalyses(caseId.value),
+        fetchMessages(requestedCaseId),
+        fetchFacts(requestedCaseId),
+        fetchTimeline(requestedCaseId),
+        fetchSessionState(requestedCaseId),
+        nativeCaptureAvailable ? fetchAsrCaptureStatus(requestedCaseId) : Promise.resolve(null),
+        fetchCaseAiAnalyses(requestedCaseId),
       ])
+
+      if (!isCurrentScope(scope)) return
+      if (sessionState.caseId !== requestedCaseId) throw new Error('会话状态案件号与当前案件不一致')
+      if (captureStatus && captureStatus.caseId !== requestedCaseId) throw new Error('录音状态案件号与当前案件不一致')
+
+      caseSummary.value = summary
       transcript.value = messages
       facts.value = factItems
       timeline.value = timelineItems
       session.value = sessionState
-      if (captureStatus) applyCaptureStatus(captureStatus)
-      caseAiAnalyses.value = analyses
+      if (captureStatus) applyCaptureStatus(captureStatus, scope)
+      caseAiAnalyses.value = analyses.filter((item) => item.caseId === requestedCaseId)
     } catch (err) {
+      const scope: CaseScope = { caseId: requestedCaseId, generation }
+      if (!isCurrentScope(scope)) return
       error.value = backendErrorMessage(err)
       feedback(`后端初始化失败：${error.value}`, true)
     } finally {
-      loading.value = false
+      const scope: CaseScope = { caseId: requestedCaseId, generation }
+      if (isCurrentScope(scope)) loading.value = false
     }
   }
 
-  function mergeConfirmedRecord(record: TranscriptMessage) {
+  function mergeConfirmedRecord(record: TranscriptMessage, scope = currentScope()) {
+    if (!isCurrentScope(scope)) return
     const index = transcript.value.findIndex((item) => item.id === record.id)
     if (index >= 0) transcript.value[index] = record
     else transcript.value.push(record)
@@ -215,78 +301,94 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     if (!nativeCaptureAvailable) return feedback('连续离线录音仅在 Android APK 中可用', true)
     if (!canRecord.value) return feedback('请先开始审讯再录音', true)
     if (captureBusy.value || capture.value.running) return
+
+    const scope = currentScope()
     captureBusy.value = true
     try {
-      applyCaptureStatus(await startAsrCapture(caseId.value))
-      feedback('连续录音已开始，识别结果将先进入临时片段')
+      const status = await startAsrCapture(scope.caseId)
+      applyCaptureStatus(status, scope)
+      feedbackIfCurrent(scope, '连续录音已开始，识别结果将先进入临时片段')
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
     } finally {
-      captureBusy.value = false
+      if (isCurrentScope(scope)) captureBusy.value = false
     }
   }
 
   async function stopCapture(showFeedback = true) {
     if (!nativeCaptureAvailable || captureBusy.value || !capture.value.running) return
+
+    const scope = currentScope()
     captureBusy.value = true
     try {
-      applyCaptureStatus(await stopAsrCapture(caseId.value))
-      if (showFeedback) feedback('录音已停止，待确认片段仍保留')
+      const status = await stopAsrCapture(scope.caseId)
+      applyCaptureStatus(status, scope)
+      if (showFeedback) feedbackIfCurrent(scope, '录音已停止，待确认片段仍保留')
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
     } finally {
-      captureBusy.value = false
+      if (isCurrentScope(scope)) captureBusy.value = false
     }
   }
 
   async function updatePendingFragment(fragmentId: string, editedText: string, speaker: TemporaryAsrSpeaker) {
+    const scope = currentScope()
     try {
-      const updated = await updateAsrFragment(caseId.value, fragmentId, editedText, speaker)
+      const updated = await updateAsrFragment(scope.caseId, fragmentId, editedText, speaker)
+      if (!isCurrentScope(scope) || updated.caseId !== scope.caseId) return
       const index = capture.value.fragments.findIndex((item) => item.id === fragmentId)
       if (index >= 0) capture.value.fragments[index] = updated
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
   }
 
   async function confirmPendingFragment(fragmentId: string) {
+    const scope = currentScope()
     try {
-      const result = await confirmAsrFragment(caseId.value, fragmentId)
-      mergeConfirmedRecord(result.record)
+      const result = await confirmAsrFragment(scope.caseId, fragmentId)
+      if (!isCurrentScope(scope) || result.fragment.caseId !== scope.caseId) return
+      mergeConfirmedRecord(result.record, scope)
       capture.value.fragments = capture.value.fragments.filter((fragment) => fragment.id !== fragmentId)
       selectedFragmentIds.value = selectedFragmentIds.value.filter((id) => id !== fragmentId)
-      feedback(`片段已确认并保存为第 ${result.record.seq} 条正式记录`)
+      feedbackIfCurrent(scope, `片段已确认并保存为第 ${result.record.seq} 条正式记录`)
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
   }
 
   async function confirmSelectedFragments() {
     if (!selectedFragmentIds.value.length) return
+
+    const scope = currentScope()
+    const fragmentIds = [...selectedFragmentIds.value]
     try {
-      const result = await confirmAsrFragmentBatch(caseId.value, selectedFragmentIds.value)
-      result.confirmed.forEach((item) => mergeConfirmedRecord(item.record))
+      const result = await confirmAsrFragmentBatch(scope.caseId, fragmentIds)
+      if (!isCurrentScope(scope) || result.confirmed.some((item) => item.fragment.caseId !== scope.caseId)) return
+      result.confirmed.forEach((item) => mergeConfirmedRecord(item.record, scope))
       const confirmedIds = new Set(result.confirmed.map((item) => item.fragment.id))
       capture.value.fragments = capture.value.fragments.filter((fragment) => !confirmedIds.has(fragment.id))
       selectedFragmentIds.value = result.failures.map((item) => item.fragmentId)
       if (result.failures.length) {
-        feedback(`已确认 ${result.confirmed.length} 条，${result.failures.length} 条需补充说话人或文本`, true)
+        feedbackIfCurrent(scope, `已确认 ${result.confirmed.length} 条，${result.failures.length} 条需补充说话人或文本`, true)
       } else {
-        feedback(`已确认并入库 ${result.confirmed.length} 条片段`)
+        feedbackIfCurrent(scope, `已确认并入库 ${result.confirmed.length} 条片段`)
       }
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
   }
 
   async function discardPendingFragment(fragmentId: string) {
+    const scope = currentScope()
     try {
-      await discardAsrFragment(caseId.value, fragmentId)
+      const discarded = await discardAsrFragment(scope.caseId, fragmentId)
+      if (!isCurrentScope(scope) || discarded.caseId !== scope.caseId) return
       capture.value.fragments = capture.value.fragments.filter((fragment) => fragment.id !== fragmentId)
       selectedFragmentIds.value = selectedFragmentIds.value.filter((id) => id !== fragmentId)
-      feedback('临时片段已丢弃')
+      feedbackIfCurrent(scope, '临时片段已丢弃')
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
   }
 
@@ -296,15 +398,10 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       : [...selectedFragmentIds.value, fragmentId]
   }
 
-  function disposeCaptureEvents() {
-    removeCaptureListener?.()
-    removeCaptureListener = undefined
-    if (captureTimer) clearInterval(captureTimer)
-    captureTimer = undefined
-  }
-
-  async function refreshCase() {
-    caseSummary.value = await fetchCase(caseId.value)
+  async function refreshCase(scope = currentScope()) {
+    const summary = await fetchCase(scope.caseId)
+    if (!isCurrentScope(scope) || summary.id !== scope.caseId) return
+    caseSummary.value = summary
   }
 
   async function ask(text: string) {
@@ -315,71 +412,92 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       return
     }
 
+    const scope = currentScope()
     error.value = ''
     actionError.value = ''
     try {
-      const persisted = await persistQuestionOrAnswer(caseId.value, clean, '民警')
+      const persisted = await persistQuestionOrAnswer(scope.caseId, clean, '民警')
+      if (!isCurrentScope(scope)) return
       transcript.value.push(persisted)
-      feedback(`Q${persisted.seq || transcript.value.length} 已保存`)
+      feedbackIfCurrent(scope, `Q${persisted.seq || transcript.value.length} 已保存`)
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
       return
     }
 
+    if (!isCurrentScope(scope)) return
     const aiMessage: TranscriptMessage = { id: uid(), speaker: 'AI', text: '', streaming: true }
     transcript.value.push(aiMessage)
     streaming.value = true
+    const controller = new AbortController()
+    inquiryController = controller
+
     try {
-      await streamInquiry(caseId.value, clean, (payload) => {
+      await streamInquiry(scope.caseId, clean, (payload) => {
+        if (!isCurrentScope(scope)) return
         if (payload.code) {
           error.value = payload.message || `AI 上游返回错误 ${payload.code}`
           return
         }
         if (payload.text_chunk) aiMessage.text += payload.text_chunk
-      })
+      }, controller.signal)
     } catch (err) {
-      error.value = backendErrorMessage(err)
+      if (isCurrentScope(scope) && !controller.signal.aborted) error.value = backendErrorMessage(err)
     } finally {
       aiMessage.streaming = false
-      streaming.value = false
+      if (inquiryController === controller) inquiryController = undefined
+      if (isCurrentScope(scope)) streaming.value = false
     }
   }
 
   async function generateCaseAnalysis() {
     if (caseAiBusy.value) return
+
+    const scope = currentScope()
     caseAiBusy.value = true
     caseAiError.value = ''
     try {
-      const analysis = await generateCaseAiAnalysis(caseId.value)
-      caseAiAnalyses.value = [analysis, ...caseAiAnalyses.value.filter((item) => item.id !== analysis.id)]
-      feedback('本案 AI 推理已生成并保存到当前案件')
+      const analysis = await generateCaseAiAnalysis(scope.caseId)
+      if (!isCurrentScope(scope)) return
+      if (analysis.caseId !== scope.caseId) {
+        caseAiError.value = 'AI 推理返回的案件号与当前案件不一致'
+        feedback(caseAiError.value, true)
+        return
+      }
+      caseAiAnalyses.value = [analysis, ...caseAiAnalyses.value.filter((item) => item.id !== analysis.id && item.caseId === scope.caseId)]
+      feedbackIfCurrent(scope, '本案 AI 推理已生成并保存到当前案件')
     } catch (err) {
+      if (!isCurrentScope(scope)) return
       caseAiError.value = backendErrorMessage(err)
       feedback(caseAiError.value, true)
     } finally {
-      caseAiBusy.value = false
+      if (isCurrentScope(scope)) caseAiBusy.value = false
     }
   }
 
   async function editMessage(messageId: string, text: string) {
+    const scope = currentScope()
     try {
-      const updated = await updateTranscriptMessage(caseId.value, messageId, text)
+      const updated = await updateTranscriptMessage(scope.caseId, messageId, text)
+      if (!isCurrentScope(scope)) return
       const index = transcript.value.findIndex((item) => item.id === messageId)
       if (index >= 0) transcript.value[index] = updated
-      feedback(`Q/A ${updated.seq || ''} 已修订，旧内容已进入版本历史`)
+      feedbackIfCurrent(scope, `Q/A ${updated.seq || ''} 已修订，旧内容已进入版本历史`)
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
   }
 
   async function markMessage(messageId: string) {
+    const scope = currentScope()
     try {
-      const updated = await markTranscriptMessage(caseId.value, messageId, 'conflict')
+      const updated = await markTranscriptMessage(scope.caseId, messageId, 'conflict')
+      if (!isCurrentScope(scope)) return
       const index = transcript.value.findIndex((item) => item.id === messageId)
       if (index >= 0) transcript.value[index] = updated
-      feedback('已标记为“存在矛盾”，后端审计日志已记录')
+      feedbackIfCurrent(scope, '已标记为“存在矛盾”，后端审计日志已记录')
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
   }
 
@@ -390,12 +508,15 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   }
 
   async function openRevisions(messageId?: string) {
+    const scope = currentScope()
     try {
-      revisions.value = await fetchRevisions(caseId.value, messageId)
+      const nextRevisions = await fetchRevisions(scope.caseId, messageId)
+      if (!isCurrentScope(scope)) return
+      revisions.value = nextRevisions
       revisionsOpen.value = true
-      feedback(revisions.value.length ? `已读取 ${revisions.value.length} 条版本记录` : '当前暂无修订历史')
+      feedbackIfCurrent(scope, revisions.value.length ? `已读取 ${revisions.value.length} 条版本记录` : '当前暂无修订历史')
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
   }
 
@@ -404,50 +525,67 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   }
 
   async function startSession() {
+    const scope = currentScope()
     try {
-      session.value = await startSessionApi(caseId.value)
-      await refreshCase()
-      feedback('审讯已开始：录入问答和 AI SSE 主链路已解锁')
+      const nextSession = await startSessionApi(scope.caseId)
+      if (!isCurrentScope(scope) || nextSession.caseId !== scope.caseId) return
+      session.value = nextSession
+      await refreshCase(scope)
+      feedbackIfCurrent(scope, '审讯已开始：录入问答和 AI SSE 主链路已解锁')
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
   }
 
   async function togglePause() {
+    const scope = currentScope()
     try {
       if (session.value.status === 'RUNNING') {
         if (capture.value.running) await stopCapture(false)
-        session.value = await pauseSessionApi(caseId.value)
-        feedback('审讯已暂停，新的正式问答将被后端拒绝')
+        if (!isCurrentScope(scope)) return
+        const nextSession = await pauseSessionApi(scope.caseId)
+        if (!isCurrentScope(scope) || nextSession.caseId !== scope.caseId) return
+        session.value = nextSession
+        feedbackIfCurrent(scope, '审讯已暂停，新的正式问答将被后端拒绝')
       } else if (session.value.status === 'PAUSED') {
-        session.value = await resumeSessionApi(caseId.value)
-        feedback('审讯已恢复')
+        const nextSession = await resumeSessionApi(scope.caseId)
+        if (!isCurrentScope(scope) || nextSession.caseId !== scope.caseId) return
+        session.value = nextSession
+        feedbackIfCurrent(scope, '审讯已恢复')
       }
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
   }
 
   async function finishSession() {
+    const scope = currentScope()
     try {
       if (capture.value.running) await stopCapture(false)
-      session.value = await finishSessionApi(caseId.value)
-      await refreshCase()
-      feedback('本次审讯已结束并进入复核状态')
+      if (!isCurrentScope(scope)) return
+      const nextSession = await finishSessionApi(scope.caseId)
+      if (!isCurrentScope(scope) || nextSession.caseId !== scope.caseId) return
+      session.value = nextSession
+      await refreshCase(scope)
+      feedbackIfCurrent(scope, '本次审讯已结束并进入复核状态')
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
   }
 
   async function nextStage() {
     const index = stageOrder.indexOf(session.value.stage)
     if (index < 0 || index >= stageOrder.length - 1) return feedback('当前已经是最后的“确认签名”阶段', true)
+
+    const scope = currentScope()
     try {
-      session.value = await changeSessionStage(caseId.value, stageOrder[index + 1])
-      await refreshCase()
-      feedback(`已进入：${stageTextMap[session.value.stage]}`)
+      const nextSession = await changeSessionStage(scope.caseId, stageOrder[index + 1])
+      if (!isCurrentScope(scope) || nextSession.caseId !== scope.caseId) return
+      session.value = nextSession
+      await refreshCase(scope)
+      feedbackIfCurrent(scope, `已进入：${stageTextMap[nextSession.stage]}`)
     } catch (err) {
-      feedback(backendErrorMessage(err), true)
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
   }
 
@@ -482,6 +620,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     captureBusy,
     captureElapsedMs,
     selectedFragmentIds,
+    resetCaseContext,
     initialize,
     ask,
     generateCaseAnalysis,
