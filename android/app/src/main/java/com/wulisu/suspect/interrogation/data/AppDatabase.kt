@@ -21,7 +21,7 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
         AsrCaptureSessionEntity::class,
         AsrTemporaryFragmentEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -43,7 +43,7 @@ abstract class AppDatabase : RoomDatabase() {
             val factory = SupportOpenHelperFactory(passphrase)
             return Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, context.getDatabasePath("suspect-interrogation.db").absolutePath)
                 .openHelperFactory(factory)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
         }
 
@@ -83,6 +83,12 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_ai_case_analyses_caseId` ON `ai_case_analyses` (`caseId`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_ai_case_analyses_caseId_createdAt` ON `ai_case_analyses` (`caseId`, `createdAt`)")
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `ai_case_analyses` ADD COLUMN `metadataJson` TEXT NOT NULL DEFAULT '{}'")
             }
         }
     }

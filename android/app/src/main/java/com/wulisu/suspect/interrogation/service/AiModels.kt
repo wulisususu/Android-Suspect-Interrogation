@@ -41,8 +41,16 @@ data class AiRuntimeStatus(
     val localModel: String? = null,
 )
 
+data class AiGenerationMetadata(
+    val runtimeVersion: String = "unknown",
+    val generationConfigJson: String = "{}",
+    val modelId: String? = null,
+    val modelFileHash: String? = null,
+)
+
 data class AiResponse(
     val text: String,
     val provider: AiProviderKind,
     val model: String,
+    val generationMetadata: AiGenerationMetadata = AiGenerationMetadata(),
 )
