@@ -84,3 +84,35 @@ jobs:
 
       - name: Assemble debug APK
         run: gradle -p android assembleDebug --stacktrace --console=plain
+
+      - name: Compile instrumentation APK
+        run: gradle -p android assembleDebugAndroidTest --stacktrace --console=plain
+
+      - name: Verify ONNX Runtime native uniqueness
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          committed = Path('android/app/src/main/jniLibs/arm64-v8a/libonnxruntime.so')
+          if committed.exists():
+              raise SystemExit(f'Unexpected committed ONNX Runtime native library: {committed}')
+
+          apk = Path('android/app/build/outputs/apk/debug/app-debug.apk')
+          if not apk.is_file():
+              raise SystemExit(f'Debug APK not found: {apk}')
+
+          with ZipFile(apk) as archive:
+              entries = [
+                  name for name in archive.namelist()
+                  if name.endswith('/libonnxruntime.so')
+              ]
+          expected = ['lib/arm64-v8a/libonnxruntime.so']
+          if entries != expected:
+              raise SystemExit(f'Expected exactly one arm64-v8a libonnxruntime.so; found {entries}')
+          print(f'ONNX Runtime native library verified: {entries[0]}')
+          PY
+
+      - name: Git diff whitespace check
+        run: git diff --check origin/${{ github.base_ref }}...HEAD
