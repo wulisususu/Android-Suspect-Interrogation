@@ -1,0 +1,56 @@
+name: Case AI Instrumentation Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'android/**'
+      - '.github/workflows/case-ai-instrumentation-validation.yml'
+
+jobs:
+  instrumentation:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build Vue assets
+        working-directory: webapp
+        run: |
+          npm install
+          npm run build
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform and emulator image
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'emulator' 'system-images;android-35;google_apis;arm64-v8a'
+
+      - name: Build instrumentation APK
+        run: gradle -p android assembleDebugAndroidTest --stacktrace --console=plain
+
+      - name: Run Case AI Room instrumentation
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: arm64-v8a
+          working-directory: android
+          script: |
+            gradle connectedDebugAndroidTest --stacktrace --console=plain -Pandroid.testInstrumentationRunnerArguments.class=com.wulisu.suspect.interrogation.data.AppDatabaseMigrationTest,com.wulisu.suspect.interrogation.data.CaseIsolationTest
