@@ -1,5 +1,6 @@
 package com.wulisu.suspect.interrogation.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -134,6 +135,7 @@ data class AiCaseAnalysisEntity(
     val provider: String,
     val model: String,
     val createdAt: Long,
+    @ColumnInfo(defaultValue = "{}") val metadataJson: String = "{}",
 )
 
 @Entity(
