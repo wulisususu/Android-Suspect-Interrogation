@@ -74,15 +74,9 @@ class CaseAiContextPacker(
             .filter { it.title.isNotBlank() || it.detail.isNotBlank() }
             .sortedWith(compareBy<TimelineEvent>({ normalize(it.time) }, { it.id }))
 
-        val latestSuspect = records.lastOrNull { it.speaker == "嫌疑人" }
-            ?: throw BusinessException(
-                "CASE_AI_INSUFFICIENT_DATA",
-                "当前案件暂无足够的正式审讯记录，至少需要一条嫌疑人回答后才能生成本案推理。",
-            )
-
         val selectedFacts = mutableListOf<FactItem>()
         val selectedTimeline = mutableListOf<TimelineEvent>()
-        val selectedRecords = linkedMapOf(latestSuspect.id to latestSuspect)
+        val selectedRecords = linkedMapOf<String, TranscriptMessage>()
 
         fun renderCurrent(): String = render(
             context = context,
@@ -91,15 +85,16 @@ class CaseAiContextPacker(
             records = selectedRecords.values.sortedWith(compareBy<TranscriptMessage>({ it.seq }, { it.id })),
         )
 
+        // Priority 1: the case block is never truncated. If it cannot fit, reject instead of
+        // cutting any field or sending a structurally incomplete case identity to the model.
         if (estimator.estimateText(renderCurrent()) > maxContextTokens) {
             throw BusinessException(
                 "CASE_AI_CONTEXT_TOO_LARGE",
-                "案件基本信息或最新正式嫌疑人回答单条已超过上下文预算；为避免截断正式记录，本次拒绝生成。",
+                "案件基本信息已超过上下文预算；为避免截断案件身份信息，本次拒绝生成。",
             )
         }
 
-        // Priority 1 is the case block (always rendered). Keep the latest suspect answer as a
-        // safety floor, then spend all remaining capacity in the requested priority order.
+        // Priority 2: confirmed facts. Candidates are accepted/rejected as complete fact rows.
         facts.forEach { fact ->
             selectedFacts += fact
             if (estimator.estimateText(renderCurrent()) > maxContextTokens) {
@@ -107,6 +102,7 @@ class CaseAiContextPacker(
             }
         }
 
+        // Priority 3: valid timeline rows, again only as complete rows.
         timeline.forEach { event ->
             selectedTimeline += event
             if (estimator.estimateText(renderCurrent()) > maxContextTokens) {
@@ -114,15 +110,18 @@ class CaseAiContextPacker(
             }
         }
 
+        // Priority 4: recent formal interrogation records. Newest records get first chance to
+        // consume the remaining budget; output is re-sorted chronologically after selection.
         val recentIds = records.takeLast(RECENT_RECORD_LIMIT).mapTo(hashSetOf()) { it.id }
         records.asReversed()
             .asSequence()
-            .filter { it.id != latestSuspect.id && it.id in recentIds }
+            .filter { it.id in recentIds }
             .forEach { tryAddRecord(it, selectedRecords, ::renderCurrent, maxContextTokens) }
 
+        // Priority 5: older formal interrogation records, newest of the old history first.
         records.asReversed()
             .asSequence()
-            .filter { it.id != latestSuspect.id && it.id !in recentIds }
+            .filter { it.id !in recentIds }
             .forEach { tryAddRecord(it, selectedRecords, ::renderCurrent, maxContextTokens) }
 
         val finalRecords = selectedRecords.values.sortedWith(compareBy<TranscriptMessage>({ it.seq }, { it.id }))
