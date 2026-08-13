@@ -33,7 +33,7 @@ class CaseAiServiceTest {
     @Test
     fun `officer question without suspect answer is insufficient`() = runBlocking {
         val service = CaseAiService(
-            contextSource = FakeSource(context("CASE-A", listOf(record("民警", "请说明情况")))),
+            contextSource = FakeSource(context("CASE-A", listOf(record(1, "民警", "请说明情况")))),
             generator = { AiResponse("不应调用", AiProviderKind.LOCAL, "test") },
         )
 
@@ -43,11 +43,13 @@ class CaseAiServiceTest {
     }
 
     @Test
-    fun `analysis prompt contains only requested case context and is saved to that case`() = runBlocking {
+    fun `analysis prompt contains only requested case context and audit metadata is saved`() = runBlocking {
         val source = FakeSource(
             context(
                 "CASE-A",
-                listOf(record("民警", "A问题"), record("嫌疑人", "A回答")),
+                listOf(record(1, "民警", "A问题"), record(2, "嫌疑人", "A回答")),
+                facts = listOf(FactItem("where", "地点", "A地点", "confirmed", null)),
+                timeline = listOf(TimelineEvent("timeline-a", "10:00", "到场", "A时间线", emptyList())),
             ),
         )
         var messages = emptyList<AiMessage>()
@@ -55,7 +57,16 @@ class CaseAiServiceTest {
             contextSource = source,
             generator = {
                 messages = it
-                AiResponse("仅基于 A 的分析", AiProviderKind.LOCAL, "LegalOne")
+                AiResponse(
+                    "仅基于 A 的分析",
+                    AiProviderKind.LOCAL,
+                    "LegalOne",
+                    AiGenerationMetadata(
+                        runtimeVersion = "1.3.0",
+                        generationConfigJson = "{\"maxContextLen\":1024,\"maxNewTokens\":256}",
+                        modelId = "legalone-rk3576",
+                    ),
+                )
             },
             clock = { 123L },
             idGenerator = { "analysis-a" },
@@ -67,11 +78,88 @@ class CaseAiServiceTest {
         assertTrue(prompt.contains("CASE-A"))
         assertTrue(prompt.contains("A问题"))
         assertTrue(prompt.contains("A回答"))
+        assertTrue(prompt.contains("A地点"))
+        assertTrue(prompt.contains("A时间线"))
         assertTrue(prompt.contains("不得补充、虚构或假设"))
         assertFalse(prompt.contains("CASE-B"))
         assertFalse(prompt.contains("B案内容"))
         assertEquals("CASE-A", result.caseId)
+        assertEquals(CASE_ANALYSIS_PROMPT_TEMPLATE_VERSION, result.metadata.promptTemplateVersion)
+        assertEquals("1.3.0", result.metadata.runtimeVersion)
+        assertEquals("legalone-rk3576", result.metadata.modelId)
+        assertEquals(listOf("民警-A问题", "嫌疑人-A回答"), result.metadata.sourceRecordIds)
+        assertEquals(listOf("where"), result.metadata.sourceFactIds)
+        assertEquals(listOf("timeline-a"), result.metadata.sourceTimelineIds)
+        assertEquals(64, result.metadata.contextHash.length)
+        assertTrue(result.metadata.estimatedInputTokens <= result.metadata.inputBudgetTokens)
+        assertTrue(result.metadata.estimatedContextTokens <= result.metadata.contextBudgetTokens)
         assertEquals(listOf(result), source.saved)
+    }
+
+    @Test
+    fun `long case is packed by complete records and stays inside deterministic budget`() = runBlocking {
+        val records = (1..80).map { seq ->
+            val speaker = if (seq % 2 == 0) "嫌疑人" else "民警"
+            record(seq, speaker, "record-$seq-${"内容".repeat(35)}")
+        }
+        val value = context(
+            "CASE-LONG",
+            records,
+            facts = (1..5).map { FactItem("fact-$it", "事实$it", "已确认$it", "confirmed", null) },
+            timeline = (1..5).map { TimelineEvent("timeline-$it", "1$it:00", "事件$it", "有效详情$it", emptyList()) },
+        )
+        val source = FakeSource(value)
+        var messages = emptyList<AiMessage>()
+        val estimator = ContextBudgetEstimator(maxInputTokens = 900)
+        val result = CaseAiService(
+            contextSource = source,
+            generator = {
+                messages = it
+                AiResponse("bounded", AiProviderKind.LOCAL, "test")
+            },
+            budgetEstimator = estimator,
+        ).analyze("CASE-LONG")
+
+        val prompt = messages.joinToString("\n") { it.content }
+        assertTrue(result.metadata.estimatedInputTokens <= estimator.maxInputTokens)
+        assertTrue(result.metadata.sourceRecordIds.size < records.size)
+        assertTrue(result.metadata.sourceRecordIds.contains(records.last().id))
+        assertEquals((1..5).map { "fact-$it" }, result.metadata.sourceFactIds)
+        assertEquals((1..5).map { "timeline-$it" }, result.metadata.sourceTimelineIds)
+
+        records.forEach { record ->
+            if (record.id in result.metadata.sourceRecordIds) {
+                assertTrue("selected record must be present in full", prompt.contains(record.text))
+            } else {
+                assertFalse("excluded record must not leak into prompt", prompt.contains(record.text))
+            }
+        }
+    }
+
+    @Test
+    fun `context hash is stable for identical normalized packed context`() = runBlocking {
+        val value = context(
+            "CASE-HASH",
+            listOf(
+                record(1, "民警", "问题\r\n第二行"),
+                record(2, "嫌疑人", "回答"),
+            ),
+            facts = listOf(FactItem("fact", "事实", "确认", "confirmed", null)),
+        )
+        val source = FakeSource(value)
+        var id = 0
+        val service = CaseAiService(
+            contextSource = source,
+            generator = { AiResponse("ok", AiProviderKind.CLOUD_ZHIPU, "glm") },
+            idGenerator = { "analysis-${++id}" },
+        )
+
+        val first = service.analyze("CASE-HASH")
+        val second = service.analyze("CASE-HASH")
+
+        assertEquals(first.metadata.contextHash, second.metadata.contextHash)
+        assertEquals(first.metadata.sourceRecordIds, second.metadata.sourceRecordIds)
+        assertEquals(first.metadata.sourceFactIds, second.metadata.sourceFactIds)
     }
 
     private class FakeSource(private val value: CaseAiContext) : CaseAiContextSource {
@@ -87,7 +175,12 @@ class CaseAiServiceTest {
     }
 
     companion object {
-        private fun context(caseId: String, records: List<TranscriptMessage>) = CaseAiContext(
+        private fun context(
+            caseId: String,
+            records: List<TranscriptMessage>,
+            facts: List<FactItem> = listOf(FactItem("time", "时间", "待根据问答核实", "pending", null)),
+            timeline: List<TimelineEvent> = listOf(TimelineEvent("t1", "", "", "", emptyList())),
+        ) = CaseAiContext(
             caseSummary = CaseSummary(
                 id = caseId,
                 suspectName = "测试对象",
@@ -106,19 +199,19 @@ class CaseAiServiceTest {
                 updatedAt = 2L,
             ),
             records = records,
-            facts = listOf(FactItem("time", "时间", "待根据问答核实", "pending", null)),
-            timeline = listOf(TimelineEvent("t1", "", "", "", emptyList())),
+            facts = facts,
+            timeline = timeline,
         )
 
-        private fun record(speaker: String, text: String) = TranscriptMessage(
+        private fun record(seq: Int, speaker: String, text: String) = TranscriptMessage(
             id = "$speaker-$text",
-            seq = 1,
+            seq = seq,
             speaker = speaker,
             text = text,
             mark = "",
             confirmed = true,
-            createdAt = 1L,
-            updatedAt = 1L,
+            createdAt = seq.toLong(),
+            updatedAt = seq.toLong(),
         )
     }
 }
