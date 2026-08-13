@@ -1,3 +1,5 @@
+import java.util.zip.ZipFile
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,6 +7,22 @@ plugins {
 }
 
 val generatedWebAssets = layout.buildDirectory.dir("generated/webappAssets")
+val onnxRuntimeVersion = "1.27.0"
+val onnxRuntimeJava by configurations.creating {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+}
+val onnxRuntimeJavaDir = layout.buildDirectory.dir("generated/onnxruntime-java")
+val extractOnnxRuntimeJava by tasks.registering(Copy::class) {
+    from({ zipTree(onnxRuntimeJava.singleFile) }) {
+        include("classes.jar")
+        rename("classes.jar", "onnxruntime-android-$onnxRuntimeVersion-classes.jar")
+    }
+    into(onnxRuntimeJavaDir)
+}
+val onnxRuntimeJavaJar = files(
+    onnxRuntimeJavaDir.map { it.file("onnxruntime-android-$onnxRuntimeVersion-classes.jar") },
+).builtBy(extractOnnxRuntimeJava)
 
 val syncWebapp by tasks.registering(Sync::class) {
     val webDist = rootProject.projectDir.resolve("../webapp/dist")
@@ -90,7 +108,12 @@ dependencies {
     implementation("androidx.exifinterface:exifinterface:1.4.1")
     implementation("androidx.webkit:webkit:1.15.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.27.0")
+
+    // Keep the ORT Java/Kotlin API from Maven, but do not package its AAR native libraries.
+    // arm64-v8a/libonnxruntime.so is deliberately sourced only from src/main/jniLibs so it stays
+    // ABI-aligned with the checked-in sherpa native bundle instead of relying on pickFirst order.
+    onnxRuntimeJava("com.microsoft.onnxruntime:onnxruntime-android:$onnxRuntimeVersion@aar")
+    implementation(onnxRuntimeJavaJar)
 
     val roomVersion = "2.8.4"
     implementation("androidx.room:room-runtime:$roomVersion")
@@ -107,4 +130,27 @@ dependencies {
     androidTestImplementation("androidx.room:room-testing:$roomVersion")
 }
 
-tasks.named("preBuild").configure { dependsOn(syncWebapp) }
+val verifyDebugOnnxRuntimeNative by tasks.registering {
+    group = "verification"
+    description = "Verifies the debug APK contains exactly one arm64-v8a libonnxruntime.so."
+    dependsOn("assembleDebug")
+    doLast {
+        val apk = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile
+        if (!apk.isFile) throw GradleException("Debug APK not found: $apk")
+        val entries = ZipFile(apk).use { zip ->
+            zip.entries().asSequence()
+                .map { it.name }
+                .filter { it == "lib/arm64-v8a/libonnxruntime.so" }
+                .toList()
+        }
+        if (entries.size != 1) {
+            throw GradleException("Expected exactly one arm64-v8a libonnxruntime.so in APK, found ${entries.size}: $entries")
+        }
+        logger.lifecycle("Verified one APK ORT native library: ${entries.single()}")
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(syncWebapp)
+    dependsOn(extractOnnxRuntimeJava)
+}
