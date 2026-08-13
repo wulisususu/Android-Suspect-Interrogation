@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 abstract class SherpaOnlineAsrEngine(
     protected val context: Context,
     final override val spec: AsrModelSpec,
-) : AsrEngine {
+) : AsrEngine, PcmTranscribableAsrEngine {
     private val resourceLock = Any()
     private val recording = AtomicBoolean(false)
 
@@ -77,6 +77,46 @@ abstract class SherpaOnlineAsrEngine(
                 if (error is BusinessException) throw error
                 throw BusinessException("ASR_INITIALIZATION_FAILED", error.message ?: "ASR 模型初始化失败")
             }
+        }
+    }
+
+    override fun transcribePcm(input: AsrPcmInput): AsrFinalResult {
+        require(input.sampleRate > 0) { "sampleRate must be positive" }
+        require(input.samples.isNotEmpty()) { "PCM samples must not be empty" }
+        synchronized(resourceLock) {
+            if (recording.get()) throw BusinessException("ASR_ALREADY_RUNNING", "实时识别运行时不能执行离线 PCM smoke")
+        }
+
+        verifyAssets()
+        SherpaNativeRuntime.ensureLoaded()
+        logModelConfiguration()
+
+        val startedElapsed = SystemClock.elapsedRealtime()
+        val startedWall = System.currentTimeMillis()
+        val localRecognizer = try {
+            OnlineRecognizer(assetManager = context.assets, config = recognizerConfig())
+        } catch (error: Throwable) {
+            throw BusinessException("ASR_INITIALIZATION_FAILED", error.message ?: "ASR 模型初始化失败")
+        }
+        val localStream = localRecognizer.createStream()
+        return try {
+            localStream.acceptWaveform(input.samples, input.sampleRate)
+            localStream.inputFinished()
+            while (localRecognizer.isReady(localStream)) {
+                localRecognizer.decode(localStream)
+            }
+            val recognizerResult = localRecognizer.getResult(localStream)
+            val endedWall = System.currentTimeMillis()
+            AsrFinalResult(
+                text = recognizerResult.text.trim(),
+                startedAtMs = startedWall,
+                endedAtMs = endedWall,
+                latencyMs = SystemClock.elapsedRealtime() - startedElapsed,
+                confidence = AsrConfidence.fromLogProbabilities(recognizerResult.ysProbs),
+            )
+        } finally {
+            runCatching { localStream.release() }
+            runCatching { localRecognizer.release() }
         }
     }
 
