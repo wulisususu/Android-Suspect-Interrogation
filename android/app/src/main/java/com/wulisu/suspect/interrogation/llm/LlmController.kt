@@ -8,6 +8,7 @@ interface LlmModelRepository {
     fun find(modelId: String): LlmModelSpec?
     fun persistSelection(modelId: String?)
     fun storagePermissionGranted(): Boolean
+    fun devicePlatform(): LlmTargetPlatform = LlmTargetPlatform.UNKNOWN
 }
 
 interface LlmConfigurationStore {
@@ -45,6 +46,7 @@ class LlmController(
             selectedModelId = selected?.id,
             selectedModelName = selected?.name,
             activeModelId = switcher.currentEngine?.modelSpec?.id,
+            provider = selected?.provider ?: rkllmProvider(models.devicePlatform()),
             storagePermissionGranted = models.storagePermissionGranted(),
             initialized = initialized,
             busy = busy.get(),
@@ -80,19 +82,7 @@ class LlmController(
         }
         val spec = models.find(cleanId)
             ?: throw BusinessException("LLM_MODEL_NOT_FOUND", "所选 LLM 模型不存在，请重新扫描")
-        if (!spec.complete) {
-            throw BusinessException("LLM_MODEL_INCOMPLETE", "所选 LLM 模型文件不完整")
-        }
-        when (spec.compatibility) {
-            LlmCompatibility.READY -> Unit
-            LlmCompatibility.PLATFORM_MISMATCH -> throw BusinessException(
-                "LLM_PLATFORM_MISMATCH",
-                "${spec.targetPlatform.name} 模型不能在当前 RK3576 设备上运行",
-            )
-            LlmCompatibility.UNREADABLE -> throw BusinessException("LLM_MODEL_UNREADABLE", "所选 LLM 模型不可读")
-            LlmCompatibility.INCOMPLETE -> throw BusinessException("LLM_MODEL_INCOMPLETE", "所选 LLM 模型文件不完整")
-            LlmCompatibility.UNSUPPORTED -> throw BusinessException("LLM_MODEL_UNSUPPORTED", "所选 LLM 模型平台未知")
-        }
+        validateRunnable(spec)
         if (models.selected()?.id == spec.id) return status()
         switcher.release()
         initialized = false
@@ -118,6 +108,7 @@ class LlmController(
             }
             val spec = models.selected()
                 ?: throw BusinessException("LLM_MODEL_NOT_SELECTED", "尚未选择 LLM 模型")
+            validateRunnable(spec)
             configurationStore.save(input.config)
             val engine = switcher.switchTo(spec, input.config)
             val metrics = engine.initialize()
@@ -156,6 +147,37 @@ class LlmController(
         generationId = null
         notifyStatus()
         return status()
+    }
+
+    private fun validateRunnable(spec: LlmModelSpec) {
+        if (!spec.complete && spec.compatibility == LlmCompatibility.READY) {
+            throw BusinessException("LLM_MODEL_INCOMPLETE", "所选 LLM 模型文件不完整")
+        }
+        when (spec.compatibility) {
+            LlmCompatibility.READY -> Unit
+            LlmCompatibility.PLATFORM_MISMATCH -> throw BusinessException(
+                "LLM_PLATFORM_MISMATCH",
+                "${spec.targetPlatform.name} 模型不能在当前 ${spec.devicePlatform.name} 设备上运行",
+            )
+            LlmCompatibility.RUNTIME_MISMATCH -> throw BusinessException(
+                "LLM_RUNTIME_MISMATCH",
+                "模型要求 RKLLM Runtime ${spec.runtimeVersion}，当前 Runtime 为 $RKLLM_RUNTIME_VERSION",
+            )
+            LlmCompatibility.METADATA_INVALID -> throw BusinessException(
+                "LLM_METADATA_INVALID",
+                "所选 LLM 模型 metadata 无效，请重新导入或修复 sidecar",
+            )
+            LlmCompatibility.UNREADABLE -> throw BusinessException("LLM_MODEL_UNREADABLE", "所选 LLM 模型不可读")
+            LlmCompatibility.INCOMPLETE -> throw BusinessException("LLM_MODEL_INCOMPLETE", "所选 LLM 模型文件不完整")
+            LlmCompatibility.UNSUPPORTED -> throw BusinessException(
+                "LLM_MODEL_UNSUPPORTED",
+                if (spec.devicePlatform == LlmTargetPlatform.UNKNOWN) {
+                    "当前设备平台无法识别，仅支持 RK3576 / RK3588"
+                } else {
+                    "所选 LLM 模型缺少可验证的平台/格式信息"
+                },
+            )
+        }
     }
 
     private fun notifyStatus() {

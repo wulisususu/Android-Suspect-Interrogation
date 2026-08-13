@@ -18,6 +18,7 @@ class LlmControllerTest {
         val incompatible = spec(
             id = "rk3588",
             targetPlatform = LlmTargetPlatform.RK3588,
+            devicePlatform = LlmTargetPlatform.RK3576,
             compatibility = LlmCompatibility.PLATFORM_MISMATCH,
         )
         val repository = FakeRepository(current, listOf(current, incompatible))
@@ -27,8 +28,24 @@ class LlmControllerTest {
         val error = runCatching { controller.selectModel(incompatible.id) }.exceptionOrNull() as BusinessException
 
         assertEquals("LLM_PLATFORM_MISMATCH", error.code)
+        assertEquals("RK3588 模型不能在当前 RK3576 设备上运行", error.message)
         assertEquals(0, engine.releaseCount)
         assertEquals(current.id, repository.selected()?.id)
+    }
+
+    @Test
+    fun `status provider reflects actual RK3588 device`() {
+        val current = spec(
+            id = "rk3588",
+            targetPlatform = LlmTargetPlatform.RK3588,
+            devicePlatform = LlmTargetPlatform.RK3588,
+            provider = rkllmProvider(LlmTargetPlatform.RK3588),
+        )
+        val repository = FakeRepository(current)
+        val engine = BlockingFakeEngine(current, config())
+        val controller = controller(repository, engine)
+
+        assertEquals("RKLLM / RK3588 NPU", controller.status().provider)
     }
 
     @Test
@@ -100,6 +117,7 @@ class LlmControllerTest {
             current = modelId?.let(::find)
         }
         override fun storagePermissionGranted(): Boolean = true
+        override fun devicePlatform(): LlmTargetPlatform = current?.devicePlatform ?: LlmTargetPlatform.UNKNOWN
     }
 
     private class FakeConfigurationStore : LlmConfigurationStore {
@@ -147,15 +165,19 @@ class LlmControllerTest {
         private fun spec(
             id: String,
             targetPlatform: LlmTargetPlatform = LlmTargetPlatform.RK3576,
+            devicePlatform: LlmTargetPlatform = LlmTargetPlatform.RK3576,
             compatibility: LlmCompatibility = LlmCompatibility.READY,
+            provider: String = rkllmProvider(devicePlatform),
         ) = LlmModelSpec(
             id = id,
             name = id,
             absolutePath = "/models/$id.rkllm",
             sizeBytes = 1,
             targetPlatform = targetPlatform,
+            devicePlatform = devicePlatform,
             complete = true,
             compatibility = compatibility,
+            provider = provider,
         )
 
         private fun config() = LlmGenerationConfig(64, 1024)

@@ -1,7 +1,8 @@
 package com.wulisu.suspect.interrogation.service
 
+import com.wulisu.suspect.interrogation.llm.LlmModelMetadataStore
 import com.wulisu.suspect.interrogation.llm.LlmModelProbe
-import com.wulisu.suspect.interrogation.llm.RKLLM_RUNTIME_VERSION
+import com.wulisu.suspect.interrogation.llm.LlmTargetPlatform
 import com.wulisu.suspect.interrogation.ocr.OcrModelProbe
 import java.io.File
 
@@ -11,7 +12,7 @@ class ModelCatalogScanner {
         selectedIds: Map<ModelCategory, String> = emptyMap(),
         runtimeReadyIds: Set<String> = emptySet(),
         externalRoots: List<File> = emptyList(),
-        devicePlatform: String = "",
+        devicePlatform: LlmTargetPlatform = LlmTargetPlatform.UNKNOWN,
     ): LocalModelCatalog {
         root.mkdirs()
         val models = ModelCategory.entries.flatMap { category ->
@@ -20,12 +21,12 @@ class ModelCatalogScanner {
                 ModelCategory.OCR -> ocrDescriptors(root, categoryRoot, externalRoots, selectedIds[category])
                 ModelCategory.LLM -> llmDescriptors(externalRoots, selectedIds[category], devicePlatform)
                 else -> categoryRoot.listFiles()
-                        .orEmpty()
-                        .asSequence()
-                        .filter(::isVisibleModelEntry)
-                        .map { entry -> descriptor(root, category, entry, selectedIds[category], runtimeReadyIds) }
-                        .sortedBy { it.name.lowercase() }
-                        .toList()
+                    .orEmpty()
+                    .asSequence()
+                    .filter(::isVisibleModelEntry)
+                    .map { entry -> descriptor(root, category, entry, selectedIds[category], runtimeReadyIds) }
+                    .sortedBy { it.name.lowercase() }
+                    .toList()
             }
         }
         return LocalModelCatalog(rootPath = root.absolutePath, models = models)
@@ -34,18 +35,31 @@ class ModelCatalogScanner {
     private fun llmDescriptors(
         externalRoots: List<File>,
         selectedId: String?,
-        devicePlatform: String,
+        devicePlatform: LlmTargetPlatform,
     ): List<LocalModelDescriptor> = externalRoots
         .asSequence()
         .filter { it.isDirectory }
-        .flatMap { root -> root.listFiles().orEmpty().asSequence() }
-        .filter { entry ->
-            entry.isFile && isVisibleModelEntry(entry) && entry.extension.equals("rkllm", ignoreCase = true)
+        .flatMap { root ->
+            root.walkTopDown()
+                .maxDepth(3)
+                .filter { entry ->
+                    entry.isFile &&
+                        entry.extension.equals("rkllm", ignoreCase = true) &&
+                        isVisibleLlmEntry(root, entry)
+                }
+                .map { root to it }
         }
-        .distinctBy { it.absolutePath }
-        .map { entry ->
-            val probe = LlmModelProbe.evaluate(entry.name, entry.length(), entry.canRead(), devicePlatform)
-            val relativePath = "external/${entry.name}"
+        .distinctBy { (_, entry) -> entry.absolutePath }
+        .map { (root, entry) ->
+            val metadataState = LlmModelMetadataStore.read(entry)
+            val probe = LlmModelProbe.evaluate(
+                fileName = entry.name,
+                sizeBytes = entry.length(),
+                readable = entry.canRead(),
+                devicePlatform = devicePlatform,
+                metadataState = metadataState,
+            )
+            val relativePath = externalRelativePath(root, entry)
             val id = "${ModelCategory.LLM.name}:$relativePath"
             LocalModelDescriptor(
                 id = id,
@@ -60,15 +74,18 @@ class ModelCatalogScanner {
                 archive = false,
                 selected = selectedId == id,
                 runtimeReady = probe.runtimeReady,
-                version = RKLLM_RUNTIME_VERSION,
+                version = probe.runtimeVersion,
                 modelFormat = probe.modelFormat,
                 provider = probe.provider,
                 complete = probe.complete,
                 targetPlatform = probe.targetPlatform.name,
+                devicePlatform = probe.devicePlatform.name,
                 compatibility = probe.compatibility.name,
+                quantization = probe.quantization,
+                sha256 = probe.sha256,
             )
         }
-        .sortedWith(compareBy({ !it.runtimeReady }, { it.name.lowercase() }))
+        .sortedWith(compareBy({ !it.runtimeReady }, { it.name.lowercase() }, { it.relativePath }))
         .toList()
 
     private fun descriptor(
@@ -148,6 +165,17 @@ class ModelCatalogScanner {
         }
     }
 
+    private fun externalRelativePath(root: File, entry: File): String {
+        val withinRoot = entry.relativeTo(root).invariantSeparatorsPath
+        return if ('/' in withinRoot) "external/${root.name}/$withinRoot" else "external/$withinRoot"
+    }
+
+    private fun isVisibleLlmEntry(root: File, entry: File): Boolean {
+        if (!isVisibleModelEntry(entry)) return false
+        val relative = entry.relativeTo(root).invariantSeparatorsPath
+        return relative.split('/').none { it.startsWith('.') || it.endsWith(".part", ignoreCase = true) }
+    }
+
     private fun displayName(entry: File): String {
         if (entry.isDirectory) return entry.name
         val lowerName = entry.name.lowercase()
@@ -156,7 +184,7 @@ class ModelCatalogScanner {
     }
 
     private fun isVisibleModelEntry(entry: File): Boolean =
-        entry.name.isNotBlank() && !entry.name.startsWith(".") && !entry.name.endsWith(".part")
+        entry.name.isNotBlank() && !entry.name.startsWith(".") && !entry.name.endsWith(".part", ignoreCase = true)
 
     private fun File.totalSize(): Long {
         if (isFile) return length()

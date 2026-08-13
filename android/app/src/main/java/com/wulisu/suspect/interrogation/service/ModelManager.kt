@@ -10,17 +10,25 @@ import com.wulisu.suspect.interrogation.asr.BundledAsrModels
 import com.wulisu.suspect.interrogation.domain.BusinessException
 import com.wulisu.suspect.interrogation.llm.LlmCompatibility
 import com.wulisu.suspect.interrogation.llm.LlmDevicePlatform
+import com.wulisu.suspect.interrogation.llm.LlmModelMetadata
+import com.wulisu.suspect.interrogation.llm.LlmModelMetadataStore
+import com.wulisu.suspect.interrogation.llm.LlmModelProbe
 import com.wulisu.suspect.interrogation.llm.LlmModelRepository
 import com.wulisu.suspect.interrogation.llm.LlmModelSpec
 import com.wulisu.suspect.interrogation.llm.LlmTargetPlatform
+import com.wulisu.suspect.interrogation.llm.RKLLM_RUNTIME_VERSION
+import com.wulisu.suspect.interrogation.llm.rkllmProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.util.UUID
 
 class ModelManager(
@@ -157,7 +165,14 @@ class ModelManager(
         else -> llmRoot.canRead() && llmRoot.canWrite()
     }
 
-    private fun importLlmFromUri(source: ModelImportSource, uri: Uri): LocalModelCatalog {
+    override fun devicePlatform(): LlmTargetPlatform = LlmDevicePlatform.fromProperties(
+        socModel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MODEL.orEmpty() else "",
+        device = Build.DEVICE.orEmpty(),
+        board = Build.BOARD.orEmpty(),
+        hardware = Build.HARDWARE.orEmpty(),
+    )
+
+    private suspend fun importLlmFromUri(source: ModelImportSource, uri: Uri): LocalModelCatalog {
         if (!storagePermissionGranted()) {
             throw BusinessException("LLM_STORAGE_PERMISSION_REQUIRED", "请先授权 App 访问 Android 设备模型目录")
         }
@@ -174,40 +189,102 @@ class ModelManager(
         if (!llmRoot.exists() && !llmRoot.mkdirs()) {
             throw BusinessException("MODEL_IMPORT_WRITE_FAILED", "无法创建 Android 设备模型目录")
         }
+
         val destination = File(llmRoot, sourceName)
-        val expectedSize = document.length()
+        val metadataDestination = LlmModelMetadataStore.sidecarFor(destination)
         if (destination.exists()) {
-            if (expectedSize > 0 && destination.length() == expectedSize) return scan()
-            throw BusinessException("MODEL_IMPORT_NAME_CONFLICT", "同名 LLM 模型已存在且大小不同")
+            throw BusinessException("MODEL_IMPORT_NAME_CONFLICT", "同名 LLM 模型已存在，请先移除或重命名")
         }
+        if (metadataDestination.exists() && !metadataDestination.delete()) {
+            throw BusinessException("MODEL_IMPORT_NAME_CONFLICT", "存在无法清理的同名 LLM metadata")
+        }
+
+        val expectedSize = document.length()
         if (expectedSize > 0 && expectedSize > llmRoot.usableSpace) {
             throw BusinessException("MODEL_STORAGE_INSUFFICIENT", "设备存储空间不足，无法导入该 LLM 模型")
         }
-        val temporary = File(llmRoot, ".importing-${UUID.randomUUID()}.part")
+
+        val importId = UUID.randomUUID().toString()
+        val temporary = File(llmRoot, ".importing-$importId.rkllm.part")
+        val temporaryMetadata = File(llmRoot, ".importing-$importId.rkllm.json.part")
+        var metadataCommitted = false
+        var modelCommitted = false
+
         try {
-            val input = context.contentResolver.openInputStream(document.uri)
-                ?: throw BusinessException("MODEL_IMPORT_READ_FAILED", "无法打开所选 LLM 模型")
-            input.use { sourceStream ->
-                FileOutputStream(temporary).use { destinationStream ->
-                    sourceStream.copyTo(destinationStream, DEFAULT_BUFFER_SIZE)
-                }
+            val copied = copyLlmWithSha256(document.uri, temporary)
+            if (copied.size <= 0L || temporary.length() != copied.size) {
+                throw BusinessException("MODEL_IMPORT_INCOMPLETE", "LLM 模型复制结果为空或大小异常")
             }
-            if (expectedSize > 0 && temporary.length() != expectedSize) {
+            if (expectedSize > 0L && copied.size != expectedSize) {
                 throw BusinessException("MODEL_IMPORT_INCOMPLETE", "LLM 模型复制不完整")
             }
-            if (!temporary.renameTo(destination)) {
-                throw BusinessException("MODEL_IMPORT_COMMIT_FAILED", "LLM 模型复制完成，但无法写入设备模型目录")
+
+            val metadata = LlmModelMetadata(
+                name = sourceName.removeSuffixIgnoreCase(".rkllm"),
+                platform = LlmModelProbe.inferTrustedImportPlatform(sourceName),
+                runtimeVersion = RKLLM_RUNTIME_VERSION,
+                quantization = LlmModelProbe.inferQuantization(sourceName) ?: "UNKNOWN",
+                size = copied.size,
+                sha256 = copied.sha256,
+                modelFormat = "RKLLM",
+            )
+            writeTextAndSync(temporaryMetadata, metadata.toJson().toString(2))
+
+            if (!temporaryMetadata.renameTo(metadataDestination)) {
+                throw BusinessException("MODEL_IMPORT_COMMIT_FAILED", "LLM metadata 无法原子写入模型目录")
             }
+            metadataCommitted = true
+
+            if (!temporary.renameTo(destination)) {
+                throw BusinessException("MODEL_IMPORT_COMMIT_FAILED", "LLM 模型复制完成，但无法原子写入设备模型目录")
+            }
+            modelCommitted = true
             return scan()
         } catch (error: CancellationException) {
-            temporary.delete()
             throw error
         } catch (error: BusinessException) {
-            temporary.delete()
             throw error
         } catch (error: Throwable) {
-            temporary.delete()
             throw BusinessException("MODEL_IMPORT_FAILED", error.message ?: "LLM 模型导入失败")
+        } finally {
+            temporary.delete()
+            temporaryMetadata.delete()
+            if (metadataCommitted && !modelCommitted) metadataDestination.delete()
+        }
+    }
+
+    private suspend fun copyLlmWithSha256(uri: Uri, destination: File): CopiedLlm {
+        val digest = MessageDigest.getInstance("SHA-256")
+        var copied = 0L
+        val input = context.contentResolver.openInputStream(uri)
+            ?: throw BusinessException("MODEL_IMPORT_READ_FAILED", "无法打开所选 LLM 模型")
+        input.use { sourceStream ->
+            FileOutputStream(destination).use { destinationStream ->
+                val buffer = ByteArray(256 * 1024)
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val count = sourceStream.read(buffer)
+                    if (count < 0) break
+                    if (count == 0) continue
+                    destinationStream.write(buffer, 0, count)
+                    digest.update(buffer, 0, count)
+                    copied += count.toLong()
+                }
+                destinationStream.flush()
+                destinationStream.fd.sync()
+            }
+        }
+        return CopiedLlm(
+            size = copied,
+            sha256 = digest.digest().joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) },
+        )
+    }
+
+    private fun writeTextAndSync(destination: File, text: String) {
+        FileOutputStream(destination).use { stream ->
+            stream.write(text.toByteArray(Charsets.UTF_8))
+            stream.flush()
+            stream.fd.sync()
         }
     }
 
@@ -270,12 +347,6 @@ class ModelManager(
         if (changed) editor.apply()
     }
 
-    private fun devicePlatform(): String = LlmDevicePlatform.fromProperties(
-        socModel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MODEL else "",
-        device = Build.DEVICE.orEmpty(),
-        board = Build.BOARD.orEmpty(),
-    )
-
     private fun LocalModelDescriptor.toLlmModelSpec(): LlmModelSpec = LlmModelSpec(
         id = id,
         name = name,
@@ -283,13 +354,22 @@ class ModelManager(
         sizeBytes = sizeBytes,
         targetPlatform = runCatching { LlmTargetPlatform.valueOf(targetPlatform.orEmpty()) }
             .getOrDefault(LlmTargetPlatform.UNKNOWN),
+        devicePlatform = runCatching { LlmTargetPlatform.valueOf(devicePlatform.orEmpty()) }
+            .getOrDefault(devicePlatform()),
         complete = complete,
         compatibility = runCatching { LlmCompatibility.valueOf(compatibility.orEmpty()) }
             .getOrDefault(LlmCompatibility.UNSUPPORTED),
-        provider = provider ?: com.wulisu.suspect.interrogation.llm.RKLLM_PROVIDER,
+        provider = provider ?: rkllmProvider(devicePlatform()),
         modelFormat = modelFormat ?: "RKLLM",
-        runtimeVersion = version ?: com.wulisu.suspect.interrogation.llm.RKLLM_RUNTIME_VERSION,
+        runtimeVersion = version ?: RKLLM_RUNTIME_VERSION,
+        quantization = quantization,
+        sha256 = sha256,
     )
 
     private fun selectionKey(category: ModelCategory) = "selected_${category.name.lowercase()}"
+
+    private data class CopiedLlm(val size: Long, val sha256: String)
+
+    private fun String.removeSuffixIgnoreCase(suffix: String): String =
+        if (endsWith(suffix, ignoreCase = true)) dropLast(suffix.length) else this
 }

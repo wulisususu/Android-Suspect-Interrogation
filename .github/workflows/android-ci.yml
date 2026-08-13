@@ -84,3 +84,6 @@ jobs:
 
       - name: Assemble debug APK
         run: gradle -p android assembleDebug --stacktrace --console=plain
+
+      - name: Assemble instrumentation test APK
+        run: gradle -p android assembleDebugAndroidTest --stacktrace --console=plain

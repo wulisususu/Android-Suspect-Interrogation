@@ -39,7 +39,10 @@ data class LocalModelDescriptor(
     val provider: String? = null,
     val complete: Boolean = true,
     val targetPlatform: String? = null,
+    val devicePlatform: String? = null,
     val compatibility: String? = null,
+    val quantization: String? = null,
+    val sha256: String? = null,
 )
 
 data class LocalModelCatalog(
@@ -82,4 +85,7 @@ private fun LocalModelDescriptor.toWireJson() = JSONObject()
     .put("provider", provider ?: JSONObject.NULL)
     .put("complete", complete)
     .put("targetPlatform", targetPlatform ?: JSONObject.NULL)
+    .put("devicePlatform", devicePlatform ?: JSONObject.NULL)
     .put("compatibility", compatibility ?: JSONObject.NULL)
+    .put("quantization", quantization ?: JSONObject.NULL)
+    .put("sha256", sha256 ?: JSONObject.NULL)

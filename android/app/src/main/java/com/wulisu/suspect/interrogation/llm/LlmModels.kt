@@ -4,7 +4,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 const val RKLLM_RUNTIME_VERSION = "1.3.0"
-const val RKLLM_PROVIDER = "RKLLM / RK3576 NPU"
+const val RKLLM_PROVIDER = "RKLLM"
+
+fun rkllmProvider(platform: LlmTargetPlatform): String = when (platform) {
+    LlmTargetPlatform.RK3576 -> "RKLLM / RK3576 NPU"
+    LlmTargetPlatform.RK3588 -> "RKLLM / RK3588 NPU"
+    LlmTargetPlatform.UNKNOWN -> "$RKLLM_PROVIDER / UNKNOWN NPU"
+}
 
 enum class LlmTargetPlatform {
     RK3576,
@@ -17,14 +23,20 @@ enum class LlmCompatibility {
     INCOMPLETE,
     UNREADABLE,
     PLATFORM_MISMATCH,
+    RUNTIME_MISMATCH,
+    METADATA_INVALID,
     UNSUPPORTED,
 }
 
 data class LlmProbeResult(
     val displayName: String,
     val targetPlatform: LlmTargetPlatform,
+    val devicePlatform: LlmTargetPlatform,
     val provider: String,
     val modelFormat: String,
+    val runtimeVersion: String,
+    val quantization: String?,
+    val sha256: String?,
     val complete: Boolean,
     val runtimeReady: Boolean,
     val compatibility: LlmCompatibility,
@@ -36,11 +48,14 @@ data class LlmModelSpec(
     val absolutePath: String,
     val sizeBytes: Long,
     val targetPlatform: LlmTargetPlatform,
+    val devicePlatform: LlmTargetPlatform = LlmTargetPlatform.UNKNOWN,
     val complete: Boolean = true,
     val compatibility: LlmCompatibility = LlmCompatibility.READY,
     val provider: String = RKLLM_PROVIDER,
     val modelFormat: String = "RKLLM",
     val runtimeVersion: String = RKLLM_RUNTIME_VERSION,
+    val quantization: String? = null,
+    val sha256: String? = null,
 )
 
 data class LlmGenerationConfig(
