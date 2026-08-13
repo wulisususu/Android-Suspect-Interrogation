@@ -1,4 +1,4 @@
-name: Android M0-M1 CI
+name: Android Final Regression CI
 
 on:
   pull_request:
@@ -6,13 +6,88 @@ on:
       - 'android/**'
       - 'webapp/**'
       - '.github/workflows/android-ci.yml'
+      - '.gitattributes'
+  push:
+    branches:
+      - main
+    paths:
+      - 'android/**'
+      - 'webapp/**'
+      - '.github/workflows/android-ci.yml'
+      - '.gitattributes'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-regression-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository with Git LFS
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Verify Git LFS model payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          model_root='android/app/src/main/assets/models'
+          lfs_signature='version https://git-lfs.github.com/spec/v1'
+          required_models=(
+            'zipformer_rk3576/encoder.rknn'
+            'zipformer_rk3576/decoder.rknn'
+            'zipformer_rk3576/joiner.rknn'
+            'paraformer_int8/encoder.int8.onnx'
+            'paraformer_int8/decoder.int8.onnx'
+          )
+
+          git lfs version
+          git lfs pull
+
+          for relative_path in "${required_models[@]}"; do
+            model="$model_root/$relative_path"
+            if [[ ! -f "$model" ]]; then
+              echo "::error file=$model::Required bundled ASR model is missing"
+              exit 1
+            fi
+          done
+
+          mapfile -d '' model_files < <(
+            find "$model_root" -type f \( -name '*.onnx' -o -name '*.rknn' \) -print0
+          )
+          if (( ${#model_files[@]} == 0 )); then
+            echo "::error::No .onnx or .rknn model files found under $model_root"
+            exit 1
+          fi
+
+          for model in "${model_files[@]}"; do
+            filter_attr="$(git check-attr filter -- "$model" | awk -F': ' '{print $3}')"
+            if [[ "$filter_attr" != 'lfs' ]]; then
+              echo "::error file=$model::Model is not covered by Git LFS attributes"
+              exit 1
+            fi
+            if head -c 512 "$model" | grep -aFq "$lfs_signature"; then
+              echo "::error file=$model::Git LFS pointer detected; real model payload was not materialized"
+              exit 1
+            fi
+            size="$(stat -c '%s' "$model")"
+            if (( size < 1024 )); then
+              echo "::error file=$model::Model payload is implausibly small: $size bytes"
+              exit 1
+            fi
+            echo "Verified model payload: $model ($size bytes)"
+          done
+
+      - name: Git whitespace check
+        run: git diff --check HEAD^
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -43,44 +118,98 @@ jobs:
         run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
 
       - name: Android unit tests
-        id: android_unit_tests
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          gradle -p android testDebugUnitTest --stacktrace --console=plain 2>&1 | tee /tmp/android-unit-tests.log
+        run: gradle -p android testDebugUnitTest --stacktrace --console=plain
 
-      - name: Report Android diagnostics
-        if: steps.android_unit_tests.outcome == 'failure'
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import re
-          from pathlib import Path
-
-          lines = Path('/tmp/android-unit-tests.log').read_text(errors='replace').splitlines()
-          selected = []
-          for index, line in enumerate(lines):
-              if 'issues were found when checking AAR metadata' in line:
-                  selected.extend(lines[index:index + 45])
-                  break
-          pattern = re.compile(r'(^e: |error:|FAILURE:|Compilation error|Could not resolve|What went wrong|Caused by:|requires |Dependency |compileSdk|Android Gradle plugin)', re.I)
-          selected.extend(line for line in lines if pattern.search(line))
-          if not selected:
-              selected = lines[-50:]
-          seen = set()
-          clean = []
-          for line in selected:
-              line = line.strip()
-              if not line or line in seen:
-                  continue
-              seen.add(line)
-              clean.append(line)
-          for line in clean[:45]:
-              line = line.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-              print(f'::error title=Android build::{line}')
-          raise SystemExit(1)
-          PY
+      - name: Compile Android instrumentation tests
+        run: gradle -p android assembleDebugAndroidTest --stacktrace --console=plain
 
       - name: Assemble debug APK
         run: gradle -p android assembleDebug --stacktrace --console=plain
+
+      - name: Verify single ONNX Runtime native source
+        run: gradle -p android verifyDebugOnnxRuntimeNative --stacktrace --console=plain
+
+      - name: Verify APK web assets, models and native libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          apk_dir = Path('android/app/build/outputs/apk/debug')
+          apks = sorted(apk_dir.glob('*.apk'))
+          if not apks:
+              raise SystemExit(f'No debug APK found under {apk_dir}')
+          apk = apks[-1]
+
+          lfs_signature = b'version https://git-lfs.github.com/spec/v1'
+          required_assets = [
+              'assets/webapp/index.html',
+              'assets/models/zipformer_rk3576/encoder.rknn',
+              'assets/models/zipformer_rk3576/decoder.rknn',
+              'assets/models/zipformer_rk3576/joiner.rknn',
+              'assets/models/zipformer_rk3576/tokens.txt',
+              'assets/models/paraformer_int8/encoder.int8.onnx',
+              'assets/models/paraformer_int8/decoder.int8.onnx',
+              'assets/models/paraformer_int8/tokens.txt',
+          ]
+          required_native_libraries = [
+              'lib/arm64-v8a/libonnxruntime.so',
+              'lib/arm64-v8a/libomp.so',
+              'lib/arm64-v8a/librkllmrt.so',
+              'lib/arm64-v8a/librkllm_jni.so',
+              'lib/arm64-v8a/librknnrt.so',
+              'lib/arm64-v8a/libsherpa-onnx-c-api.so',
+              'lib/arm64-v8a/libsherpa-onnx-cxx-api.so',
+              'lib/arm64-v8a/libsherpa-onnx-jni.so',
+          ]
+
+          with ZipFile(apk) as archive:
+              entries = archive.namelist()
+              names = set(entries)
+
+              missing_assets = [entry for entry in required_assets if entry not in names]
+              if missing_assets:
+                  raise SystemExit('Required APK assets are missing: ' + ', '.join(missing_assets))
+
+              model_entries = sorted(
+                  entry for entry in entries
+                  if entry.startswith('assets/models/')
+                  and entry.lower().endswith(('.onnx', '.rknn'))
+              )
+              if not model_entries:
+                  raise SystemExit('APK contains no bundled .onnx/.rknn model payloads')
+              for entry in model_entries:
+                  info = archive.getinfo(entry)
+                  with archive.open(entry) as stream:
+                      header = stream.read(512)
+                  if lfs_signature in header:
+                      raise SystemExit(f'Git LFS pointer detected inside APK: {entry}')
+                  if info.file_size < 1024:
+                      raise SystemExit(f'APK model payload is implausibly small: {entry} ({info.file_size} bytes)')
+
+              missing_libraries = [entry for entry in required_native_libraries if entry not in names]
+              if missing_libraries:
+                  raise SystemExit('Required arm64-v8a native libraries are missing: ' + ', '.join(missing_libraries))
+
+              ort_count = entries.count('lib/arm64-v8a/libonnxruntime.so')
+              if ort_count != 1:
+                  raise SystemExit(f'Expected exactly one libonnxruntime.so in APK, found {ort_count}')
+
+              arm64 = sorted(entry for entry in entries if entry.startswith('lib/arm64-v8a/') and entry.endswith('.so'))
+              print(f'Verified APK: {apk}')
+              print(f'Bundled model payloads: {len(model_entries)}')
+              print(f'arm64-v8a native libraries ({len(arm64)}):')
+              for entry in arm64:
+                  print('  ' + entry)
+          PY
+
+      - name: Upload debug APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-final-regression-apks
+          path: |
+            android/app/build/outputs/apk/debug/*.apk
+            android/app/build/outputs/apk/androidTest/debug/*.apk
+          if-no-files-found: error
