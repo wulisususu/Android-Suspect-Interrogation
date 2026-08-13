@@ -10,9 +10,30 @@ on:
 
 jobs:
   instrumentation:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate committed diff
+        run: git diff --check origin/main...HEAD
+
+      - name: Prepare x86 test-only Android build
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('android/app/build.gradle.kts')
+          text = path.read_text()
+          text = text.replace('''        ndk {\n            abiFilters += "arm64-v8a"\n        }\n\n''', '')
+          text = text.replace('''        externalNativeBuild {\n            cmake {\n                cppFlags += listOf("-std=c++17")\n            }\n        }\n\n''', '')
+          text = text.replace('''    externalNativeBuild {\n        cmake {\n            path = file("src/main/cpp/CMakeLists.txt")\n            version = "3.22.1"\n        }\n    }\n''', '')
+          text = text.replace(
+              '        getByName("main").assets.srcDir(generatedWebAssets)\n',
+              '        getByName("main").assets.srcDir(generatedWebAssets)\n        getByName("main").jniLibs.setSrcDirs(emptyList<String>())\n',
+          )
+          path.write_text(text)
+          PY
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -42,7 +63,7 @@ jobs:
       - name: Install Android platform
         run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'emulator'
 
-      - name: Build instrumentation APK
+      - name: Build x86 instrumentation APK
         run: gradle -p android assembleDebugAndroidTest --stacktrace --console=plain
 
       - name: Run Case AI Room instrumentation
@@ -50,7 +71,7 @@ jobs:
         with:
           api-level: 30
           target: google_apis
-          arch: arm64-v8a
+          arch: x86_64
           working-directory: android
           disable-animations: true
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
