@@ -68,7 +68,16 @@ class ZhipuAiProvider(private val settingsStore: AiSettingsStore) : AiProvider {
             }
 
             if (text.isBlank()) throw BusinessException("AI_CLOUD_EMPTY_CONTENT", "智谱 API 返回成功，但回答内容为空")
-            AiResponse(text = text, provider = kind, model = settings.cloudModel)
+            AiResponse(
+                text = text,
+                provider = kind,
+                model = settings.cloudModel,
+                generationMetadata = AiGenerationMetadata(
+                    runtimeVersion = "zhipu-api-v4",
+                    generationConfigJson = cloudGenerationConfig(settings),
+                    modelId = settings.cloudModel,
+                ),
+            )
         } finally {
             connection.disconnect()
         }
@@ -106,6 +115,10 @@ class ZhipuAiProvider(private val settingsStore: AiSettingsStore) : AiProvider {
             ?: json.optString("message").takeIf { it.isNotBlank() }
             ?: "智谱 API 请求失败（HTTP $status）"
     }.getOrDefault("智谱 API 请求失败（HTTP $status）")
+
+    private fun cloudGenerationConfig(settings: AiSettings): String =
+        "{\"maxTokens\":${settings.maxTokens},\"stream\":${settings.stream}," +
+            "\"temperature\":${settings.temperature},\"thinkingEnabled\":${settings.thinkingEnabled}}"
 }
 
 interface LocalLlmRuntime {
@@ -141,17 +154,28 @@ class ControllerLocalLlmRuntime(
     ): AiResponse {
         val prompt = messages.joinToString("\n") { message -> "${message.role}: ${message.content}" }.trim()
         val currentConfig = controller.status().config
+        val generationConfig = LlmGenerationConfig(
+            maxNewTokens = settings.maxTokens.coerceIn(1, 4096),
+            maxContextLen = currentConfig.maxContextLen,
+        )
         val result = controller.generate(
             LlmInput(
                 generationId = UUID.randomUUID().toString(),
                 prompt = prompt,
-                config = LlmGenerationConfig(
-                    maxNewTokens = settings.maxTokens.coerceIn(1, 4096),
-                    maxContextLen = currentConfig.maxContextLen,
-                ),
+                config = generationConfig,
             ),
         )
-        return AiResponse(result.outputText, AiProviderKind.LOCAL, result.modelName)
+        return AiResponse(
+            text = result.outputText,
+            provider = AiProviderKind.LOCAL,
+            model = result.modelName,
+            generationMetadata = AiGenerationMetadata(
+                runtimeVersion = model.version ?: "unknown",
+                generationConfigJson =
+                    "{\"maxContextLen\":${generationConfig.maxContextLen},\"maxNewTokens\":${generationConfig.maxNewTokens}}",
+                modelId = model.id,
+            ),
+        )
     }
 }
 
