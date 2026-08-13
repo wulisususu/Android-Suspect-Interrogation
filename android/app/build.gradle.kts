@@ -69,12 +69,6 @@ android {
         noCompress += listOf("onnx", "rknn", "rkllm", "pdiparams", "pdmodel", "tar")
     }
 
-    packaging {
-        jniLibs {
-            pickFirsts += "lib/arm64-v8a/libonnxruntime.so"
-        }
-    }
-
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
