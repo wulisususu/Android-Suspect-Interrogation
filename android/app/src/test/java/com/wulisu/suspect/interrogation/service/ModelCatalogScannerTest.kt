@@ -62,6 +62,33 @@ class ModelCatalogScannerTest {
     }
 
     @Test
+    fun `scan marks a complete known ASR directory runtime ready`() {
+        val root = temporaryFolder.newFolder("models")
+        val modelRoot = File(root, "asr/zipformer_rk3576").apply { mkdirs() }
+        listOf("encoder.rknn", "decoder.rknn", "joiner.rknn", "tokens.txt").forEach { name ->
+            File(modelRoot, name).writeBytes(byteArrayOf(1))
+        }
+
+        val model = scanner.scan(root).models.single { it.category == ModelCategory.ASR }
+
+        assertEquals("ASR:asr/zipformer_rk3576", model.id)
+        assertTrue(model.complete)
+        assertTrue(model.runtimeReady)
+    }
+
+    @Test
+    fun `scan keeps an incomplete known ASR directory unavailable`() {
+        val root = temporaryFolder.newFolder("models")
+        val modelRoot = File(root, "asr/paraformer_int8").apply { mkdirs() }
+        File(modelRoot, "encoder.int8.onnx").writeBytes(byteArrayOf(1))
+
+        val model = scanner.scan(root).models.single { it.category == ModelCategory.ASR }
+
+        assertFalse(model.complete)
+        assertFalse(model.runtimeReady)
+    }
+
+    @Test
     fun `scan reads rkllm files from external root without unrelated files`() {
         val privateRoot = temporaryFolder.newFolder("private")
         val sharedRoot = temporaryFolder.newFolder("shared")
@@ -85,13 +112,16 @@ class ModelCatalogScannerTest {
     }
 
     @Test
-    fun `private llm directory is not used`() {
+    fun `standard llm category directory is scanned`() {
         val root = temporaryFolder.newFolder("models")
-        File(File(root, "llm").apply { mkdirs() }, "private.rkllm").writeBytes(byteArrayOf(1))
+        val model = File(File(root, "llm").apply { mkdirs() }, "LegalOne-4B_W8A8_RK3576.rkllm")
+        RandomAccessFile(model, "rw").use { it.setLength(4_862_583_588L) }
 
         val models = scanner.scan(root, devicePlatform = "rk3576").models
 
-        assertTrue(models.none { it.category == ModelCategory.LLM })
+        val descriptor = models.single { it.category == ModelCategory.LLM }
+        assertEquals("LLM:llm/LegalOne-4B_W8A8_RK3576.rkllm", descriptor.id)
+        assertEquals(model.absolutePath, descriptor.absolutePath)
     }
 
     @Test

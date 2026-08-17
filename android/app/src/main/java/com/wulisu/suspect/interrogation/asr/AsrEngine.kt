@@ -12,8 +12,17 @@ data class AsrFinalResult(
     val confidence: Double?,
 )
 
+data class AsrAudioInputStatus(
+    val preferredInput: String?,
+    val routedInput: String?,
+    val routedInputKind: AudioInputKind?,
+    val peak: Int?,
+    val signalState: AudioSignalState,
+)
+
 interface AsrListener {
     fun onAudioSamples(samples: ShortArray, count: Int, sampleRate: Int, capturedAtMs: Long) = Unit
+    fun onAudioInputStatus(status: AsrAudioInputStatus) = Unit
     fun onPartialResult(text: String, firstTokenLatencyMs: Long?)
     fun onFinalResult(result: AsrFinalResult)
     fun onError(code: String, message: String)

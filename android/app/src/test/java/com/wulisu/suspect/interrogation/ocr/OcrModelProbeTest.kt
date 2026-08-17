@@ -13,13 +13,16 @@ class OcrModelProbeTest {
     val temporaryFolder = TemporaryFolder()
 
     @Test
-    fun `v4 onnx model is complete only when det and rec files exist`() {
+    fun `v4 onnx model is complete only when graphs and dictionary exist`() {
         val root = temporaryFolder.newFolder("ocr")
         File(root, "ppocrv4_det.onnx").writeBytes(ByteArray(3))
 
         assertFalse(OcrModelProbe.probe(root).any { it.complete })
 
         File(root, "ppocrv4_rec.onnx").writeBytes(ByteArray(4))
+        assertFalse(OcrModelProbe.probe(root).any { it.complete })
+
+        File(root, "ppocr_keys_v1.txt").writeText("字")
         val candidates = OcrModelProbe.probe(root)
 
         assertEquals(OcrKnownModels.PPOCR_V4_ONNX.id, candidates.single().spec.id)

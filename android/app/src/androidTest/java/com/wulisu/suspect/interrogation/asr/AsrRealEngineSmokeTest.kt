@@ -8,7 +8,12 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class AsrRealEngineSmokeTest {
     @Test
-    fun fixedFixtureReachesRealEngine() {
-        AsrSmokeHarness.run(ApplicationProvider.getApplicationContext())
+    fun fixedFixtureReachesParaformerEngine() {
+        AsrSmokeHarness.run(ApplicationProvider.getApplicationContext(), AsrModelSpecs.PARAFORMER_INT8)
+    }
+
+    @Test
+    fun fixedFixtureReachesZipformerRknnEngine() {
+        AsrSmokeHarness.run(ApplicationProvider.getApplicationContext(), AsrModelSpecs.ZIPFORMER_RK3576)
     }
 }

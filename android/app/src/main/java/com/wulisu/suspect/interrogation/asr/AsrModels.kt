@@ -1,13 +1,15 @@
 package com.wulisu.suspect.interrogation.asr
 
+import com.wulisu.suspect.interrogation.service.ModelDirectories
+
 enum class AsrModelId(val wireValue: String, val catalogId: String) {
     ZIPFORMER_RK3576(
         wireValue = "zipformer_rk3576",
-        catalogId = "ASR:asset/models/zipformer_rk3576",
+        catalogId = "ASR:asr/zipformer_rk3576",
     ),
     PARAFORMER_INT8(
         wireValue = "paraformer_int8",
-        catalogId = "ASR:asset/models/paraformer_int8",
+        catalogId = "ASR:asr/paraformer_int8",
     );
 
     companion object {
@@ -20,7 +22,7 @@ enum class AsrModelId(val wireValue: String, val catalogId: String) {
 data class AsrModelSpec(
     val id: AsrModelId,
     val displayName: String,
-    val assetRoot: String,
+    val modelRoot: String,
     val encoder: String,
     val decoder: String,
     val joiner: String?,
@@ -29,18 +31,20 @@ data class AsrModelSpec(
     val modelType: String,
     val numThreads: Int,
 ) {
-    val requiredAssets: List<String> = listOfNotNull(encoder, decoder, joiner, tokens)
+    val requiredFiles: List<String> = listOfNotNull(encoder, decoder, joiner, tokens)
 }
 
 object AsrModelSpecs {
+    private const val ASR_ROOT = "${ModelDirectories.ROOT_PATH}/asr"
+
     val ZIPFORMER_RK3576 = AsrModelSpec(
         id = AsrModelId.ZIPFORMER_RK3576,
         displayName = "Zipformer RKNN (RK3576)",
-        assetRoot = "models/zipformer_rk3576",
-        encoder = "models/zipformer_rk3576/encoder.rknn",
-        decoder = "models/zipformer_rk3576/decoder.rknn",
-        joiner = "models/zipformer_rk3576/joiner.rknn",
-        tokens = "models/zipformer_rk3576/tokens.txt",
+        modelRoot = "$ASR_ROOT/zipformer_rk3576",
+        encoder = "$ASR_ROOT/zipformer_rk3576/encoder.rknn",
+        decoder = "$ASR_ROOT/zipformer_rk3576/decoder.rknn",
+        joiner = "$ASR_ROOT/zipformer_rk3576/joiner.rknn",
+        tokens = "$ASR_ROOT/zipformer_rk3576/tokens.txt",
         provider = "rknn",
         modelType = "zipformer",
         numThreads = 1,
@@ -49,11 +53,11 @@ object AsrModelSpecs {
     val PARAFORMER_INT8 = AsrModelSpec(
         id = AsrModelId.PARAFORMER_INT8,
         displayName = "Paraformer INT8",
-        assetRoot = "models/paraformer_int8",
-        encoder = "models/paraformer_int8/encoder.int8.onnx",
-        decoder = "models/paraformer_int8/decoder.int8.onnx",
+        modelRoot = "$ASR_ROOT/paraformer_int8",
+        encoder = "$ASR_ROOT/paraformer_int8/encoder.int8.onnx",
+        decoder = "$ASR_ROOT/paraformer_int8/decoder.int8.onnx",
         joiner = null,
-        tokens = "models/paraformer_int8/tokens.txt",
+        tokens = "$ASR_ROOT/paraformer_int8/tokens.txt",
         provider = "cpu",
         modelType = "paraformer",
         numThreads = 4,
@@ -65,4 +69,3 @@ object AsrModelSpecs {
     fun fromId(id: AsrModelId): AsrModelSpec = all.first { it.id == id }
     fun fromCatalogId(catalogId: String?): AsrModelSpec? = all.firstOrNull { it.id.catalogId == catalogId }
 }
-

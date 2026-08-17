@@ -25,14 +25,15 @@ class OcrInstrumentedSmokeTest {
         val modelDir = File("/sdcard/models/ocr")
         val det = File(modelDir, "ppocrv4_det.onnx")
         val rec = File(modelDir, "ppocrv4_rec.onnx")
-        assumeTrue("OCR ONNX files are missing from /sdcard/models/ocr", det.isFile && rec.isFile)
+        val dictionary = File(modelDir, "ppocr_keys_v1.txt")
+        assumeTrue("OCR model files are missing from /sdcard/models/ocr", det.isFile && rec.isFile && dictionary.isFile)
 
         val image = File(context.cacheDir, "ocr-smoke-cn.png")
         createChinesePng(image)
 
         val engine = OnnxPpocrV4Engine(
             modelRoot = modelDir,
-            dictionary = loadDictionary(context),
+            dictionary = loadDictionary(),
             modelSpec = OcrKnownModels.PPOCR_V4_ONNX,
         )
         try {
@@ -88,8 +89,8 @@ class OcrInstrumentedSmokeTest {
         bitmap.recycle()
     }
 
-    private fun loadDictionary(context: android.content.Context): List<String> {
-        val lines = context.assets.open("models/ocr/ppocr_keys_v1.txt").bufferedReader().use { it.readLines() }
+    private fun loadDictionary(): List<String> {
+        val lines = File("/sdcard/models/ocr/ppocr_keys_v1.txt").bufferedReader().use { it.readLines() }
         return buildList {
             add("")
             addAll(lines)

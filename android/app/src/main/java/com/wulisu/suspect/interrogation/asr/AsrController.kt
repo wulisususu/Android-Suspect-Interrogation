@@ -24,6 +24,10 @@ data class AsrRuntimeStatus(
     val error: String?,
     val sherpaVersion: String = SHERPA_ONNX_VERSION,
     val sampleRate: Int = 16_000,
+    val preferredAudioInput: String? = null,
+    val routedAudioInput: String? = null,
+    val audioPeak: Int? = null,
+    val audioSignalState: AudioSignalState = AudioSignalState.WAITING,
 )
 
 class AsrController(
@@ -51,6 +55,19 @@ class AsrController(
     private val engineListener = object : AsrListener {
         override fun onAudioSamples(samples: ShortArray, count: Int, sampleRate: Int, capturedAtMs: Long) {
             captureListener?.onAudioSamples(samples, count, sampleRate, capturedAtMs)
+        }
+
+        override fun onAudioInputStatus(status: AsrAudioInputStatus) {
+            synchronized(controlLock) {
+                state = state.copy(
+                    preferredAudioInput = status.preferredInput,
+                    routedAudioInput = status.routedInput,
+                    audioPeak = status.peak,
+                    audioSignalState = status.signalState,
+                )
+                emitState()
+            }
+            captureListener?.onAudioInputStatus(status)
         }
 
         override fun onPartialResult(text: String, firstTokenLatencyMs: Long?) {
@@ -130,6 +147,10 @@ class AsrController(
                 initialized = false,
                 partialText = "",
                 error = null,
+                preferredAudioInput = null,
+                routedAudioInput = null,
+                audioPeak = null,
+                audioSignalState = AudioSignalState.WAITING,
             )
             emitState()
         }
@@ -178,6 +199,12 @@ class AsrController(
         } else {
             AsrModelSpecs.fromCatalogId(modelId)
                 ?: throw BusinessException("ASR_MODEL_UNSUPPORTED", "当前 ASR Runtime 不支持所选模型")
+        }
+        val descriptor = modelManager.list().models.firstOrNull {
+            it.category == ModelCategory.ASR && it.id == spec.id.catalogId
+        }
+        if (descriptor?.runtimeReady != true) {
+            throw BusinessException("ASR_MODEL_FILES_MISSING", "ASR 模型文件不完整：${spec.modelRoot}")
         }
         switcher.release()
         val catalog = modelManager.select(ModelCategory.ASR, spec.id.catalogId)

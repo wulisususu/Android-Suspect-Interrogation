@@ -184,6 +184,10 @@ export interface AsrRuntimeStatus {
   error?: string | null
   sherpaVersion: string
   sampleRate: number
+  preferredAudioInput?: string | null
+  routedAudioInput?: string | null
+  audioPeak?: number | null
+  audioSignalState?: 'WAITING' | 'ACTIVE' | 'SILENT'
 }
 
 export type TemporaryAsrSpeaker = 'UNKNOWN' | 'OFFICER' | 'SUSPECT'

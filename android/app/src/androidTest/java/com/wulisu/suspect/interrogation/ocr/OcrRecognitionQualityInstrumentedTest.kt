@@ -22,13 +22,15 @@ class OcrRecognitionQualityInstrumentedTest {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val modelDir = File("/sdcard/models/ocr")
         assumeTrue(
-            "OCR ONNX files are missing from /sdcard/models/ocr",
-            File(modelDir, "ppocrv4_det.onnx").isFile && File(modelDir, "ppocrv4_rec.onnx").isFile,
+            "OCR model files are missing from /sdcard/models/ocr",
+            File(modelDir, "ppocrv4_det.onnx").isFile &&
+                File(modelDir, "ppocrv4_rec.onnx").isFile &&
+                File(modelDir, "ppocr_keys_v1.txt").isFile,
         )
 
         val image = File(context.cacheDir, "ocr-quality-cn.png")
         createChinesePng(image)
-        val dictionary = context.assets.open("models/ocr/ppocr_keys_v1.txt").bufferedReader().use { it.readLines() }
+        val dictionary = File(modelDir, "ppocr_keys_v1.txt").bufferedReader().use { it.readLines() }
         val engine = OnnxPpocrV4Engine(
             modelRoot = modelDir,
             dictionary = buildList {

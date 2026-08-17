@@ -3,6 +3,7 @@ package com.wulisu.suspect.interrogation.service
 import com.wulisu.suspect.interrogation.llm.LlmModelProbe
 import com.wulisu.suspect.interrogation.llm.RKLLM_RUNTIME_VERSION
 import com.wulisu.suspect.interrogation.ocr.OcrModelProbe
+import com.wulisu.suspect.interrogation.asr.AsrModelSpecs
 import java.io.File
 
 class ModelCatalogScanner {
@@ -18,7 +19,7 @@ class ModelCatalogScanner {
             val categoryRoot = File(root, category.directoryName).apply { mkdirs() }
             when (category) {
                 ModelCategory.OCR -> ocrDescriptors(root, categoryRoot, externalRoots, selectedIds[category])
-                ModelCategory.LLM -> llmDescriptors(externalRoots, selectedIds[category], devicePlatform)
+                ModelCategory.LLM -> llmDescriptors(categoryRoot, externalRoots, selectedIds[category], devicePlatform)
                 else -> categoryRoot.listFiles()
                         .orEmpty()
                         .asSequence()
@@ -32,10 +33,11 @@ class ModelCatalogScanner {
     }
 
     private fun llmDescriptors(
+        categoryRoot: File,
         externalRoots: List<File>,
         selectedId: String?,
         devicePlatform: String,
-    ): List<LocalModelDescriptor> = externalRoots
+    ): List<LocalModelDescriptor> = (listOf(categoryRoot) + externalRoots)
         .asSequence()
         .filter { it.isDirectory }
         .flatMap { root -> root.listFiles().orEmpty().asSequence() }
@@ -45,7 +47,11 @@ class ModelCatalogScanner {
         .distinctBy { it.absolutePath }
         .map { entry ->
             val probe = LlmModelProbe.evaluate(entry.name, entry.length(), entry.canRead(), devicePlatform)
-            val relativePath = "external/${entry.name}"
+            val relativePath = if (entry.parentFile == categoryRoot) {
+                "${ModelCategory.LLM.directoryName}/${entry.name}"
+            } else {
+                "external/${entry.name}"
+            }
             val id = "${ModelCategory.LLM.name}:$relativePath"
             LocalModelDescriptor(
                 id = id,
@@ -80,6 +86,10 @@ class ModelCatalogScanner {
     ): LocalModelDescriptor {
         val relativePath = entry.relativeTo(root).invariantSeparatorsPath
         val id = "${category.name}:$relativePath"
+        val asrSpec = if (category == ModelCategory.ASR) AsrModelSpecs.fromCatalogId(id) else null
+        val asrComplete = asrSpec?.requiredFiles
+            ?.map { File(entry, File(it).name) }
+            ?.all { it.isFile && it.length() > 0L }
         return LocalModelDescriptor(
             id = id,
             category = category,
@@ -92,7 +102,9 @@ class ModelCatalogScanner {
             sourceKind = if (entry.isDirectory) ModelSourceKind.DIRECTORY else ModelSourceKind.FILE,
             archive = entry.isFile && ARCHIVE_SUFFIXES.any { entry.name.lowercase().endsWith(it) },
             selected = selectedId == id,
-            runtimeReady = id in runtimeReadyIds,
+            runtimeReady = asrComplete ?: (id in runtimeReadyIds),
+            provider = asrSpec?.provider,
+            complete = asrComplete ?: true,
         )
     }
 

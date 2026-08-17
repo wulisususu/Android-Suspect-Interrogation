@@ -19,18 +19,19 @@ APK 内不监听 `localhost:8080`。`backend-dev/` 仅用于电脑浏览器开�
 
 ## 本地模型前置接口
 
-`ModelManager` 管理以下 App 私有目录：
+`ModelManager` 统一管理设备目录 `/sdcard/models/`：
 
 ```text
-files/models/asr/
-files/models/vad/
-files/models/speaker/
-files/models/llm/
+/sdcard/models/asr/
+/sdcard/models/ocr/
+/sdcard/models/vad/
+/sdcard/models/speaker/
+/sdcard/models/llm/
 ```
 
-应用启动只做后台扫描，没有模型或扫描失败都不会阻止进入。WebView 通过 `model.scan`、`model.list`、`model.select` 和 `model.import.request` 管理模型；导入使用安卓系统文件管理器，文件或目录会复制到对应私有目录。压缩包只登记，不自动解压。
+应用启动只做后台扫描，没有模型或扫描失败都不会阻止进入。WebView 通过 `model.scan`、`model.list`、`model.select` 和 `model.import.request` 管理模型；导入使用安卓系统文件管理器，文件或目录会复制到对应分类目录。压缩包只登记，不自动解压。LLM 新导入文件写入 `/sdcard/models/llm/`，同时兼容直接位于 `/sdcard/models/` 的旧部署。
 
-“已导入 / 已选择”和“Runtime 可运行”是不同状态。`LocalLlmRuntime` 是后续 JNI、RKNN、ONNX Runtime 或 llama.cpp 的接入点；默认实现始终不可用，因此当前不会把存在的模型文件误报为已经可以本地推理。
+“已导入 / 已选择”和“Runtime 可运行”是不同状态。当前 APK 已接入 Zipformer RKNN、Paraformer INT8、PP-OCRv4 ONNX 和 RKLLM 1.3.0；模型扫描仍会按设备平台、文件完整性和 Runtime 支持情况区分 `complete` 与 `runtimeReady`。PP-OCRv4 目录还必须包含 `ppocr_keys_v1.txt`。PP-OCRv6 Paddle PIR 压缩包目前只可检测，尚无可运行 Runtime。
 
 构建前先执行：
 

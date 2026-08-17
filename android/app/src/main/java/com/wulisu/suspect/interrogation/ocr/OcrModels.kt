@@ -26,7 +26,7 @@ object OcrKnownModels {
         version = "v4",
         format = OcrModelFormat.ONNX,
         provider = "onnxruntime-cpu",
-        requiredFiles = listOf("ppocrv4_det.onnx", "ppocrv4_rec.onnx"),
+        requiredFiles = listOf("ppocrv4_det.onnx", "ppocrv4_rec.onnx", "ppocr_keys_v1.txt"),
         runtimeAvailable = true,
         detInputWidth = 480,
         detInputHeight = 480,

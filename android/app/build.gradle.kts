@@ -23,6 +23,15 @@ val extractOnnxRuntimeJava by tasks.registering(Copy::class) {
 val onnxRuntimeJavaJar = files(
     onnxRuntimeJavaDir.map { it.file("onnxruntime-android-$onnxRuntimeVersion-classes.jar") },
 ).builtBy(extractOnnxRuntimeJava)
+val onnxRuntimeNativeDir = layout.buildDirectory.dir("generated/onnxruntime-native")
+val extractOnnxRuntimeNative by tasks.registering(Copy::class) {
+    from({ zipTree(onnxRuntimeJava.singleFile) }) {
+        include("jni/arm64-v8a/libonnxruntime4j_jni.so")
+        eachFile { path = path.removePrefix("jni/") }
+        includeEmptyDirs = false
+    }
+    into(onnxRuntimeNativeDir)
+}
 
 val syncWebapp by tasks.registering(Sync::class) {
     val webDist = rootProject.projectDir.resolve("../webapp/dist")
@@ -79,12 +88,11 @@ android {
     }
 
     sourceSets {
-        getByName("main").assets.srcDir(generatedWebAssets)
+        getByName("main") {
+            assets.srcDir(generatedWebAssets)
+            jniLibs.srcDir(onnxRuntimeNativeDir)
+        }
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
-    }
-
-    androidResources {
-        noCompress += listOf("onnx", "rknn", "rkllm", "pdiparams", "pdmodel", "tar")
     }
 
     externalNativeBuild {
@@ -109,9 +117,8 @@ dependencies {
     implementation("androidx.webkit:webkit:1.15.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
-    // Keep the ORT Java/Kotlin API from Maven, but do not package its AAR native libraries.
-    // arm64-v8a/libonnxruntime.so is deliberately sourced only from src/main/jniLibs so it stays
-    // ABI-aligned with the checked-in sherpa native bundle instead of relying on pickFirst order.
+    // Keep the ORT Java/Kotlin API and JNI bridge from Maven, but source libonnxruntime.so only
+    // from src/main/jniLibs so it stays ABI-aligned with the checked-in sherpa native bundle.
     onnxRuntimeJava("com.microsoft.onnxruntime:onnxruntime-android:$onnxRuntimeVersion@aar")
     implementation(onnxRuntimeJavaJar)
 
@@ -132,25 +139,31 @@ dependencies {
 
 val verifyDebugOnnxRuntimeNative by tasks.registering {
     group = "verification"
-    description = "Verifies the debug APK contains exactly one arm64-v8a libonnxruntime.so."
+    description = "Verifies the debug APK contains exactly one arm64-v8a ORT core and JNI bridge."
     dependsOn("assembleDebug")
     doLast {
         val apk = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile
         if (!apk.isFile) throw GradleException("Debug APK not found: $apk")
+        val requiredEntries = listOf(
+            "lib/arm64-v8a/libonnxruntime.so",
+            "lib/arm64-v8a/libonnxruntime4j_jni.so",
+        )
         val entries = ZipFile(apk).use { zip ->
             zip.entries().asSequence()
                 .map { it.name }
-                .filter { it == "lib/arm64-v8a/libonnxruntime.so" }
+                .filter { it in requiredEntries }
                 .toList()
         }
-        if (entries.size != 1) {
-            throw GradleException("Expected exactly one arm64-v8a libonnxruntime.so in APK, found ${entries.size}: $entries")
+        val invalidEntries = requiredEntries.filter { required -> entries.count { it == required } != 1 }
+        if (invalidEntries.isNotEmpty()) {
+            throw GradleException("Expected exactly one of each ORT native library in APK; invalid: $invalidEntries; found: $entries")
         }
-        logger.lifecycle("Verified one APK ORT native library: ${entries.single()}")
+        logger.lifecycle("Verified APK ORT native libraries: ${entries.sorted()}")
     }
 }
 
 tasks.named("preBuild").configure {
     dependsOn(syncWebapp)
     dependsOn(extractOnnxRuntimeJava)
+    dependsOn(extractOnnxRuntimeNative)
 }

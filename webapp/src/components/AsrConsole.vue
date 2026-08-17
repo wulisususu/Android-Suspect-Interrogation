@@ -19,6 +19,15 @@ function metric(value?: number | null) {
   return value == null ? '—' : `${value} ms`
 }
 
+function signal(status: AsrRuntimeStatus) {
+  const label = status.audioSignalState === 'ACTIVE'
+    ? '有效'
+    : status.audioSignalState === 'SILENT'
+      ? '无有效信号'
+      : '等待声音'
+  return `${label} · 峰值 ${status.audioPeak ?? '—'}`
+}
+
 async function load() {
   if (!native.value) return
   try { status.value = await fetchAsrStatus() }
@@ -64,6 +73,9 @@ onUnmounted(() => unsubscribe?.())
       <div><span>首字延迟</span><strong>{{ metric(status.firstTokenLatencyMs) }}</strong></div>
       <div><span>单句耗时</span><strong>{{ metric(status.utteranceLatencyMs) }}</strong></div>
       <div><span>Runtime</span><strong>sherpa {{ status.sherpaVersion }} · {{ status.sampleRate }} Hz</strong></div>
+      <div><span>首选输入</span><strong>{{ status.preferredAudioInput || '系统默认' }}</strong></div>
+      <div><span>实际输入</span><strong>{{ status.routedAudioInput || '等待路由' }}</strong></div>
+      <div><span>输入信号</span><strong>{{ signal(status) }}</strong></div>
     </div>
 
     <div class="asr-results">

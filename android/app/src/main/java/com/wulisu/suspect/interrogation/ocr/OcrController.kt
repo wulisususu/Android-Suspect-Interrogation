@@ -44,15 +44,13 @@ class OcrController(
     private val operationLock = Any()
     private val controlLock = Any()
     private val cacheRoot = File(context.cacheDir, "ocr").apply { mkdirs() }
-    private val dictionary by lazy { loadPpocrV4Dictionary() }
-
     @Volatile
     private var activeModelRoot: File? = null
     private val switcher = OcrEngineSwitcher { spec ->
         when {
             spec.provider == "onnxruntime-cpu" -> OnnxPpocrV4Engine(
                 modelRoot = requireNotNull(activeModelRoot),
-                dictionary = dictionary,
+                dictionary = loadPpocrV4Dictionary(requireNotNull(activeModelRoot)),
                 modelSpec = spec,
             )
             spec.provider == "paddle-inference" -> PaddlePirOcrEngine(spec)
@@ -257,8 +255,12 @@ class OcrController(
         )
     }
 
-    private fun loadPpocrV4Dictionary(): List<String> {
-        val entries = context.assets.open("models/ocr/ppocr_keys_v1.txt").bufferedReader(Charsets.UTF_8).useLines { lines ->
+    private fun loadPpocrV4Dictionary(modelRoot: File): List<String> {
+        val dictionaryFile = File(modelRoot, "ppocr_keys_v1.txt")
+        if (!dictionaryFile.isFile || !dictionaryFile.canRead()) {
+            throw BusinessException("OCR_DICTIONARY_MISSING", "无法读取 OCR 字典 ${dictionaryFile.absolutePath}")
+        }
+        val entries = dictionaryFile.bufferedReader(Charsets.UTF_8).useLines { lines ->
             lines.map { it }.toList()
         }
         return listOf("") + entries + listOf(" ")

@@ -10,12 +10,13 @@ class AsrModelSpecTest {
         val spec = AsrModelSpecs.ZIPFORMER_RK3576
 
         assertEquals(AsrModelId.ZIPFORMER_RK3576, AsrModelSpecs.default.id)
+        assertEquals("ASR:asr/zipformer_rk3576", spec.id.catalogId)
         assertEquals("rknn", spec.provider)
         assertEquals("zipformer", spec.modelType)
-        assertEquals("models/zipformer_rk3576/encoder.rknn", spec.encoder)
-        assertEquals("models/zipformer_rk3576/decoder.rknn", spec.decoder)
-        assertEquals("models/zipformer_rk3576/joiner.rknn", spec.joiner)
-        assertTrue(spec.requiredAssets.all { it.endsWith(".rknn") || it.endsWith("tokens.txt") })
+        assertEquals("/sdcard/models/asr/zipformer_rk3576/encoder.rknn", spec.encoder)
+        assertEquals("/sdcard/models/asr/zipformer_rk3576/decoder.rknn", spec.decoder)
+        assertEquals("/sdcard/models/asr/zipformer_rk3576/joiner.rknn", spec.joiner)
+        assertTrue(spec.requiredFiles.all { it.endsWith(".rknn") || it.endsWith("tokens.txt") })
     }
 
     @Test
@@ -25,9 +26,9 @@ class AsrModelSpecTest {
         assertEquals("cpu", spec.provider)
         assertEquals("paraformer", spec.modelType)
         assertEquals(4, spec.numThreads)
-        assertEquals("models/paraformer_int8/encoder.int8.onnx", spec.encoder)
-        assertEquals("models/paraformer_int8/decoder.int8.onnx", spec.decoder)
-        assertTrue(spec.requiredAssets.none { it.endsWith("encoder.onnx") || it.endsWith("decoder.onnx") })
+        assertEquals("ASR:asr/paraformer_int8", spec.id.catalogId)
+        assertEquals("/sdcard/models/asr/paraformer_int8/encoder.int8.onnx", spec.encoder)
+        assertEquals("/sdcard/models/asr/paraformer_int8/decoder.int8.onnx", spec.decoder)
+        assertTrue(spec.requiredFiles.none { it.endsWith("encoder.onnx") || it.endsWith("decoder.onnx") })
     }
 }
-

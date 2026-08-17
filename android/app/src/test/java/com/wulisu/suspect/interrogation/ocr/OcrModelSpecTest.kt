@@ -21,6 +21,7 @@ class OcrModelSpecTest {
         assertEquals("onnxruntime-cpu", spec.provider)
         assertEquals("ppocrv4_det.onnx", spec.requiredFiles[0])
         assertEquals("ppocrv4_rec.onnx", spec.requiredFiles[1])
+        assertTrue(spec.requiredFiles.contains("ppocr_keys_v1.txt"))
         assertFalse(spec.provider.contains("rknn", ignoreCase = true))
     }
 

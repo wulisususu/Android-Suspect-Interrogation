@@ -6,7 +6,6 @@ import android.os.Build
 import android.os.Environment
 import androidx.documentfile.provider.DocumentFile
 import com.wulisu.suspect.interrogation.asr.AsrModelSpecs
-import com.wulisu.suspect.interrogation.asr.BundledAsrModels
 import com.wulisu.suspect.interrogation.domain.BusinessException
 import com.wulisu.suspect.interrogation.llm.LlmCompatibility
 import com.wulisu.suspect.interrogation.llm.LlmDevicePlatform
@@ -27,12 +26,11 @@ class ModelManager(
     private val context: Context,
     private val scanner: ModelCatalogScanner = ModelCatalogScanner(),
 ) : LlmModelRepository {
-    private val root = File(context.filesDir, "models")
+    private val root = File(ModelDirectories.ROOT_PATH)
     private val prefs = context.getSharedPreferences("local_model_settings", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val bundledAsrModels = BundledAsrModels(context)
-    private val llmRoot = File("/sdcard/models")
-    private val externalModelRoots = listOf(llmRoot)
+    private val llmRoot = File(root, ModelCategory.LLM.directoryName)
+    private val legacyModelRoots = listOf(root)
 
     @Volatile
     private var cachedCatalog = LocalModelCatalog(root.absolutePath, emptyList())
@@ -48,29 +46,34 @@ class ModelManager(
         val selectedIds = ModelCategory.entries.associateWith { category ->
             prefs.getString(selectionKey(category), null).orEmpty()
         }.filterValues { it.isNotBlank() }.toMutableMap()
-        if (selectedIds[ModelCategory.ASR].isNullOrBlank()) {
-            selectedIds[ModelCategory.ASR] = AsrModelSpecs.default.id.catalogId
-            prefs.edit().putString(selectionKey(ModelCategory.ASR), AsrModelSpecs.default.id.catalogId).apply()
-        }
-
         val fileCatalog = scanner.scan(
             root,
             selectedIds,
-            externalRoots = externalModelRoots,
+            externalRoots = legacyModelRoots,
             devicePlatform = devicePlatform(),
         )
-        var models = fileCatalog.models + bundledAsrModels.descriptors(selectedIds[ModelCategory.ASR])
-        if (models.none { it.category == ModelCategory.ASR && it.selected }) {
-            val defaultId = AsrModelSpecs.default.id.catalogId
-            selectedIds[ModelCategory.ASR] = defaultId
-            prefs.edit().putString(selectionKey(ModelCategory.ASR), defaultId).apply()
-            models = fileCatalog.models.map { it.copy(selected = false) } + bundledAsrModels.descriptors(defaultId)
+        var models = fileCatalog.models
+        if (models.none { it.category == ModelCategory.ASR && it.selected && it.runtimeReady }) {
+            val fallback = models.firstOrNull {
+                it.category == ModelCategory.ASR && it.id == AsrModelSpecs.default.id.catalogId && it.runtimeReady
+            } ?: models.firstOrNull { it.category == ModelCategory.ASR && it.runtimeReady }
+            if (fallback == null) {
+                selectedIds.remove(ModelCategory.ASR)
+                prefs.edit().remove(selectionKey(ModelCategory.ASR)).apply()
+                models = models.map { if (it.category == ModelCategory.ASR) it.copy(selected = false) else it }
+            } else {
+                selectedIds[ModelCategory.ASR] = fallback.id
+                prefs.edit().putString(selectionKey(ModelCategory.ASR), fallback.id).apply()
+                models = models.map {
+                    if (it.category == ModelCategory.ASR) it.copy(selected = it.id == fallback.id) else it
+                }
+            }
         }
         val catalog = LocalModelCatalog(fileCatalog.rootPath, models)
         clearMissingSelections(
             catalog,
             selectedIds,
-            preserveMissingCategories = if (storagePermissionGranted()) emptySet() else setOf(ModelCategory.LLM),
+            preserveMissingCategories = if (storagePermissionGranted()) emptySet() else ModelCategory.entries.toSet(),
         )
         cachedCatalog = catalog
         hasScanned = true

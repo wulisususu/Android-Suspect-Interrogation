@@ -264,11 +264,20 @@ class OnnxPpocrV4Engine(
     private fun toDetectedBox(minX: Int, minY: Int, maxX: Int, maxY: Int, transform: OcrImageTransform): DetectedBox {
         val leftTop = transform.toOriginal(OcrPoint(minX.toFloat(), minY.toFloat()))
         val rightBottom = transform.toOriginal(OcrPoint((maxX + 1).toFloat(), (maxY + 1).toFloat()))
-        val rect = OcrRect(
+        val detectedRect = OcrRect(
             left = min(leftTop.x, rightBottom.x),
             top = min(leftTop.y, rightBottom.y),
             right = max(leftTop.x, rightBottom.x),
             bottom = max(leftTop.y, rightBottom.y),
+        )
+        val width = detectedRect.right - detectedRect.left
+        val height = detectedRect.bottom - detectedRect.top
+        val margin = width * height * DET_UNCLIP_RATIO / (2f * (width + height).coerceAtLeast(1f))
+        val rect = OcrRect(
+            left = detectedRect.left - margin,
+            top = detectedRect.top - margin,
+            right = detectedRect.right + margin,
+            bottom = detectedRect.bottom + margin,
         )
         val points = listOf(
             OcrPoint(rect.left, rect.top),
@@ -341,6 +350,7 @@ class OnnxPpocrV4Engine(
         private const val BOX_THRESHOLD = 0.45f
         private const val MIN_DET_AREA = 16
         private const val MAX_BOXES = 80
+        private const val DET_UNCLIP_RATIO = 1.5f
         private const val VERTICAL_CROP_RATIO = 1.2f
         private val DET_MEAN = floatArrayOf(0.485f, 0.456f, 0.406f)
         private val DET_STD = floatArrayOf(0.229f, 0.224f, 0.225f)

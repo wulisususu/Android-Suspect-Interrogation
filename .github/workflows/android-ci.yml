@@ -28,63 +28,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository with Git LFS
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          lfs: true
           fetch-depth: 0
-
-      - name: Verify Git LFS model payloads
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          model_root='android/app/src/main/assets/models'
-          lfs_signature='version https://git-lfs.github.com/spec/v1'
-          required_models=(
-            'zipformer_rk3576/encoder.rknn'
-            'zipformer_rk3576/decoder.rknn'
-            'zipformer_rk3576/joiner.rknn'
-            'paraformer_int8/encoder.int8.onnx'
-            'paraformer_int8/decoder.int8.onnx'
-          )
-
-          git lfs version
-          git lfs pull
-
-          for relative_path in "${required_models[@]}"; do
-            model="$model_root/$relative_path"
-            if [[ ! -f "$model" ]]; then
-              echo "::error file=$model::Required bundled ASR model is missing"
-              exit 1
-            fi
-          done
-
-          mapfile -d '' model_files < <(
-            find "$model_root" -type f \( -name '*.onnx' -o -name '*.rknn' \) -print0
-          )
-          if (( ${#model_files[@]} == 0 )); then
-            echo "::error::No .onnx or .rknn model files found under $model_root"
-            exit 1
-          fi
-
-          for model in "${model_files[@]}"; do
-            filter_attr="$(git check-attr filter -- "$model" | awk -F': ' '{print $3}')"
-            if [[ "$filter_attr" != 'lfs' ]]; then
-              echo "::error file=$model::Model is not covered by Git LFS attributes"
-              exit 1
-            fi
-            if head -c 512 "$model" | grep -aFq "$lfs_signature"; then
-              echo "::error file=$model::Git LFS pointer detected; real model payload was not materialized"
-              exit 1
-            fi
-            size="$(stat -c '%s' "$model")"
-            if (( size < 1024 )); then
-              echo "::error file=$model::Model payload is implausibly small: $size bytes"
-              exit 1
-            fi
-            echo "Verified model payload: $model ($size bytes)"
-          done
 
       - name: Git whitespace check
         run: git diff --check HEAD^
@@ -129,7 +76,7 @@ jobs:
       - name: Verify single ONNX Runtime native source
         run: gradle -p android verifyDebugOnnxRuntimeNative --stacktrace --console=plain
 
-      - name: Verify APK web assets, models and native libraries
+      - name: Verify APK web assets, external model boundary and native libraries
         shell: bash
         run: |
           set -euo pipefail
@@ -143,19 +90,12 @@ jobs:
               raise SystemExit(f'No debug APK found under {apk_dir}')
           apk = apks[-1]
 
-          lfs_signature = b'version https://git-lfs.github.com/spec/v1'
           required_assets = [
               'assets/webapp/index.html',
-              'assets/models/zipformer_rk3576/encoder.rknn',
-              'assets/models/zipformer_rk3576/decoder.rknn',
-              'assets/models/zipformer_rk3576/joiner.rknn',
-              'assets/models/zipformer_rk3576/tokens.txt',
-              'assets/models/paraformer_int8/encoder.int8.onnx',
-              'assets/models/paraformer_int8/decoder.int8.onnx',
-              'assets/models/paraformer_int8/tokens.txt',
           ]
           required_native_libraries = [
               'lib/arm64-v8a/libonnxruntime.so',
+              'lib/arm64-v8a/libonnxruntime4j_jni.so',
               'lib/arm64-v8a/libomp.so',
               'lib/arm64-v8a/librkllmrt.so',
               'lib/arm64-v8a/librkllm_jni.so',
@@ -173,21 +113,16 @@ jobs:
               if missing_assets:
                   raise SystemExit('Required APK assets are missing: ' + ', '.join(missing_assets))
 
-              model_entries = sorted(
+              forbidden_model_entries = sorted(
                   entry for entry in entries
                   if entry.startswith('assets/models/')
-                  and entry.lower().endswith(('.onnx', '.rknn'))
+                  and (
+                      entry.lower().endswith(('.onnx', '.rknn', '.rkllm', '.pdiparams', '.pdmodel'))
+                      or entry.endswith('ppocr_keys_v1.txt')
+                  )
               )
-              if not model_entries:
-                  raise SystemExit('APK contains no bundled .onnx/.rknn model payloads')
-              for entry in model_entries:
-                  info = archive.getinfo(entry)
-                  with archive.open(entry) as stream:
-                      header = stream.read(512)
-                  if lfs_signature in header:
-                      raise SystemExit(f'Git LFS pointer detected inside APK: {entry}')
-                  if info.file_size < 1024:
-                      raise SystemExit(f'APK model payload is implausibly small: {entry} ({info.file_size} bytes)')
+              if forbidden_model_entries:
+                  raise SystemExit('Runtime model payloads must be external: ' + ', '.join(forbidden_model_entries))
 
               missing_libraries = [entry for entry in required_native_libraries if entry not in names]
               if missing_libraries:
@@ -196,10 +131,13 @@ jobs:
               ort_count = entries.count('lib/arm64-v8a/libonnxruntime.so')
               if ort_count != 1:
                   raise SystemExit(f'Expected exactly one libonnxruntime.so in APK, found {ort_count}')
+              ort_jni_count = entries.count('lib/arm64-v8a/libonnxruntime4j_jni.so')
+              if ort_jni_count != 1:
+                  raise SystemExit(f'Expected exactly one libonnxruntime4j_jni.so in APK, found {ort_jni_count}')
 
               arm64 = sorted(entry for entry in entries if entry.startswith('lib/arm64-v8a/') and entry.endswith('.so'))
               print(f'Verified APK: {apk}')
-              print(f'Bundled model payloads: {len(model_entries)}')
+              print('Runtime model payloads: external only')
               print(f'arm64-v8a native libraries ({len(arm64)}):')
               for entry in arm64:
                   print('  ' + entry)

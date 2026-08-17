@@ -72,11 +72,24 @@ temperature = 1.0
 
 智谱 API Key 不写死在源码或 APK 配置中：用户在 APP 内录入后，使用 Android Keystore + AES-GCM 加密保存；设置页面只返回“已配置 / 未配置”，不会回显 Key 明文。
 
-目前本地模型 Provider 接口已经存在，但 JNI / RKNN / llama.cpp Runtime 尚未接入，所以：
+本地模型 Runtime 已接入，所有运行时模型统一放在 `/sdcard/models/`：
 
-- `LOCAL` 当前会明确返回本地模型未配置；
-- `OFFLINE_ONLY` 当前会明确失败且不会访问云端；
-- `AUTO` 当前在本地不可用时会走已配置的智谱 Provider。
+- ASR：`/sdcard/models/asr/` 下的 Zipformer RKNN（RK3576 NPU）和 Paraformer INT8（ONNX Runtime CPU），可在运行时切换；
+- OCR：`/sdcard/models/ocr/` 下的 `ppocrv4_det.onnx`、`ppocrv4_rec.onnx` 和 `ppocr_keys_v1.txt`，使用 ONNX Runtime CPU；PP-OCRv6 Paddle PIR 压缩包目前只检测完整性，尚无可运行 Runtime；
+- LLM：优先扫描 `/sdcard/models/llm/` 下的 RK3576 `.rkllm` 模型，并兼容原先直接放在 `/sdcard/models/` 下的文件，使用 RKLLM 1.3.0 / RK3576 NPU；
+- `LOCAL` 和 `OFFLINE_ONLY` 在选择兼容的 RKLLM 模型后执行本地推理；`AUTO` 在本地不可用或失败时可回退已配置的智谱 Provider。
+
+模型权重不随 APK 分发。首次使用前需授权设备模型目录，并按以下结构部署、扫描和选择兼容模型：
+
+```text
+/sdcard/models/
+├── asr/zipformer_rk3576/{encoder.rknn,decoder.rknn,joiner.rknn,tokens.txt}
+├── asr/paraformer_int8/{encoder.int8.onnx,decoder.int8.onnx,tokens.txt}
+├── ocr/{ppocrv4_det.onnx,ppocrv4_rec.onnx,ppocr_keys_v1.txt}
+├── llm/*.rkllm
+├── vad/
+└── speaker/
+```
 
 ## 浏览器联调
 
