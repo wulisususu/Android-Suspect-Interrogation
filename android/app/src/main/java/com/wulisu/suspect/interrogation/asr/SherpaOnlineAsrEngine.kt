@@ -67,8 +67,11 @@ abstract class SherpaOnlineAsrEngine(
                     throw BusinessException("ASR_AUDIO_START_FAILED", "麦克风未进入录音状态")
                 }
                 val routedInput = recorder.routedDevice
-                if (preferredInput != null && routedInput != null && AndroidAudioInputSelector.kind(routedInput) != AudioInputKind.BUILT_IN) {
-                    throw BusinessException("ASR_AUDIO_ROUTE_FAILED", "系统未采用板载麦克风，实际路由为 ${AndroidAudioInputSelector.describe(routedInput)}")
+                val preferredKind = AndroidAudioInputSelector.kind(preferredInput)
+                if (preferredInput != null && routedInput != null && preferredKind != null &&
+                    AndroidAudioInputSelector.kind(routedInput) != preferredKind
+                ) {
+                    throw BusinessException("ASR_AUDIO_ROUTE_FAILED", "系统未采用所选麦克风，实际路由为 ${AndroidAudioInputSelector.describe(routedInput)}")
                 }
                 val initialAudioStatus = AsrAudioInputStatus(
                     preferredInput = AndroidAudioInputSelector.describe(preferredInput),
@@ -173,7 +176,7 @@ abstract class SherpaOnlineAsrEngine(
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
         val minBufferBytes = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
         val samples = ShortArray(maxOf(minBufferBytes / 2, SAMPLES_PER_BATCH))
-        val signalMonitor = PcmSignalMonitor(SAMPLE_RATE)
+        val signalMonitor = PcmSignalMonitor(SAMPLE_RATE, silenceWindowSeconds = SILENT_ABORT_SECONDS)
         var routedInput = initialRoutedInput
         var lastAudioStatus = AsrAudioInputStatus(
             preferredInput = AndroidAudioInputSelector.describe(preferredInput),
@@ -200,15 +203,26 @@ abstract class SherpaOnlineAsrEngine(
 
         fun normalizeSegment(src: FloatArray): FloatArray {
             var peak = 0f
+            var sumSq = 0.0
             for (s in src) {
                 val a = if (s < 0f) -s else s
                 if (a > peak) peak = a
+                sumSq += (s * s).toDouble()
             }
-            if (peak > 0f && peak < NORMALIZE_MIN_PEAK) {
-                val gain = minOf(NORMALIZE_MAX_GAIN, NORMALIZE_CEILING / peak)
-                return FloatArray(src.size) { i -> src[i] * gain }
-            }
-            return src
+            val rms = kotlin.math.sqrt(sumSq / src.size).toFloat()
+            // Loudness normalization: bring quiet input (this device's mic returns only a
+            // few % of full scale for real speech) up to a decodable level. Whisper tolerates
+            // low levels; zipformer/paraformer here decode effectively only above ~12-50% FS.
+            val gain = if (rms > 0f) {
+                minOf(NORMALIZE_MAX_GAIN, NORMALIZE_CEILING / peak, NORMALIZE_TARGET_RMS / rms)
+            } else 0f
+            val normalized = FloatArray(src.size) { i -> src[i] * gain }
+            Log.i(
+                OHASR_TAG,
+                "segment level: rawPeak=${(peak * 32768f).toInt()} rawRmsDbfs=${(20.0 * kotlin.math.log10(rms.toDouble() + 1e-9)).toInt()}dB" +
+                    " gain=${"%.1f".format(gain)} outPeak=${(peak * gain * 32768f).toInt()}",
+            )
+            return normalized
         }
 
         fun decodeSegment(rawSamples: FloatArray) {
@@ -253,8 +267,9 @@ abstract class SherpaOnlineAsrEngine(
                 if (count > 0) {
                     routedInput = recorder.routedDevice ?: routedInput
                     val routedKind = AndroidAudioInputSelector.kind(routedInput)
-                    if (preferredInput != null && routedInput != null && routedKind != AudioInputKind.BUILT_IN) {
-                        throw BusinessException("ASR_AUDIO_ROUTE_FAILED", "系统未采用板载麦克风，实际路由为 ${AndroidAudioInputSelector.describe(routedInput)}")
+                    val preferredKind = AndroidAudioInputSelector.kind(preferredInput)
+                    if (preferredInput != null && routedInput != null && preferredKind != null && routedKind != preferredKind) {
+                        throw BusinessException("ASR_AUDIO_ROUTE_FAILED", "系统未采用所选麦克风，实际路由为 ${AndroidAudioInputSelector.describe(routedInput)}")
                     }
                     val signal = signalMonitor.accept(samples, count)
                     val audioStatus = AsrAudioInputStatus(
@@ -399,9 +414,12 @@ abstract class SherpaOnlineAsrEngine(
         private const val INTERRUPT_JOIN_TIMEOUT_MS = 1_000L
         private const val DIAGNOSTIC_INTERVAL_MS = 5_000L
         private const val SEGMENT_SAMPLES = 128_000 // 8 seconds of 16 kHz audio per decode window
-        private const val NORMALIZE_MIN_PEAK = 0.12f // below ~12% full-scale: quiet source
+        // Interrogation flow has pauses longer than 3s; only abort when the (now preferred
+        // USB) mic shows true silence for a long stretch - typically a detached/broken mic.
+        private const val SILENT_ABORT_SECONDS = 20
         private const val NORMALIZE_CEILING = 0.95f
-        private const val NORMALIZE_MAX_GAIN = 8f
+        private const val NORMALIZE_MAX_GAIN = 64f
+        private const val NORMALIZE_TARGET_RMS = 0.05f // ~-26 dBFS target loudness
         private const val AUDIO_STATUS_INTERVAL_MS = 500L
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT

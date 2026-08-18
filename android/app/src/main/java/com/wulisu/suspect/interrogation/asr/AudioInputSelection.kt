@@ -13,8 +13,14 @@ data class AudioInputCandidate(
 )
 
 object AudioInputSelectionPolicy {
+    /**
+     * Pick the input the operator actually talks into. On this rig the on-board DMIC
+     * (YF_033B) reports BUILT_IN but delivers only digital silence (-60 dBFS) — the real
+     * microphone is the USB device (HK DXMIC V1). Prefer USB, fall back to built-in.
+     */
     fun select(candidates: List<AudioInputCandidate>): AudioInputCandidate? =
-        candidates.firstOrNull { it.kind == AudioInputKind.BUILT_IN }
+        candidates.firstOrNull { it.kind == AudioInputKind.USB }
+            ?: candidates.firstOrNull { it.kind == AudioInputKind.BUILT_IN }
 }
 
 internal class AndroidAudioInputSelector(context: Context) {
