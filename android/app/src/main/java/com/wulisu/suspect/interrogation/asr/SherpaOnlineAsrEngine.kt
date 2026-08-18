@@ -53,8 +53,9 @@ abstract class SherpaOnlineAsrEngine(
             try {
                 val recognizer = OnlineRecognizer(config = recognizerConfig())
                 this.recognizer = recognizer
-                val stream = recognizer.createStream()
-                this.stream = stream
+                // No long-lived main stream: the RKNN provider on this device never reports
+                // isReady() while a stream is fed incrementally, so the audio loop decodes
+                // each accumulated window as a finished utterance on a fresh per-segment stream.
                 val preferredInput = audioInputSelector.selectPreferred()
                 val recorder = createAudioRecord(preferredInput)
                 this.audioRecord = recorder
@@ -79,7 +80,7 @@ abstract class SherpaOnlineAsrEngine(
                 listener.onAudioInputStatus(initialAudioStatus)
 
                 val thread = Thread(
-                    { runAudioLoop(listener, recorder, recognizer, stream, preferredInput, routedInput) },
+                    { runAudioLoop(listener, recorder, recognizer, preferredInput, routedInput) },
                     "offline-asr-${spec.id.wireValue}",
                 )
                 audioThread = thread
@@ -166,18 +167,12 @@ abstract class SherpaOnlineAsrEngine(
         listener: AsrListener,
         recorder: AudioRecord,
         recognizer: OnlineRecognizer,
-        stream: OnlineStream,
         preferredInput: AudioDeviceInfo?,
         initialRoutedInput: AudioDeviceInfo?,
     ) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
         val minBufferBytes = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
         val samples = ShortArray(maxOf(minBufferBytes / 2, SAMPLES_PER_BATCH))
-        var previousText = ""
-        var windowStartedElapsed = SystemClock.elapsedRealtime()
-        var speechStartedElapsed = 0L
-        var speechStartedWall = 0L
-        var firstTokenObserved = false
         val signalMonitor = PcmSignalMonitor(SAMPLE_RATE)
         var routedInput = initialRoutedInput
         var lastAudioStatus = AsrAudioInputStatus(
@@ -188,49 +183,69 @@ abstract class SherpaOnlineAsrEngine(
             signalState = AudioSignalState.WAITING,
         )
         var lastAudioStatusAt = 0L
+        var lastDiagnosticAt = 0L
 
-        fun decodeReady() {
-            while (recognizer.isReady(stream)) {
-                recognizer.decode(stream)
-                val text = recognizer.getResult(stream).text.trim()
-                if (text != previousText) {
-                    val now = SystemClock.elapsedRealtime()
-                    var firstTokenLatency: Long? = null
-                    if (text.isNotEmpty() && !firstTokenObserved) {
-                        firstTokenObserved = true
-                        firstTokenLatency = now - speechStartedElapsed.takeIf { it > 0L }.let { it ?: windowStartedElapsed }
-                    }
-                    previousText = text
-                    listener.onPartialResult(text, firstTokenLatency)
+        // Segment-as-offline pipeline. RKNN Zipformer in this sherpa-onnx build never
+        // reports isReady() while a stream is fed incrementally (streaming path dead),
+        // but it decodes correctly once inputFinished() has been called. So we accumulate
+        // audio into fixed windows and decode each window as a finished utterance on a
+        // fresh stream, from a dedicated decoder thread so recording never blocks.
+        val segmentBuffer = FloatArray(SEGMENT_SAMPLES)
+        var segmentFilled = 0
+        val segments = java.util.concurrent.LinkedBlockingQueue<FloatArray>()
+        val transcript = StringBuilder()
+        val decodeRunning = AtomicBoolean(true)
+        val startedElapsed = SystemClock.elapsedRealtime()
+        val startedWall = System.currentTimeMillis()
+
+        fun normalizeSegment(src: FloatArray): FloatArray {
+            var peak = 0f
+            for (s in src) {
+                val a = if (s < 0f) -s else s
+                if (a > peak) peak = a
+            }
+            if (peak > 0f && peak < NORMALIZE_MIN_PEAK) {
+                val gain = minOf(NORMALIZE_MAX_GAIN, NORMALIZE_CEILING / peak)
+                return FloatArray(src.size) { i -> src[i] * gain }
+            }
+            return src
+        }
+
+        fun decodeSegment(rawSamples: FloatArray) {
+            val normalized = normalizeSegment(rawSamples)
+            val segStream = recognizer.createStream()
+            try {
+                segStream.acceptWaveform(normalized, SAMPLE_RATE)
+                segStream.inputFinished()
+                var text = ""
+                while (recognizer.isReady(segStream)) {
+                    recognizer.decode(segStream)
+                    text = recognizer.getResult(segStream).text.trim()
                 }
+                if (text.isNotEmpty()) {
+                    transcript.append(text)
+                    val cumulative = transcript.toString()
+                    listener.onPartialResult(cumulative, null)
+                    Log.i(OHASR_TAG, "segment: '$text' cumulative='${cumulative.take(96)}'")
+                } else {
+                    Log.d(OHASR_TAG, "segment decoded empty (${rawSamples.size / SAMPLE_RATE}s window)")
+                }
+            } finally {
+                runCatching { segStream.release() }
             }
         }
 
-        fun finalizeUtterance(reset: Boolean) {
-            val recognizerResult = recognizer.getResult(stream)
-            val text = recognizerResult.text.trim().ifEmpty { previousText }
-            if (text.isNotEmpty()) {
-                val endedElapsed = SystemClock.elapsedRealtime()
-                val endedWall = System.currentTimeMillis()
-                val startedElapsed = speechStartedElapsed.takeIf { it > 0L } ?: endedElapsed
-                val startedWall = speechStartedWall.takeIf { it > 0L } ?: endedWall
-                listener.onFinalResult(
-                    AsrFinalResult(
-                        text = text,
-                        startedAtMs = startedWall,
-                        endedAtMs = endedWall,
-                        latencyMs = endedElapsed - startedElapsed,
-                        confidence = AsrConfidence.fromLogProbabilities(recognizerResult.ysProbs),
-                    ),
-                )
-            }
-            if (reset) recognizer.reset(stream)
-            previousText = ""
-            speechStartedElapsed = 0L
-            speechStartedWall = 0L
-            firstTokenObserved = false
-            windowStartedElapsed = SystemClock.elapsedRealtime()
-        }
+        val decodeThread = Thread(
+            {
+                while (decodeRunning.get() || !segments.isEmpty()) {
+                    val segment = segments.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
+                    runCatching { decodeSegment(segment) }
+                        .onFailure { Log.e(OHASR_TAG, "segment decode failed", it) }
+                }
+                Log.i(OHASR_TAG, "decoder thread finished")
+            },
+            "offline-asr-seg-${spec.id.wireValue}",
+        ).apply { start() }
 
         try {
             while (recording.get()) {
@@ -249,6 +264,14 @@ abstract class SherpaOnlineAsrEngine(
                         peak = signal.peak,
                         signalState = signal.state,
                     )
+                    if (SystemClock.elapsedRealtime() - lastDiagnosticAt >= DIAGNOSTIC_INTERVAL_MS) {
+                        lastDiagnosticAt = SystemClock.elapsedRealtime()
+                        Log.i(
+                            OHASR_TAG,
+                            "audio peak=${signal.peak} state=${signal.state} routed=${AndroidAudioInputSelector.describe(routedInput)} " +
+                                "queued=${segments.size} cumulative='${transcript.takeLast(48)}'",
+                        )
+                    }
                     val now = SystemClock.elapsedRealtime()
                     if (
                         audioStatus.signalState != lastAudioStatus.signalState ||
@@ -267,24 +290,18 @@ abstract class SherpaOnlineAsrEngine(
                     }
                     listener.onAudioSamples(samples, count, SAMPLE_RATE, System.currentTimeMillis())
                     val normalized = FloatArray(count) { index -> samples[index] / 32768.0f }
-                    if (speechStartedElapsed == 0L) {
-                        val meanSquare = normalized.sumOf { sample -> (sample * sample).toDouble() } / count
-                        if (meanSquare >= SPEECH_ACTIVITY_MEAN_SQUARE) {
-                            speechStartedElapsed = SystemClock.elapsedRealtime()
-                            speechStartedWall = System.currentTimeMillis()
-                        }
+                    // accumulate into the current segment window (v1: fixed windows, no overlap)
+                    val copyLen = minOf(count, segmentBuffer.size - segmentFilled)
+                    System.arraycopy(normalized, 0, segmentBuffer, segmentFilled, copyLen)
+                    segmentFilled += copyLen
+                    if (segmentFilled >= segmentBuffer.size) {
+                        segments.offer(segmentBuffer.copyOf())
+                        segmentFilled = 0
                     }
-                    stream.acceptWaveform(normalized, SAMPLE_RATE)
-                    decodeReady()
-                    if (recognizer.isEndpoint(stream)) finalizeUtterance(reset = true)
                 } else if (count < 0 && recording.get()) {
                     throw IllegalStateException("AudioRecord.read failed: $count")
                 }
             }
-
-            stream.inputFinished()
-            decodeReady()
-            finalizeUtterance(reset = false)
         } catch (error: Throwable) {
             if (recording.get()) {
                 Log.e(TAG, "ASR audio loop failed for ${spec.id.wireValue}", error)
@@ -294,6 +311,26 @@ abstract class SherpaOnlineAsrEngine(
                 )
             }
         } finally {
+            // flush the remaining tail as a final short segment, then let the decoder drain
+            if (segmentFilled > 0) {
+                segments.offer(segmentBuffer.copyOf(segmentFilled))
+                segmentFilled = 0
+            }
+            decodeRunning.set(false)
+            runCatching { decodeThread.join(DECODER_JOIN_TIMEOUT_MS) }
+            val transcriptText = transcript.toString()
+            if (transcriptText.isNotEmpty()) {
+                listener.onFinalResult(
+                    AsrFinalResult(
+                        text = transcriptText,
+                        startedAtMs = startedWall,
+                        endedAtMs = System.currentTimeMillis(),
+                        latencyMs = SystemClock.elapsedRealtime() - startedElapsed,
+                        confidence = null,
+                    ),
+                )
+                Log.i(OHASR_TAG, "final: '$transcriptText'")
+            }
             recording.set(false)
             cleanupResources()
         }
@@ -354,11 +391,17 @@ abstract class SherpaOnlineAsrEngine(
 
     companion object {
         private const val TAG = "OfflineAsr"
+        private const val OHASR_TAG = "OhASR"
         private const val SAMPLE_RATE = 16_000
         private const val SAMPLES_PER_BATCH = 1_600
-        private const val STOP_JOIN_TIMEOUT_MS = 5_000L
+        private const val STOP_JOIN_TIMEOUT_MS = 40_000L
+        private const val DECODER_JOIN_TIMEOUT_MS = 35_000L
         private const val INTERRUPT_JOIN_TIMEOUT_MS = 1_000L
-        private const val SPEECH_ACTIVITY_MEAN_SQUARE = 0.000225
+        private const val DIAGNOSTIC_INTERVAL_MS = 5_000L
+        private const val SEGMENT_SAMPLES = 128_000 // 8 seconds of 16 kHz audio per decode window
+        private const val NORMALIZE_MIN_PEAK = 0.12f // below ~12% full-scale: quiet source
+        private const val NORMALIZE_CEILING = 0.95f
+        private const val NORMALIZE_MAX_GAIN = 8f
         private const val AUDIO_STATUS_INTERVAL_MS = 500L
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
