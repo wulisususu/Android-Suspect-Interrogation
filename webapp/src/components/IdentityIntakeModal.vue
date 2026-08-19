@@ -10,14 +10,16 @@ import {
   recognizeOcrImage,
   selectLocalModel,
 } from '../api/interrogation'
+import { updateCaseFact } from '../api/caseProfile'
 import { isNativeBusinessRuntime } from '../native/rpcBridge'
 import type { CaseSummary, LocalModelDescriptor, OcrResult } from '../types/interrogation'
 import { calculateAge, parseIdentityCardOcr } from '../utils/identityOcr'
 
 const emit = defineEmits<{ close: []; created: [item: CaseSummary] }>()
 
-const native = computed(() => isNativeBusinessRuntime())
-const method = ref<'manual' | 'ocr'>('manual')
+const nativeRuntime = isNativeBusinessRuntime()
+const native = computed(() => nativeRuntime)
+const method = ref<'manual' | 'ocr'>(nativeRuntime ? 'ocr' : 'manual')
 const busy = ref('')
 const error = ref('')
 const previewError = ref('')
@@ -35,7 +37,9 @@ const form = reactive({
   birthDate: '',
   age: '',
   idNumber: '',
-  address: '',
+  idCardAddress: '',
+  currentAddress: '',
+  caseType: '',
   officerName: '当前警官',
 })
 
@@ -95,7 +99,7 @@ function applyOcr(result: OcrResult) {
   if (parsed.birthDate) form.birthDate = parsed.birthDate
   if (parsed.age) form.age = parsed.age
   if (parsed.idNumber) form.idNumber = parsed.idNumber
-  if (parsed.address) form.address = parsed.address
+  if (parsed.address) form.idCardAddress = parsed.address
   ocrApplied.value = true
   if (!parsed.suspectName && !parsed.idNumber) {
     error.value = 'OCR 已完成，但未能可靠定位身份证关键字段。请检查图片方向/清晰度，或直接手动修正。'
@@ -140,21 +144,47 @@ async function submit() {
     error.value = '身份证号码格式不正确，请核对后再创建询问。'
     return
   }
+
   busy.value = 'submit'
   try {
-    const item = await createCase({
+    const identityCapturedAt = Date.now()
+    const payload = {
       suspectName: name,
       gender: form.gender.trim(),
       nation: form.nation.trim(),
       birthDate: form.birthDate.trim(),
       age: form.age.trim() || calculateAge(form.birthDate),
       idNumber,
-      address: form.address.trim(),
+      address: form.idCardAddress.trim(),
       officerName: form.officerName.trim() || '当前警官',
       identitySource: ocrApplied.value ? 'OCR' : 'MANUAL',
-      identityCapturedAt: Date.now(),
+      identityCapturedAt,
+    }
+    const item = await createCase(payload)
+
+    if (native.value) {
+      await Promise.all([
+        updateCaseFact(item.id, 'current_address', {
+          value: form.currentAddress.trim() || '未录入',
+          status: form.currentAddress.trim() ? 'confirmed' : 'missing',
+        }),
+        updateCaseFact(item.id, 'case_type', {
+          value: form.caseType.trim() || '未录入',
+          status: form.caseType.trim() ? 'confirmed' : 'missing',
+        }),
+      ])
+    } else {
+      localStorage.setItem(`case-profile:${item.id}`, JSON.stringify({
+        ...form,
+        suspectName: name,
+        idNumber,
+      }))
+    }
+
+    emit('created', {
+      ...item,
+      ...payload,
     })
-    emit('created', item)
   } catch (e) {
     error.value = backendErrorMessage(e)
   } finally {
@@ -170,19 +200,19 @@ onMounted(loadOcrModels)
     <section class="identity-modal">
       <header class="identity-header">
         <div>
-          <h2>新建询问 · 身份录入</h2>
-          <p>先确认被询问人身份，再进入审讯工作台。OCR 结果仅用于自动回填，创建前可人工修正。</p>
+          <h2>新建询问 · 身份与案件信息</h2>
+          <p>首次建档在这里完成：优先用高拍仪读取身份证，再补充现住址、案件类型和主审民警。</p>
         </div>
         <button class="close-btn" type="button" :disabled="!!busy" @click="emit('close')">关闭</button>
       </header>
 
       <div class="identity-methods">
+        <button type="button" :class="{ active: method === 'ocr' }" @click="method = 'ocr'">高拍仪 / OCR</button>
         <button type="button" :class="{ active: method === 'manual' }" @click="method = 'manual'">手动录入</button>
-        <button type="button" :class="{ active: method === 'ocr' }" @click="method = 'ocr'">OCR 身份证识别</button>
       </div>
 
       <div v-if="method === 'ocr'" class="ocr-intake-card">
-        <div v-if="!native" class="identity-note warning">当前是浏览器联调环境，拍照/OCR 需要 Android APK；你仍可切回“手动录入”。</div>
+        <div v-if="!native" class="identity-note warning">当前是浏览器联调环境，高拍仪 / OCR 需要 Android APK；你可以切换到“手动录入”。</div>
         <template v-else>
           <div class="ocr-toolbar">
             <label>
@@ -196,18 +226,18 @@ onMounted(loadOcrModels)
             </label>
             <div class="capture-actions">
               <button type="button" :disabled="!!busy || !selectedOcrModelId" @click="runOcr('camera')">
-                {{ busy === 'camera' || busy === 'recognize' ? '拍照识别中…' : '高拍仪 / 相机拍身份证' }}
+                {{ busy === 'camera' || busy === 'recognize' ? '读取识别中…' : '▣ 高拍仪读取身份证' }}
               </button>
               <button type="button" :disabled="!!busy || !selectedOcrModelId" @click="runOcr('pick')">选择身份证图片</button>
             </div>
           </div>
-          <p v-if="!usableOcrModels.length" class="identity-note warning">检测到 OCR 模型配置，但当前没有 `runtimeReady` 的模型。PP-OCRv6 Paddle PIR 若仍未接 Paddle Android Runtime，会在这里保持不可选。</p>
+          <p v-if="!usableOcrModels.length" class="identity-note warning">当前没有可运行的 OCR 模型，请先在 AI 设置中导入并选择 OCR 模型。</p>
           <div v-if="previewUri || rawOcrText" class="ocr-review">
             <div class="id-preview">
               <img
                 v-if="previewUri"
                 :src="previewUri"
-                alt="身份证拍照预览"
+                alt="身份证高拍仪预览"
                 @load="previewError = ''"
                 @error="previewError = '身份证图片预览加载失败，请重新拍照或选择。'"
               />
@@ -247,15 +277,23 @@ onMounted(loadOcrModels)
           </label>
           <label>
             <span>年龄</span>
-            <input v-model.trim="form.age" inputmode="numeric" placeholder="自动计算/可修正" />
+            <input v-model.trim="form.age" inputmode="numeric" placeholder="自动计算 / 可修正" />
           </label>
           <label class="wide">
             <span>身份证号码</span>
             <input v-model.trim="form.idNumber" autocomplete="off" maxlength="18" placeholder="18 位身份证号码" />
           </label>
           <label class="full">
-            <span>住址</span>
-            <textarea v-model.trim="form.address" rows="2" placeholder="身份证住址或当前核实住址"></textarea>
+            <span>身份证住址</span>
+            <textarea v-model.trim="form.idCardAddress" rows="2" placeholder="由身份证 OCR 自动回填，也可人工修正"></textarea>
+          </label>
+          <label class="full">
+            <span>现住址</span>
+            <textarea v-model.trim="form.currentAddress" rows="2" placeholder="填写当前实际居住地址；与身份证住址相同也可再次确认"></textarea>
+          </label>
+          <label class="wide">
+            <span>案件类型</span>
+            <input v-model.trim="form.caseType" autocomplete="off" placeholder="如：盗窃、诈骗、故意伤害等" />
           </label>
           <label class="wide">
             <span>主审民警</span>
@@ -264,13 +302,13 @@ onMounted(loadOcrModels)
         </div>
 
         <div v-if="error" class="identity-note error">{{ error }}</div>
-        <div v-else-if="ocrApplied" class="identity-note success">OCR 字段已回填，请人工核对后点击“确认身份并创建询问”。</div>
+        <div v-else-if="ocrApplied" class="identity-note success">身份证字段已由高拍仪 / OCR 回填，请核对后补充案件信息并创建询问。</div>
 
         <footer class="identity-footer">
-          <span>创建后案件处于“身份核验 / 待开始”状态，不会自动生成任何问答。</span>
+          <span>创建后直接进入案件工作台；A 页用于后续查看和修正身份资料。</span>
           <div>
             <button type="button" :disabled="!!busy" @click="emit('close')">取消</button>
-            <button class="primary" type="submit" :disabled="!!busy">{{ busy === 'submit' ? '创建中…' : '确认身份并创建询问' }}</button>
+            <button class="primary" type="submit" :disabled="!!busy">{{ busy === 'submit' ? '创建中…' : '确认信息并创建询问' }}</button>
           </div>
         </footer>
       </form>
@@ -296,7 +334,7 @@ onMounted(loadOcrModels)
 .ocr-toolbar select:focus, .identity-form input:focus, .identity-form select:focus, .identity-form textarea:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, .1); }
 .capture-actions { display: flex; gap: 8px; }
 .capture-actions button { border: 1px solid #93c5fd; background: #fff; color: #1d4ed8; border-radius: 8px; padding: 9px 12px; white-space: nowrap; cursor: pointer; }
-.capture-actions button:first-child { background: #2563eb; color: #fff; border-color: #2563eb; }
+.capture-actions button:first-child { background: #2563eb; color: #fff; border-color: #2563eb; font-weight: 700; }
 button:disabled { opacity: .55; cursor: not-allowed; }
 .ocr-review { display: grid; grid-template-columns: minmax(230px, 36%) 1fr; gap: 12px; margin-top: 12px; }
 .id-preview { min-height: 150px; border: 1px dashed #94a3b8; border-radius: 10px; display: grid; place-items: center; overflow: hidden; background: #fff; color: #94a3b8; }

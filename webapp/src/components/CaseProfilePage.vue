@@ -20,7 +20,6 @@ const native = isNativeBusinessRuntime()
 const busy = ref('')
 const error = ref('')
 const message = ref('')
-const previewUri = ref('')
 const rawOcrText = ref('')
 
 const form = reactive({
@@ -81,20 +80,19 @@ async function ensureOcrModel() {
   await selectLocalModel('OCR', candidate.id)
 }
 
-async function captureIdentity() {
+async function recaptureIdentity() {
   if (!native) {
-    error.value = '高拍仪 / OCR 仅在 Android APK 中可用。浏览器联调环境可继续手工录入。'
+    error.value = '重新读取身份证仅在 Android APK 中可用。浏览器联调环境可直接修改字段。'
     return
   }
   busy.value = 'ocr'
   error.value = ''
   message.value = ''
+  rawOcrText.value = ''
   try {
     await ensureOcrModel()
-    const status = await captureOcrImage()
-    previewUri.value = status.previewUri || ''
+    await captureOcrImage()
     const result = await recognizeOcrImage()
-    previewUri.value = result.previewUri || previewUri.value
     rawOcrText.value = result.text
     const parsed = parseIdentityCardOcr(result.text)
     if (parsed.suspectName) form.suspectName = parsed.suspectName
@@ -104,7 +102,7 @@ async function captureIdentity() {
     if (parsed.age) form.age = parsed.age
     if (parsed.idNumber) form.idNumber = parsed.idNumber
     if (parsed.address) form.idCardAddress = parsed.address
-    message.value = '身份证 OCR 已回填，请核对后保存。'
+    message.value = '身份证已重新读取并回填。请核对后点击“保存修改”。'
   } catch (err) {
     error.value = backendErrorMessage(err)
   } finally {
@@ -173,17 +171,17 @@ onMounted(syncFromProps)
     <header class="page-card-header">
       <div>
         <h2>嫌疑人身份信息</h2>
-        <p>身份证信息、现住址和案件基础信息统一在这里维护。</p>
+        <p>这里用于查看和修正建档信息；首次身份证采集应在“新建询问”时完成。</p>
       </div>
       <div class="profile-header-actions">
         <span class="identity-source">身份来源：{{ identitySourceText }}</span>
-        <button class="scanner-button" :disabled="!!busy" @click="captureIdentity">
-          {{ busy === 'ocr' ? '识别中…' : '▣ 高拍仪识别身份证' }}
+        <button class="scanner-button secondary-scan" :disabled="!!busy" @click="recaptureIdentity">
+          {{ busy === 'ocr' ? '读取中…' : '重新读取身份证' }}
         </button>
       </div>
     </header>
 
-    <div class="profile-content">
+    <div class="profile-content profile-content-single">
       <div class="profile-main">
         <div class="profile-grid">
           <label class="wide"><span>姓名 *</span><input v-model="form.suspectName" autocomplete="off" /></label>
@@ -198,25 +196,55 @@ onMounted(syncFromProps)
           <label class="wide"><span>主审民警</span><input v-model="form.officerName" /></label>
         </div>
 
+        <div v-if="rawOcrText" class="profile-recapture-result">
+          <strong>本次重新读取已完成</strong>
+          <span>身份证字段已回填到表单，保存前请人工核对。</span>
+        </div>
         <div v-if="error" class="page-message error">{{ error }}</div>
         <div v-else-if="message" class="page-message success">{{ message }}</div>
 
         <footer class="profile-footer">
-          <span>高拍仪识别只负责自动回填，最终以人工核对并保存的内容为准。</span>
-          <button class="primary-action" :disabled="!!busy" @click="save">{{ busy === 'save' ? '保存中…' : '保存身份信息' }}</button>
+          <span>日常只需在这里修正资料；只有身份证信息需要重新核验时再使用“重新读取身份证”。</span>
+          <button class="primary-action" :disabled="!!busy" @click="save">{{ busy === 'save' ? '保存中…' : '保存修改' }}</button>
         </footer>
       </div>
-
-      <aside class="identity-preview">
-        <div class="identity-preview-box">
-          <img v-if="previewUri" :src="previewUri" alt="身份证高拍仪预览" />
-          <div v-else class="preview-placeholder">高拍仪拍摄后<br />在此显示身份证预览</div>
-        </div>
-        <div class="ocr-raw-box">
-          <span>OCR 原始识别文本</span>
-          <pre>{{ rawOcrText || '尚未进行本次识别' }}</pre>
-        </div>
-      </aside>
     </div>
   </section>
 </template>
+
+<style scoped>
+.profile-content.profile-content-single {
+  display: block;
+  overflow: auto;
+  padding: 20px;
+}
+.profile-content-single .profile-main {
+  width: min(1120px, 100%);
+  margin: 0 auto;
+}
+.scanner-button.secondary-scan {
+  border-color: #cbd8e2;
+  background: #fff;
+  color: #4f6474;
+  padding: 7px 11px;
+  font-weight: 600;
+}
+.scanner-button.secondary-scan:hover:not(:disabled) {
+  border-color: #8eb7d8;
+  color: #2369a2;
+  background: #f8fbfe;
+}
+.profile-recapture-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 9px 12px;
+  border: 1px solid #d8e8f5;
+  border-radius: 8px;
+  background: #f6fbff;
+  color: #557080;
+  font-size: 12px;
+}
+.profile-recapture-result strong { color: #266a9f; }
+</style>
