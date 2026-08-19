@@ -33,6 +33,7 @@ class RpcRouter(
     private val asrCapture: AsrCaptureSessionManager,
     private val ocr: OcrController,
     private val llm: LlmController,
+    private val signing: DocumentSigningService,
 ) {
     suspend fun handle(raw: String): String {
         val request = runCatching { JSONObject(raw) }.getOrElse {
@@ -66,62 +67,96 @@ class RpcRouter(
         ).toJson()
         "case.list" -> cases.list(payload.optInt("limit", 100)).toJsonArray { it.toJson() }
         "case.get" -> cases.get(payload.requiredString("caseId")).toJson()
-        "case.update" -> cases.update(
-            caseId = payload.requiredString("caseId"),
-            suspectName = payload.nullableString("suspectName"),
-            gender = payload.nullableString("gender"),
-            age = payload.nullableString("age"),
-            officerName = payload.nullableString("officerName"),
-            state = payload.nullableString("state"),
-            stage = payload.nullableString("stage")?.let(::stageFromWire),
-            idNumber = payload.nullableString("idNumber"),
-            nation = payload.nullableString("nation"),
-            birthDate = payload.nullableString("birthDate"),
-            address = payload.nullableString("address"),
-            identitySource = payload.nullableString("identitySource"),
-            identityCapturedAt = payload.nullableLong("identityCapturedAt"),
-        ).toJson()
+        "case.update" -> {
+            val caseId = payload.requiredString("caseId")
+            signing.requireEditable(caseId)
+            cases.update(
+                caseId = caseId,
+                suspectName = payload.nullableString("suspectName"),
+                gender = payload.nullableString("gender"),
+                age = payload.nullableString("age"),
+                officerName = payload.nullableString("officerName"),
+                state = payload.nullableString("state"),
+                stage = payload.nullableString("stage")?.let(::stageFromWire),
+                idNumber = payload.nullableString("idNumber"),
+                nation = payload.nullableString("nation"),
+                birthDate = payload.nullableString("birthDate"),
+                address = payload.nullableString("address"),
+                identitySource = payload.nullableString("identitySource"),
+                identityCapturedAt = payload.nullableLong("identityCapturedAt"),
+            ).toJson()
+        }
         "session.get" -> sessions.state(payload.requiredString("caseId")).toJson()
-        "session.start" -> sessions.start(payload.requiredString("caseId")).toJson()
+        "session.start" -> {
+            val caseId = payload.requiredString("caseId")
+            signing.requireEditable(caseId)
+            sessions.start(caseId).toJson()
+        }
         "session.pause" -> sessions.pause(payload.requiredString("caseId")).toJson()
-        "session.resume" -> sessions.resume(payload.requiredString("caseId")).toJson()
+        "session.resume" -> {
+            val caseId = payload.requiredString("caseId")
+            signing.requireEditable(caseId)
+            sessions.resume(caseId).toJson()
+        }
         "session.finish" -> sessions.finish(payload.requiredString("caseId")).toJson()
-        "session.stage" -> sessions.changeStage(
-            payload.requiredString("caseId"),
-            stageFromWire(payload.requiredString("stage")),
-        ).toJson()
+        "session.stage" -> {
+            val caseId = payload.requiredString("caseId")
+            signing.requireEditable(caseId)
+            sessions.changeStage(caseId, stageFromWire(payload.requiredString("stage"))).toJson()
+        }
         "record.list" -> records.list(payload.requiredString("caseId")).toJsonArray { it.toJson() }
-        "record.add" -> records.add(
-            payload.requiredString("caseId"),
-            payload.requiredString("text"),
-            payload.requiredString("from"),
-        ).toJson()
-        "record.update" -> records.update(
-            payload.requiredString("caseId"),
-            payload.requiredString("messageId"),
-            payload.requiredString("text"),
-            payload.optString("reason", "警官在审讯工作台修订"),
-        ).toJson()
-        "record.mark" -> records.mark(
-            payload.requiredString("caseId"),
-            payload.requiredString("messageId"),
-            payload.optString("mark", "conflict"),
-        ).toJson()
+        "record.add" -> {
+            val caseId = payload.requiredString("caseId")
+            signing.requireEditable(caseId)
+            records.add(caseId, payload.requiredString("text"), payload.requiredString("from")).toJson()
+        }
+        "record.update" -> {
+            val caseId = payload.requiredString("caseId")
+            signing.requireEditable(caseId)
+            records.update(
+                caseId,
+                payload.requiredString("messageId"),
+                payload.requiredString("text"),
+                payload.optString("reason", "警官在审讯工作台修订"),
+            ).toJson()
+        }
+        "record.mark" -> {
+            val caseId = payload.requiredString("caseId")
+            signing.requireEditable(caseId)
+            records.mark(
+                caseId,
+                payload.requiredString("messageId"),
+                payload.optString("mark", "conflict"),
+            ).toJson()
+        }
         "record.revisions" -> records.revisions(
             payload.requiredString("caseId"),
             payload.nullableString("messageId"),
         ).toJsonArray { it.toJson() }
         "fact.list" -> facts.list(payload.requiredString("caseId")).toJsonArray { it.toJson() }
-        "fact.update" -> facts.update(
-            caseId = payload.requiredString("caseId"),
-            factKey = payload.requiredString("factKey"),
-            value = payload.nullableString("value"),
-            status = payload.nullableString("status"),
-            suggestion = payload.nullableString("suggestion"),
-        ).toJson()
+        "fact.update" -> {
+            val caseId = payload.requiredString("caseId")
+            signing.requireEditable(caseId)
+            facts.update(
+                caseId = caseId,
+                factKey = payload.requiredString("factKey"),
+                value = payload.nullableString("value"),
+                status = payload.nullableString("status"),
+                suggestion = payload.nullableString("suggestion"),
+            ).toJson()
+        }
         "timeline.list" -> timeline.list(payload.requiredString("caseId")).toJsonArray { it.toJson() }
         "audit.list" -> audit.list(payload.requiredString("caseId")).toJsonArray { it.toJson() }
         "device.action" -> devices.invoke(payload.requiredString("type"))
+        "document.signing.get" -> signing.current(payload.requiredString("caseId"))?.toJson() ?: JSONObject.NULL
+        "document.freeze" -> signing.freeze(payload.requiredString("caseId")).toJson()
+        "document.sign" -> signing.sign(
+            caseId = payload.requiredString("caseId"),
+            signerRole = payload.requiredString("signerRole"),
+            signerName = payload.requiredString("signerName"),
+            imageDataUrl = payload.requiredString("imageDataUrl"),
+            strokesJson = payload.requiredString("strokesJson"),
+        ).toJson()
         "ai.inquiry" -> caseAi.inquiry(
             caseId = payload.requiredString("caseId"),
             message = payload.requiredString("message"),
@@ -132,7 +167,11 @@ class RpcRouter(
         "asr.start" -> asr.start().toJson()
         "asr.stop" -> asr.stop().toJson()
         "asr.capture.status" -> asrCapture.status(payload.requiredString("caseId")).toJson()
-        "asr.capture.start" -> asrCapture.start(payload.requiredString("caseId")).toJson()
+        "asr.capture.start" -> {
+            val caseId = payload.requiredString("caseId")
+            signing.requireEditable(caseId)
+            asrCapture.start(caseId).toJson()
+        }
         "asr.capture.stop" -> asrCapture.stop(payload.requiredString("caseId")).toJson()
         "asr.fragment.list" -> asrCapture.listFragments(
             payload.requiredString("caseId"),
@@ -144,14 +183,16 @@ class RpcRouter(
             payload.requiredString("editedText"),
             payload.requiredString("speaker"),
         ).toJson()
-        "asr.fragment.confirm" -> asrCapture.confirmFragment(
-            payload.requiredString("caseId"),
-            payload.requiredString("fragmentId"),
-        ).toJson()
-        "asr.fragment.confirmBatch" -> asrCapture.confirmBatch(
-            payload.requiredString("caseId"),
-            payload.requiredStringList("fragmentIds"),
-        ).toJson()
+        "asr.fragment.confirm" -> {
+            val caseId = payload.requiredString("caseId")
+            signing.requireEditable(caseId)
+            asrCapture.confirmFragment(caseId, payload.requiredString("fragmentId")).toJson()
+        }
+        "asr.fragment.confirmBatch" -> {
+            val caseId = payload.requiredString("caseId")
+            signing.requireEditable(caseId)
+            asrCapture.confirmBatch(caseId, payload.requiredStringList("fragmentIds")).toJson()
+        }
         "asr.fragment.discard" -> asrCapture.discardFragment(
             payload.requiredString("caseId"),
             payload.requiredString("fragmentId"),
