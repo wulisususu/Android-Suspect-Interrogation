@@ -5,7 +5,6 @@ import CaseOverviewPage from '../components/CaseOverviewPage.vue'
 import CaseProfilePage from '../components/CaseProfilePage.vue'
 import DeviceStatusBar from '../components/DeviceStatusBar.vue'
 import InterrogationPage from '../components/InterrogationPage.vue'
-import SessionControls from '../components/SessionControls.vue'
 import { useInterrogationStore } from '../stores/interrogation'
 
 type WorkspacePage = 'profile' | 'overview' | 'interrogation'
@@ -31,6 +30,12 @@ onUnmounted(() => {
 
 async function refreshCaseWorkspace() {
   await store.initialize()
+}
+
+async function openInterrogation() {
+  activePage.value = 'interrogation'
+  if (store.session.status === 'READY') await store.startSession()
+  else if (store.session.status === 'PAUSED') await store.togglePause()
 }
 
 async function generateCaseOverview() {
@@ -73,7 +78,7 @@ async function generateCaseOverview() {
         <button :class="{ active: activePage === 'overview' }" @click="activePage = 'overview'">
           <b>B</b><span>案件梳理</span>
         </button>
-        <button :class="{ active: activePage === 'interrogation' }" @click="activePage = 'interrogation'">
+        <button :class="{ active: activePage === 'interrogation' }" @click="openInterrogation">
           <b>C</b><span>审讯记录</span>
         </button>
       </nav>
@@ -83,16 +88,7 @@ async function generateCaseOverview() {
         <div v-else-if="store.actionMessage" class="workspace-toast success">{{ store.actionMessage }}</div>
       </div>
 
-      <SessionControls
-        :session="store.session"
-        :stage-text="store.stageText"
-        @start="store.startSession"
-        @toggle-pause="store.togglePause"
-        @finish="store.finishSession"
-        @next-stage="store.nextStage"
-      />
-
-      <section class="workspace-page-body">
+      <section class="workspace-page-body" :class="{ 'interrogation-body': activePage === 'interrogation' }">
         <CaseProfilePage
           v-if="activePage === 'profile'"
           :summary="store.caseSummary"
@@ -113,6 +109,7 @@ async function generateCaseOverview() {
           :messages="store.transcript"
           :capture="store.capture"
           :can-record="store.canRecord"
+          :can-finish="store.session.status === 'RUNNING' || store.session.status === 'PAUSED'"
           :native-capture-available="store.nativeCaptureAvailable"
           :capture-busy="store.captureBusy"
           :capture-elapsed-ms="store.captureElapsedMs"
@@ -121,6 +118,7 @@ async function generateCaseOverview() {
           @saved="refreshCaseWorkspace"
           @capture-start="store.startCapture"
           @capture-stop="store.stopCapture"
+          @finish-session="store.finishSession"
           @generate-ai="generateCaseOverview"
         />
       </section>
