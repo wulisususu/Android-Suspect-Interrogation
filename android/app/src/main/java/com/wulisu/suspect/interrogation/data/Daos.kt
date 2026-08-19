@@ -42,6 +42,7 @@ interface RevisionDao {
 @Dao
 interface FactDao {
     @Query("SELECT * FROM facts WHERE caseId = :caseId ORDER BY sortOrder ASC") suspend fun list(caseId: String): List<FactEntity>
+    @Query("SELECT * FROM facts WHERE caseId = :caseId AND factKey = :factKey LIMIT 1") suspend fun get(caseId: String, factKey: String): FactEntity?
     @Query("SELECT COUNT(*) FROM facts WHERE caseId = :caseId") suspend fun count(caseId: String): Int
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertAll(entities: List<FactEntity>)
 }
@@ -49,6 +50,7 @@ interface FactDao {
 @Dao
 interface TimelineDao {
     @Query("SELECT * FROM timeline_events WHERE caseId = :caseId ORDER BY createdAt ASC") suspend fun list(caseId: String): List<TimelineEntity>
+    @Query("DELETE FROM timeline_events WHERE caseId = :caseId AND evidenceJson LIKE '%AI推理%'") suspend fun deleteAiGenerated(caseId: String)
     @Insert(onConflict = OnConflictStrategy.ABORT) suspend fun insert(entity: TimelineEntity)
 }
 

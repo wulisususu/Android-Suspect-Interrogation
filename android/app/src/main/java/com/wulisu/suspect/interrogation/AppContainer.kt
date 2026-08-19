@@ -39,6 +39,8 @@ class AppContainer(context: Context) {
     private val caseAi = CaseAiService(
         RoomCaseAiContextSource(cases, records, facts, timeline, database.aiCaseAnalysisDao(), audit),
         aiRouter::inquiry,
+        facts,
+        timeline,
     )
 
     val rpcRouter = RpcRouter(cases, sessions, records, facts, timeline, audit, devices, ai, caseAi, modelManager, asrController, asrCapture, ocrController, llmController)

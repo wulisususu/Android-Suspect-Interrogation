@@ -88,6 +88,13 @@ class RpcRouter(
         "record.mark" -> records.mark(payload.requiredString("caseId"), payload.requiredString("messageId"), payload.optString("mark", "conflict")).toJson()
         "record.revisions" -> records.revisions(payload.requiredString("caseId"), payload.nullableString("messageId")).toJsonArray { it.toJson() }
         "fact.list" -> facts.list(payload.requiredString("caseId")).toJsonArray { it.toJson() }
+        "fact.update" -> facts.update(
+            caseId = payload.requiredString("caseId"),
+            factKey = payload.requiredString("factKey"),
+            value = payload.nullableString("value"),
+            status = payload.nullableString("status"),
+            suggestion = payload.nullableString("suggestion"),
+        ).toJson()
         "timeline.list" -> timeline.list(payload.requiredString("caseId")).toJsonArray { it.toJson() }
         "audit.list" -> audit.list(payload.requiredString("caseId")).toJsonArray { it.toJson() }
         "device.action" -> devices.invoke(payload.requiredString("type"))

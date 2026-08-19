@@ -129,9 +129,24 @@ class RoomCaseAiContextSource(
     }
 }
 
+private data class StructuredCaseOverview(
+    val summary: String,
+    val facts: List<StructuredFact>,
+    val timeline: List<TimelineDraft>,
+)
+
+private data class StructuredFact(
+    val key: String,
+    val value: String,
+    val status: String,
+    val suggestion: String?,
+)
+
 class CaseAiService(
     private val contextSource: CaseAiContextSource,
     private val generator: suspend (List<AiMessage>) -> AiResponse,
+    private val facts: FactService? = null,
+    private val timeline: TimelineService? = null,
     private val clock: () -> Long = System::currentTimeMillis,
     private val idGenerator: () -> String = { UUID.randomUUID().toString() },
     private val budgetEstimator: ContextBudgetEstimator = ContextBudgetEstimator(),
@@ -139,13 +154,33 @@ class CaseAiService(
 ) {
     suspend fun analyze(caseId: String): CaseAiAnalysis {
         val context = loadSufficientContext(caseId)
-        val prepared = preparePrompt(context, "请对当前案件已有资料进行审慎分析。")
+        val request = if (facts != null && timeline != null) STRUCTURED_OVERVIEW_REQUEST else "请对当前案件已有资料进行审慎分析。"
+        val prepared = preparePrompt(context, request)
         val response = generator(prepared.messages)
         if (response.text.isBlank()) throw BusinessException("CASE_AI_EMPTY_RESULT", "本案 AI 推理没有返回内容")
+
+        val overview = if (facts != null && timeline != null) {
+            parseStructuredOverview(response.text)
+        } else {
+            StructuredCaseOverview(response.text, emptyList(), emptyList())
+        }
+        if (facts != null && timeline != null) {
+            overview.facts.forEach { fact ->
+                facts.update(
+                    caseId = caseId,
+                    factKey = fact.key,
+                    value = fact.value,
+                    status = fact.status,
+                    suggestion = fact.suggestion,
+                )
+            }
+            timeline.replaceAiGenerated(caseId, overview.timeline)
+        }
+
         return CaseAiAnalysis(
             id = idGenerator(),
             caseId = context.caseSummary.id,
-            text = response.text,
+            text = overview.summary.ifBlank { "案件梳理已更新" },
             provider = response.provider,
             model = response.model,
             createdAt = clock(),
@@ -185,7 +220,7 @@ class CaseAiService(
         if (confirmed.none { it.speaker == "嫌疑人" }) {
             throw BusinessException(
                 "CASE_AI_INSUFFICIENT_DATA",
-                "当前案件暂无足够的正式审讯记录，至少需要一条嫌疑人回答后才能生成本案推理。",
+                "当前案件暂无足够的正式审讯记录，至少需要一条嫌疑人口供后才能生成案件梳理。",
             )
         }
         return context.copy(records = confirmed)
@@ -215,6 +250,68 @@ class CaseAiService(
         return PreparedPrompt(messages, packed, estimated)
     }
 
+    private fun parseStructuredOverview(raw: String): StructuredCaseOverview {
+        val first = raw.indexOf('{')
+        val last = raw.lastIndexOf('}')
+        if (first < 0 || last <= first) {
+            throw BusinessException("CASE_AI_FORMAT_INVALID", "AI 返回的案件梳理不是可解析的结构化 JSON")
+        }
+        val root = runCatching { JSONObject(raw.substring(first, last + 1)) }.getOrElse {
+            throw BusinessException("CASE_AI_FORMAT_INVALID", "AI 返回的案件梳理 JSON 格式无效")
+        }
+
+        val parsedFacts = buildList {
+            val array = root.optJSONArray("facts") ?: JSONArray()
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val key = item.optString("key").trim()
+                if (key !in ALLOWED_FACT_KEYS) continue
+                val value = item.optString("value").trim()
+                if (value.isEmpty()) continue
+                val status = item.optString("status", "pending").trim().lowercase()
+                    .takeIf { it in ALLOWED_FACT_STATUSES } ?: "pending"
+                add(
+                    StructuredFact(
+                        key = key,
+                        value = value,
+                        status = status,
+                        suggestion = item.optString("suggestion").trim().takeIf { it.isNotEmpty() },
+                    ),
+                )
+            }
+        }
+
+        val parsedTimeline = buildList {
+            val array = root.optJSONArray("timeline") ?: JSONArray()
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val title = item.optString("title").trim()
+                val detail = item.optString("detail").trim()
+                if (title.isEmpty() && detail.isEmpty()) continue
+                val evidence = buildList {
+                    val evidenceArray = item.optJSONArray("evidence") ?: JSONArray()
+                    for (evidenceIndex in 0 until evidenceArray.length()) {
+                        evidenceArray.optString(evidenceIndex).trim().takeIf { it.isNotEmpty() }?.let(::add)
+                    }
+                }
+                add(
+                    TimelineDraft(
+                        time = item.optString("time").trim().ifBlank { "时间待核实" },
+                        title = title.ifBlank { "案件事件" },
+                        detail = detail,
+                        evidence = evidence,
+                    ),
+                )
+            }
+        }
+
+        return StructuredCaseOverview(
+            summary = root.optString("summary").trim(),
+            facts = parsedFacts,
+            timeline = parsedTimeline,
+        )
+    }
+
     private data class PreparedPrompt(
         val messages: List<AiMessage>,
         val packed: PackedCaseAiContext,
@@ -223,6 +320,12 @@ class CaseAiService(
 
     companion object {
         private const val MIN_CONTEXT_BUDGET_TOKENS = 128
+        private val ALLOWED_FACT_KEYS = setOf("time", "place", "motive", "people", "method", "process", "evidence", "after")
+        private val ALLOWED_FACT_STATUSES = setOf("confirmed", "pending", "conflict", "missing")
+        private const val STRUCTURED_OVERVIEW_REQUEST =
+            "请基于当前案件已有正式审讯记录生成案件梳理。只输出一个 JSON 对象，不要 Markdown、代码块或额外解释。" +
+                "JSON 格式必须为 {\"summary\":\"简要结论\",\"facts\":[{\"key\":\"time|place|motive|people|method|process|evidence|after\",\"value\":\"核实结果\",\"status\":\"confirmed|pending|conflict|missing\",\"suggestion\":\"下一步追问\"}],\"timeline\":[{\"time\":\"具体或相对时间\",\"title\":\"事件标题\",\"detail\":\"仅依据记录的事件详情\",\"evidence\":[\"Q1\",\"Q2\"]}]}。" +
+                "不得编造；证据不足使用 pending 或 missing；记录相互矛盾使用 conflict；timeline 只写审讯记录能够支持的事件。"
     }
 }
 

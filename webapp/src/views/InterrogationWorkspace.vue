@@ -1,22 +1,24 @@
 <script setup lang="ts">
-import { onUnmounted, watch } from 'vue'
+import { onUnmounted, ref, watch } from 'vue'
 import AiSettingsPanel from '../components/AiSettingsPanel.vue'
-import CaseAiAnalysisPanel from '../components/CaseAiAnalysisPanel.vue'
+import CaseOverviewPage from '../components/CaseOverviewPage.vue'
+import CaseProfilePage from '../components/CaseProfilePage.vue'
 import DeviceStatusBar from '../components/DeviceStatusBar.vue'
-import FactMatrix from '../components/FactMatrix.vue'
-import RevisionDrawer from '../components/RevisionDrawer.vue'
+import InterrogationPage from '../components/InterrogationPage.vue'
 import SessionControls from '../components/SessionControls.vue'
-import TimelinePanel from '../components/TimelinePanel.vue'
-import TranscriptPanel from '../components/TranscriptPanel.vue'
 import { useInterrogationStore } from '../stores/interrogation'
+
+type WorkspacePage = 'profile' | 'overview' | 'interrogation'
 
 const props = defineProps<{ caseId: string }>()
 defineEmits<{ back: [] }>()
 const store = useInterrogationStore()
+const activePage = ref<WorkspacePage>('profile')
 
 watch(
   () => props.caseId,
   async (nextCaseId) => {
+    activePage.value = 'profile'
     store.resetCaseContext(nextCaseId)
     await store.initialize()
   },
@@ -27,9 +29,15 @@ onUnmounted(() => {
   if (store.caseId === props.caseId) store.resetCaseContext()
 })
 
-function maskedId(idNumber?: string) {
-  if (!idNumber) return ''
-  return idNumber.length >= 8 ? `${idNumber.slice(0, 3)}***********${idNumber.slice(-4)}` : idNumber
+async function refreshCaseWorkspace() {
+  await store.initialize()
+}
+
+async function generateCaseOverview() {
+  await store.generateCaseAnalysis()
+  if (store.caseAiError) return
+  await store.initialize()
+  activePage.value = 'overview'
 }
 </script>
 
@@ -37,7 +45,7 @@ function maskedId(idNumber?: string) {
   <main class="workspace">
     <section v-if="store.loading" class="case-loading" aria-live="polite" aria-busy="true">
       <h1>正在加载案件</h1>
-      <p>正在清理上一案件上下文并读取当前案件数据…</p>
+      <p>正在读取案件身份、审讯记录和案件梳理数据…</p>
     </section>
 
     <template v-else>
@@ -46,11 +54,7 @@ function maskedId(idNumber?: string) {
           <button class="back-btn" @click="$emit('back')">‹ 返回</button>
           <div>
             <h1>案件审讯工作台</h1>
-            <p>
-              案件：{{ store.caseSummary.id || store.caseId }}　｜　对象：{{ store.caseSummary.suspectName || '待录入' }}
-              <template v-if="store.caseSummary.gender || store.caseSummary.age">　{{ store.caseSummary.gender }} {{ store.caseSummary.age ? `${store.caseSummary.age}岁` : '' }}</template>
-              <template v-if="store.caseSummary.idNumber">　｜　身份证：{{ maskedId(store.caseSummary.idNumber) }}</template>
-            </p>
+            <p>案件：{{ store.caseSummary.id || store.caseId }}　｜　对象：{{ store.caseSummary.suspectName || '待录入' }}</p>
           </div>
           <span class="state-chip">{{ store.stateText }}</span>
         </div>
@@ -62,50 +66,63 @@ function maskedId(idNumber?: string) {
         </div>
       </header>
 
+      <nav class="workspace-page-tabs" aria-label="案件工作区页面">
+        <button :class="{ active: activePage === 'profile' }" @click="activePage = 'profile'">
+          <b>A</b><span>身份信息</span>
+        </button>
+        <button :class="{ active: activePage === 'overview' }" @click="activePage = 'overview'">
+          <b>B</b><span>案件梳理</span>
+        </button>
+        <button :class="{ active: activePage === 'interrogation' }" @click="activePage = 'interrogation'">
+          <b>C</b><span>审讯记录</span>
+        </button>
+      </nav>
+
       <div class="workspace-toast-region" aria-live="polite">
         <div v-if="store.actionError" class="workspace-toast error">{{ store.actionError }}</div>
         <div v-else-if="store.actionMessage" class="workspace-toast success">{{ store.actionMessage }}</div>
       </div>
 
-      <SessionControls :session="store.session" :stage-text="store.stageText" @start="store.startSession" @toggle-pause="store.togglePause" @finish="store.finishSession" @next-stage="store.nextStage" />
-
-      <CaseAiAnalysisPanel
-        :case-id="store.caseId"
-        :analyses="store.caseAiAnalyses"
-        :busy="store.caseAiBusy"
-        :error="store.caseAiError"
-        @generate="store.generateCaseAnalysis"
+      <SessionControls
+        :session="store.session"
+        :stage-text="store.stageText"
+        @start="store.startSession"
+        @toggle-pause="store.togglePause"
+        @finish="store.finishSession"
+        @next-stage="store.nextStage"
       />
 
-      <section class="workspace-grid">
-        <TimelinePanel :items="store.timeline" />
-        <TranscriptPanel
+      <section class="workspace-page-body">
+        <CaseProfilePage
+          v-if="activePage === 'profile'"
+          :summary="store.caseSummary"
+          :facts="store.facts"
+          @saved="refreshCaseWorkspace"
+        />
+
+        <CaseOverviewPage
+          v-else-if="activePage === 'overview'"
+          :timeline="store.timeline"
+          :facts="store.facts"
+        />
+
+        <InterrogationPage
+          v-else
+          :case-id="store.caseId"
           :messages="store.transcript"
-          :streaming="store.streaming"
+          :capture="store.capture"
           :can-record="store.canRecord"
           :native-capture-available="store.nativeCaptureAvailable"
-          :capture="store.capture"
           :capture-busy="store.captureBusy"
           :capture-elapsed-ms="store.captureElapsedMs"
-          :selected-fragment-ids="store.selectedFragmentIds"
-          :error="store.error"
-          @send="store.ask"
-          @edit="store.editMessage"
-          @mark="store.markMessage"
-          @mark-latest="store.markLatestConflict"
-          @versions="store.openRevisions"
+          :ai-busy="store.caseAiBusy"
+          :ai-error="store.caseAiError"
+          @saved="refreshCaseWorkspace"
           @capture-start="store.startCapture"
           @capture-stop="store.stopCapture"
-          @update-fragment="store.updatePendingFragment"
-          @confirm-fragment="store.confirmPendingFragment"
-          @discard-fragment="store.discardPendingFragment"
-          @toggle-fragment="store.toggleFragmentSelection"
-          @confirm-selected="store.confirmSelectedFragments"
+          @generate-ai="generateCaseOverview"
         />
-        <FactMatrix :items="store.facts" :completion="store.completion" @use-suggestion="store.useSuggestion" />
       </section>
-
-      <RevisionDrawer v-if="store.revisionsOpen" :revisions="store.revisions" @close="store.closeRevisions" />
     </template>
   </main>
 </template>
