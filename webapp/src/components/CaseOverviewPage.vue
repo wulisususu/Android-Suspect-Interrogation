@@ -4,7 +4,19 @@ import type { FactItem, TimelineEvent } from '../types/interrogation'
 
 const props = defineProps<{ timeline: TimelineEvent[]; facts: FactItem[] }>()
 
-const hiddenKeys = new Set(['current_address', 'case_type'])
+const hiddenKeys = new Set([
+  'current_address',
+  'case_type',
+  'interrogation_round',
+  'interrogation_place',
+  'officer_unit',
+  'recorder_name',
+  'recorder_unit',
+  'id_document_type',
+  'peoples_representative',
+  'contact',
+  'household_registration',
+])
 const preferredOrder = ['time', 'place', 'motive', 'people', 'method', 'process', 'evidence', 'after']
 const visibleFacts = computed(() => props.facts
   .filter((item) => !hiddenKeys.has(item.key))
