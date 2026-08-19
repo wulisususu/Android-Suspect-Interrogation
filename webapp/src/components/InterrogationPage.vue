@@ -13,6 +13,7 @@ const props = defineProps<{
   messages: TranscriptMessage[]
   capture: AsrCaptureStatus
   canRecord: boolean
+  canFinish: boolean
   nativeCaptureAvailable: boolean
   captureBusy: boolean
   captureElapsedMs: number
@@ -23,6 +24,7 @@ const emit = defineEmits<{
   saved: []
   captureStart: []
   captureStop: []
+  finishSession: []
   generateAi: []
 }>()
 
@@ -129,7 +131,7 @@ async function appendRecord() {
   const clean = text.value.trim()
   if (!clean || saving.value) return
   if (!props.canRecord) {
-    localError.value = '请先开始审讯，再保存审讯记录。'
+    localError.value = '当前审讯未处于可记录状态。'
     return
   }
   saving.value = true
@@ -153,15 +155,14 @@ function toggleCapture() {
 
 <template>
   <section class="interrogation-page page-card document-mode">
-    <header class="page-card-header interrogation-header">
-      <div>
-        <h2>审讯记录</h2>
-        <p>单栏 A4 文档式笔录；问答正文可直接编辑，失焦后保存并保留修订记录。</p>
-      </div>
+    <div class="document-actions">
+      <button class="finish-interrogation-button" :disabled="!canFinish" @click="$emit('finishSession')">
+        结束审讯
+      </button>
       <button class="ai-generate-button" :disabled="aiBusy" @click="$emit('generateAi')">
         {{ aiBusy ? 'AI 梳理中…' : '✦ 生成 AI 案件梳理' }}
       </button>
-    </header>
+    </div>
 
     <div class="document-scroll">
       <article class="interrogation-paper" aria-label="讯问笔录文档">
@@ -258,13 +259,46 @@ function toggleCapture() {
 </template>
 
 <style scoped>
-.document-mode { display: flex; flex-direction: column; background: #eef1f4; }
-.interrogation-header { flex: 0 0 auto; }
+.document-mode {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: 0;
+  box-shadow: none;
+  background: #eef1f4;
+}
+.document-actions {
+  position: absolute;
+  top: 14px;
+  right: 20px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.finish-interrogation-button,
+.ai-generate-button {
+  border-radius: 9px;
+  padding: 9px 14px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, .94);
+  box-shadow: 0 2px 8px rgba(30, 55, 76, .08);
+}
+.finish-interrogation-button {
+  border: 1px solid #f0b5b1;
+  color: #c52b23;
+}
+.ai-generate-button {
+  border: 1px solid #8eb8e4;
+  color: #1c68b6;
+}
+.finish-interrogation-button:disabled,
+.ai-generate-button:disabled { opacity: .5; }
 .document-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 24px 30px 42px;
+  padding: 18px 30px 42px;
   background: #e8ebee;
 }
 .interrogation-paper {
@@ -430,8 +464,16 @@ function toggleCapture() {
   padding: 9px 11px;
   font: 14px/1.5 "Microsoft YaHei", sans-serif;
 }
+@media (max-width: 1100px) {
+  .document-actions {
+    top: 8px;
+    right: 10px;
+  }
+  .finish-interrogation-button,
+  .ai-generate-button { padding: 7px 10px; font-size: 12px; }
+}
 @media (max-width: 900px) {
-  .document-scroll { padding: 12px; }
+  .document-scroll { padding: 56px 12px 12px; }
   .interrogation-paper { min-height: 0; padding: 64px 28px 44px; }
   .document-meta { grid-template-columns: 1fr; }
   .document-composer { grid-template-columns: auto 1fr auto; }
