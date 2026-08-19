@@ -12,6 +12,8 @@ import com.wulisu.suspect.interrogation.llm.RkllmEngine
 import com.wulisu.suspect.interrogation.ocr.OcrController
 import com.wulisu.suspect.interrogation.service.*
 import java.security.KeyStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 
 class AppContainer(context: Context) {
     private val database = AppDatabase.build(context)
@@ -22,6 +24,7 @@ class AppContainer(context: Context) {
     private val facts = FactService(database.factDao(), cases)
     private val timeline = TimelineService(database.timelineDao(), cases, audit)
     private val devices = DeviceService()
+    private val demoCaseSeed = DemoCaseSeed(cases, sessions, records, facts, timeline)
 
     val modelManager = ModelManager(context)
     val llmController = LlmController(
@@ -58,6 +61,11 @@ class AppContainer(context: Context) {
 
     init {
         clearLegacyCloudAiState(context)
+        // Temporary demo bootstrap. This is idempotent and writes the fictional case
+        // into Room/SQLCipher before the WebView asks for the case list.
+        runBlocking(Dispatchers.IO) {
+            demoCaseSeed.seedIfNeeded()
+        }
         asrController.setCaptureListener(asrCapture)
         asrController.setCaptureRunningProvider(asrCapture::isRunning)
         modelManager.scanAsync()
