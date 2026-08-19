@@ -88,7 +88,10 @@ async function generateCaseOverview() {
         <div v-else-if="store.actionMessage" class="workspace-toast success">{{ store.actionMessage }}</div>
       </div>
 
-      <section class="workspace-page-body" :class="{ 'interrogation-body': activePage === 'interrogation' }">
+      <section
+        class="workspace-page-body"
+        :style="activePage === 'interrogation' ? { padding: '0' } : undefined"
+      >
         <CaseProfilePage
           v-if="activePage === 'profile'"
           :summary="store.caseSummary"
