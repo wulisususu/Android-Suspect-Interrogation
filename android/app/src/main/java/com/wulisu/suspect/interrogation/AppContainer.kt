@@ -11,6 +11,7 @@ import com.wulisu.suspect.interrogation.llm.LlmSettingsStore
 import com.wulisu.suspect.interrogation.llm.RkllmEngine
 import com.wulisu.suspect.interrogation.ocr.OcrController
 import com.wulisu.suspect.interrogation.service.*
+import java.security.KeyStore
 
 class AppContainer(context: Context) {
     private val database = AppDatabase.build(context)
@@ -31,23 +32,44 @@ class AppContainer(context: Context) {
     val asrController = AsrController(context, modelManager)
     val ocrController = OcrController(context, modelManager)
     val asrCapture = AsrCaptureSessionManager(context, database, sessions, records, audit, asrController)
-    private val aiSettings = AiSettingsStore(context)
-    private val cloudAi = ZhipuAiProvider(aiSettings)
     private val localAi = LocalAiProvider(modelManager, ControllerLocalLlmRuntime(llmController))
-    private val aiRouter = AiRouter(aiSettings, cloudAi, localAi)
-    private val ai = AiService(aiSettings, aiRouter)
     private val caseAi = CaseAiService(
         RoomCaseAiContextSource(cases, records, facts, timeline, database.aiCaseAnalysisDao(), audit),
-        aiRouter::inquiry,
+        localAi::inquiry,
         facts,
         timeline,
     )
 
-    val rpcRouter = RpcRouter(cases, sessions, records, facts, timeline, audit, devices, ai, caseAi, modelManager, asrController, asrCapture, ocrController, llmController)
+    val rpcRouter = RpcRouter(
+        cases,
+        sessions,
+        records,
+        facts,
+        timeline,
+        audit,
+        devices,
+        caseAi,
+        modelManager,
+        asrController,
+        asrCapture,
+        ocrController,
+        llmController,
+    )
 
     init {
+        clearLegacyCloudAiState(context)
         asrController.setCaptureListener(asrCapture)
         asrController.setCaptureRunningProvider(asrCapture::isRunning)
         modelManager.scanAsync()
+    }
+}
+
+private fun clearLegacyCloudAiState(context: Context) {
+    context.getSharedPreferences("ai_runtime_settings", Context.MODE_PRIVATE).edit().clear().apply()
+    runCatching {
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        if (keyStore.containsAlias("suspect_interrogation_ai_secret_v1")) {
+            keyStore.deleteEntry("suspect_interrogation_ai_secret_v1")
+        }
     }
 }

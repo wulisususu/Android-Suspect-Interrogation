@@ -1,25 +1,10 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
-import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 
 const port = 18080 + Math.floor(Math.random() * 1000)
-const aiPort = 20080 + Math.floor(Math.random() * 1000)
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'suspect-backend-'))
-let aiRequest = null
-const aiServer = http.createServer(async (req, res) => {
-  const chunks = []
-  for await (const chunk of req) chunks.push(chunk)
-  aiRequest = {
-    authorization: req.headers.authorization,
-    body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
-  }
-  res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' })
-  res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: '测试' } }] })}\n\n`)
-  res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: '通过' } }] })}\n\ndata: [DONE]\n\n`)
-})
-await new Promise((resolve) => aiServer.listen(aiPort, '127.0.0.1', resolve))
 
 const child = spawn(process.execPath, ['src/server.mjs'], {
   cwd: path.resolve(import.meta.dirname, '..'),
@@ -29,9 +14,6 @@ const child = spawn(process.execPath, ['src/server.mjs'], {
     PORT: String(port),
     DB_PATH: path.join(tmp, 'test.db'),
     DEVICE_SIMULATOR: '0',
-    AI_BIGMODEL_API_KEY: '',
-    AI_BIGMODEL_BASE_URL: `http://127.0.0.1:${aiPort}/chat/completions`,
-    AI_MODEL: 'test-model',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
@@ -61,22 +43,8 @@ async function waitReady() {
 
 try {
   await waitReady()
-  let result = await request('/api/ai/settings')
-  if (result.payload.data.cloudConfigured !== false) throw new Error('browser AI must start without a key in smoke test')
 
-  result = await request('/api/ai/settings', {
-    method: 'PATCH',
-    body: JSON.stringify({
-      mode: 'CLOUD',
-      cloudBaseUrl: `http://127.0.0.1:${aiPort}/chat/completions`,
-      cloudModel: 'test-model',
-      apiKey: 'test-api-key',
-    }),
-  })
-  if (!result.payload.data.cloudConfigured) throw new Error('browser AI key was not configured')
-  if ('apiKey' in result.payload.data.settings) throw new Error('browser AI key must not be returned')
-
-  result = await request('/api/cases/create', {
+  let result = await request('/api/cases/create', {
     method: 'POST',
     body: JSON.stringify({ suspectName: '测试对象', officerName: '测试警官' }),
   })
@@ -92,15 +60,6 @@ try {
   })
   const messageId = result.payload.data.id
   if (!messageId) throw new Error('message was not persisted')
-
-  const inquiry = await fetch(`${base}/work/case/${caseId}/session/message/inquiry?message=${encodeURIComponent('请回答测试')}`)
-  const inquiryText = await inquiry.text()
-  if (!inquiryText.includes('"text_chunk":"测试"') || !inquiryText.includes('"text_chunk":"通过"')) {
-    throw new Error(`AI stream was not translated: ${inquiryText}`)
-  }
-  if (aiRequest?.authorization !== 'Bearer test-api-key') throw new Error('AI authorization was not forwarded from settings')
-  if (aiRequest?.body?.model !== 'test-model') throw new Error('configured AI model was not used')
-  if (aiRequest?.body?.messages?.[0]?.content !== '请回答测试') throw new Error('AI message was not forwarded')
 
   result = await request(`/api/cases/${caseId}/messages/${messageId}`, {
     method: 'PUT',
@@ -131,14 +90,13 @@ try {
   result = await request(`/api/cases/${caseId}/audit`)
   if (result.payload.data.length < 6) throw new Error('audit log missing')
 
-  result = await request('/api/ai/settings', {
-    method: 'PATCH',
-    body: JSON.stringify({ clearApiKey: true }),
-  })
-  if (result.payload.data.cloudConfigured !== false) throw new Error('browser AI key was not cleared')
+  result = await request('/api/ai/settings')
+  if (result.response.status !== 404) throw new Error('cloud AI settings endpoint must not exist')
+
+  result = await request(`/work/case/${caseId}/session/message/inquiry?message=${encodeURIComponent('测试')}`)
+  if (result.response.status !== 404) throw new Error('browser cloud AI inquiry endpoint must not exist')
 
   console.log(`smoke ok: ${caseId}`)
 } finally {
   child.kill('SIGTERM')
-  await new Promise((resolve) => aiServer.close(resolve))
 }

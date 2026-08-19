@@ -23,8 +23,6 @@ import {
   updateFact,
   updateMessage,
 } from './store.mjs'
-import { proxyInquiry } from './aiProxy.mjs'
-import { getAiSettingsStatus, updateAiSettings } from './aiSettings.mjs'
 
 const host = process.env.HOST || '127.0.0.1'
 const port = Number(process.env.PORT || 8080)
@@ -95,10 +93,6 @@ async function handle(req, res) {
   if (req.method === 'GET' && p === '/api/health') {
     return ok(res, req, { service: 'suspect-interrogation-backend', status: 'ready', timestamp: Date.now() })
   }
-  if (req.method === 'GET' && p === '/api/ai/settings') return ok(res, req, getAiSettingsStatus())
-  if (req.method === 'PATCH' && p === '/api/ai/settings') {
-    return ok(res, req, updateAiSettings(await body(req)), 'AI 设置已保存')
-  }
   if (req.method === 'GET' && p === '/api/cases') return ok(res, req, listCases(Number(url.searchParams.get('limit') || 100)))
   if (req.method === 'POST' && p === '/api/cases/create') return ok(res, req, createCase(await body(req)), '案件已创建')
 
@@ -162,12 +156,6 @@ async function handle(req, res) {
   if (req.method === 'POST' && p === '/api/device/action') {
     const payload = await body(req)
     return ok(res, req, invokeDevice(payload.type), '设备操作完成')
-  }
-
-  if ((params = pathMatch(p, '/work/case/:caseId/session/message/inquiry')) && req.method === 'GET') {
-    const message = String(url.searchParams.get('message') || '').trim()
-    if (!message) return json(res, req, 400, { ok: false, code: 'EMPTY_MESSAGE', message: 'AI 询问内容不能为空' })
-    return proxyInquiry({ req, res, caseId: params.caseId, message })
   }
 
   return json(res, req, 404, { ok: false, code: 'NOT_FOUND', message: `未找到接口：${req.method} ${p}` })

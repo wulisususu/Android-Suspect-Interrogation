@@ -1,27 +1,21 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import {
   backendErrorMessage,
-  fetchAiSettings,
   fetchLocalModels,
   importLocalModel,
   selectLocalModel,
-  updateAiSettings,
 } from '../api/interrogation'
 import { isNativeBusinessRuntime, NativeRpcError } from '../native/rpcBridge'
 import AsrConsole from './AsrConsole.vue'
 import OcrConsole from './OcrConsole.vue'
 import LlmConsole from './LlmConsole.vue'
 import type {
-  AiMode,
-  AiRuntimeStatus,
   LocalModelCatalog,
   LocalModelDescriptor,
   ModelCategory,
   ModelImportSource,
 } from '../types/interrogation'
-
-type SettingsTab = 'runtime' | 'models'
 
 const categories: Array<{ id: ModelCategory; label: string }> = [
   { id: 'ASR', label: 'ASR 语音识别' },
@@ -32,40 +26,14 @@ const categories: Array<{ id: ModelCategory; label: string }> = [
 ]
 
 const open = ref(false)
-const activeTab = ref<SettingsTab>('runtime')
-const loading = ref(false)
-const saving = ref(false)
-const error = ref('')
-const status = ref<AiRuntimeStatus | null>(null)
-const apiKey = ref('')
 const modelLoading = ref(false)
 const modelAction = ref('')
 const modelError = ref('')
 const catalog = ref<LocalModelCatalog>({ rootPath: '', models: [] })
 
-const form = reactive({
-  mode: 'CLOUD' as AiMode,
-  cloudBaseUrl: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
-  cloudModel: 'glm-4.7',
-  stream: true,
-  thinkingEnabled: true,
-  maxTokens: 65536,
-  temperature: 1.0,
-})
-
 const native = computed(() => isNativeBusinessRuntime())
-const providerText = computed(() => {
-  if (!status.value) return 'AI未加载'
-  if (status.value.activeProvider === 'CLOUD_ZHIPU') return '智谱 API'
-  if (status.value.activeProvider === 'LOCAL') return '本地模型'
-  return 'AI不可用'
-})
-const localStatusText = computed(() => {
-  if (!status.value) return '未读取'
-  if (status.value.localAvailable) return status.value.localModel || '可用'
-  if (status.value.localModel) return `${status.value.localModel}（运行时待接入）`
-  return '未选择 LLM'
-})
+const selectedLlm = computed(() => catalog.value.models.find((model) => model.category === 'LLM' && model.selected))
+const triggerText = computed(() => selectedLlm.value ? `AI：${selectedLlm.value.name}` : 'AI：本地模型')
 
 function modelsFor(category: ModelCategory) {
   return catalog.value.models.filter((model) => model.category === category)
@@ -97,19 +65,6 @@ function formatDate(value: number) {
   return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value))
 }
 
-async function load() {
-  loading.value = true
-  error.value = ''
-  try {
-    status.value = await fetchAiSettings()
-    Object.assign(form, status.value.settings)
-  } catch (e) {
-    error.value = backendErrorMessage(e)
-  } finally {
-    loading.value = false
-  }
-}
-
 async function loadModels(rescan = false) {
   modelLoading.value = true
   modelError.value = ''
@@ -124,42 +79,7 @@ async function loadModels(rescan = false) {
 
 async function show() {
   open.value = true
-  await Promise.all([load(), loadModels()])
-}
-
-async function save() {
-  saving.value = true
-  error.value = ''
-  try {
-    status.value = await updateAiSettings({
-      mode: form.mode,
-      cloudBaseUrl: form.cloudBaseUrl,
-      cloudModel: form.cloudModel,
-      stream: form.stream,
-      thinkingEnabled: form.thinkingEnabled,
-      maxTokens: Number(form.maxTokens),
-      temperature: Number(form.temperature),
-      apiKey: apiKey.value.trim() || undefined,
-    })
-    apiKey.value = ''
-  } catch (e) {
-    error.value = backendErrorMessage(e)
-  } finally {
-    saving.value = false
-  }
-}
-
-async function clearKey() {
-  saving.value = true
-  error.value = ''
-  try {
-    status.value = await updateAiSettings({ clearApiKey: true })
-    apiKey.value = ''
-  } catch (e) {
-    error.value = backendErrorMessage(e)
-  } finally {
-    saving.value = false
-  }
+  await loadModels()
 }
 
 async function chooseModel(category: ModelCategory, modelId?: string) {
@@ -167,7 +87,6 @@ async function chooseModel(category: ModelCategory, modelId?: string) {
   modelError.value = ''
   try {
     catalog.value = await selectLocalModel(category, modelId)
-    status.value = await fetchAiSettings()
   } catch (e) {
     modelError.value = backendErrorMessage(e)
   } finally {
@@ -189,126 +108,43 @@ async function importModel(category: ModelCategory, source: ModelImportSource) {
   }
 }
 
-onMounted(() => Promise.all([load(), loadModels()]))
+onMounted(() => loadModels())
 </script>
 
 <template>
-  <button class="ai-settings-trigger" title="AI 设置与本地模型管理" @click="show">
-    AI：{{ providerText }}
+  <button class="ai-settings-trigger" title="本地模型管理" @click="show">
+    {{ triggerText }}
   </button>
 
-  <div v-if="open" class="ai-settings-mask" @click.self="open = false">
-    <section class="ai-settings-panel">
-      <header>
+  <div v-if="open" class="local-model-mask" @click.self="open = false">
+    <section class="local-model-panel">
+      <header class="local-model-header">
         <div>
-          <h2>AI 设置与模型管理</h2>
-          <p>云端 API 与设备本地模型统一配置。</p>
+          <h2>本地模型</h2>
+          <p>AI 仅使用设备本地模型，不提供云端 API、API Key 或自动回退配置。</p>
         </div>
-        <button @click="open = false">关闭</button>
+        <button class="close-button" @click="open = false">关闭</button>
       </header>
 
-      <nav class="ai-settings-tabs" aria-label="AI 设置视图">
-        <button :class="{ active: activeTab === 'runtime' }" @click="activeTab = 'runtime'">推理设置</button>
-        <button :class="{ active: activeTab === 'models' }" @click="activeTab = 'models'">本地模型</button>
-      </nav>
-
-      <template v-if="activeTab === 'runtime'">
-        <div v-if="!native" class="ai-settings-note warning">
-          Windows 联调使用本机 backend-dev；本地模型管理仅在 Android APK 中启用。
+      <div class="model-manager-toolbar">
+        <div>
+          <span>模型目录</span>
+          <code>{{ catalog.rootPath || '正在读取…' }}</code>
         </div>
-        <div v-if="loading" class="ai-settings-note">正在读取 AI 配置…</div>
-        <div v-if="error" class="ai-settings-note error">{{ error }}</div>
+        <button :disabled="modelLoading || !!modelAction" @click="loadModels(true)">
+          {{ modelLoading ? '扫描中…' : '重新扫描' }}
+        </button>
+      </div>
 
-        <div v-if="status" class="ai-status-grid">
-          <div><span>当前模式</span><strong>{{ status.settings.mode }}</strong></div>
-          <div><span>实际路由</span><strong>{{ status.activeProvider }}</strong></div>
-          <div><span>智谱 API</span><strong>{{ status.cloudConfigured ? '已配置' : '未配置 Key' }}</strong></div>
-          <div><span>本地模型</span><strong>{{ localStatusText }}</strong></div>
-        </div>
+      <div v-if="!native" class="local-model-note warning">
+        本地模型只在 Android APK 中运行；浏览器联调环境不提供云端 AI 兜底。
+      </div>
+      <div v-if="modelAction.startsWith('import-')" class="local-model-note">
+        正在导入模型，大文件复制可能需要一些时间。
+      </div>
+      <div v-if="modelError" class="local-model-note error">{{ modelError }}</div>
 
-        <form v-if="status" class="ai-settings-form" @submit.prevent="save">
-          <label>
-            <span>推理模式</span>
-            <select v-model="form.mode">
-              <option value="CLOUD">云端 API（智谱）</option>
-              <option value="LOCAL">本地模型</option>
-              <option value="AUTO">自动：本地优先，失败后走云端</option>
-              <option value="OFFLINE_ONLY">强制离线：绝不走云端</option>
-            </select>
-          </label>
-
-          <div class="ai-two-columns">
-            <label>
-              <span>API 地址</span>
-              <input v-model.trim="form.cloudBaseUrl" type="url" autocomplete="off" />
-            </label>
-            <label>
-              <span>模型</span>
-              <input v-model.trim="form.cloudModel" type="text" autocomplete="off" />
-            </label>
-          </div>
-
-          <label>
-            <span>智谱 API Key</span>
-            <input
-              v-model="apiKey"
-              type="password"
-              autocomplete="new-password"
-              :placeholder="status.settings.apiKeyConfigured ? '已安全保存；留空则保持原 Key' : '请输入 API Key'"
-            />
-            <small v-if="native">Key 使用 Android Keystore 加密保存，读取设置时不会回显明文。</small>
-            <small v-else>Key 仅保存在本机 backend-dev 开发数据库中，页面不会回显明文。</small>
-          </label>
-
-          <div class="ai-two-columns">
-            <label>
-              <span>max_tokens</span>
-              <input v-model.number="form.maxTokens" type="number" min="1" max="65536" />
-            </label>
-            <label>
-              <span>temperature</span>
-              <input v-model.number="form.temperature" type="number" min="0" max="2" step="0.1" />
-            </label>
-          </div>
-
-          <div class="ai-checks">
-            <label><input v-model="form.thinkingEnabled" type="checkbox" /> thinking.enabled</label>
-            <label><input v-model="form.stream" type="checkbox" /> stream</label>
-          </div>
-
-          <div v-if="form.mode === 'OFFLINE_ONLY'" class="ai-settings-note warning">
-            强制离线模式不会把审讯内容发送到智谱 API。
-          </div>
-          <div v-if="(form.mode === 'LOCAL' || form.mode === 'OFFLINE_ONLY') && !status.localAvailable" class="ai-settings-note warning">
-            {{ status.localModel ? `已选择 ${status.localModel}，推理 Runtime 尚未接入。` : '请先在“本地模型”中导入并选择 LLM。' }}
-          </div>
-
-          <footer>
-            <button type="button" class="danger-light" :disabled="saving || !status.settings.apiKeyConfigured" @click="clearKey">清除 API Key</button>
-            <button type="submit" class="session-primary" :disabled="saving">{{ saving ? '保存中…' : '保存并立即切换' }}</button>
-          </footer>
-        </form>
-      </template>
-
-      <div v-else class="model-manager">
-        <div class="model-manager-toolbar">
-          <div>
-            <span>模型目录</span>
-            <code>{{ catalog.rootPath || '正在读取…' }}</code>
-          </div>
-          <button :disabled="modelLoading || !!modelAction" @click="loadModels(true)">
-            {{ modelLoading ? '扫描中…' : '重新扫描' }}
-          </button>
-        </div>
-
-        <div v-if="!native" class="ai-settings-note warning">
-          请在 Android APK 中从系统文件管理器导入和选择模型。
-        </div>
-        <div v-if="modelAction.startsWith('import-')" class="ai-settings-note">
-          正在导入模型，大文件复制需要一些时间，请保持当前页面开启。
-        </div>
-        <div v-if="modelError" class="ai-settings-note error">{{ modelError }}</div>
-
+      <div class="local-model-scroll">
         <section v-for="category in categories" :key="category.id" class="model-category">
           <header>
             <div>
@@ -322,13 +158,11 @@ onMounted(() => Promise.all([load(), loadModels()]))
                 @click="chooseModel(category.id)"
               >取消选择</button>
               <button :disabled="!native || !!modelAction" @click="importModel(category.id, 'FILE')">导入文件</button>
-               <button v-if="category.id !== 'LLM'" :disabled="!native || !!modelAction" @click="importModel(category.id, 'DIRECTORY')">导入目录</button>
+              <button v-if="category.id !== 'LLM'" :disabled="!native || !!modelAction" @click="importModel(category.id, 'DIRECTORY')">导入目录</button>
             </div>
           </header>
 
-          <div v-if="!modelsFor(category.id).length" class="model-empty">
-            暂无 {{ category.label }} 模型
-          </div>
+          <div v-if="!modelsFor(category.id).length" class="model-empty">暂无 {{ category.label }} 模型</div>
           <label
             v-for="model in modelsFor(category.id)"
             :key="model.id"
@@ -345,24 +179,107 @@ onMounted(() => Promise.all([load(), loadModels()]))
             <span class="model-row-main">
               <strong>{{ model.name }}</strong>
               <span>
-                {{ model.sourceKind === 'ASSET' ? '内置' : model.sourceKind === 'DIRECTORY' ? '目录' : '文件' }} · {{ formatBytes(model.sizeBytes) }} · {{ formatDate(model.modifiedAt) }}
+                {{ model.sourceKind === 'ASSET' ? '内置' : model.sourceKind === 'DIRECTORY' ? '目录' : '文件' }} ·
+                {{ formatBytes(model.sizeBytes) }} · {{ formatDate(model.modifiedAt) }}
                 <template v-if="model.archive"> · 压缩包未解压</template>
                 <template v-if="model.modelFormat"> · {{ model.modelFormat }}</template>
                 <template v-if="model.provider"> · {{ model.provider }}</template>
-                 <template v-if="model.version"> · {{ model.version }}</template>
-                 <template v-if="model.targetPlatform"> · {{ model.targetPlatform }}</template>
+                <template v-if="model.version"> · {{ model.version }}</template>
+                <template v-if="model.targetPlatform"> · {{ model.targetPlatform }}</template>
               </span>
               <code>{{ model.relativePath }}</code>
             </span>
-            <span class="model-state" :class="{ ready: model.runtimeReady }">
-               {{ modelState(model) }}
-            </span>
+            <span class="model-state" :class="{ ready: model.runtimeReady }">{{ modelState(model) }}</span>
           </label>
+
           <AsrConsole v-if="category.id === 'ASR'" />
-           <OcrConsole v-if="category.id === 'OCR'" />
-           <LlmConsole v-if="category.id === 'LLM'" @rescan="loadModels(true)" />
+          <OcrConsole v-if="category.id === 'OCR'" />
+          <LlmConsole v-if="category.id === 'LLM'" @rescan="loadModels(true)" />
         </section>
       </div>
     </section>
   </div>
 </template>
+
+<style scoped>
+.ai-settings-trigger {
+  border: 1px solid #557087;
+  border-radius: 8px;
+  background: #17364f;
+  color: #e7f0f8;
+  padding: 7px 11px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.local-model-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(10, 24, 38, .58);
+}
+.local-model-panel {
+  width: min(1080px, 96vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 16px;
+  background: #f8fafc;
+  box-shadow: 0 26px 76px rgba(6, 20, 33, .28);
+}
+.local-model-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 19px 22px 15px;
+  background: #fff;
+  border-bottom: 1px solid #e1e8ee;
+}
+.local-model-header h2 { margin: 0; color: #21384b; font-size: 20px; }
+.local-model-header p { margin: 6px 0 0; color: #6b7c89; font-size: 13px; }
+.close-button, .model-manager-toolbar button, .model-category-actions button {
+  border: 1px solid #cbd8e2;
+  border-radius: 8px;
+  background: #fff;
+  color: #385268;
+  padding: 8px 12px;
+}
+.model-manager-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 22px;
+  background: #f5f8fa;
+  border-bottom: 1px solid #e3e9ee;
+}
+.model-manager-toolbar > div { min-width: 0; }
+.model-manager-toolbar span { display: block; margin-bottom: 4px; color: #71818d; font-size: 11px; }
+.model-manager-toolbar code { display: block; overflow: hidden; color: #3d5668; text-overflow: ellipsis; white-space: nowrap; }
+.local-model-note { margin: 12px 22px 0; padding: 9px 12px; border-radius: 8px; background: #eef6fd; color: #365d7c; font-size: 13px; }
+.local-model-note.warning { background: #fff7e8; color: #895700; }
+.local-model-note.error { background: #fff0f0; color: #a32626; }
+.local-model-scroll { min-height: 0; overflow: auto; padding: 14px 22px 24px; }
+.model-category { margin-bottom: 16px; border: 1px solid #dce5eb; border-radius: 12px; background: #fff; overflow: hidden; }
+.model-category > header { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px; border-bottom: 1px solid #edf1f4; }
+.model-category h3 { margin: 0; color: #294154; font-size: 15px; }
+.model-category header span { color: #80909b; font-size: 11px; }
+.model-category-actions { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+.model-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 11px 14px; border-top: 1px solid #f0f3f5; }
+.model-row:first-of-type { border-top: 0; }
+.model-row.selected { background: #f4f9ff; }
+.model-row-main { min-width: 0; }
+.model-row-main strong { display: block; color: #263d50; font-size: 13px; }
+.model-row-main > span { display: block; margin: 3px 0; color: #72828e; font-size: 11px; }
+.model-row-main code { display: block; overflow: hidden; color: #526979; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.model-state { padding: 4px 7px; border-radius: 999px; background: #f1f3f5; color: #6a7883; font-size: 10px; white-space: nowrap; }
+.model-state.ready { background: #e9f7ef; color: #17734b; }
+.model-empty { padding: 18px; color: #8b99a4; text-align: center; font-size: 12px; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+</style>

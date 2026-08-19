@@ -2,12 +2,9 @@
 
 这个目录不是正式 Android 产品后端。
 
-用途只有两类：
+用途是：在电脑浏览器运行 `webapp/` 时，提供与 NativeBridge 对齐的案件、会话、笔录、事实、时间线和设备联调 HTTP 接口。
 
-1. 在电脑浏览器运行 `webapp/` 时提供与 NativeBridge 对齐的 HTTP 业务接口；
-2. 临时验证智谱/DeepSeek/其他云端 AI 流式接口，不把临时云 API 写进正式 APK。
-
-正式一体机主链已经迁往：
+正式一体机主链：
 
 ```text
 webapp -> window.NativeBridge -> android/Kotlin -> Room/SQLCipher
@@ -15,4 +12,10 @@ webapp -> window.NativeBridge -> android/Kotlin -> Room/SQLCipher
 
 默认监听 `127.0.0.1:8080`，仅用于研发联调。设备模拟默认关闭，未接真实设备时返回 `DEVICE_NOT_CONNECTED`。
 
-浏览器 AI 设置通过 `/api/ai/settings` 读写，并保存在本机开发数据库中。AI 询问使用当前设置直连兼容 OpenAI Chat Completions 的云端接口；Windows 未接本地 Runtime 时，本地模式会返回明确错误。
+## AI 说明
+
+`backend-dev` 不再提供任何云端 AI 配置、API Key 保存、云端模型地址或 AI 代理接口。
+
+案件 AI 梳理与 AI 询问仅在 Android APK 内运行，并直接使用设备上已导入、已选择且 Runtime 可用的本地 LLM。
+
+浏览器联调环境不会回退到云端 AI。

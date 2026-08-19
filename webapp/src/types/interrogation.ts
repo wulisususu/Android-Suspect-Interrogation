@@ -2,8 +2,7 @@ export type Speaker = '民警' | '嫌疑人' | 'AI'
 export type RecordMark = '' | 'conflict' | 'confirmed' | 'pending'
 export type SessionStatus = 'READY' | 'RUNNING' | 'PAUSED' | 'COMPLETED'
 export type InterrogationStage = 'IDENTITY' | 'STATEMENT' | 'FOLLOW_UP' | 'SIGNING'
-export type AiMode = 'CLOUD' | 'LOCAL' | 'AUTO' | 'OFFLINE_ONLY'
-export type AiProviderKind = 'CLOUD_ZHIPU' | 'LOCAL' | 'UNAVAILABLE'
+export type AiProviderKind = 'LOCAL' | 'UNAVAILABLE'
 export type ModelCategory = 'ASR' | 'OCR' | 'VAD' | 'SPEAKER' | 'LLM'
 export type ModelSourceKind = 'FILE' | 'DIRECTORY' | 'ASSET'
 export type ModelImportSource = 'FILE' | 'DIRECTORY'
@@ -93,37 +92,6 @@ export interface InquirySsePayload {
   infos?: Record<string, unknown>
   code?: number
   message?: string
-}
-
-export interface AiSettings {
-  mode: AiMode
-  cloudBaseUrl: string
-  cloudModel: string
-  stream: boolean
-  thinkingEnabled: boolean
-  maxTokens: number
-  temperature: number
-  apiKeyConfigured: boolean
-}
-
-export interface AiRuntimeStatus {
-  settings: AiSettings
-  activeProvider: AiProviderKind
-  cloudConfigured: boolean
-  localAvailable: boolean
-  localModel?: string | null
-}
-
-export interface AiSettingsPatch {
-  mode?: AiMode
-  cloudBaseUrl?: string
-  cloudModel?: string
-  stream?: boolean
-  thinkingEnabled?: boolean
-  maxTokens?: number
-  temperature?: number
-  apiKey?: string
-  clearApiKey?: boolean
 }
 
 export interface LocalModelDescriptor {
