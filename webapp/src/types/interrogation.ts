@@ -6,6 +6,8 @@ export type AiProviderKind = 'LOCAL' | 'UNAVAILABLE'
 export type ModelCategory = 'ASR' | 'OCR' | 'VAD' | 'SPEAKER' | 'LLM'
 export type ModelSourceKind = 'FILE' | 'DIRECTORY' | 'ASSET'
 export type ModelImportSource = 'FILE' | 'DIRECTORY'
+export type DocumentSignerRole = 'SUSPECT' | 'OFFICER'
+export type DocumentSigningStatus = 'FROZEN' | 'LOCKED'
 
 export interface TranscriptMessage {
   id: string
@@ -282,6 +284,27 @@ export interface LlmRuntimeStatus {
   firstTokenLatencyMs?: number | null
   totalInferenceMs?: number | null
   error?: string | null
+}
+
+export interface DocumentSignatureState {
+  signerRole: DocumentSignerRole
+  signerName: string
+  signedAt: number
+  signatureHash: string
+  imageDataUrl: string
+  strokesJson: string
+  deviceId: string
+}
+
+export interface DocumentSigningState {
+  caseId: string
+  version: number
+  documentId: string
+  documentHash: string
+  status: DocumentSigningStatus
+  createdAt: number
+  integrityValid: boolean
+  signatures: DocumentSignatureState[]
 }
 
 export interface FragmentConfirmation { fragment: TemporaryAsrFragment; record: TranscriptMessage }
