@@ -55,6 +55,17 @@ class FactService(private val dao: FactDao, private val cases: CaseService) {
             FactEntity(caseId, "people", 25, "相关人员", "待根据问答核实", "pending", "确认同伙、联系人及其分工。", now),
             FactEntity(caseId, "current_address", 90, "现住址", "未录入", "missing", null, now),
             FactEntity(caseId, "case_type", 91, "案件类型", "未录入", "missing", null, now),
+
+            // 询问笔录固定头部字段。A 页负责维护，C 页只读引用。
+            FactEntity(caseId, "interrogation_round", 100, "询问次数", "1", "confirmed", null, now),
+            FactEntity(caseId, "interrogation_place", 101, "询问地点", "未录入", "missing", null, now),
+            FactEntity(caseId, "officer_unit", 102, "询问人工作单位", DEFAULT_POLICE_UNIT, "confirmed", null, now),
+            FactEntity(caseId, "recorder_name", 103, "记录人", "未录入", "missing", null, now),
+            FactEntity(caseId, "recorder_unit", 104, "记录人工作单位", DEFAULT_POLICE_UNIT, "confirmed", null, now),
+            FactEntity(caseId, "id_document_type", 105, "身份证件种类", "身份证", "confirmed", null, now),
+            FactEntity(caseId, "peoples_representative", 106, "人大代表", "否", "confirmed", null, now),
+            FactEntity(caseId, "contact", 107, "联系方式", "未录入", "missing", null, now),
+            FactEntity(caseId, "household_registration", 108, "户籍所在地", "未录入", "missing", null, now),
         )
         val missing = defaults.filter { dao.get(caseId, it.factKey) == null }
         if (missing.isNotEmpty()) dao.insertAll(missing)
@@ -69,6 +80,7 @@ class FactService(private val dao: FactDao, private val cases: CaseService) {
     )
 
     companion object {
+        const val DEFAULT_POLICE_UNIT = "南通市公安局崇川分局紫琅湖派出所"
         private val ALLOWED_STATUSES = setOf("confirmed", "pending", "conflict", "missing")
     }
 }
