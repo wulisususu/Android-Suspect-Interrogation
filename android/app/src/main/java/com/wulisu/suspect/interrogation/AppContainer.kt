@@ -23,6 +23,7 @@ class AppContainer(context: Context) {
     private val records = RecordService(database, cases, sessions, audit)
     private val facts = FactService(database.factDao(), cases)
     private val timeline = TimelineService(database.timelineDao(), cases, audit)
+    private val documentSigning = DocumentSigningService(database, cases, audit)
     private val devices = DeviceService()
     private val demoCaseSeed = DemoCaseSeed(cases, sessions, records, facts, timeline)
 
@@ -57,6 +58,7 @@ class AppContainer(context: Context) {
         asrCapture,
         ocrController,
         llmController,
+        documentSigning,
     )
 
     init {
