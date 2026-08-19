@@ -109,10 +109,11 @@ async function generateCaseOverview() {
           v-else
           :case-id="store.caseId"
           :summary="store.caseSummary"
+          :facts="store.facts"
+          :session="store.session"
           :messages="store.transcript"
           :capture="store.capture"
           :can-record="store.canRecord"
-          :can-finish="store.session.status === 'RUNNING' || store.session.status === 'PAUSED'"
           :native-capture-available="store.nativeCaptureAvailable"
           :capture-busy="store.captureBusy"
           :capture-elapsed-ms="store.captureElapsedMs"
@@ -121,7 +122,6 @@ async function generateCaseOverview() {
           @saved="refreshCaseWorkspace"
           @capture-start="store.startCapture"
           @capture-stop="store.stopCapture"
-          @finish-session="store.finishSession"
           @generate-ai="generateCaseOverview"
         />
       </section>
