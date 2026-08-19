@@ -109,6 +109,7 @@ async function generateCaseOverview() {
         <InterrogationPage
           v-else
           :case-id="store.caseId"
+          :summary="store.caseSummary"
           :messages="store.transcript"
           :capture="store.capture"
           :can-record="store.canRecord"
