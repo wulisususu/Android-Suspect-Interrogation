@@ -9,6 +9,7 @@ import type {
   CaseSummary,
   DeviceActionResult,
   FactItem,
+  FragmentApplication,
   FragmentConfirmation,
   InquirySsePayload,
   InterrogationStage,
@@ -290,6 +291,23 @@ export function confirmAsrFragment(caseId: string, fragmentId: string): Promise<
 export function confirmAsrFragmentBatch(caseId: string, fragmentIds: string[]): Promise<BatchFragmentConfirmation> {
   requireNativeCapture()
   return callNative<BatchFragmentConfirmation>('asr.fragment.confirmBatch', { caseId, fragmentIds })
+}
+
+export function applyAsrFragmentsToRecord(
+  caseId: string,
+  captureSessionId: string,
+  recordId: string,
+  fragmentIds: string[],
+  text: string,
+): Promise<FragmentApplication> {
+  requireNativeCapture()
+  return callNative<FragmentApplication>('asr.fragment.applyToRecord', {
+    caseId,
+    captureSessionId,
+    recordId,
+    fragmentIds,
+    text,
+  })
 }
 
 export function discardAsrFragment(caseId: string, fragmentId: string): Promise<TemporaryAsrFragment> {

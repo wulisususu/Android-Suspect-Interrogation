@@ -117,11 +117,12 @@ async function generateCaseOverview() {
           :native-capture-available="store.nativeCaptureAvailable"
           :capture-busy="store.captureBusy"
           :capture-elapsed-ms="store.captureElapsedMs"
+          :capture-insertion-receipt="store.captureInsertionReceipt"
           :ai-busy="store.caseAiBusy"
           :ai-error="store.caseAiError"
           @saved="refreshCaseWorkspace"
           @capture-start="store.startCapture"
-          @capture-stop="store.stopCapture"
+          @capture-stop="store.stopCapture($event)"
           @generate-ai="generateCaseOverview"
         />
       </section>

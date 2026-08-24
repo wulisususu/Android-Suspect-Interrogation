@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import {
+  applyAsrFragmentsToRecord,
   backendErrorMessage,
   changeSessionStage,
   confirmAsrFragment,
@@ -29,8 +30,11 @@ import {
   updateTranscriptMessage,
 } from '../api/interrogation'
 import { isNativeBusinessRuntime, onNativeEvent } from '../native/rpcBridge'
+import { buildAsrInsertion, isAsrTargetUsable } from '../utils/asrInsertion'
 import type {
   AsrCaptureStatus,
+  AsrInsertionReceipt,
+  AsrInsertionTarget,
   CaseAiAnalysis,
   CaseSummary,
   FactItem,
@@ -119,6 +123,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   const revisionsOpen = ref(false)
   const nativeCaptureAvailable = isNativeBusinessRuntime()
   const captureBusy = ref(false)
+  const captureInsertionReceipt = ref<AsrInsertionReceipt | null>(null)
   const captureClock = ref(Date.now())
   const selectedFragmentIds = ref<string[]>([])
   const capture = ref<AsrCaptureStatus>(emptyCapture(caseId.value))
@@ -181,6 +186,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     revisions.value = []
     revisionsOpen.value = false
     captureBusy.value = false
+    captureInsertionReceipt.value = null
     captureClock.value = Date.now()
     selectedFragmentIds.value = []
     capture.value = emptyCapture(nextCaseId)
@@ -307,7 +313,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     try {
       const status = await startAsrCapture(scope.caseId)
       applyCaptureStatus(status, scope)
-      feedbackIfCurrent(scope, '连续录音已开始，识别结果将先进入临时片段')
+      feedbackIfCurrent(scope, '录音已开始，停止后将写入所选问答位置')
     } catch (err) {
       feedbackIfCurrent(scope, backendErrorMessage(err), true)
     } finally {
@@ -315,15 +321,50 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     }
   }
 
-  async function stopCapture(showFeedback = true) {
+  async function stopCapture(target?: AsrInsertionTarget, showFeedback = true) {
     if (!nativeCaptureAvailable || captureBusy.value || !capture.value.running) return
 
     const scope = currentScope()
+    const captureSessionId = capture.value.captureSessionId
     captureBusy.value = true
     try {
       const status = await stopAsrCapture(scope.caseId)
       applyCaptureStatus(status, scope)
-      if (showFeedback) feedbackIfCurrent(scope, '录音已停止，待确认片段仍保留')
+      if (!isCurrentScope(scope)) return
+
+      if (!target) {
+        if (showFeedback) feedbackIfCurrent(scope, '录音已停止，待确认片段仍保留')
+        return
+      }
+      if (!captureSessionId || !isAsrTargetUsable(target, scope.caseId, transcript.value)) {
+        feedbackIfCurrent(scope, '录音目标已经变化，识别结果已保留为待确认片段', true)
+        return
+      }
+
+      const insertion = buildAsrInsertion(target, captureSessionId, status.fragments)
+      if (!insertion) {
+        feedbackIfCurrent(scope, '本次录音未识别到有效文字', true)
+        return
+      }
+
+      const applied = await applyAsrFragmentsToRecord(
+        scope.caseId,
+        captureSessionId,
+        target.recordId,
+        insertion.fragmentIds,
+        insertion.text,
+      )
+      if (!isCurrentScope(scope) || applied.record.id !== target.recordId) return
+      mergeConfirmedRecord(applied.record, scope)
+      const appliedIds = new Set(applied.fragments.map((item) => item.id))
+      capture.value.fragments = capture.value.fragments.filter((item) => !appliedIds.has(item.id))
+      captureInsertionReceipt.value = {
+        caseId: scope.caseId,
+        recordId: target.recordId,
+        caretPosition: insertion.caretPosition,
+        appliedAt: Date.now(),
+      }
+      feedbackIfCurrent(scope, `语音文字已写入第 ${applied.record.seq} 条记录`)
     } catch (err) {
       feedbackIfCurrent(scope, backendErrorMessage(err), true)
     } finally {
@@ -541,7 +582,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     const scope = currentScope()
     try {
       if (session.value.status === 'RUNNING') {
-        if (capture.value.running) await stopCapture(false)
+        if (capture.value.running) await stopCapture(undefined, false)
         if (!isCurrentScope(scope)) return
         const nextSession = await pauseSessionApi(scope.caseId)
         if (!isCurrentScope(scope) || nextSession.caseId !== scope.caseId) return
@@ -561,7 +602,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   async function finishSession() {
     const scope = currentScope()
     try {
-      if (capture.value.running) await stopCapture(false)
+      if (capture.value.running) await stopCapture(undefined, false)
       if (!isCurrentScope(scope)) return
       const nextSession = await finishSessionApi(scope.caseId)
       if (!isCurrentScope(scope) || nextSession.caseId !== scope.caseId) return
@@ -618,6 +659,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     nativeCaptureAvailable,
     capture,
     captureBusy,
+    captureInsertionReceipt,
     captureElapsedMs,
     selectedFragmentIds,
     resetCaseContext,

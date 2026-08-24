@@ -14,6 +14,8 @@ import {
 import { isNativeBusinessRuntime } from '../native/rpcBridge'
 import type {
   AsrCaptureStatus,
+  AsrInsertionReceipt,
+  AsrInsertionTarget,
   CaseSummary,
   DocumentSignerRole,
   DocumentSigningState,
@@ -35,11 +37,12 @@ const props = defineProps<{
   captureElapsedMs: number
   aiBusy: boolean
   aiError: string
+  captureInsertionReceipt?: AsrInsertionReceipt | null
 }>()
 const emit = defineEmits<{
   saved: []
   captureStart: []
-  captureStop: []
+  captureStop: [target?: AsrInsertionTarget]
   generateAi: []
 }>()
 
@@ -59,6 +62,9 @@ const signingBusy = ref('')
 const signatureRole = ref<DocumentSignerRole | null>(null)
 const signatureCanvas = ref<HTMLCanvasElement | null>(null)
 const signatureStrokes = ref<SignaturePoint[][]>([])
+const insertionTarget = ref<AsrInsertionTarget | null>(null)
+const recordingTarget = ref<AsrInsertionTarget | null>(null)
+const pageRoot = ref<HTMLElement | null>(null)
 let activeStroke: SignaturePoint[] | null = null
 
 const formalRecords = computed(() => props.messages.filter((item) => item.speaker !== 'AI'))
@@ -115,8 +121,33 @@ watch(
 
 watch(
   () => props.caseId,
-  () => { void loadSigningState() },
+  () => {
+    insertionTarget.value = null
+    recordingTarget.value = null
+    void loadSigningState()
+  },
   { immediate: true },
+)
+
+watch(
+  () => props.captureInsertionReceipt,
+  async (receipt) => {
+    if (!receipt || receipt.caseId !== props.caseId) return
+    await nextTick()
+    const inputs = pageRoot.value?.querySelectorAll<HTMLTextAreaElement>('[data-record-id]') ?? []
+    const input = Array.from(inputs).find((item) => item.dataset.recordId === receipt.recordId)
+    if (!input) return
+    input.focus()
+    input.setSelectionRange(receipt.caretPosition, receipt.caretPosition)
+    insertionTarget.value = {
+      caseId: props.caseId,
+      recordId: receipt.recordId,
+      selectionStart: receipt.caretPosition,
+      selectionEnd: receipt.caretPosition,
+      sourceText: input.value,
+    }
+    recordingTarget.value = null
+  },
 )
 
 function headerFact(key: string, fallback = '') {
@@ -149,6 +180,23 @@ function rowsFor(value: string | undefined, minimum = 2) {
 function markEditing(id: string, editing: boolean) {
   if (editing && !editingIds.value.includes(id)) editingIds.value.push(id)
   if (!editing) editingIds.value = editingIds.value.filter((item) => item !== id)
+}
+
+function rememberInsertionTarget(item: TranscriptMessage, event: Event) {
+  if (props.capture.running || props.captureBusy || documentFrozen.value) return
+  const input = event.currentTarget as HTMLTextAreaElement
+  insertionTarget.value = {
+    caseId: props.caseId,
+    recordId: item.id,
+    selectionStart: input.selectionStart ?? input.value.length,
+    selectionEnd: input.selectionEnd ?? input.value.length,
+    sourceText: input.value,
+  }
+}
+
+function focusRecordEditor(item: TranscriptMessage, event: FocusEvent) {
+  markEditing(item.id, true)
+  rememberInsertionTarget(item, event)
 }
 
 async function loadSigningState() {
@@ -219,8 +267,23 @@ function toggleCapture() {
     localError.value = '笔录已经冻结，不能继续录音。'
     return
   }
-  if (props.capture.running) emit('captureStop')
-  else emit('captureStart')
+  if (props.capture.running) {
+    const target = recordingTarget.value
+    if (!target) localError.value = '当前录音缺少写入目标，停止后将保留为待确认片段。'
+    emit('captureStop', target || undefined)
+    return
+  }
+  const target = insertionTarget.value
+  const valid = target
+    && target.caseId === props.caseId
+    && formalRecords.value.some((item) => item.id === target.recordId)
+  if (!valid) {
+    localError.value = '请先点击要写入的问或答，并放置输入光标。'
+    return
+  }
+  localError.value = ''
+  recordingTarget.value = { ...target }
+  emit('captureStart')
 }
 
 async function finishAndFreeze() {
@@ -371,7 +434,7 @@ async function confirmSignature() {
 </script>
 
 <template>
-  <section class="interrogation-page page-card document-mode">
+  <section ref="pageRoot" class="interrogation-page page-card document-mode">
     <div class="document-actions">
       <button
         class="finish-interrogation-button"
@@ -421,11 +484,19 @@ async function confirmSignature() {
             <textarea
               v-model="drafts[pair.question.id]"
               class="document-editor"
-              :class="{ locked: documentFrozen }"
+              :class="{
+                locked: documentFrozen,
+                'recording-target': (recordingTarget || insertionTarget)?.recordId === pair.question.id,
+              }"
+              :data-record-id="pair.question.id"
               :disabled="documentFrozen"
               :rows="rowsFor(drafts[pair.question.id], 2)"
               aria-label="民警问题，可编辑"
-              @focus="markEditing(pair.question.id, true)"
+              @focus="focusRecordEditor(pair.question, $event)"
+              @click="rememberInsertionTarget(pair.question, $event)"
+              @keyup="rememberInsertionTarget(pair.question, $event)"
+              @select="rememberInsertionTarget(pair.question, $event)"
+              @input="rememberInsertionTarget(pair.question, $event)"
               @blur="saveEdit(pair.question)"
             ></textarea>
           </div>
@@ -435,11 +506,19 @@ async function confirmSignature() {
             <textarea
               v-model="drafts[pair.answer.id]"
               class="document-editor answer-editor"
-              :class="{ locked: documentFrozen }"
+              :class="{
+                locked: documentFrozen,
+                'recording-target': (recordingTarget || insertionTarget)?.recordId === pair.answer.id,
+              }"
+              :data-record-id="pair.answer.id"
               :disabled="documentFrozen"
               :rows="rowsFor(drafts[pair.answer.id], 3)"
               aria-label="嫌疑人回答，可编辑"
-              @focus="markEditing(pair.answer.id, true)"
+              @focus="focusRecordEditor(pair.answer, $event)"
+              @click="rememberInsertionTarget(pair.answer, $event)"
+              @keyup="rememberInsertionTarget(pair.answer, $event)"
+              @select="rememberInsertionTarget(pair.answer, $event)"
+              @input="rememberInsertionTarget(pair.answer, $event)"
               @blur="saveEdit(pair.answer)"
             ></textarea>
           </div>
@@ -696,6 +775,7 @@ async function confirmSignature() {
 .document-editor:hover:not(:disabled) { background: #fbfcfd; border-color: #edf0f2; }
 .document-editor:focus { background: #fffef5; border-color: #8fb6d8; box-shadow: 0 0 0 2px rgba(47, 128, 237, .08); }
 .document-editor.locked { resize: none; opacity: 1; -webkit-text-fill-color: #111; }
+.document-editor.recording-target:not(:disabled) { background: #fff9e8; border-color: #d69b2d; box-shadow: 0 0 0 2px rgba(214, 155, 45, .14); }
 .voice-draft-section { margin-top: 10mm; padding-top: 6mm; border-top: 1px solid #aaa; }
 .voice-draft-section h2,
 .signature-section h2 { margin: 0 0 2mm; font: 700 14pt/1.5 SimHei, "黑体", sans-serif; }
