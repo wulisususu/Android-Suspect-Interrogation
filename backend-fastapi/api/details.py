@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from services.fact_service import get_case_facts, get_case_timeline, get_case_audit, get_case_revisions
+from services.detail_service import get_case_facts, get_case_timeline, get_case_audit, get_case_revisions
 
 router = APIRouter(prefix='/api/cases', tags=['case-details'])
 
