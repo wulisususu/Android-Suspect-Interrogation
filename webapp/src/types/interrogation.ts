@@ -207,6 +207,26 @@ export interface AsrCaptureStatus {
   error?: string | null
 }
 
+export interface AsrInsertionTarget {
+  caseId: string
+  recordId: string
+  selectionStart: number
+  selectionEnd: number
+  sourceText: string
+}
+
+export interface AsrInsertionReceipt {
+  caseId: string
+  recordId: string
+  caretPosition: number
+  appliedAt: number
+}
+
+export interface FragmentApplication {
+  fragments: TemporaryAsrFragment[]
+  record: TranscriptMessage
+}
+
 export interface OcrPoint { x: number; y: number }
 export interface OcrRect { left: number; top: number; right: number; bottom: number }
 export interface OcrTextBlock { text: string; confidence?: number | null; rect?: OcrRect | null; points?: OcrPoint[] | null }
