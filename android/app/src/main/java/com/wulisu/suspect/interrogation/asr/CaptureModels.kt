@@ -84,6 +84,11 @@ data class FragmentConfirmation(
     val record: TranscriptMessage,
 )
 
+data class FragmentApplication(
+    val fragments: List<TemporaryAsrFragment>,
+    val record: TranscriptMessage,
+)
+
 data class FragmentConfirmationFailure(
     val fragmentId: String,
     val code: String,

@@ -8,6 +8,7 @@ import com.wulisu.suspect.interrogation.data.AsrCaptureSessionEntity
 import com.wulisu.suspect.interrogation.data.AsrTemporaryFragmentEntity
 import com.wulisu.suspect.interrogation.data.CaseEntity
 import com.wulisu.suspect.interrogation.data.SessionEntity
+import com.wulisu.suspect.interrogation.domain.BusinessException
 import com.wulisu.suspect.interrogation.service.AuditService
 import com.wulisu.suspect.interrogation.service.CaseService
 import com.wulisu.suspect.interrogation.service.InterrogationService
@@ -26,6 +27,7 @@ class AsrFragmentConfirmationTest {
     private lateinit var db: AppDatabase
     private lateinit var asr: AsrController
     private lateinit var manager: AsrCaptureSessionManager
+    private lateinit var records: RecordService
 
     @Before
     fun setUp() = runBlocking {
@@ -34,7 +36,7 @@ class AsrFragmentConfirmationTest {
         val audit = AuditService(db.auditDao())
         val cases = CaseService(db, audit)
         val sessions = InterrogationService(db, cases, audit)
-        val records = RecordService(db, cases, sessions, audit)
+        records = RecordService(db, cases, sessions, audit)
         asr = AsrController(context, ModelManager(context))
         manager = AsrCaptureSessionManager(context, db, sessions, records, audit, asr)
 
@@ -113,11 +115,69 @@ class AsrFragmentConfirmationTest {
         assertEquals(0, db.qaDao().list(CASE_ID).size)
     }
 
-    private suspend fun insertFragment(id: String, ordinal: Int, rawText: String, editedText: String, speaker: String) {
+    @Test
+    fun applyingFragmentsUpdatesOnlyTheTargetRecordAndConfirmsEveryFragment() = runBlocking {
+        val target = records.add(CASE_ID, "嫌疑人于案发当晚", "嫌疑人")
+        val other = records.add(CASE_ID, "另一条正式记录", "民警")
+        insertFragment("fragment-1", 2, "经过", "经过", "UNKNOWN")
+        insertFragment("fragment-2", 1, "说明", "说明", "UNKNOWN")
+
+        val application = manager.applyFragmentsToRecord(
+            caseId = CASE_ID,
+            captureSessionId = CAPTURE_ID,
+            fragmentIds = listOf("fragment-1", "fragment-2"),
+            recordId = target.id,
+            text = "嫌疑人于案发当晚说明经过",
+            reason = "语音识别插入",
+        )
+
+        assertEquals(target.id, application.record.id)
+        assertEquals("嫌疑人于案发当晚说明经过", application.record.text)
+        assertEquals("另一条正式记录", db.qaDao().get(CASE_ID, other.id)!!.text)
+        assertEquals(2, application.fragments.size)
+        assertEquals("CONFIRMED", db.asrTemporaryFragmentDao().get(CASE_ID, "fragment-1")!!.state)
+        assertEquals(target.id, db.asrTemporaryFragmentDao().get(CASE_ID, "fragment-1")!!.confirmedQaId)
+        assertEquals(1, records.revisions(CASE_ID, target.id).size)
+    }
+
+    @Test
+    fun applyingFragmentsRollsBackWhenAnyFragmentIsOutsideTheCapture() = runBlocking {
+        val target = records.add(CASE_ID, "原始内容", "嫌疑人")
+        insertFragment("fragment-valid", 1, "有效", "有效", "UNKNOWN")
+        db.asrCaptureSessionDao().insert(
+            AsrCaptureSessionEntity("other-capture", CASE_ID, SESSION_ID, "model", "Zipformer", "rknn", SHERPA_ONNX_VERSION, 16_000, "other.wav", 3L, 4L, "STOPPED", null),
+        )
+        insertFragment("fragment-foreign-capture", 2, "无效", "无效", "UNKNOWN", "other-capture")
+
+        val error = runCatching {
+            manager.applyFragmentsToRecord(
+                caseId = CASE_ID,
+                captureSessionId = CAPTURE_ID,
+                fragmentIds = listOf("fragment-valid", "fragment-foreign-capture"),
+                recordId = target.id,
+                text = "原始内容有效无效",
+                reason = "语音识别插入",
+            )
+        }.exceptionOrNull() as BusinessException
+
+        assertEquals("ASR_FRAGMENT_CAPTURE_MISMATCH", error.code)
+        assertEquals("原始内容", db.qaDao().get(CASE_ID, target.id)!!.text)
+        assertEquals("PENDING", db.asrTemporaryFragmentDao().get(CASE_ID, "fragment-valid")!!.state)
+        assertEquals(0, records.revisions(CASE_ID, target.id).size)
+    }
+
+    private suspend fun insertFragment(
+        id: String,
+        ordinal: Int,
+        rawText: String,
+        editedText: String,
+        speaker: String,
+        captureSessionId: String = CAPTURE_ID,
+    ) {
         db.asrTemporaryFragmentDao().insert(
             AsrTemporaryFragmentEntity(
                 id = id,
-                captureSessionId = CAPTURE_ID,
+                captureSessionId = captureSessionId,
                 caseId = CASE_ID,
                 ordinal = ordinal,
                 startedAtMs = ordinal * 1000L,

@@ -8,6 +8,7 @@ import com.wulisu.suspect.interrogation.asr.AsrFinalResult
 import com.wulisu.suspect.interrogation.asr.AsrRuntimeStatus
 import com.wulisu.suspect.interrogation.asr.BatchFragmentConfirmation
 import com.wulisu.suspect.interrogation.asr.CaptureFragmentRules
+import com.wulisu.suspect.interrogation.asr.FragmentApplication
 import com.wulisu.suspect.interrogation.asr.FragmentConfirmation
 import com.wulisu.suspect.interrogation.asr.TemporaryAsrFragment
 import com.wulisu.suspect.interrogation.domain.*
@@ -192,6 +193,18 @@ class RpcRouter(
             val caseId = payload.requiredString("caseId")
             signing.requireEditable(caseId)
             asrCapture.confirmBatch(caseId, payload.requiredStringList("fragmentIds")).toJson()
+        }
+        "asr.fragment.applyToRecord" -> {
+            val caseId = payload.requiredString("caseId")
+            signing.requireEditable(caseId)
+            asrCapture.applyFragmentsToRecord(
+                caseId = caseId,
+                captureSessionId = payload.requiredString("captureSessionId"),
+                fragmentIds = payload.requiredStringList("fragmentIds"),
+                recordId = payload.requiredString("recordId"),
+                text = payload.requiredString("text"),
+                reason = payload.nullableString("reason") ?: "语音识别插入",
+            ).toJson()
         }
         "asr.fragment.discard" -> asrCapture.discardFragment(
             payload.requiredString("caseId"),
@@ -474,6 +487,10 @@ private fun TemporaryAsrFragment.toJson() = JSONObject()
 
 private fun FragmentConfirmation.toJson() = JSONObject()
     .put("fragment", fragment.toJson())
+    .put("record", record.toJson())
+
+private fun FragmentApplication.toJson() = JSONObject()
+    .put("fragments", fragments.toJsonArray { it.toJson() })
     .put("record", record.toJson())
 
 private fun BatchFragmentConfirmation.toJson() = JSONObject()

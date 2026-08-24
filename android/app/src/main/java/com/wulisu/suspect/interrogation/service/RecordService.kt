@@ -38,15 +38,19 @@ class RecordService(private val db: AppDatabase, private val cases: CaseService,
         qaDao.get(caseId, messageId)?.toDomain()
 
     suspend fun update(caseId: String, messageId: String, text: String, reason: String): TranscriptMessage = db.withTransaction {
+        updateWithinTransaction(caseId, messageId, text, reason)
+    }
+
+    internal suspend fun updateWithinTransaction(caseId: String, messageId: String, text: String, reason: String): TranscriptMessage {
         val current = qaDao.get(caseId, messageId) ?: throw BusinessException("QA_NOT_FOUND", "问答记录不存在")
         val clean = InterrogationRules.requireNonBlankMessage(text)
-        if (clean == current.text) return@withTransaction current.toDomain()
+        if (clean == current.text) return current.toDomain()
         val version = revisionDao.maxVersion(messageId) + 1
         val now = System.currentTimeMillis()
         revisionDao.insert(QaRevisionEntity(UUID.randomUUID().toString(), messageId, caseId, version, current.text, clean, reason.ifBlank { "警官修订" }, now))
         val next = current.copy(text = clean, updatedAt = now); qaDao.update(next)
         audit.append(caseId, "QA_UPDATE", "QA", messageId, JSONObject().put("version", version).put("reason", reason))
-        next.toDomain()
+        return next.toDomain()
     }
 
     suspend fun mark(caseId: String, messageId: String, markValue: String): TranscriptMessage = db.withTransaction {

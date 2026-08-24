@@ -27,7 +27,7 @@ class AsrCaptureSessionManager(
     private val sessions: InterrogationService,
     private val records: RecordService,
     private val audit: AuditService,
-    private val asr: AsrController,
+    private val asr: AsrCaptureRuntime,
 ) : AsrListener {
     private val appContext = context.applicationContext
     private val captureDao = db.asrCaptureSessionDao()
@@ -113,19 +113,24 @@ class AsrCaptureSessionManager(
         val current = synchronized(activeLock) {
             val value = active
             if (value != null && value.entity.caseId != caseId) throw BusinessException("ASR_CAPTURE_CASE_MISMATCH", "当前录音不属于此案件")
-            active = null
+            value?.stopping = true
             value
         }
         if (current == null) return@withContext statusInternal(caseId)
 
-        val endedAt = System.currentTimeMillis()
         runCatching { current.writer.close() }.getOrElse { error ->
             Log.e(TAG, "Failed to finalize capture WAV", error)
         }
+        asr.stop()
+        persistPendingFinalResults(current)
+
+        val endedAt = System.currentTimeMillis()
         val stopped = current.entity.copy(state = CaptureSessionState.STOPPED.name, endedAt = endedAt)
         captureDao.update(stopped)
         audit.append(caseId, "ASR_CAPTURE_STOP", "ASR_CAPTURE", stopped.id)
-        asr.stop()
+        synchronized(activeLock) {
+            if (active === current) active = null
+        }
         statusInternal(caseId).also(::emit)
     }
 
@@ -180,6 +185,55 @@ class AsrCaptureSessionManager(
         BatchFragmentConfirmation(confirmed, failures)
     }
 
+    suspend fun applyFragmentsToRecord(
+        caseId: String,
+        captureSessionId: String,
+        fragmentIds: List<String>,
+        recordId: String,
+        text: String,
+        reason: String,
+    ): FragmentApplication = withContext(dispatcher) {
+        val application = db.withTransaction {
+            sessions.activeRunning(caseId)
+            val ids = fragmentIds.distinct()
+            if (ids.isEmpty()) throw BusinessException("ASR_FRAGMENT_REQUIRED", "请选择待写入的语音片段")
+            val fragments = ids.map { fragmentId ->
+                fragmentDao.get(caseId, fragmentId)
+                    ?: throw BusinessException("ASR_FRAGMENT_NOT_FOUND", "临时片段不存在")
+            }
+            fragments.forEach { fragment ->
+                if (fragment.captureSessionId != captureSessionId) {
+                    throw BusinessException("ASR_FRAGMENT_CAPTURE_MISMATCH", "语音片段不属于当前录音会话")
+                }
+                if (fragment.state != TemporaryFragmentState.PENDING.name) {
+                    throw BusinessException("ASR_FRAGMENT_NOT_PENDING", "只有待确认片段可以写入问答")
+                }
+            }
+            val record = records.updateWithinTransaction(caseId, recordId, text, reason)
+            val now = System.currentTimeMillis()
+            val updated = fragments.map { fragment ->
+                val next = fragment.copy(
+                    state = TemporaryFragmentState.CONFIRMED.name,
+                    confirmedQaId = record.id,
+                    updatedAt = now,
+                )
+                fragmentDao.update(next)
+                next
+            }
+            audit.append(
+                caseId,
+                "ASR_FRAGMENT_APPLY",
+                "ASR_CAPTURE",
+                captureSessionId,
+                JSONObject().put("qaId", record.id).put("fragmentIds", ids),
+            )
+            FragmentApplication(updated.map(::toDomain), record)
+        }
+        application.fragments.forEach { removeActiveFragment(it.id) }
+        emitForCase(caseId)
+        application
+    }
+
     suspend fun discardFragment(caseId: String, fragmentId: String): TemporaryAsrFragment = withContext(dispatcher) {
         val current = fragmentDao.get(caseId, fragmentId)
             ?: throw BusinessException("ASR_FRAGMENT_NOT_FOUND", "临时片段不存在")
@@ -193,7 +247,7 @@ class AsrCaptureSessionManager(
     }
 
     override fun onAudioSamples(samples: ShortArray, count: Int, sampleRate: Int, capturedAtMs: Long) {
-        val current = active ?: return
+        val current = synchronized(activeLock) { active?.takeUnless { it.stopping } } ?: return
         try {
             current.writer.append(samples, count)
         } catch (error: Throwable) {
@@ -202,55 +256,24 @@ class AsrCaptureSessionManager(
     }
 
     override fun onPartialResult(text: String, firstTokenLatencyMs: Long?) {
-        synchronized(activeLock) {
-            active?.partialText = text
+        val shouldEmit = synchronized(activeLock) {
+            val current = active?.takeUnless { it.stopping }
+            if (current == null) false else {
+                current.partialText = text
+                true
+            }
         }
-        emitActive()
+        if (shouldEmit) emitActive()
     }
 
     override fun onFinalResult(result: AsrFinalResult) {
-        val current = active ?: return
-        runCatching { current.writer.checkpoint() }.onFailure { error ->
-            failFromCallback(current, "ASR_AUDIO_WRITE_FAILED", error.message ?: "录音文件更新失败")
-            return
-        }
-        val entity = synchronized(activeLock) {
-            if (active !== current) return
+        if (result.text.isBlank()) return
+        synchronized(activeLock) {
+            val current = active ?: return
             current.partialText = ""
-            val startOffset = (result.startedAtMs - current.entity.startedAt).coerceAtLeast(0L)
-            val endOffset = (result.endedAtMs - current.entity.startedAt).coerceAtLeast(startOffset)
-            AsrTemporaryFragmentEntity(
-                id = UUID.randomUUID().toString(),
-                captureSessionId = current.entity.id,
-                caseId = current.entity.caseId,
-                ordinal = current.nextOrdinal++,
-                startedAtMs = result.startedAtMs,
-                endedAtMs = result.endedAtMs,
-                audioStartOffsetMs = startOffset,
-                audioEndOffsetMs = endOffset,
-                rawText = result.text,
-                editedText = result.text,
-                speaker = TemporarySpeaker.UNKNOWN.name,
-                speakerSource = SpeakerSource.UNASSIGNED.name,
-                confidence = result.confidence,
-                confidenceSource = if (result.confidence == null) ConfidenceSource.UNAVAILABLE.name else ConfidenceSource.SHERPA_TOKEN_LOG_PROBS.name,
-                state = TemporaryFragmentState.PENDING.name,
-                confirmedQaId = null,
-                createdAt = result.endedAtMs,
-                updatedAt = result.endedAtMs,
-            )
+            current.pendingFinalResults += result
         }
-        scope.launch {
-            runCatching {
-                fragmentDao.insert(entity)
-                synchronized(activeLock) {
-                    active?.takeIf { it.entity.id == entity.captureSessionId }?.fragments?.add(entity)
-                }
-                emitActive()
-            }.onFailure { error ->
-                failFromCallback(current, "ASR_FRAGMENT_SAVE_FAILED", error.message ?: "临时片段保存失败")
-            }
-        }
+        emitActive()
     }
 
     override fun onError(code: String, message: String) {
@@ -386,6 +409,41 @@ class AsrCaptureSessionManager(
         emit(statusInternal(caseId))
     }
 
+    private suspend fun persistPendingFinalResults(current: ActiveCapture) {
+        val results = synchronized(activeLock) {
+            current.pendingFinalResults.toList().also { current.pendingFinalResults.clear() }
+        }
+        if (results.isEmpty()) return
+        val entities = results.filter { it.text.isNotBlank() }.map { result ->
+            val startOffset = (result.startedAtMs - current.entity.startedAt).coerceAtLeast(0L)
+            val endOffset = (result.endedAtMs - current.entity.startedAt).coerceAtLeast(startOffset)
+            AsrTemporaryFragmentEntity(
+                id = UUID.randomUUID().toString(),
+                captureSessionId = current.entity.id,
+                caseId = current.entity.caseId,
+                ordinal = current.nextOrdinal++,
+                startedAtMs = result.startedAtMs,
+                endedAtMs = result.endedAtMs,
+                audioStartOffsetMs = startOffset,
+                audioEndOffsetMs = endOffset,
+                rawText = result.text.trim(),
+                editedText = result.text.trim(),
+                speaker = TemporarySpeaker.UNKNOWN.name,
+                speakerSource = SpeakerSource.UNASSIGNED.name,
+                confidence = result.confidence,
+                confidenceSource = if (result.confidence == null) ConfidenceSource.UNAVAILABLE.name else ConfidenceSource.SHERPA_TOKEN_LOG_PROBS.name,
+                state = TemporaryFragmentState.PENDING.name,
+                confirmedQaId = null,
+                createdAt = result.endedAtMs,
+                updatedAt = result.endedAtMs,
+            )
+        }
+        db.withTransaction {
+            entities.forEach { entity -> fragmentDao.insert(entity) }
+        }
+        synchronized(activeLock) { current.fragments += entities }
+    }
+
     private fun emitActive() {
         active?.snapshot()?.let(::emit)
     }
@@ -405,7 +463,9 @@ class AsrCaptureSessionManager(
         val writer: PcmWavWriter,
         var partialText: String = "",
         var nextOrdinal: Int = 1,
+        var stopping: Boolean = false,
         val fragments: MutableList<AsrTemporaryFragmentEntity> = mutableListOf(),
+        val pendingFinalResults: MutableList<AsrFinalResult> = mutableListOf(),
     )
 
     companion object {

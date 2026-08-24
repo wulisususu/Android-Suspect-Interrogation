@@ -30,10 +30,16 @@ data class AsrRuntimeStatus(
     val audioSignalState: AudioSignalState = AudioSignalState.WAITING,
 )
 
+interface AsrCaptureRuntime {
+    fun status(): AsrRuntimeStatus
+    fun start(): AsrRuntimeStatus
+    fun stop(): AsrRuntimeStatus
+}
+
 class AsrController(
     context: Context,
     private val modelManager: ModelManager,
-) {
+) : AsrCaptureRuntime {
     private val operationLock = Any()
     private val controlLock = Any()
     private val switcher = AsrEngineSwitcher { spec ->
@@ -124,7 +130,7 @@ class AsrController(
         captureRunningProvider = provider
     }
 
-    fun status(): AsrRuntimeStatus = synchronized(controlLock) {
+    override fun status(): AsrRuntimeStatus = synchronized(controlLock) {
         val selected = resolveSelectedSpec()
         if (selected.id.catalogId != state.selectedModelId && !state.running) {
             state = initialStatus(selected).copy(finalResults = state.finalResults)
@@ -132,7 +138,7 @@ class AsrController(
         state
     }
 
-    fun start(): AsrRuntimeStatus = synchronized(operationLock) operation@{
+    override fun start(): AsrRuntimeStatus = synchronized(operationLock) operation@{
         val runningState = synchronized(controlLock) { state.takeIf { it.running } }
         if (runningState != null) return@operation runningState
         val selected = resolveSelectedSpec()
@@ -176,7 +182,7 @@ class AsrController(
         }
     }
 
-    fun stop(): AsrRuntimeStatus = synchronized(operationLock) {
+    override fun stop(): AsrRuntimeStatus = synchronized(operationLock) {
         switcher.release()
         synchronized(controlLock) {
             state = state.copy(
