@@ -1,22 +1,21 @@
 package com.wulisu.suspect.interrogation.asr
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class AudioInputSelectionTest {
     @Test
-    fun `built in microphone wins over connected USB input`() {
+    fun `USB microphone wins over silent built in input`() {
         val usb = AudioInputCandidate(2, AudioInputKind.USB, "HK DXMIC V1")
         val builtIn = AudioInputCandidate(1, AudioInputKind.BUILT_IN, "rockchip-es8388")
 
-        assertEquals(builtIn, AudioInputSelectionPolicy.select(listOf(usb, builtIn)))
+        assertEquals(usb, AudioInputSelectionPolicy.select(listOf(usb, builtIn)))
     }
 
     @Test
-    fun `no built in microphone leaves routing to system default`() {
+    fun `USB microphone is selected when it is the only usable input`() {
         val usb = AudioInputCandidate(2, AudioInputKind.USB, "HK DXMIC V1")
 
-        assertNull(AudioInputSelectionPolicy.select(listOf(usb)))
+        assertEquals(usb, AudioInputSelectionPolicy.select(listOf(usb)))
     }
 }

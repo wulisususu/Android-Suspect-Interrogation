@@ -203,7 +203,7 @@ class RpcRouter(
                 fragmentIds = payload.requiredStringList("fragmentIds"),
                 recordId = payload.requiredString("recordId"),
                 text = payload.requiredString("text"),
-                reason = payload.nullableString("reason") ?: "语音识别插入",
+                reason = payload.nullableString("reason") ?: "语音转写插入",
             ).toJson()
         }
         "asr.fragment.discard" -> asrCapture.discardFragment(

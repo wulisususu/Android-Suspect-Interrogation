@@ -222,7 +222,7 @@ class AsrCaptureSessionManager(
             }
             audit.append(
                 caseId,
-                "ASR_FRAGMENT_APPLY",
+                "ASR_FRAGMENT_APPLY_TO_RECORD",
                 "ASR_CAPTURE",
                 captureSessionId,
                 JSONObject().put("qaId", record.id).put("fragmentIds", ids),
