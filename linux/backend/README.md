@@ -1,6 +1,6 @@
 # Linux Backend
 
-`linux/backend` is the authoritative production backend for the Linux adaptation of Android-Suspect-Interrogation. It runs independently of Android APK/Kotlin/Room/NativeBridge and is designed for fully offline RK3588 deployments.
+`linux/backend` is the authoritative production backend for the suspect-interrogation system. It is designed for fully offline RK3588 Linux deployments.
 
 ## Architecture
 
