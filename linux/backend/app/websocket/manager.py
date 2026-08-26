@@ -1,4 +1,4 @@
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 router = APIRouter()
 
@@ -19,5 +19,10 @@ async def interrogation_socket(websocket: WebSocket, session_id: str):
                 "session_id": session_id,
                 "received": data
             })
+    except WebSocketDisconnect:
+        # A client closing a WebSocket normally is expected control flow, not an
+        # application failure. Cleanup below makes the same session reconnectable.
+        pass
     finally:
-        connections.pop(session_id, None)
+        if connections.get(session_id) is websocket:
+            connections.pop(session_id, None)
