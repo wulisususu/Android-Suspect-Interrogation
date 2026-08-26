@@ -14,7 +14,7 @@ permissions:
 jobs:
   connectivity:
     runs-on: [self-hosted, rk3588]
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Runner identity
@@ -36,24 +36,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo '=== DNS ==='
           getent hosts github.com || true
           getent hosts api.github.com || true
-          getent hosts objects.githubusercontent.com || true
-          echo '=== HTTPS github.com ==='
           curl -fsSIL --connect-timeout 5 --max-time 15 https://github.com/ >/dev/null
-          echo 'github.com HTTPS OK'
-          echo '=== HTTPS api.github.com ==='
           curl -fsSIL --connect-timeout 5 --max-time 15 https://api.github.com/ >/dev/null
-          echo 'api.github.com HTTPS OK'
-          echo '=== Git smart HTTP ==='
           timeout 20s git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" HEAD
-          echo 'git ls-remote OK'
+          echo 'GitHub network preflight OK'
 
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout Linux migration workspace
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
+          clean: false
+          sparse-checkout: |
+            .github
+            linux
+            webapp
+            backend-fastapi
+            backend-dev
+            docs
 
       - name: Repository verification
         shell: bash
@@ -64,4 +65,6 @@ jobs:
           echo "github_sha=${GITHUB_SHA}"
           git rev-parse --show-toplevel
           git rev-parse HEAD
+          test -d linux
+          test -d webapp
           git status --short
