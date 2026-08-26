@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .api.cases import router as cases_router
 from .api.identity import router as identity_router
@@ -39,3 +42,10 @@ app.include_router(signature_router, prefix="/api/v1")
 def legacy_health():
     """Backward-compatible liveness endpoint for older kiosk clients."""
     return {"status": "ok", "platform": "linux"}
+
+
+# Mount the production Vue bundle last so REST/WebSocket/health routes keep
+# precedence. Development remains Vite-driven when dist does not exist.
+web_dist = Path(settings.web_dist_dir)
+if web_dist.is_dir():
+    app.mount("/", StaticFiles(directory=web_dist, html=True), name="webapp")

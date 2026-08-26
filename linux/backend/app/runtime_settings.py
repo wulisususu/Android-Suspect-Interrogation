@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class RuntimeSettings(BaseSettings):
     """Production-safe Linux runtime defaults.
 
-    LAN exposure, debug mode and CORS are opt-in. Mutable/model paths are
+    LAN exposure, debug mode and CORS are opt-in. Mutable/model/web paths are
     configurable so tests and deployments do not need to run as root.
     """
 
@@ -23,6 +23,7 @@ class RuntimeSettings(BaseSettings):
     log_dir: Path = Path("/var/log/suspect-interrogation")
     db_path: Path = Path("/var/lib/suspect-interrogation/interrogation.db")
     model_path: Path | None = None
+    web_dist_dir: Path = Path("/opt/suspect-interrogation/current/webapp/dist")
     min_free_mb: int = 256
 
     @property
