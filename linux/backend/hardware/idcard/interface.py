@@ -1,9 +1,15 @@
-from abc import ABC, abstractmethod
+from abc import abstractmethod
+
+from hardware.base import HardwareDevice
+from hardware.idcard.models import IdentityResult
 
 
-class IDCardReader(ABC):
-    """Common interface for ID card readers."""
+class IdentityReader(HardwareDevice):
+    """Normalized identity-reader contract. Vendor structs never leave adapters."""
 
     @abstractmethod
-    def read(self):
-        pass
+    def read(self) -> IdentityResult:
+        raise NotImplementedError
+
+
+IDCardReader = IdentityReader

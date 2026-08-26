@@ -1,0 +1,12 @@
+# Safe Linux device permissions for the interrogation terminal.
+# Install only after reviewing local device ownership and vendor VID/PID.
+
+# V4L2 camera nodes: service account must belong to the video group.
+SUBSYSTEM=="video4linux", GROUP="video", MODE="0660"
+
+# ALSA sound nodes: service account must belong to the audio group.
+SUBSYSTEM=="sound", GROUP="audio", MODE="0660"
+
+# Do NOT grant MODE="0777" to all USB devices.
+# For identity readers/signature pads, add a vendor-specific rule after `lsusb`:
+# SUBSYSTEM=="usb", ATTR{idVendor}=="<vendor-id>", ATTR{idProduct}=="<product-id>", GROUP="plugdev", MODE="0660"
