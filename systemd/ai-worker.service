@@ -1,0 +1,32 @@
+[Unit]
+Description=Suspect Interrogation Optional Offline AI Worker
+After=local-fs.target
+ConditionPathExists=/opt/suspect-interrogation/current/linux/backend
+
+[Service]
+Type=simple
+User=suspect-interrogation
+Group=suspect-interrogation
+WorkingDirectory=/opt/suspect-interrogation/current/linux/backend
+EnvironmentFile=/etc/suspect-interrogation/runtime.env
+EnvironmentFile=-/etc/suspect-interrogation/ai-worker.env
+ExecStart=/opt/suspect-interrogation/current/scripts/ai-worker-start.sh
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/suspect-interrogation /var/log/suspect-interrogation
+
+[Install]
+WantedBy=multi-user.target
