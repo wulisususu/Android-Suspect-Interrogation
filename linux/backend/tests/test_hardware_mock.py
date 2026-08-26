@@ -1,8 +1,17 @@
+import pytest
+
+from hardware.base import HardwareError
 from hardware.device_manager import DeviceManager
 
 
-def test_unconfigured_hardware_returns_unavailable_instead_of_crashing():
+def assert_not_configured(operation):
+    with pytest.raises(HardwareError) as captured:
+        operation()
+    assert captured.value.code == "DEVICE_NOT_CONFIGURED"
+
+
+def test_unconfigured_hardware_reports_explicit_not_configured_errors():
     manager = DeviceManager()
-    assert manager.read_identity()["status"] == "unavailable"
-    assert manager.start_record()["status"] == "unavailable"
-    assert manager.capture_signature(b"mock")["status"] == "unavailable"
+    assert_not_configured(manager.read_identity)
+    assert_not_configured(manager.start_record)
+    assert_not_configured(lambda: manager.capture_signature(b"mock"))
