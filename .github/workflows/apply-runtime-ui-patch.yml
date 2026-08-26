@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   patch:
-    if: ${{ github.event.head_commit.message == 'apply-runtime-ui-patch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,8 +20,12 @@ jobs:
       - name: Apply asserted patch
         run: python3 .github/scripts/apply_runtime_ui_patch.py
 
-      - name: Commit runtime UI migration
+      - name: Commit runtime UI migration if changed
         run: |
+          if git diff --quiet; then
+            echo "No runtime UI changes required"
+            exit 0
+          fi
           git config user.name runtime-migration-bot
           git config user.email runtime-migration-bot@users.noreply.github.com
           git add webapp/src/stores/interrogation.ts webapp/src/components/InterrogationPage.vue
