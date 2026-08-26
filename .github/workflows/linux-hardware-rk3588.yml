@@ -1,0 +1,103 @@
+name: Linux Hardware RK3588 Validation
+
+on:
+  push:
+    branches:
+      - linux-hardware
+    paths:
+      - 'linux/backend/hardware/**'
+      - 'linux/backend/tests/**'
+      - 'linux/backend/app/main.py'
+      - 'linux/backend/app/websocket/manager.py'
+      - 'linux/docs/hardware-setup.md'
+      - '.github/workflows/linux-hardware-rk3588.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hardware-validation:
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 15
+
+    steps:
+      - name: Runner identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner_name=${RUNNER_NAME:-unknown}"
+          echo "runner_os=${RUNNER_OS:-unknown}"
+          echo "runner_arch=${RUNNER_ARCH:-unknown}"
+          hostname
+          uname -a
+          id
+          python3 --version
+
+      - name: Robust partial checkout
+        shell: bash
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --local gc.auto 0
+          git config --local http.version HTTP/1.1
+          git config --local http.lowSpeedLimit 1024
+          git config --local http.lowSpeedTime 15
+          git sparse-checkout init --cone
+          git sparse-checkout set linux
+
+          fetched=0
+          for attempt in 1 2 3 4 5; do
+            echo "fetch attempt ${attempt}/5"
+            if timeout 120s git -c protocol.version=2 fetch \
+              --filter=blob:none \
+              --no-tags \
+              --prune \
+              --no-recurse-submodules \
+              --depth=1 \
+              origin "+${GITHUB_SHA}:refs/remotes/origin/linux-hardware"; then
+              fetched=1
+              break
+            fi
+            sleep $((attempt * 3))
+          done
+          test "$fetched" -eq 1
+          git checkout --force --detach "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: HAL unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/linux/backend"
+          PYTHONPATH=. python3 -m unittest discover -s tests -v
+          PYTHONPATH=. python3 -m compileall -q hardware app/websocket
+
+      - name: Mock E2E diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/linux/backend"
+          HARDWARE_MODE=mock PYTHONPATH=. python3 -m hardware.diagnostics --json
+
+      - name: Real hardware evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/linux/backend"
+          echo '=== device nodes ==='
+          ls -l /dev/video* 2>/dev/null || true
+          ls -l /dev/snd 2>/dev/null || true
+          ls -l /dev/bus/usb 2>/dev/null || true
+          echo '=== tools ==='
+          command -v arecord || true
+          command -v v4l2-ctl || true
+          command -v udevadm || true
+          command -v lsusb || true
+          echo '=== HAL real diagnostics (unavailable is valid evidence, not success) ==='
+          HARDWARE_MODE=real PYTHONPATH=. python3 -m hardware.diagnostics --json
