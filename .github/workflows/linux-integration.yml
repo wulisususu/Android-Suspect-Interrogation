@@ -14,7 +14,42 @@ permissions:
   contents: read
 
 jobs:
+  hosted-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HARDWARE_MODE: mock
+      DEVICE_SIMULATOR: '1'
+      AI_MODE: mock
+    steps:
+      - uses: actions/checkout@v4
+      - name: Backend environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd linux/backend
+          python3 -m venv .venv-integration
+          . .venv-integration/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Alembic migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd linux/backend
+          . .venv-integration/bin/activate
+          export DATABASE_URL="sqlite:///${RUNNER_TEMP}/linux-integration-${GITHUB_RUN_ID}.db"
+          python -m alembic -c alembic.ini upgrade head
+      - name: Backend integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd linux/backend
+          . .venv-integration/bin/activate
+          python -m pytest -q
+
   backend-integration:
+    needs: hosted-backend
     runs-on: [self-hosted, rk3588]
     timeout-minutes: 30
     env:
