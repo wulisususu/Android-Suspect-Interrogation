@@ -1,18 +1,21 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_db, get_hardware
+from app.api.responses import envelope
+from app.api.schemas import IdentityReadRequest
+from app.services.identity_service import IdentityService
 
 router = APIRouter(prefix="/identity", tags=["identity"])
 
+
 @router.get("/status")
-def identity_status():
-    return {
-        "device": "idcard_reader",
-        "status": "waiting"
-    }
+def identity_status(db: Session = Depends(get_db), hardware=Depends(get_hardware)):
+    return envelope(IdentityService(db, hardware).status())
+
 
 @router.post("/read")
-def read_identity():
-    # Hardware layer will be connected later
-    return {
-        "status": "pending",
-        "message": "waiting for idcard hardware adapter"
-    }
+def read_identity(body: IdentityReadRequest | None = None, db: Session = Depends(get_db), hardware=Depends(get_hardware)):
+    body = body or IdentityReadRequest()
+    data = IdentityService(db, hardware).read(case_id=body.case_id, actor_id=body.actor_id)
+    return envelope(data, "身份信息已读取")
