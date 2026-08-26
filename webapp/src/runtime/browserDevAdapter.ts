@@ -1,0 +1,72 @@
+import type { AxiosRequestConfig } from 'axios'
+import { http } from '../api/http'
+import { RuntimeAdapterError } from './errors'
+import { capability, capabilitySet, type RuntimeAdapter, type RuntimeCapabilities, type RuntimeEventListener, type RuntimeInvokeOptions, type RuntimeOperation, type RuntimeSessionConnection } from './types'
+
+function encode(value: unknown) { return encodeURIComponent(String(value ?? '')) }
+
+function unavailable(operation: string): never {
+  const model = operation.startsWith('llm.') || operation.startsWith('ocr.') || operation.startsWith('asr.') || operation.startsWith('ai.') || operation.startsWith('model.') || operation.startsWith('case.ai.')
+  throw new RuntimeAdapterError(
+    model ? 'MODEL_NOT_INSTALLED' : 'CAPABILITY_NOT_CONFIGURED',
+    model ? '浏览器开发模式未配置本地模型 Runtime' : '浏览器开发模式未配置该设备能力',
+    model ? 'MODEL_NOT_INSTALLED' : 'NOT_CONFIGURED',
+  )
+}
+
+function legacyConfig(operation: string, payload: Record<string, unknown>): AxiosRequestConfig | undefined {
+  const caseId = encode(payload.caseId)
+  const messageId = encode(payload.messageId)
+  switch (operation) {
+    case 'case.create': return { method: 'POST', url: '/api/cases', data: payload }
+    case 'case.list': return { method: 'GET', url: '/api/cases', params: { limit: payload.limit } }
+    case 'case.get': return { method: 'GET', url: `/api/cases/${caseId}` }
+    case 'case.update': return { method: 'PUT', url: `/api/cases/${caseId}`, data: payload.patch ?? payload }
+    case 'message.list': return { method: 'GET', url: `/work/case/${caseId}/messages`, params: { limit: payload.limit ?? 1000 } }
+    case 'message.add': return { method: 'POST', url: `/work/case/${caseId}/message`, data: { text: payload.text, from: payload.from } }
+    case 'message.update': return { method: 'PUT', url: `/api/cases/${caseId}/messages/${messageId}`, data: { text: payload.text, reason: payload.reason } }
+    case 'message.mark': return { method: 'POST', url: `/api/cases/${caseId}/messages/${messageId}/mark`, data: { mark: payload.mark } }
+    case 'message.revisions': return { method: 'GET', url: `/api/cases/${caseId}/revisions`, params: payload.messageId ? { message_id: payload.messageId } : undefined }
+    case 'fact.list': return { method: 'GET', url: `/work/case/${caseId}/facts` }
+    case 'fact.update': return { method: 'PUT', url: `/api/cases/${caseId}/facts/${encode(payload.factKey)}`, data: payload.patch ?? payload }
+    case 'timeline.list': return { method: 'GET', url: `/work/case/${caseId}/timeline` }
+    case 'session.get': return { method: 'GET', url: `/api/cases/${caseId}/session` }
+    case 'session.start': return { method: 'POST', url: `/api/cases/${caseId}/session/start` }
+    case 'session.pause': return { method: 'POST', url: `/api/cases/${caseId}/session/pause` }
+    case 'session.resume': return { method: 'POST', url: `/api/cases/${caseId}/session/resume` }
+    case 'session.finish': return { method: 'POST', url: `/api/cases/${caseId}/session/finish` }
+    case 'session.stage': return { method: 'POST', url: `/api/cases/${caseId}/session/stage`, data: { stage: payload.stage } }
+    case 'device.action': return { method: 'POST', url: '/api/device/action', data: { type: payload.type } }
+    default: return undefined
+  }
+}
+
+export class BrowserDevAdapter implements RuntimeAdapter {
+  readonly kind = 'browser-dev' as const
+
+  async invoke<T>(operation: RuntimeOperation, payload: Record<string, unknown> = {}, options: RuntimeInvokeOptions = {}): Promise<T> {
+    const config = legacyConfig(operation, payload)
+    if (!config) return unavailable(operation)
+    const response = await http.request<T>({ ...config, ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}) })
+    const body = response.data as unknown
+    if (body && typeof body === 'object' && 'ok' in body && 'data' in body) {
+      const envelope = body as { ok: boolean; data: T; code?: string; message?: string }
+      if (!envelope.ok) throw new RuntimeAdapterError(envelope.code || 'BACKEND_ERROR', envelope.message || '浏览器开发后端返回错误')
+      return envelope.data
+    }
+    return response.data
+  }
+
+  async getCapabilities(): Promise<RuntimeCapabilities> {
+    const result = capabilitySet('NOT_CONFIGURED', '浏览器开发模式未连接硬件')
+    result.asr = capability('asr', 'MODEL_NOT_INSTALLED', '浏览器开发模式未加载 ASR 模型')
+    result.ocr = capability('ocr', 'MODEL_NOT_INSTALLED', '浏览器开发模式未加载 OCR 模型')
+    result.llm = capability('llm', 'MODEL_NOT_INSTALLED', '浏览器开发模式未加载 LLM 模型')
+    result.recording = capability('recording', 'MODEL_NOT_INSTALLED', '浏览器开发模式未加载连续 ASR Runtime')
+    return result
+  }
+
+  connectSession(_sessionId: string, _listener: RuntimeEventListener): RuntimeSessionConnection {
+    return { close() {}, send() { return false } }
+  }
+}
