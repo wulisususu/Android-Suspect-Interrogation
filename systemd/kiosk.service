@@ -1,0 +1,25 @@
+[Unit]
+Description=Suspect Interrogation Kiosk Browser
+After=graphical.target interrogation-api.service
+Wants=interrogation-api.service
+
+[Service]
+Type=simple
+User=suspect-interrogation
+Group=suspect-interrogation
+WorkingDirectory=/opt/suspect-interrogation/current
+EnvironmentFile=/etc/suspect-interrogation/runtime.env
+EnvironmentFile=-/etc/suspect-interrogation/kiosk.env
+Environment=DISPLAY=:0
+ExecStart=/opt/suspect-interrogation/current/scripts/kiosk-launch.sh
+Restart=always
+RestartSec=3s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/suspect-interrogation/current
+ReadWritePaths=/var/lib/suspect-interrogation /var/log/suspect-interrogation
+
+[Install]
+WantedBy=graphical.target

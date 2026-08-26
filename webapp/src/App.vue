@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import MaintenanceGate from './components/MaintenanceGate.vue'
 import CaseListView from './views/CaseListView.vue'
 import InterrogationWorkspace from './views/InterrogationWorkspace.vue'
 
@@ -17,6 +18,8 @@ function backToList() {
 </script>
 
 <template>
-  <CaseListView v-if="!caseId" @open="openCase" />
-  <InterrogationWorkspace v-else :key="caseId" :case-id="caseId" @back="backToList" />
+  <MaintenanceGate>
+    <CaseListView v-if="!caseId" @open="openCase" />
+    <InterrogationWorkspace v-else :key="caseId" :case-id="caseId" @back="backToList" />
+  </MaintenanceGate>
 </template>

@@ -1,35 +1,31 @@
-import { callNative, isNativeBusinessRuntime } from '../native/rpcBridge'
+import { getRuntimeAdapter, RuntimeAdapterError } from '../runtime'
 import type { DocumentSignerRole, DocumentSigningState } from '../types/interrogation'
 
-function requireNativeSigning() {
-  if (!isNativeBusinessRuntime()) {
-    throw new Error('电子签名与笔录冻结仅在 Android APK 本地数据库中运行')
+export async function fetchDocumentSigningState(caseId: string): Promise<DocumentSigningState | null> {
+  try {
+    return await getRuntimeAdapter().invoke<DocumentSigningState | null>('document.signing.get', { caseId })
+  } catch (error) {
+    if (error instanceof RuntimeAdapterError && (error.state === 'NOT_CONFIGURED' || error.state === 'MODEL_NOT_INSTALLED')) return null
+    throw error
   }
 }
 
-export async function fetchDocumentSigningState(caseId: string): Promise<DocumentSigningState | null> {
-  if (!isNativeBusinessRuntime()) return null
-  return callNative<DocumentSigningState | null>('document.signing.get', { caseId })
+export function freezeDocument(caseId: string): Promise<DocumentSigningState> {
+  return getRuntimeAdapter().invoke<DocumentSigningState>('document.freeze', { caseId }, { timeoutMs: 60_000 })
 }
 
-export async function freezeDocument(caseId: string): Promise<DocumentSigningState> {
-  requireNativeSigning()
-  return callNative<DocumentSigningState>('document.freeze', { caseId })
-}
-
-export async function signDocument(
+export function signDocument(
   caseId: string,
   signerRole: DocumentSignerRole,
   signerName: string,
   imageDataUrl: string,
   strokesJson: string,
 ): Promise<DocumentSigningState> {
-  requireNativeSigning()
-  return callNative<DocumentSigningState>('document.sign', {
+  return getRuntimeAdapter().invoke<DocumentSigningState>('document.sign', {
     caseId,
     signerRole,
     signerName,
     imageDataUrl,
     strokesJson,
-  }, 60_000)
+  }, { timeoutMs: 60_000 })
 }

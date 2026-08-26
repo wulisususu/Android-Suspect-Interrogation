@@ -4,11 +4,13 @@ import {
   applyAsrFragmentsToRecord,
   backendErrorMessage,
   changeSessionStage,
+  connectRuntimeSession,
   confirmAsrFragment,
   confirmAsrFragmentBatch,
   createCase,
   discardAsrFragment,
   fetchAsrCaptureStatus,
+  fetchRuntimeCapabilities,
   fetchCase,
   fetchCaseAiAnalyses,
   fetchFacts,
@@ -29,7 +31,7 @@ import {
   updateAsrFragment,
   updateTranscriptMessage,
 } from '../api/interrogation'
-import { isNativeBusinessRuntime, onNativeEvent } from '../native/rpcBridge'
+import type { RuntimeSessionConnection } from '../runtime'
 import { buildAsrInsertion, isAsrTargetUsable } from '../utils/asrInsertion'
 import type {
   AsrCaptureStatus,
@@ -121,7 +123,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   const actionError = ref('')
   const revisions = ref<RecordRevision[]>([])
   const revisionsOpen = ref(false)
-  const nativeCaptureAvailable = isNativeBusinessRuntime()
+  const captureAvailable = ref(false)
   const captureBusy = ref(false)
   const captureInsertionReceipt = ref<AsrInsertionReceipt | null>(null)
   const captureClock = ref(Date.now())
@@ -139,7 +141,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   let caseGeneration = 0
   let feedbackTimer: ReturnType<typeof setTimeout> | undefined
   let captureTimer: ReturnType<typeof setInterval> | undefined
-  let removeCaptureListener: (() => void) | undefined
+  let sessionConnection: RuntimeSessionConnection | undefined
   let inquiryController: AbortController | undefined
 
   const completion = computed(() => {
@@ -163,8 +165,8 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   }
 
   function disposeCaptureEvents() {
-    removeCaptureListener?.()
-    removeCaptureListener = undefined
+    sessionConnection?.close()
+    sessionConnection = undefined
     if (captureTimer) clearInterval(captureTimer)
     captureTimer = undefined
   }
@@ -185,6 +187,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     actionError.value = ''
     revisions.value = []
     revisionsOpen.value = false
+    captureAvailable.value = false
     captureBusy.value = false
     captureInsertionReceipt.value = null
     captureClock.value = Date.now()
@@ -232,10 +235,37 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     }
   }
 
-  function initializeCaptureEvents(scope: CaseScope) {
-    if (!nativeCaptureAvailable || removeCaptureListener || !scope.caseId) return
-    removeCaptureListener = onNativeEvent<AsrCaptureStatus>('asr.capture.status', (status) => {
-      applyCaptureStatus(status, scope)
+  function initializeRuntimeEvents(scope: CaseScope) {
+    if (sessionConnection || !scope.caseId || !session.value.id) return
+    sessionConnection = connectRuntimeSession(session.value.id, (event) => {
+      if (!isCurrentScope(scope)) return
+      if (event.event === 'ASR_PARTIAL') {
+        const payload = event.payload as { text?: string; partialText?: string }
+        capture.value.partialText = payload.partialText ?? payload.text ?? capture.value.partialText
+        return
+      }
+      if (event.event === 'ASR_FINAL') {
+        const payload = event.payload as { text?: string }
+        if (payload.text) capture.value.partialText = payload.text
+        return
+      }
+      if (event.event === 'RECORDING_STATE' || event.event === 'asr.capture.status') {
+        const status = event.payload as Partial<AsrCaptureStatus>
+        if (status.caseId === scope.caseId && typeof status.running === 'boolean' && Array.isArray(status.fragments)) {
+          applyCaptureStatus(status as AsrCaptureStatus, scope)
+        }
+        return
+      }
+      if (event.event === 'SESSION_STATE') {
+        const next = event.payload as Partial<SessionState>
+        if (next.caseId && next.caseId !== scope.caseId) return
+        session.value = {
+          ...session.value,
+          ...next,
+          caseId: scope.caseId,
+          updatedAt: next.updatedAt ?? Date.now(),
+        }
+      }
     })
   }
 
@@ -263,13 +293,14 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       const scope: CaseScope = { caseId: requestedCaseId, generation }
       if (!isCurrentScope(scope) || summary.id !== requestedCaseId) return
 
-      initializeCaptureEvents(scope)
+      const runtimeCapabilities = await fetchRuntimeCapabilities()
+      captureAvailable.value = runtimeCapabilities.recording.state === 'AVAILABLE' || runtimeCapabilities.asr.state === 'AVAILABLE'
       const [messages, factItems, timelineItems, sessionState, captureStatus, analyses] = await Promise.all([
         fetchMessages(requestedCaseId),
         fetchFacts(requestedCaseId),
         fetchTimeline(requestedCaseId),
         fetchSessionState(requestedCaseId),
-        nativeCaptureAvailable ? fetchAsrCaptureStatus(requestedCaseId) : Promise.resolve(null),
+        captureAvailable.value ? fetchAsrCaptureStatus(requestedCaseId) : Promise.resolve(null),
         fetchCaseAiAnalyses(requestedCaseId),
       ])
 
@@ -282,6 +313,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       facts.value = factItems
       timeline.value = timelineItems
       session.value = sessionState
+      initializeRuntimeEvents(scope)
       if (captureStatus) applyCaptureStatus(captureStatus, scope)
       caseAiAnalyses.value = analyses.filter((item) => item.caseId === requestedCaseId)
     } catch (err) {
@@ -304,7 +336,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   }
 
   async function startCapture() {
-    if (!nativeCaptureAvailable) return feedback('连续离线录音仅在 Android APK 中可用', true)
+    if (!captureAvailable.value) return feedback('连续离线录音 Runtime 当前不可用，请检查 ASR/麦克风能力状态', true)
     if (!canRecord.value) return feedback('请先开始审讯再录音', true)
     if (captureBusy.value || capture.value.running) return
 
@@ -322,7 +354,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   }
 
   async function stopCapture(target?: AsrInsertionTarget, showFeedback = true) {
-    if (!nativeCaptureAvailable || captureBusy.value || !capture.value.running) return
+    if (!captureAvailable.value || captureBusy.value || !capture.value.running) return
 
     const scope = currentScope()
     const captureSessionId = capture.value.captureSessionId
@@ -571,8 +603,10 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       const nextSession = await startSessionApi(scope.caseId)
       if (!isCurrentScope(scope) || nextSession.caseId !== scope.caseId) return
       session.value = nextSession
+      disposeCaptureEvents()
+      initializeRuntimeEvents(scope)
       await refreshCase(scope)
-      feedbackIfCurrent(scope, '审讯已开始：录入问答和 AI SSE 主链路已解锁')
+      feedbackIfCurrent(scope, '审讯已开始：录入问答和本地 AI 主链路已解锁')
     } catch (err) {
       feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
@@ -656,7 +690,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     actionError,
     revisions,
     revisionsOpen,
-    nativeCaptureAvailable,
+    nativeCaptureAvailable: captureAvailable,
     capture,
     captureBusy,
     captureInsertionReceipt,
