@@ -1,0 +1,33 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class RuntimeSettings(BaseSettings):
+    """Production-safe Linux runtime defaults.
+
+    LAN exposure, debug mode and CORS are opt-in. Mutable/model paths are
+    configurable so tests and deployments do not need to run as root.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SUSPECT_", case_sensitive=False)
+
+    api_host: str = "127.0.0.1"
+    api_port: int = 8000
+    debug: bool = False
+    cors_origins: str = ""
+
+    data_dir: Path = Path("/var/lib/suspect-interrogation")
+    log_dir: Path = Path("/var/log/suspect-interrogation")
+    db_path: Path = Path("/var/lib/suspect-interrogation/interrogation.db")
+    model_path: Path | None = None
+    min_free_mb: int = 256
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        origins = [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+        if "*" in origins:
+            raise ValueError("Wildcard CORS is not allowed; configure explicit origins")
+        return origins
