@@ -7,7 +7,7 @@ on:
       - linux-release-hardening
       - linux-integration-2026-08-26
     paths:
-      - '.github/workflows/linux-ci.yml'
+      - '.github/workflows/**'
       - 'linux/**'
       - 'webapp/**'
       - 'deploy/**'
@@ -21,7 +21,7 @@ on:
       - linux-adaptation
       - linux-integration-2026-08-26
     paths:
-      - '.github/workflows/linux-ci.yml'
+      - '.github/workflows/**'
       - 'linux/**'
       - 'webapp/**'
       - 'deploy/**'
