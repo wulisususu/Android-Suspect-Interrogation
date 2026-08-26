@@ -26,35 +26,50 @@ jobs:
           echo "runner_arch=${RUNNER_ARCH:-unknown}"
           echo "hostname=$(hostname)"
           echo "whoami=$(whoami)"
-          echo "pwd=$(pwd)"
           uname -a
           git --version
           python3 --version || true
           node --version || true
 
-      - name: GitHub network preflight
+      - name: Robust partial checkout
         shell: bash
+        env:
+          GIT_TERMINAL_PROMPT: '0'
         run: |
           set -euo pipefail
-          getent hosts github.com || true
-          getent hosts api.github.com || true
-          curl -fsSIL --connect-timeout 5 --max-time 15 https://github.com/ >/dev/null
-          curl -fsSIL --connect-timeout 5 --max-time 15 https://api.github.com/ >/dev/null
-          timeout 20s git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" HEAD
-          echo 'GitHub network preflight OK'
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --local gc.auto 0
+          git config --local http.version HTTP/1.1
+          git config --local http.lowSpeedLimit 1024
+          git config --local http.lowSpeedTime 15
+          git sparse-checkout init --cone
+          git sparse-checkout set .github linux webapp backend-fastapi backend-dev docs
 
-      - name: Checkout Linux migration workspace
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 1
-          clean: false
-          sparse-checkout: |
-            .github
-            linux
-            webapp
-            backend-fastapi
-            backend-dev
-            docs
+          fetched=0
+          for attempt in 1 2 3 4 5; do
+            echo "fetch attempt ${attempt}/5"
+            if timeout 120s git -c protocol.version=2 fetch \
+              --filter=blob:none \
+              --no-tags \
+              --prune \
+              --no-recurse-submodules \
+              --depth=1 \
+              origin "+${GITHUB_SHA}:refs/remotes/origin/linux-adaptation"; then
+              fetched=1
+              break
+            fi
+            sleep $((attempt * 3))
+          done
+
+          if [ "$fetched" -ne 1 ]; then
+            echo 'Git fetch failed after 5 bounded retries.' >&2
+            exit 1
+          fi
+
+          git checkout --force --detach "$GITHUB_SHA"
 
       - name: Repository verification
         shell: bash
@@ -64,7 +79,7 @@ jobs:
           echo "github_ref=${GITHUB_REF}"
           echo "github_sha=${GITHUB_SHA}"
           git rev-parse --show-toplevel
-          git rev-parse HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -d linux
           test -d webapp
           git status --short
