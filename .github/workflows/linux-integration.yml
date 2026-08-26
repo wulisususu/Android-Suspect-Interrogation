@@ -1,0 +1,88 @@
+name: Linux Integration RK3588
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - linux-integration-2026-08-26
+    paths:
+      - 'linux/backend/**'
+      - 'webapp/**'
+      - '.github/workflows/linux-integration.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  backend-integration:
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 30
+    env:
+      HARDWARE_MODE: mock
+      DEVICE_SIMULATOR: '1'
+      AI_MODE: mock
+    steps:
+      - name: Runner identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner=${RUNNER_NAME:-unknown} ${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown}"
+          uname -a
+          python3 --version
+
+      - name: Resilient sparse checkout
+        shell: bash
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --local gc.auto 0
+          git config --local http.version HTTP/1.1
+          git config --local http.lowSpeedLimit 1024
+          git config --local http.lowSpeedTime 15
+          git sparse-checkout init --cone
+          git sparse-checkout set .github linux webapp docs scripts deploy systemd tests
+          fetched=0
+          for attempt in 1 2 3 4 5; do
+            echo "fetch attempt ${attempt}/5"
+            if timeout 120s git -c protocol.version=2 fetch --filter=blob:none --no-tags --prune --no-recurse-submodules --depth=1 origin "+${GITHUB_SHA}:refs/remotes/origin/integration-target"; then
+              fetched=1
+              break
+            fi
+            sleep $((attempt * 3))
+          done
+          test "$fetched" -eq 1
+          git checkout --force --detach "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Backend environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd linux/backend
+          rm -rf .venv-integration
+          python3 -m venv .venv-integration
+          . .venv-integration/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Alembic migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd linux/backend
+          . .venv-integration/bin/activate
+          export DATABASE_URL="sqlite:///${RUNNER_TEMP}/linux-integration-${GITHUB_RUN_ID}.db"
+          python -m alembic -c alembic.ini upgrade head
+
+      - name: Backend integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd linux/backend
+          . .venv-integration/bin/activate
+          python -m pytest -q
