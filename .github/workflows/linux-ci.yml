@@ -5,6 +5,7 @@ on:
     branches:
       - linux-adaptation
       - linux-release-hardening
+      - linux-integration-2026-08-26
     paths:
       - '.github/workflows/linux-ci.yml'
       - 'linux/**'
@@ -18,6 +19,7 @@ on:
   pull_request:
     branches:
       - linux-adaptation
+      - linux-integration-2026-08-26
     paths:
       - '.github/workflows/linux-ci.yml'
       - 'linux/**'
@@ -41,10 +43,13 @@ jobs:
   linux-hosted:
     name: Linux hosted gate
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       PYTHONPATH: linux/backend
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      HARDWARE_MODE: mock
+      DEVICE_SIMULATOR: '1'
+      AI_MODE: mock
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,14 +77,27 @@ jobs:
       - name: DB migration test
         run: scripts/ci/db-migration-gate.sh
 
-      - name: API contract tests
+      - name: API and security contract tests
         run: python -m pytest linux/backend/tests/test_health_contract.py linux/backend/tests/test_capability_health.py linux/backend/tests/test_runtime_security.py -q
 
-      - name: hardware mock tests
-        run: python -m pytest linux/backend/tests/test_hardware_mock.py -q
+      - name: Hardware and AI mock tests
+        run: |
+          python -m pytest linux/backend/tests/test_hardware.py linux/backend/tests/test_hardware_mock.py -q
+          python -m pytest linux/backend/tests/test_ai_mock.py linux/backend/tests/test_mock_engines.py linux/backend/tests/test_supervisor.py -q
 
-      - name: AI mock tests
-        run: python -m pytest linux/backend/tests/test_ai_mock.py -q
+      - name: Linux independence audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE 'window\.NativeBridge|android\.|androidx\.|RoomDatabase|\badb\b' linux/backend --exclude-dir='__pycache__'; then
+            echo 'Android dependency found in formal Linux backend path' >&2
+            exit 1
+          fi
+          if grep -nE 'NativeBridge|AndroidNativeAdapter|androidNativeAdapter' webapp/src/runtime/linuxHttpWsAdapter.ts; then
+            echo 'LinuxHttpWsAdapter directly depends on Android runtime' >&2
+            exit 1
+          fi
+          echo 'Linux production runtime has no direct Android dependency'
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -104,7 +122,7 @@ jobs:
         working-directory: webapp
         run: npm run build
 
-      - name: integration test
+      - name: Release integration and E2E tests
         run: |
           bash -n deploy/control.sh deploy/lib/common.sh deploy/lib/release.sh
           bash -n scripts/backup.sh scripts/restore.sh scripts/kiosk-launch.sh scripts/check-release.sh
@@ -116,13 +134,16 @@ jobs:
     name: RK3588 smoke
     needs: linux-hosted
     runs-on: [self-hosted, rk3588]
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       GIT_TERMINAL_PROMPT: '0'
       FETCH_ATTEMPTS: '5'
       FETCH_TIMEOUT_SECONDS: '120'
       SPARSE_PATHS: '.github linux webapp deploy scripts systemd tests docs'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      HARDWARE_MODE: mock
+      DEVICE_SIMULATOR: '1'
+      AI_MODE: mock
     steps:
       - name: Runner identity before checkout
         shell: bash
@@ -180,14 +201,31 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if python3 -c 'import fastapi, pydantic_settings' >/dev/null 2>&1; then
+          if python3 -c 'import fastapi, pydantic_settings, sqlalchemy, alembic' >/dev/null 2>&1; then
             echo 'runner already has required Python runtime packages'
           else
             python3 -m venv .ci-venv
-            .ci-venv/bin/python -m pip install --retries 3 --timeout 15 -r linux/backend/requirements.txt httpx
+            .ci-venv/bin/python -m pip install --retries 3 --timeout 15 -r linux/backend/requirements.txt httpx pytest
             echo "$PWD/.ci-venv/bin" >> "$GITHUB_PATH"
           fi
 
-      - name: RK3588 smoke
+      - name: RK3588 backend full tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/linux/backend"
+          python3 -m pytest linux/backend/tests -q
+
+      - name: RK3588 Vue gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd webapp
+          npm ci
+          npm test
+          npm run typecheck
+          npm run build
+
+      - name: RK3588 release smoke
         shell: bash
         run: scripts/ci/rk3588-smoke.sh
