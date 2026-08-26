@@ -1,40 +1,100 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { backendErrorMessage, invokeDeviceAction } from '../api/interrogation'
-import { deviceBridge, isNativeDeviceRuntime } from '../native/deviceBridge'
+import { computed, onMounted, ref } from 'vue'
+import { backendErrorMessage, fetchRuntimeCapabilities, invokeDeviceAction } from '../api/interrogation'
+import type { RuntimeCapabilities, RuntimeCapabilityName, RuntimeCapabilityState } from '../runtime'
 
 const message = ref('')
 const pending = ref('')
+const capabilities = ref<RuntimeCapabilities | null>(null)
+
+const items: Array<{ name: RuntimeCapabilityName; label: string }> = [
+  { name: 'identity', label: '身份证读卡器' },
+  { name: 'camera', label: '摄像头' },
+  { name: 'microphone', label: '麦克风' },
+  { name: 'signature', label: '签名板' },
+  { name: 'asr', label: 'ASR' },
+  { name: 'ocr', label: 'OCR' },
+  { name: 'llm', label: 'LLM' },
+]
+
+const stateText: Record<RuntimeCapabilityState, string> = {
+  AVAILABLE: '可用',
+  NOT_CONNECTED: '未连接',
+  NOT_CONFIGURED: '未配置',
+  MODEL_NOT_INSTALLED: '模型未安装',
+  BUSY: '忙碌',
+  ERROR: '异常',
+}
+
+const capabilityItems = computed(() => items.map((item) => ({
+  ...item,
+  capability: capabilities.value?.[item.name],
+})))
+
+async function refresh(force = false) {
+  capabilities.value = await fetchRuntimeCapabilities(force)
+}
+
+function available(name: RuntimeCapabilityName) {
+  return capabilities.value?.[name]?.state === 'AVAILABLE'
+}
 
 async function invoke(type: 'fingerprint' | 'signature') {
   pending.value = type
   message.value = ''
   try {
-    if (isNativeDeviceRuntime()) {
-      if (type === 'fingerprint') {
-        const result = await deviceBridge.captureFingerprint()
-        message.value = result.success ? '指纹采集完成' : '指纹采集未完成'
-      } else {
-        const result = await deviceBridge.captureSignature()
-        message.value = result.success ? '签名采集完成' : '签名采集未完成'
-      }
-      return
-    }
-
     const result = await invokeDeviceAction(type)
-    message.value = result.message || (result.simulated ? '设备模拟联调完成' : '设备操作完成')
+    message.value = result.message || (result.success ? '设备操作完成' : '设备操作未完成')
+    await refresh(true)
   } catch (error) {
     message.value = backendErrorMessage(error)
   } finally {
     pending.value = ''
   }
 }
+
+onMounted(() => {
+  void refresh().catch((error) => { message.value = backendErrorMessage(error) })
+})
 </script>
 
 <template>
-  <div class="device-actions">
-    <button class="device-button" @click="invoke('fingerprint')">{{ pending === 'fingerprint' ? '采集中…' : '指纹' }}</button>
-    <button class="device-button" @click="invoke('signature')">{{ pending === 'signature' ? '签字中…' : '签名' }}</button>
-    <span v-if="message" class="device-message">{{ message }}</span>
+  <div class="device-status-wrap">
+    <div class="capability-strip" aria-label="Linux 本地能力状态">
+      <span
+        v-for="item in capabilityItems"
+        :key="item.name"
+        class="capability-chip"
+        :class="(item.capability?.state || 'NOT_CONNECTED').toLowerCase()"
+        :title="item.capability?.reason || stateText[item.capability?.state || 'NOT_CONNECTED']"
+      >
+        {{ item.label }} · {{ stateText[item.capability?.state || 'NOT_CONNECTED'] }}
+      </span>
+    </div>
+    <div class="device-actions">
+      <button class="device-button" :disabled="!!pending || !available('fingerprint')" @click="invoke('fingerprint')">
+        {{ pending === 'fingerprint' ? '采集中…' : '指纹' }}
+      </button>
+      <button class="device-button" :disabled="!!pending || !available('signature')" @click="invoke('signature')">
+        {{ pending === 'signature' ? '签字中…' : '签名' }}
+      </button>
+      <button class="device-button compact" :disabled="!!pending" @click="refresh(true)">刷新</button>
+      <span v-if="message" class="device-message">{{ message }}</span>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.device-status-wrap { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.capability-strip { display: flex; gap: 4px; max-width: 520px; overflow-x: auto; scrollbar-width: thin; }
+.capability-chip { flex: 0 0 auto; border-radius: 999px; padding: 3px 6px; background: #eef2f6; color: #536779; font-size: 9px; white-space: nowrap; }
+.capability-chip.available { background: #e9f7ef; color: #17734b; }
+.capability-chip.not_connected, .capability-chip.not_configured, .capability-chip.model_not_installed { background: #fff7e8; color: #895700; }
+.capability-chip.busy { background: #eef6fd; color: #365d7c; }
+.capability-chip.error { background: #fff0f0; color: #a32626; }
+.device-actions { display: flex; align-items: center; gap: 5px; }
+.device-button { border: 1px solid #557087; border-radius: 7px; background: #17364f; color: #e7f0f8; padding: 6px 9px; font-size: 11px; }
+.device-button.compact { padding-inline: 7px; }
+.device-button:disabled { opacity: .45; cursor: not-allowed; }
+.device-message { max-width: 180px; overflow: hidden; color: #dbe7f0; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+</style>
