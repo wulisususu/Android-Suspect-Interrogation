@@ -2,14 +2,15 @@ name: Apply Runtime UI Patch
 
 on:
   push:
-    branches: [linux-web-runtime]
+    branches:
+      - linux-web-runtime
 
 permissions:
   contents: write
 
 jobs:
   patch:
-    if: github.event.head_commit.message == 'chore: apply runtime UI patch'
+    if: github.event.head_commit.message == 'apply runtime UI patch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
