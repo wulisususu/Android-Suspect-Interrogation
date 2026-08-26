@@ -9,14 +9,12 @@ import {
   selectLocalModel,
 } from '../api/interrogation'
 import { updateCaseFact, updateCaseProfile } from '../api/caseProfile'
-import { isNativeBusinessRuntime } from '../native/rpcBridge'
 import type { CaseSummary, FactItem } from '../types/interrogation'
 import { calculateAge, parseIdentityCardOcr } from '../utils/identityOcr'
 
 const props = defineProps<{ summary: CaseSummary; facts: FactItem[] }>()
 const emit = defineEmits<{ saved: [] }>()
 
-const native = isNativeBusinessRuntime()
 const busy = ref('')
 const error = ref('')
 const message = ref('')
@@ -47,15 +45,6 @@ const form = reactive({
 const profileFact = (key: string) => props.facts.find((item) => item.key === key)
 const identitySourceText = computed(() => props.summary.identitySource === 'OCR' ? '高拍仪 / OCR' : props.summary.identitySource === 'MANUAL' ? '人工录入' : '未标记')
 
-function browserProfile(): Partial<typeof form> {
-  if (native || !props.summary.id) return {}
-  try {
-    return JSON.parse(localStorage.getItem(`case-profile:${props.summary.id}`) || '{}') as Partial<typeof form>
-  } catch {
-    return {}
-  }
-}
-
 function factText(key: string, fallback = '') {
   const value = profileFact(key)?.value?.trim()
   if (!value || value === '未录入') return fallback
@@ -63,26 +52,25 @@ function factText(key: string, fallback = '') {
 }
 
 function syncFromProps() {
-  const fallback = browserProfile()
-  form.suspectName = props.summary.suspectName === '待录入' ? '' : props.summary.suspectName || fallback.suspectName || ''
-  form.gender = props.summary.gender || fallback.gender || ''
-  form.nation = props.summary.nation || fallback.nation || ''
-  form.birthDate = props.summary.birthDate || fallback.birthDate || ''
-  form.age = props.summary.age || fallback.age || calculateAge(form.birthDate)
-  form.idDocumentType = factText('id_document_type', fallback.idDocumentType || '身份证')
-  form.idNumber = props.summary.idNumber || fallback.idNumber || ''
-  form.idCardAddress = props.summary.address || fallback.idCardAddress || ''
-  form.contact = factText('contact', fallback.contact || '')
-  form.currentAddress = factText('current_address', fallback.currentAddress || '')
-  form.householdRegistration = factText('household_registration', fallback.householdRegistration || '')
-  form.peoplesRepresentative = factText('peoples_representative', fallback.peoplesRepresentative || '否')
-  form.caseType = factText('case_type', fallback.caseType || '')
-  form.interrogationRound = factText('interrogation_round', fallback.interrogationRound || '1')
-  form.interrogationPlace = factText('interrogation_place', fallback.interrogationPlace || '')
-  form.officerName = props.summary.officerName || fallback.officerName || '当前警官'
-  form.officerUnit = factText('officer_unit', fallback.officerUnit || '')
-  form.recorderName = factText('recorder_name', fallback.recorderName || '')
-  form.recorderUnit = factText('recorder_unit', fallback.recorderUnit || form.officerUnit)
+  form.suspectName = props.summary.suspectName === '待录入' ? '' : props.summary.suspectName || ''
+  form.gender = props.summary.gender || ''
+  form.nation = props.summary.nation || ''
+  form.birthDate = props.summary.birthDate || ''
+  form.age = props.summary.age || calculateAge(form.birthDate)
+  form.idDocumentType = factText('id_document_type', '身份证')
+  form.idNumber = props.summary.idNumber || ''
+  form.idCardAddress = props.summary.address || ''
+  form.contact = factText('contact')
+  form.currentAddress = factText('current_address')
+  form.householdRegistration = factText('household_registration')
+  form.peoplesRepresentative = factText('peoples_representative', '否')
+  form.caseType = factText('case_type')
+  form.interrogationRound = factText('interrogation_round', '1')
+  form.interrogationPlace = factText('interrogation_place')
+  form.officerName = props.summary.officerName || '当前警官'
+  form.officerUnit = factText('officer_unit')
+  form.recorderName = factText('recorder_name')
+  form.recorderUnit = factText('recorder_unit', form.officerUnit)
 }
 
 watch(() => [props.summary, props.facts], syncFromProps, { deep: true, immediate: true })
@@ -101,10 +89,6 @@ async function ensureOcrModel() {
 }
 
 async function recaptureIdentity() {
-  if (!native) {
-    error.value = '重新读取身份证仅在 Android APK 中可用。浏览器联调环境可直接修改字段。'
-    return
-  }
   busy.value = 'ocr'
   error.value = ''
   message.value = ''
@@ -168,32 +152,28 @@ async function save() {
       identityCapturedAt: rawOcrText.value ? Date.now() : (props.summary.identityCapturedAt || Date.now()),
     })
 
-    if (native) {
-      await Promise.all([
-        updateCaseFact(props.summary.id, 'current_address', factPatch(form.currentAddress)),
-        updateCaseFact(props.summary.id, 'case_type', factPatch(form.caseType)),
-        updateCaseFact(props.summary.id, 'interrogation_round', {
-          value: form.interrogationRound.trim() || '1',
-          status: 'confirmed',
-        }),
-        updateCaseFact(props.summary.id, 'interrogation_place', factPatch(form.interrogationPlace)),
-        updateCaseFact(props.summary.id, 'officer_unit', factPatch(form.officerUnit)),
-        updateCaseFact(props.summary.id, 'recorder_name', factPatch(form.recorderName)),
-        updateCaseFact(props.summary.id, 'recorder_unit', factPatch(form.recorderUnit)),
-        updateCaseFact(props.summary.id, 'id_document_type', {
-          value: form.idDocumentType.trim() || '身份证',
-          status: 'confirmed',
-        }),
-        updateCaseFact(props.summary.id, 'peoples_representative', {
-          value: form.peoplesRepresentative.trim() || '否',
-          status: 'confirmed',
-        }),
-        updateCaseFact(props.summary.id, 'contact', factPatch(form.contact)),
-        updateCaseFact(props.summary.id, 'household_registration', factPatch(form.householdRegistration)),
-      ])
-    } else {
-      localStorage.setItem(`case-profile:${props.summary.id}`, JSON.stringify({ ...form, suspectName: name, idNumber }))
-    }
+    await Promise.all([
+      updateCaseFact(props.summary.id, 'current_address', factPatch(form.currentAddress)),
+      updateCaseFact(props.summary.id, 'case_type', factPatch(form.caseType)),
+      updateCaseFact(props.summary.id, 'interrogation_round', {
+        value: form.interrogationRound.trim() || '1',
+        status: 'confirmed',
+      }),
+      updateCaseFact(props.summary.id, 'interrogation_place', factPatch(form.interrogationPlace)),
+      updateCaseFact(props.summary.id, 'officer_unit', factPatch(form.officerUnit)),
+      updateCaseFact(props.summary.id, 'recorder_name', factPatch(form.recorderName)),
+      updateCaseFact(props.summary.id, 'recorder_unit', factPatch(form.recorderUnit)),
+      updateCaseFact(props.summary.id, 'id_document_type', {
+        value: form.idDocumentType.trim() || '身份证',
+        status: 'confirmed',
+      }),
+      updateCaseFact(props.summary.id, 'peoples_representative', {
+        value: form.peoplesRepresentative.trim() || '否',
+        status: 'confirmed',
+      }),
+      updateCaseFact(props.summary.id, 'contact', factPatch(form.contact)),
+      updateCaseFact(props.summary.id, 'household_registration', factPatch(form.householdRegistration)),
+    ])
 
     message.value = '身份、案件信息及询问笔录固定头部已保存。'
     emit('saved')

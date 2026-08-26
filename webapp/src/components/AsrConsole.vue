@@ -1,15 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { backendErrorMessage, fetchAsrStatus, startAsr, stopAsr } from '../api/interrogation'
-import { isNativeBusinessRuntime, onNativeEvent } from '../native/rpcBridge'
 import type { AsrRuntimeStatus } from '../types/interrogation'
 
 const status = ref<AsrRuntimeStatus | null>(null)
 const busy = ref(false)
 const error = ref('')
-let unsubscribe: (() => void) | undefined
+let pollTimer: ReturnType<typeof setInterval> | undefined
 
-const native = computed(() => isNativeBusinessRuntime())
 const actionText = computed(() => {
   if (busy.value) return status.value?.running ? '停止中…' : '初始化中…'
   return status.value?.running ? '停止识别' : '开始识别'
@@ -19,19 +17,22 @@ function metric(value?: number | null) {
   return value == null ? '—' : `${value} ms`
 }
 
-function signal(status: AsrRuntimeStatus) {
-  const label = status.audioSignalState === 'ACTIVE'
+function signal(current: AsrRuntimeStatus) {
+  const label = current.audioSignalState === 'ACTIVE'
     ? '有效'
-    : status.audioSignalState === 'SILENT'
+    : current.audioSignalState === 'SILENT'
       ? '无有效信号'
       : '等待声音'
-  return `${label} · 峰值 ${status.audioPeak ?? '—'}`
+  return `${label} · 峰值 ${current.audioPeak ?? '—'}`
 }
 
-async function load() {
-  if (!native.value) return
-  try { status.value = await fetchAsrStatus() }
-  catch (e) { error.value = backendErrorMessage(e) }
+async function load(reportError = true) {
+  try {
+    status.value = await fetchAsrStatus()
+    if (reportError) error.value = ''
+  } catch (e) {
+    if (reportError) error.value = backendErrorMessage(e)
+  }
 }
 
 async function toggle() {
@@ -47,10 +48,15 @@ async function toggle() {
 }
 
 onMounted(() => {
-  unsubscribe = onNativeEvent<AsrRuntimeStatus>('asr.status', (next) => { status.value = next })
   void load()
+  pollTimer = setInterval(() => {
+    if (status.value?.running && !busy.value) void load(false)
+  }, 750)
 })
-onUnmounted(() => unsubscribe?.())
+
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer)
+})
 </script>
 
 <template>
@@ -60,10 +66,9 @@ onUnmounted(() => unsubscribe?.())
         <h3>实时离线 ASR</h3>
         <span>{{ status?.selectedModelName || '正在读取当前模型' }}</span>
       </div>
-      <button class="session-primary" :disabled="!native || busy" @click="toggle">{{ actionText }}</button>
+      <button class="session-primary" :disabled="busy" @click="toggle">{{ actionText }}</button>
     </header>
 
-    <div v-if="!native" class="ai-settings-note warning">麦克风离线识别需要在 Android APK 中运行。</div>
     <div v-if="error || status?.error" class="ai-settings-note error">{{ error || status?.error }}</div>
 
     <div v-if="status" class="asr-metrics">

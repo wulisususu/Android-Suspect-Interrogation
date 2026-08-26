@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import {
   backendErrorMessage,
   captureOcrImage,
@@ -8,7 +8,7 @@ import {
   recognizeOcrImage,
   releaseOcr,
 } from '../api/interrogation'
-import { isNativeBusinessRuntime, NativeRpcError, onNativeEvent } from '../native/rpcBridge'
+import { RuntimeAdapterError } from '../runtime'
 import type { OcrResult, OcrRuntimeStatus } from '../types/interrogation'
 
 const status = ref<OcrRuntimeStatus | null>(null)
@@ -16,11 +16,9 @@ const result = ref<OcrResult | null>(null)
 const busy = ref('')
 const error = ref('')
 const previewError = ref('')
-let unsubscribe: (() => void) | undefined
 
-const native = computed(() => isNativeBusinessRuntime())
 const selectedText = computed(() => status.value?.selectedModelName || '未选择 OCR 模型')
-const canRecognize = computed(() => native.value && !!status.value?.selectedModelId && !!status.value?.imageReady && !status.value?.busy && !busy.value)
+const canRecognize = computed(() => !!status.value?.selectedModelId && !!status.value?.imageReady && !status.value?.busy && !busy.value)
 
 function metric(value?: number | null) {
   return value == null ? '—' : `${value} ms`
@@ -31,10 +29,10 @@ function confidence(value?: number | null) {
 }
 
 async function load() {
-  if (!native.value) return
   try {
     status.value = await fetchOcrStatus()
     result.value = status.value.lastResult || null
+    error.value = ''
   } catch (e) {
     error.value = backendErrorMessage(e)
   }
@@ -56,22 +54,16 @@ async function runAction(action: 'pick' | 'camera' | 'recognize' | 'release') {
       status.value = await fetchOcrStatus()
     }
   } catch (e) {
-    if (!(e instanceof NativeRpcError && (e.code === 'OCR_IMAGE_PICK_CANCELLED' || e.code === 'OCR_CAMERA_CANCELLED'))) {
-      error.value = backendErrorMessage(e)
-    }
+    const cancelled = e instanceof RuntimeAdapterError && ['OCR_IMAGE_PICK_CANCELLED', 'OCR_CAMERA_CANCELLED'].includes(e.code)
+    if (!cancelled) error.value = backendErrorMessage(e)
   } finally {
     busy.value = ''
   }
 }
 
 onMounted(() => {
-  unsubscribe = onNativeEvent<OcrRuntimeStatus>('ocr.status', (next) => {
-    status.value = next
-    result.value = next.lastResult || null
-  })
   void load()
 })
-onUnmounted(() => unsubscribe?.())
 </script>
 
 <template>
@@ -82,14 +74,13 @@ onUnmounted(() => unsubscribe?.())
         <span>{{ selectedText }}</span>
       </div>
       <div class="ocr-actions">
-        <button :disabled="!native || !!busy" @click="runAction('pick')">{{ busy === 'pick' ? '选择中…' : '选择图片' }}</button>
-        <button :disabled="!native || !!busy" @click="runAction('camera')">{{ busy === 'camera' ? '拍照中…' : '拍照' }}</button>
+        <button :disabled="!!busy" @click="runAction('pick')">{{ busy === 'pick' ? '选择中…' : '选择图片' }}</button>
+        <button :disabled="!!busy" @click="runAction('camera')">{{ busy === 'camera' ? '拍照中…' : '拍照' }}</button>
         <button class="session-primary" :disabled="!canRecognize" @click="runAction('recognize')">{{ busy === 'recognize' ? '识别中…' : '开始识别' }}</button>
-        <button :disabled="!native || !!busy || !status?.initialized" @click="runAction('release')">释放</button>
+        <button :disabled="!!busy || !status?.initialized" @click="runAction('release')">释放</button>
       </div>
     </header>
 
-    <div v-if="!native" class="ai-settings-note warning">离线 OCR 需要在 Android APK 中运行。</div>
     <div v-if="error || status?.error" class="ai-settings-note error">{{ error || status?.error }}</div>
 
     <div v-if="status" class="ocr-metrics">
