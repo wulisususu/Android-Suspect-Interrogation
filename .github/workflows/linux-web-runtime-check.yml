@@ -78,3 +78,5 @@ jobs:
       - name: Frontend build
         working-directory: webapp
         run: npm run build
+
+# Workflow intentionally lives on the feature branch so every implementation push is verified on RK3588.
