@@ -18,18 +18,21 @@ function legacyConfig(operation: string, payload: Record<string, unknown>): Axio
   const caseId = encode(payload.caseId)
   const messageId = encode(payload.messageId)
   switch (operation) {
-    case 'case.create': return { method: 'POST', url: '/api/cases', data: payload }
+    case 'case.create': return { method: 'POST', url: '/api/cases/create', data: payload }
     case 'case.list': return { method: 'GET', url: '/api/cases', params: { limit: payload.limit } }
     case 'case.get': return { method: 'GET', url: `/api/cases/${caseId}` }
     case 'case.update': return { method: 'PUT', url: `/api/cases/${caseId}`, data: payload.patch ?? payload }
-    case 'message.list': return { method: 'GET', url: `/work/case/${caseId}/messages`, params: { limit: payload.limit ?? 1000 } }
-    case 'message.add': return { method: 'POST', url: `/work/case/${caseId}/message`, data: { text: payload.text, from: payload.from } }
+    case 'message.list': return { method: 'GET', url: `/api/cases/${caseId}/messages`, params: { limit: payload.limit ?? 1000 } }
+    case 'message.add': return { method: 'POST', url: `/work/case/${caseId}/message`, data: { profile: { text: payload.text, from: payload.from } } }
     case 'message.update': return { method: 'PUT', url: `/api/cases/${caseId}/messages/${messageId}`, data: { text: payload.text, reason: payload.reason } }
     case 'message.mark': return { method: 'POST', url: `/api/cases/${caseId}/messages/${messageId}/mark`, data: { mark: payload.mark } }
-    case 'message.revisions': return { method: 'GET', url: `/api/cases/${caseId}/revisions`, params: payload.messageId ? { message_id: payload.messageId } : undefined }
-    case 'fact.list': return { method: 'GET', url: `/work/case/${caseId}/facts` }
+    case 'message.revisions': {
+      const suffix = payload.messageId ? `/messages/${messageId}/revisions` : '/revisions'
+      return { method: 'GET', url: `/api/cases/${caseId}${suffix}` }
+    }
+    case 'fact.list': return { method: 'GET', url: `/api/cases/${caseId}/facts` }
     case 'fact.update': return { method: 'PUT', url: `/api/cases/${caseId}/facts/${encode(payload.factKey)}`, data: payload.patch ?? payload }
-    case 'timeline.list': return { method: 'GET', url: `/work/case/${caseId}/timeline` }
+    case 'timeline.list': return { method: 'GET', url: `/api/cases/${caseId}/timeline` }
     case 'session.get': return { method: 'GET', url: `/api/cases/${caseId}/session` }
     case 'session.start': return { method: 'POST', url: `/api/cases/${caseId}/session/start` }
     case 'session.pause': return { method: 'POST', url: `/api/cases/${caseId}/session/pause` }

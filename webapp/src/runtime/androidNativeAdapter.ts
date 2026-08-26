@@ -10,11 +10,20 @@ const EVENT_NAMES = [
   'REPORT_GENERATED', 'REPORT_ERROR', 'asr.capture.status',
 ]
 
+const OPERATION_MAP: Record<string, string> = {
+  'message.list': 'record.list',
+  'message.add': 'record.add',
+  'message.update': 'record.update',
+  'message.mark': 'record.mark',
+  'message.revisions': 'record.revisions',
+  'model.import': 'model.import.request',
+}
+
 export class AndroidNativeAdapter implements RuntimeAdapter {
   readonly kind = 'android-native' as const
 
   invoke<T>(operation: RuntimeOperation, payload: Record<string, unknown> = {}, options: RuntimeInvokeOptions = {}): Promise<T> {
-    return callNative<T>(operation, payload, options.timeoutMs ?? 30_000)
+    return callNative<T>(OPERATION_MAP[operation] || operation, payload, options.timeoutMs ?? 30_000)
   }
 
   async getCapabilities(): Promise<RuntimeCapabilities> {
