@@ -1,0 +1,112 @@
+name: Linux Backend RK3588
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - linux-core-backend
+    paths:
+      - 'linux/backend/**'
+      - 'linux/docs/**'
+      - 'docs/linux-runtime-contract.md'
+      - '.github/workflows/linux-backend-rk3588.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  pytest-rk3588:
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 30
+
+    steps:
+      - name: Runner identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner_name=${RUNNER_NAME:-unknown}"
+          echo "runner_os=${RUNNER_OS:-unknown}"
+          echo "runner_arch=${RUNNER_ARCH:-unknown}"
+          uname -a
+          python3 --version
+
+      - name: Robust sparse checkout
+        shell: bash
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --local gc.auto 0
+          git config --local http.version HTTP/1.1
+          git config --local http.lowSpeedLimit 1024
+          git config --local http.lowSpeedTime 15
+          git sparse-checkout init --cone
+          git sparse-checkout set .github linux docs
+
+          fetched=0
+          for attempt in 1 2 3 4 5; do
+            echo "fetch attempt ${attempt}/5"
+            if timeout 120s git -c protocol.version=2 fetch \
+              --filter=blob:none \
+              --no-tags \
+              --prune \
+              --no-recurse-submodules \
+              --depth=1 \
+              origin "+${GITHUB_SHA}:refs/remotes/origin/ci-target"; then
+              fetched=1
+              break
+            fi
+            sleep $((attempt * 3))
+          done
+
+          if [ "$fetched" -ne 1 ]; then
+            echo 'Git fetch failed after 5 bounded retries.' >&2
+            exit 1
+          fi
+
+          git checkout --force --detach "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -d linux/backend
+
+      - name: Create Python environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/linux/backend"
+          rm -rf .venv-ci
+          python3 -m venv .venv-ci
+          . .venv-ci/bin/activate
+          python -m pip install --upgrade pip
+
+          installed=0
+          for attempt in 1 2 3; do
+            echo "pip install attempt ${attempt}/3"
+            if python -m pip install -r requirements.txt; then
+              installed=1
+              break
+            fi
+            sleep $((attempt * 5))
+          done
+          test "$installed" -eq 1
+
+      - name: Alembic migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/linux/backend"
+          . .venv-ci/bin/activate
+          export DATABASE_URL="sqlite:///${RUNNER_TEMP}/linux-backend-ci-${GITHUB_RUN_ID}.db"
+          rm -f "${RUNNER_TEMP}/linux-backend-ci-${GITHUB_RUN_ID}.db"
+          python -m alembic -c alembic.ini upgrade head
+
+      - name: Pytest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/linux/backend"
+          . .venv-ci/bin/activate
+          python -m pytest -q

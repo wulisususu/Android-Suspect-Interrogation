@@ -1,21 +1,18 @@
-from enum import Enum
+from fastapi import APIRouter, Depends
+
+from app.api.deps import get_hardware
+from app.api.responses import envelope
+from app.api.schemas import DeviceActionRequest
+from app.services.device_service import DeviceService
+
+router = APIRouter(prefix="/device", tags=["device"])
 
 
-class DeviceEvent(str, Enum):
-    ID_CARD_CONNECTED = "id_card_connected"
-    ID_CARD_READING = "id_card_reading"
-    ID_CARD_SUCCESS = "id_card_success"
-    CAMERA_READY = "camera_ready"
-    AUDIO_READY = "audio_ready"
-    SIGN_PAD_READY = "sign_pad_ready"
+@router.get("/status")
+def device_status(hardware=Depends(get_hardware)):
+    return envelope(DeviceService(hardware).status())
 
 
-class DeviceStatus:
-    def __init__(self):
-        self.devices = {}
-
-    def update(self, device: str, status: str):
-        self.devices[device] = status
-
-    def snapshot(self):
-        return self.devices
+@router.post("/action")
+def device_action(body: DeviceActionRequest, hardware=Depends(get_hardware)):
+    return envelope(DeviceService(hardware).action(body.type), "设备操作完成")
