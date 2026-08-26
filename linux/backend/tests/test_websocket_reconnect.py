@@ -1,26 +1,37 @@
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.hardware_gateway.mock import MockHardwareGateway
+from app.main import create_app
 
 
-client = TestClient(app)
+def ok(response):
+    body = response.json()
+    assert body["ok"] is True, body
+    return body["data"]
 
 
-def test_websocket_can_reconnect_same_session_after_disconnect():
-    with client.websocket_connect('/ws/interrogation/reconnect-session') as first:
-        first.send_json({'sequence': 1})
-        assert first.receive_json() == {
-            'type': 'ack',
-            'session_id': 'reconnect-session',
-            'received': {'sequence': 1},
-        }
+def test_websocket_can_reconnect_same_persisted_session_after_disconnect(tmp_path):
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'reconnect-release.db'}",
+        hardware_gateway=MockHardwareGateway(simulated=True),
+    )
 
-    # Closing the first socket must remove the stale entry so the same session
-    # can establish a fresh connection and continue exchanging messages.
-    with client.websocket_connect('/ws/interrogation/reconnect-session') as second:
-        second.send_json({'sequence': 2})
-        assert second.receive_json() == {
-            'type': 'ack',
-            'session_id': 'reconnect-session',
-            'received': {'sequence': 2},
-        }
+    with TestClient(app) as client:
+        case = ok(client.post("/api/v1/cases", json={"operator_id": "release-reconnect"}))
+        ok(client.post("/api/v1/identity/read", json={"case_id": case["id"]}))
+        session = ok(client.post(f"/api/v1/cases/{case['id']}/session/start", json={}))
+        session_id = session["id"]
+
+        with client.websocket_connect(f"/ws/interrogation/{session_id}") as first:
+            initial = first.receive_json()
+            assert initial["event"] == "STATE_SYNC"
+            assert initial["session_id"] == session_id
+            assert initial["payload"]["session"]["state"] == "QUESTIONING"
+
+        ok(client.post(f"/api/v1/cases/{case['id']}/session/pause", json={}))
+
+        with client.websocket_connect(f"/ws/interrogation/{session_id}") as second:
+            resumed = second.receive_json()
+            assert resumed["event"] == "STATE_SYNC"
+            assert resumed["session_id"] == session_id
+            assert resumed["payload"]["session"]["state"] == "PAUSED"
