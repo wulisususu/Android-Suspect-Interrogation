@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
@@ -13,6 +14,30 @@ from app.websocket.protocol import ClientEnvelope, SUPPORTED_CLIENT_EVENTS, serv
 
 router = APIRouter()
 
+# Compatibility registry for the Linux HAL bridge. The authoritative transport
+# registry remains ConnectionManager; this single-socket view exists so hardware
+# events from the standalone HAL can be forwarded without replacing the core
+# WebSocket protocol.
+connections: dict[str, WebSocket] = {}
+
+
+async def broadcast_hardware_event(event: dict[str, Any]) -> None:
+    """Broadcast a normalized HAL event to active interrogation sockets.
+
+    This preserves the hardware workstream's public bridge contract while the
+    main ConnectionManager remains responsible for durable session protocol,
+    sequence numbers and state synchronization.
+    """
+    stale: list[str] = []
+    message = {"type": "hardware_event", "event": event}
+    for session_id, websocket in tuple(connections.items()):
+        try:
+            await websocket.send_json(message)
+        except Exception:
+            stale.append(session_id)
+    for session_id in stale:
+        connections.pop(session_id, None)
+
 
 class ConnectionManager:
     """Owns transport handles only; persisted interrogation truth remains in SQLite."""
@@ -24,6 +49,7 @@ class ConnectionManager:
     async def connect(self, session_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
         self._connections[session_id].append(websocket)
+        connections[session_id] = websocket
 
     def disconnect(self, session_id: str, websocket: WebSocket) -> None:
         peers = self._connections.get(session_id, [])
@@ -31,6 +57,9 @@ class ConnectionManager:
             peers.remove(websocket)
         if not peers:
             self._connections.pop(session_id, None)
+            connections.pop(session_id, None)
+        elif connections.get(session_id) is websocket:
+            connections[session_id] = peers[-1]
 
     def next_seq(self, session_id: str) -> int:
         self._sequence[session_id] += 1
@@ -49,6 +78,10 @@ class ConnectionManager:
                 stale.append(peer)
         for peer in stale:
             self.disconnect(session_id, peer)
+
+    async def broadcast_all(self, event: str, payload: dict | None = None) -> None:
+        for session_id in list(self._connections):
+            await self.broadcast(session_id, event, payload)
 
 
 def _state_sync(websocket: WebSocket, session_id: str) -> dict:
