@@ -7,10 +7,55 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  web-runtime:
+  hosted-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: linux-web-runtime
+          fetch-depth: 0
+
+      - name: Apply asserted runtime UI migration
+        run: python3 .github/scripts/apply_runtime_ui_patch.py
+
+      - name: Install frontend dependencies
+        working-directory: webapp
+        run: npm ci
+
+      - name: Runtime and integration tests
+        working-directory: webapp
+        run: npm test
+
+      - name: TypeScript typecheck
+        working-directory: webapp
+        run: npm run typecheck
+
+      - name: Frontend build
+        working-directory: webapp
+        run: npm run build
+
+      - name: Commit verified runtime UI migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm -f .github/scripts/apply_runtime_ui_patch.py
+          git add webapp/src/stores/interrogation.ts webapp/src/components/InterrogationPage.vue
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No verified migration changes to commit"
+            exit 0
+          fi
+          git config user.name "runtime-migration-bot"
+          git config user.email "runtime-migration-bot@users.noreply.github.com"
+          git commit -m "refactor: connect store and signing UI to runtime adapter"
+          git push origin HEAD:linux-web-runtime
+
+  web-runtime-rk3588:
     runs-on: [self-hosted, rk3588]
     timeout-minutes: 20
 
@@ -63,11 +108,14 @@ jobs:
           git checkout --force --detach "$GITHUB_SHA"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
+      - name: Apply asserted runtime UI migration
+        run: python3 .github/scripts/apply_runtime_ui_patch.py
+
       - name: Install frontend dependencies
         working-directory: webapp
         run: npm ci
 
-      - name: Runtime tests
+      - name: Runtime and integration tests
         working-directory: webapp
         run: npm test
 
@@ -78,5 +126,3 @@ jobs:
       - name: Frontend build
         working-directory: webapp
         run: npm run build
-
-# Workflow intentionally lives on the feature branch so every implementation push is verified on RK3588.
