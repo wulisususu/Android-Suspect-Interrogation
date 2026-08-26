@@ -12,7 +12,14 @@ class RuntimeSettings(BaseSettings):
     configurable so tests and deployments do not need to run as root.
     """
 
-    model_config = SettingsConfigDict(env_prefix="SUSPECT_", case_sensitive=False)
+    model_config = SettingsConfigDict(
+        env_prefix="SUSPECT_",
+        case_sensitive=False,
+        # Pydantic 2.x reserves the ``model_`` prefix by default. ``model_path``
+        # is an intentional runtime setting, not a BaseModel method, so narrow
+        # the protected namespace to one this settings class does not use.
+        protected_namespaces=("settings_",),
+    )
 
     api_host: str = "127.0.0.1"
     api_port: int = 8000
