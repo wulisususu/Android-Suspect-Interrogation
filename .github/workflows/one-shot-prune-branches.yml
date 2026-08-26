@@ -1,0 +1,79 @@
+name: One-shot prune obsolete branches
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/one-shot-prune-branches.yml
+
+permissions:
+  contents: write
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prune all branches except linux-adaptation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$HEAD_MESSAGE" == "chore: remove one-shot branch prune workflow" ]]; then
+            echo "Cleanup commit detected; nothing else to do."
+            exit 0
+          fi
+
+          API="https://api.github.com/repos/$REPO"
+          auth=(-H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+
+          # GitHub forbids deleting the default branch. Try to make linux-adaptation the default first.
+          code=$(curl -sS -o /tmp/default-branch.json -w '%{http_code}' -X PATCH "${auth[@]}" "$API" \
+            -d '{"default_branch":"linux-adaptation"}' || true)
+          echo "default-branch PATCH HTTP $code"
+          cat /tmp/default-branch.json || true
+
+          branches=(
+            "agent/android-model-validation-final"
+            "agent/ocr-asr-ort-speaker-validation-v2"
+            "linux-ai-runtime"
+            "linux-core-backend"
+            "linux-hardware"
+            "linux-integration-2026-08-26"
+            "linux-release-hardening"
+            "linux-web-runtime"
+          )
+
+          for branch in "${branches[@]}"; do
+            echo "Deleting $branch"
+            del_code=$(curl -sS -o /tmp/delete-ref.json -w '%{http_code}' -X DELETE "${auth[@]}" "$API/git/refs/heads/$branch" || true)
+            if [[ "$del_code" != "204" && "$del_code" != "422" ]]; then
+              echo "Failed deleting $branch (HTTP $del_code)"
+              cat /tmp/delete-ref.json || true
+              exit 1
+            fi
+          done
+
+          if [[ "$code" == "200" ]]; then
+            echo "linux-adaptation is now default; deleting main"
+            main_code=$(curl -sS -o /tmp/delete-main.json -w '%{http_code}' -X DELETE "${auth[@]}" "$API/git/refs/heads/main" || true)
+            if [[ "$main_code" != "204" ]]; then
+              echo "Failed deleting main (HTTP $main_code)"
+              cat /tmp/delete-main.json || true
+              exit 1
+            fi
+            echo "Prune complete: only linux-adaptation should remain."
+          else
+            echo "Could not change default branch with GITHUB_TOKEN; main must remain for now. Cleaning up this workflow file."
+            workflow_path='.github/workflows/one-shot-prune-branches.yml'
+            meta=$(curl -sS "${auth[@]}" "$API/contents/$workflow_path?ref=main")
+            sha=$(printf '%s' "$meta" | jq -r '.sha')
+            cleanup=$(jq -nc --arg sha "$sha" '{message:"chore: remove one-shot branch prune workflow",sha:$sha,branch:"main"}')
+            cleanup_code=$(curl -sS -o /tmp/cleanup.json -w '%{http_code}' -X DELETE "${auth[@]}" "$API/contents/$workflow_path" -d "$cleanup" || true)
+            echo "workflow cleanup HTTP $cleanup_code"
+            cat /tmp/cleanup.json || true
+          fi
