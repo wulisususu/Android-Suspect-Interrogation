@@ -10,6 +10,10 @@ def replace_once(path: Path, old: str, new: str):
 
 
 store = Path("webapp/src/stores/interrogation.ts")
+if "connectRuntimeSession" in store.read_text() and "isNativeBusinessRuntime" not in store.read_text():
+    print("Runtime UI patch already applied")
+    raise SystemExit(0)
+
 replace_once(store, "  changeSessionStage,\n", "  changeSessionStage,\n  connectRuntimeSession,\n")
 replace_once(store, "  fetchAsrCaptureStatus,\n", "  fetchAsrCaptureStatus,\n  fetchRuntimeCapabilities,\n")
 replace_once(store, "import { isNativeBusinessRuntime, onNativeEvent } from '../native/rpcBridge'\n", "import type { RuntimeSessionConnection } from '../runtime'\n")
