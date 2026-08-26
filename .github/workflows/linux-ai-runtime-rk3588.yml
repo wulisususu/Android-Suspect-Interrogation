@@ -1,0 +1,110 @@
+name: Linux AI Runtime RK3588
+
+on:
+  push:
+    branches:
+      - linux-ai-runtime
+    paths:
+      - '.github/workflows/linux-ai-runtime-rk3588.yml'
+      - 'linux/backend/app/ai/**'
+      - 'linux/backend/app/api/ai_runtime.py'
+      - 'linux/backend/app/main.py'
+      - 'linux/backend/config/model-registry.yaml'
+      - 'linux/backend/models/**'
+      - 'linux/backend/tests/**'
+      - 'linux/docs/AI_RUNTIME.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ai-runtime:
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 15
+    env:
+      AI_MODE: mock
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Runner identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner_name=${RUNNER_NAME:-unknown}"
+          echo "runner_os=${RUNNER_OS:-unknown}"
+          echo "runner_arch=${RUNNER_ARCH:-unknown}"
+          hostname
+          uname -a
+          python3 --version
+
+      - name: Robust sparse checkout
+        shell: bash
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --local gc.auto 0
+          git config --local http.version HTTP/1.1
+          git config --local http.lowSpeedLimit 1024
+          git config --local http.lowSpeedTime 15
+          git sparse-checkout init --cone
+          git sparse-checkout set .github linux docs
+
+          fetched=0
+          for attempt in 1 2 3 4 5; do
+            echo "fetch attempt ${attempt}/5"
+            if timeout 120s git -c protocol.version=2 fetch \
+              --filter=blob:none \
+              --no-tags \
+              --prune \
+              --no-recurse-submodules \
+              --depth=1 \
+              origin "+${GITHUB_SHA}:refs/remotes/origin/linux-ai-runtime"; then
+              fetched=1
+              break
+            fi
+            sleep $((attempt * 3))
+          done
+          test "$fetched" -eq 1
+          git checkout --force --detach "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Verify no model weights are committed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find linux/backend/models -type f \( -name '*.rkllm' -o -name '*.gguf' -o -name '*.onnx' -o -name '*.bin' \) | grep -q .; then
+            echo 'Unexpected model weight found in repository.' >&2
+            exit 1
+          fi
+          echo 'No model weights committed.'
+
+      - name: Compile AI runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd linux/backend
+          PYTHONPATH=. python3 -m compileall -q app/ai app/api/ai_runtime.py app/main.py tests
+
+      - name: Standard-library runtime smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd linux/backend
+          PYTHONPATH=. python3 tests/rk3588_ai_runtime_smoke.py
+
+      - name: Full pytest suite when pytest is preinstalled
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd linux/backend
+          if python3 -c 'import pytest' >/dev/null 2>&1; then
+            PYTHONPATH=. python3 -m pytest -q
+          else
+            echo 'pytest not preinstalled on runner; smoke suite already passed without downloads.'
+          fi

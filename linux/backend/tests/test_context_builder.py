@@ -1,0 +1,4 @@
+from app.ai.context.builder import ContextBuilder
+
+def test_context_builder_bounds_history_and_keeps_case_structure():
+    builder=ContextBuilder(max_recent_qa=2,max_facts=3,max_timeline=2); session={"session_id":"s-1","case_metadata":{"case_id":"c-1","type":"theft"},"identity":{"name":"张三"},"facts":["f1","f2","f3","f4"],"messages":[{"role":"assistant","content":"q1"},{"role":"user","content":"a1"},{"role":"assistant","content":"q2"},{"role":"user","content":"a2"},{"role":"assistant","content":"q3"},{"role":"user","content":"a3"}],"timeline":[1,2,3],"current_stage":"DETAILS"}; context=builder.build(session); assert context["session_id"]=="s-1"; assert context["case_metadata"]["case_id"]=="c-1"; assert context["facts"]==["f2","f3","f4"]; assert [m["content"] for m in context["recent_qa"]]==["q2","a2","q3","a3"]; assert context["timeline"]==[2,3]; assert context["current_stage"]=="DETAILS"

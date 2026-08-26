@@ -1,0 +1,8 @@
+{
+  "models": {
+    "asr.default": {"kind":"asr","backend":"sherpa-onnx","path":"asr/default","architecture":"paraformer","required_files":["model.onnx"],"device":"cpu","context":0,"memory_mb":768,"capabilities":["pcm","streaming","partial_result","final_result"]},
+    "ocr.default": {"kind":"ocr","backend":"paddleocr","path":"ocr/default","architecture":"ocr","required_files":["model.bin"],"device":"cpu","context":0,"memory_mb":768,"capabilities":["text","id_card"]},
+    "llm.default": {"kind":"llm","backend":"rkllm","path":"llm/default","architecture":"qwen","required_files":["model.rkllm"],"device":"npu","context":4096,"memory_mb":4096,"capabilities":["generate","stream","cancel"]},
+    "llm.llamacpp": {"kind":"llm","backend":"llama.cpp","path":"llm/llamacpp","architecture":"gguf","required_files":["model.gguf"],"device":"cpu","context":4096,"memory_mb":4096,"capabilities":["generate","stream","cancel"]}
+  }
+}
