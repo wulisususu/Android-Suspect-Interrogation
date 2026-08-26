@@ -77,9 +77,20 @@ def _hardware_capability() -> dict[str, Any]:
 
 def _ai_capability(settings: RuntimeSettings) -> dict[str, Any]:
     model_path = settings.model_path
-    if model_path is None or not Path(model_path).exists():
-        return _result("NOT_INSTALLED", required=False, detail="local model asset is not installed")
-    return _result("READY", required=False, detail="local model asset path exists")
+    if model_path is None:
+        return _result("NOT_INSTALLED", required=False, detail="local model asset path is not configured")
+
+    path = Path(model_path)
+    installed = path.is_file()
+    if path.is_dir():
+        try:
+            installed = any(child.is_file() for child in path.rglob("*") if not child.name.startswith("."))
+        except OSError:
+            installed = False
+
+    if not installed:
+        return _result("NOT_INSTALLED", required=False, detail="local model assets are not installed")
+    return _result("READY", required=False, detail="local model assets are present")
 
 
 def readiness_snapshot() -> dict[str, Any]:

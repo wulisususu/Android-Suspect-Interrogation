@@ -3,6 +3,7 @@ name: Linux CI
 on:
   push:
     branches:
+      - linux-adaptation
       - linux-release-hardening
     paths:
       - '.github/workflows/linux-ci.yml'
@@ -15,6 +16,8 @@ on:
       - 'docs/release/**'
       - 'docs/security/**'
   pull_request:
+    branches:
+      - linux-adaptation
     paths:
       - '.github/workflows/linux-ci.yml'
       - 'linux/**'
@@ -30,21 +33,161 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: linux-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  health-contract-red:
+  linux-hosted:
+    name: Linux hosted gate
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: linux/backend
+    timeout-minutes: 25
+    env:
+      PYTHONPATH: linux/backend
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install test dependencies
+          cache: pip
+          cache-dependency-path: linux/backend/requirements.txt
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest httpx
-      - name: Run health contract tests
-        run: python -m pytest tests/test_health_contract.py tests/test_capability_health.py -q
+          python -m pip install -r linux/backend/requirements.txt pytest httpx
+
+      - name: backend-import
+        run: |
+          python -m compileall -q linux/backend
+          python -c "from app.main import app; assert app.title == 'Linux Suspect Interrogation API'"
+
+      - name: Python tests
+        run: python -m pytest linux/backend/tests -q
+
+      - name: DB migration test
+        run: scripts/ci/db-migration-gate.sh
+
+      - name: API contract tests
+        run: python -m pytest linux/backend/tests/test_health_contract.py linux/backend/tests/test_capability_health.py linux/backend/tests/test_runtime_security.py -q
+
+      - name: hardware mock tests
+        run: python -m pytest linux/backend/tests/test_hardware_mock.py -q
+
+      - name: AI mock tests
+        run: python -m pytest linux/backend/tests/test_ai_mock.py -q
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install Vue dependencies
+        working-directory: webapp
+        run: npm ci
+
+      - name: Vue tests
+        working-directory: webapp
+        run: npm test
+
+      - name: Vue typecheck
+        working-directory: webapp
+        run: npm run typecheck
+
+      - name: Vue build
+        working-directory: webapp
+        run: npm run build
+
+      - name: integration test
+        run: |
+          bash -n deploy/control.sh deploy/lib/common.sh deploy/lib/release.sh
+          bash -n scripts/backup.sh scripts/restore.sh scripts/kiosk-launch.sh scripts/check-release.sh
+          bash -n scripts/ci/resilient-checkout.sh scripts/ci/rk3588-smoke.sh scripts/ci/db-migration-gate.sh
+          bash tests/release/test_control_shell.sh
+          python -m pytest tests/release tests/e2e tests/reliability -q
+
+  rk3588-smoke:
+    name: RK3588 smoke
+    needs: linux-hosted
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 20
+    env:
+      GIT_TERMINAL_PROMPT: '0'
+      FETCH_ATTEMPTS: '5'
+      FETCH_TIMEOUT_SECONDS: '120'
+      SPARSE_PATHS: '.github linux webapp deploy scripts systemd tests docs'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - name: Runner identity before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner_name=${RUNNER_NAME:-unknown}"
+          echo "runner_os=${RUNNER_OS:-unknown}"
+          echo "runner_arch=${RUNNER_ARCH:-unknown}"
+          echo "hostname=$(hostname)"
+          uname -a
+          git --version
+          python3 --version
+          node --version || true
+
+      - name: Robust partial checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --local gc.auto 0
+          git config --local http.version HTTP/1.1
+          git config --local http.lowSpeedLimit 1024
+          git config --local http.lowSpeedTime 15
+          git sparse-checkout init --cone
+          # shellcheck disable=SC2086
+          git sparse-checkout set ${SPARSE_PATHS}
+
+          fetched=0
+          for attempt in 1 2 3 4 5; do
+            echo "fetch attempt ${attempt}/5"
+            if timeout "${FETCH_TIMEOUT_SECONDS}s" git -c protocol.version=2 fetch \
+                --filter=blob:none \
+                --no-tags \
+                --prune \
+                --no-recurse-submodules \
+                --depth=1 \
+                origin "+${GITHUB_SHA}:refs/remotes/origin/__runner_target"; then
+              fetched=1
+              break
+            fi
+            sleep $((attempt * 3))
+          done
+
+          if [[ "$fetched" -ne 1 ]]; then
+            echo "Git fetch failed after 5 bounded attempts" >&2
+            exit 1
+          fi
+          git checkout --force --detach "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Ensure Python runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if python3 -c 'import fastapi, pydantic_settings' >/dev/null 2>&1; then
+            echo 'runner already has required Python runtime packages'
+          else
+            python3 -m venv .ci-venv
+            .ci-venv/bin/python -m pip install --retries 3 --timeout 15 -r linux/backend/requirements.txt httpx
+            echo "$PWD/.ci-venv/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: RK3588 smoke
+        shell: bash
+        run: scripts/ci/rk3588-smoke.sh
