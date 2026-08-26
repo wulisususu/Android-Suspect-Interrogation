@@ -1,13 +1,11 @@
-frontend/build/
 *.log
 webapp/node_modules/
 webapp/dist/
 backend-dev/data/
 backend-dev/.env
-android/.gradle/
-android/local.properties
-android/**/build/
-android/**/.cxx/
+linux/backend/.venv/
+linux/backend/.venv-*/
+linux/backend/**/*.db
 output/
 webapp/.playwright-cli/
 *.wav

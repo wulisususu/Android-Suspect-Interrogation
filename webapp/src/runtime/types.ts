@@ -1,4 +1,4 @@
-export type RuntimeKind = 'linux-http-ws' | 'android-native' | 'browser-dev'
+export type RuntimeKind = 'linux-http-ws' | 'browser-dev'
 
 export type RuntimeCapabilityState =
   | 'AVAILABLE'

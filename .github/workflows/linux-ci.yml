@@ -16,6 +16,10 @@ on:
       - 'tests/**'
       - 'docs/release/**'
       - 'docs/security/**'
+      - 'android/**'
+      - 'frontend/**'
+      - 'README.md'
+      - '.gitignore'
   pull_request:
     branches:
       - linux-adaptation
@@ -30,6 +34,10 @@ on:
       - 'tests/**'
       - 'docs/release/**'
       - 'docs/security/**'
+      - 'android/**'
+      - 'frontend/**'
+      - 'README.md'
+      - '.gitignore'
   workflow_dispatch:
 
 permissions:
@@ -53,6 +61,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Repository Linux-only audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e android
+          test ! -e frontend
+          test ! -e .github/workflows/android-ci.yml
+          test ! -e webapp/src/native
+          test ! -e webapp/src/runtime/androidNativeAdapter.ts
+          test ! -e webapp/src/runtime/__tests__/androidGateAudit.test.ts
+          if grep -RInE 'NativeBridge|AndroidNativeAdapter|android-native|android\.|androidx\.|RoomDatabase|\badb\b|AndroidManifest|build\.gradle' \
+              linux webapp/src deploy scripts systemd tests \
+              --exclude-dir='__pycache__' --exclude-dir='node_modules' --exclude-dir='dist'; then
+            echo 'Mobile-platform artifact/reference found in Linux production paths' >&2
+            exit 1
+          fi
+          echo 'Repository Linux-only audit passed'
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -84,20 +110,6 @@ jobs:
         run: |
           python -m pytest linux/backend/tests/test_hardware.py linux/backend/tests/test_hardware_mock.py -q
           python -m pytest linux/backend/tests/test_ai_mock.py linux/backend/tests/test_mock_engines.py linux/backend/tests/test_supervisor.py -q
-
-      - name: Linux independence audit
-        shell: bash
-        run: |
-          set -euo pipefail
-          if grep -RInE 'window\.NativeBridge|android\.|androidx\.|RoomDatabase|\badb\b' linux/backend --exclude-dir='__pycache__'; then
-            echo 'Android dependency found in formal Linux backend path' >&2
-            exit 1
-          fi
-          if grep -nE 'NativeBridge|AndroidNativeAdapter|androidNativeAdapter' webapp/src/runtime/linuxHttpWsAdapter.ts; then
-            echo 'LinuxHttpWsAdapter directly depends on Android runtime' >&2
-            exit 1
-          fi
-          echo 'Linux production runtime has no direct Android dependency'
 
       - name: Setup Node
         uses: actions/setup-node@v4

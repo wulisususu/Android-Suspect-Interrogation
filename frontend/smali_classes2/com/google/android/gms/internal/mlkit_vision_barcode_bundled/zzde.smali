@@ -1,3 +1,0 @@
-.class public final synthetic Lcom/google/android/gms/internal/mlkit_vision_barcode_bundled/zzde;
-.super Ljava/lang/Object;
-.source "com.google.mlkit:barcode-scanning@@17.2.0"
