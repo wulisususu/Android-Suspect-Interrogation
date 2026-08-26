@@ -6,23 +6,23 @@ import {
   createCase,
   fetchLocalModels,
   fetchOcrStatus,
+  fetchRuntimeCapabilities,
   pickOcrImage,
   recognizeOcrImage,
   selectLocalModel,
 } from '../api/interrogation'
 import { updateCaseFact } from '../api/caseProfile'
-import { isNativeBusinessRuntime } from '../native/rpcBridge'
+import type { RuntimeCapabilities } from '../runtime'
 import type { CaseSummary, LocalModelDescriptor, OcrResult } from '../types/interrogation'
 import { calculateAge, parseIdentityCardOcr } from '../utils/identityOcr'
 
 const emit = defineEmits<{ close: []; created: [item: CaseSummary] }>()
 
-const nativeRuntime = isNativeBusinessRuntime()
-const native = computed(() => nativeRuntime)
-const method = ref<'manual' | 'ocr'>(nativeRuntime ? 'ocr' : 'manual')
+const method = ref<'manual' | 'ocr'>('ocr')
 const busy = ref('')
 const error = ref('')
 const previewError = ref('')
+const capabilities = ref<RuntimeCapabilities | null>(null)
 const ocrModels = ref<LocalModelDescriptor[]>([])
 const selectedOcrModelId = ref('')
 const previewUri = ref('')
@@ -44,6 +44,19 @@ const form = reactive({
 })
 
 const usableOcrModels = computed(() => ocrModels.value.filter((item) => item.runtimeReady && item.complete !== false))
+const ocrCapability = computed(() => capabilities.value?.ocr)
+const ocrAvailable = computed(() => ocrCapability.value?.state === 'AVAILABLE')
+const ocrReason = computed(() => {
+  const item = ocrCapability.value
+  if (!item || item.state === 'AVAILABLE') return ''
+  return item.reason || ({
+    NOT_CONNECTED: 'Linux 本地后端未连接',
+    NOT_CONFIGURED: 'OCR Runtime 尚未配置',
+    MODEL_NOT_INSTALLED: 'OCR 模型尚未安装',
+    BUSY: 'OCR Runtime 正忙',
+    ERROR: 'OCR Runtime 当前异常',
+  }[item.state] || item.state)
+})
 
 function modelLabel(item: LocalModelDescriptor) {
   const format = item.modelFormat ? ` · ${item.modelFormat}` : ''
@@ -57,7 +70,7 @@ function syncAge() {
 }
 
 async function loadOcrModels() {
-  if (!native.value) return
+  if (!ocrAvailable.value) return
   error.value = ''
   try {
     const [catalog, status] = await Promise.all([fetchLocalModels(false), fetchOcrStatus()])
@@ -75,8 +88,13 @@ async function loadOcrModels() {
   }
 }
 
+async function loadCapabilities() {
+  capabilities.value = await fetchRuntimeCapabilities()
+  if (ocrAvailable.value) await loadOcrModels()
+}
+
 async function changeOcrModel() {
-  if (!selectedOcrModelId.value) return
+  if (!selectedOcrModelId.value || !ocrAvailable.value) return
   busy.value = 'model'
   error.value = ''
   try {
@@ -107,8 +125,8 @@ function applyOcr(result: OcrResult) {
 }
 
 async function runOcr(source: 'camera' | 'pick') {
-  if (!native.value) {
-    error.value = 'OCR 拍照仅在构建后的 Android APK 中可用；当前可使用手动录入。'
+  if (!ocrAvailable.value) {
+    error.value = ocrReason.value || 'OCR Runtime 当前不可用，可继续使用手动录入。'
     return
   }
   if (!selectedOcrModelId.value) {
@@ -162,29 +180,25 @@ async function submit() {
     }
     const item = await createCase(payload)
 
-    if (native.value) {
-      await Promise.all([
-        updateCaseFact(item.id, 'current_address', {
-          value: form.currentAddress.trim() || '未录入',
-          status: form.currentAddress.trim() ? 'confirmed' : 'missing',
-        }),
-        updateCaseFact(item.id, 'case_type', {
-          value: form.caseType.trim() || '未录入',
-          status: form.caseType.trim() ? 'confirmed' : 'missing',
-        }),
-      ])
-    } else {
-      localStorage.setItem(`case-profile:${item.id}`, JSON.stringify({
-        ...form,
-        suspectName: name,
-        idNumber,
+    const factWrites = await Promise.allSettled([
+      updateCaseFact(item.id, 'current_address', {
+        value: form.currentAddress.trim() || '未录入',
+        status: form.currentAddress.trim() ? 'confirmed' : 'missing',
+      }),
+      updateCaseFact(item.id, 'case_type', {
+        value: form.caseType.trim() || '未录入',
+        status: form.caseType.trim() ? 'confirmed' : 'missing',
+      }),
+    ])
+    if (factWrites.some((result) => result.status === 'rejected')) {
+      localStorage.setItem(`case-profile-pending:${item.id}`, JSON.stringify({
+        currentAddress: form.currentAddress.trim(),
+        caseType: form.caseType.trim(),
+        savedAt: Date.now(),
       }))
     }
 
-    emit('created', {
-      ...item,
-      ...payload,
-    })
+    emit('created', { ...item, ...payload })
   } catch (e) {
     error.value = backendErrorMessage(e)
   } finally {
@@ -192,7 +206,9 @@ async function submit() {
   }
 }
 
-onMounted(loadOcrModels)
+onMounted(() => {
+  void loadCapabilities().catch((e) => { error.value = backendErrorMessage(e) })
+})
 </script>
 
 <template>
@@ -212,7 +228,9 @@ onMounted(loadOcrModels)
       </div>
 
       <div v-if="method === 'ocr'" class="ocr-intake-card">
-        <div v-if="!native" class="identity-note warning">当前是浏览器联调环境，高拍仪 / OCR 需要 Android APK；你可以切换到“手动录入”。</div>
+        <div v-if="!ocrAvailable" class="identity-note warning">
+          {{ ocrReason || '正在查询 Linux 本地 OCR 能力…' }}。手动录入始终可用。
+        </div>
         <template v-else>
           <div class="ocr-toolbar">
             <label>

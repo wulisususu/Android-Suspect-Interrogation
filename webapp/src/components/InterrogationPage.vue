@@ -11,7 +11,6 @@ import {
   freezeDocument,
   signDocument,
 } from '../api/documentSigning'
-import { isNativeBusinessRuntime } from '../native/rpcBridge'
 import type {
   AsrCaptureStatus,
   AsrInsertionReceipt,
@@ -50,7 +49,6 @@ type EntryRole = '民警' | '嫌疑人'
 type QaPair = { question?: TranscriptMessage; answer?: TranscriptMessage }
 type SignaturePoint = { x: number; y: number; t: number; p: number }
 
-const native = isNativeBusinessRuntime()
 const text = ref('')
 const entryRole = ref<EntryRole>('嫌疑人')
 const saving = ref(false)
@@ -200,7 +198,7 @@ function focusRecordEditor(item: TranscriptMessage, event: FocusEvent) {
 }
 
 async function loadSigningState() {
-  if (!native || !props.caseId) {
+  if (!props.caseId) {
     signingState.value = null
     return
   }
@@ -584,7 +582,7 @@ async function confirmSignature() {
         class="record-button"
         :class="{ active: capture.running }"
         :disabled="captureBusy || !nativeCaptureAvailable || (!canRecord && !capture.running)"
-        :title="nativeCaptureAvailable ? '开始 / 停止离线录音' : '录音仅在 Android APK 中可用'"
+        :title="nativeCaptureAvailable ? '开始 / 停止离线录音' : '连续离线录音 Runtime 当前不可用'"
         @click="toggleCapture"
       >
         <span class="record-dot">●</span>
