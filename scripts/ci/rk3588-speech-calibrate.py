@@ -181,11 +181,11 @@ def choose_calibration(scores: list[SampleScore]) -> tuple[float, float, dict[st
     genuine_margins = [s.genuine_margin for s in scores]
     impostor_margins = [s.impostor_margin for s in scores if s.impostor_margin is not None]
 
-    thresholds = _candidate_values(genuine_scores + wrong_scores)
-    margins = _candidate_values(genuine_margins + impostor_margins)
+    candidate_thresholds = _candidate_values(genuine_scores + wrong_scores)
+    candidate_margins = _candidate_values(genuine_margins + impostor_margins)
     safe: list[tuple[float, float, float]] = []
-    for threshold in thresholds:
-        for margin in margins:
+    for threshold in candidate_thresholds:
+        for margin in candidate_margins:
             false_accepts, false_rejects, robustness = _evaluate(scores, threshold, margin)
             if false_accepts == 0 and false_rejects == 0:
                 safe.append((robustness, threshold, margin))
@@ -199,6 +199,8 @@ def choose_calibration(scores: list[SampleScore]) -> tuple[float, float, dict[st
     return threshold, margin, {
         "false_accepts": false_accepts,
         "false_rejects": false_rejects,
+        "candidate_thresholds": len(candidate_thresholds),
+        "candidate_margins": len(candidate_margins),
         "min_genuine_score": min(genuine_scores),
         "max_impostor_score": max(wrong_scores),
         "min_genuine_margin": min(genuine_margins),
