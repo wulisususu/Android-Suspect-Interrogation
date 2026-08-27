@@ -18,7 +18,7 @@ def make_db(tmp_path):
     return engine, Session(engine)
 
 
-def test_full_service_workflow_revision_audit_and_documents(tmp_path):
+def test_full_service_workflow_revision_audit_and_documents(tmp_path, enroll_test_suspect_voiceprint):
     engine, db = make_db(tmp_path)
     try:
         cases = CaseService(db)
@@ -34,6 +34,7 @@ def test_full_service_workflow_revision_audit_and_documents(tmp_path):
         person = identity.read(case["id"], actor_id="officer-1")
         assert person["name"] == "联调测试对象"
         assert cases.get(case["id"])["workflowState"] == "IDENTITY_READY"
+        enroll_test_suspect_voiceprint(db, case["id"])
 
         session = sessions.start(case["id"], actor_id="officer-1")
         assert session["status"] == "RUNNING"
