@@ -9,12 +9,18 @@ from app.ai.errors import BackendUnavailableError, ModelNotInstalledError, Worke
 
 
 DEFAULT_MODEL_ROOT = Path("/opt/suspect-interrogation/models/funasr")
-_MODEL_NAMES = ("paraformer", "fsmn-vad", "xvector")
+_CRITICAL_MODEL_NAMES = ("paraformer", "fsmn-vad")
+_OPTIONAL_MODEL_NAMES = ("xvector",)
+_MODEL_NAMES = _CRITICAL_MODEL_NAMES + _OPTIONAL_MODEL_NAMES
 ModelFactory = Callable[..., Any]
 
 
 class FunASRSpeechRuntime:
-    """Own the three local FunASR models behind a vendor-neutral API.
+    """Own local FunASR ASR/VAD plus optional speaker verification.
+
+    Paraformer and FSMN-VAD are required for the speech pipeline. XVector is
+    deliberately isolated: a missing or broken speaker model degrades speaker
+    attribution but must not discard otherwise valid ASR/VAD output.
 
     Real FunASR is imported lazily so hosted/unit tests do not need the vendor
     runtime installed. Production always resolves models from a local path and
@@ -32,31 +38,42 @@ class FunASRSpeechRuntime:
         self.asr_model: Any | None = None
         self.vad_model: Any | None = None
         self.speaker_model: Any | None = None
+        self.model_errors: dict[str, dict[str, str]] = {}
 
     @property
     def loaded(self) -> bool:
-        return all(model is not None for model in (self.asr_model, self.vad_model, self.speaker_model))
+        """Return True only when all three models are loaded.
+
+        Keep the historical meaning of ``loaded`` for callers that care about
+        full speaker capability. ``core_loaded`` identifies the ASR/VAD path
+        that can legitimately continue when XVector is unavailable.
+        """
+        return self.core_loaded and self.speaker_model is not None
+
+    @property
+    def core_loaded(self) -> bool:
+        return self.asr_model is not None and self.vad_model is not None
 
     def load(self) -> None:
+        self._clear_models()
+        self.model_errors = {}
         model_dirs = {name: self.model_root / name for name in _MODEL_NAMES}
-        missing = [str(path) for path in model_dirs.values() if not path.is_dir()]
-        if missing:
+
+        missing_critical = [
+            str(model_dirs[name]) for name in _CRITICAL_MODEL_NAMES if not model_dirs[name].is_dir()
+        ]
+        if missing_critical:
             raise ModelNotInstalledError(
-                "FunASR speech model directories are not installed",
-                details={"model_root": str(self.model_root), "missing": missing},
+                "required FunASR ASR/VAD model directories are not installed",
+                details={"model_root": str(self.model_root), "missing": missing_critical},
             )
 
         factory = self._model_factory or self._load_vendor_factory()
         loaded: dict[str, Any] = {}
-        for name in _MODEL_NAMES:
+        for name in _CRITICAL_MODEL_NAMES:
             model_path = model_dirs[name]
             try:
-                loaded[name] = factory(
-                    model=str(model_path),
-                    device="cpu",
-                    disable_update=True,
-                    disable_pbar=True,
-                )
+                loaded[name] = self._load_model(factory, model_path)
             except Exception as exc:
                 self._clear_models()
                 raise BackendUnavailableError(
@@ -66,17 +83,48 @@ class FunASRSpeechRuntime:
 
         self.asr_model = loaded["paraformer"]
         self.vad_model = loaded["fsmn-vad"]
-        self.speaker_model = loaded["xvector"]
+
+        speaker_path = model_dirs["xvector"]
+        if not speaker_path.is_dir():
+            self.model_errors["xvector"] = {
+                "code": "MODEL_NOT_INSTALLED",
+                "error_type": "MissingModelDirectory",
+            }
+            return
+        try:
+            self.speaker_model = self._load_model(factory, speaker_path)
+        except Exception as exc:
+            self.speaker_model = None
+            self.model_errors["xvector"] = {
+                "code": "BACKEND_UNAVAILABLE",
+                "error_type": type(exc).__name__,
+            }
+
+    @staticmethod
+    def _load_model(factory: ModelFactory, model_path: Path) -> Any:
+        return factory(
+            model=str(model_path),
+            device="cpu",
+            disable_update=True,
+            disable_pbar=True,
+        )
 
     def health(self) -> dict[str, Any]:
+        if self.loaded:
+            status = "ready"
+        elif self.core_loaded:
+            status = "degraded"
+        else:
+            status = "not_loaded"
         return {
-            "status": "ready" if self.loaded else "not_loaded",
+            "status": status,
             "model_root": str(self.model_root),
             "models": {
                 "asr": self.asr_model is not None,
                 "vad": self.vad_model is not None,
                 "speaker": self.speaker_model is not None,
             },
+            "errors": dict(self.model_errors),
         }
 
     def vad(self, pcm: bytes, sample_rate: int) -> list[list[int]]:
