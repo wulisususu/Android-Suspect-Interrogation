@@ -22,7 +22,8 @@ from app.ai.speech.client import SpeechWorkerClient  # noqa: E402
 
 SAMPLE_RATE = 16_000
 SAMPLE_WIDTH = 2
-MIN_UTTERANCES_PER_IDENTITY = 3
+MIN_SAMPLES_PER_IDENTITY = 3
+MIN_UTTERANCES_PER_IDENTITY = MIN_SAMPLES_PER_IDENTITY
 MIN_VAD_SPEECH_MS = 1_000
 THRESHOLD_KEY = "SUSPECT_SPEAKER_ACCEPT_THRESHOLD"
 MARGIN_KEY = "SUSPECT_SPEAKER_MARGIN"
@@ -266,7 +267,10 @@ def _paths(values: list[str]) -> list[Path]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Calibrate RK3588 XVector threshold/margin from local WAV samples.")
     parser.add_argument("--socket", default="/run/suspect-interrogation/speech.sock")
-    parser.add_argument("--suspect-wavs", nargs="+", required=True)
+    parser.add_argument("--suspect-wav", action="append", default=[])
+    parser.add_argument("--interrogator-wav", action="append", default=[])
+    parser.add_argument("--recorder-wav", action="append", default=[])
+    parser.add_argument("--suspect-wavs", nargs="*", default=[])
     parser.add_argument("--interrogator-wavs", nargs="*", default=[])
     parser.add_argument("--recorder-wavs", nargs="*", default=[])
     parser.add_argument("--env-file", default="/etc/suspect-interrogation/ai-worker.env")
@@ -275,16 +279,16 @@ def main() -> int:
     args = parser.parse_args()
 
     groups = {
-        "SUSPECT": _paths(args.suspect_wavs),
-        "INTERROGATOR": _paths(args.interrogator_wavs),
-        "RECORDER": _paths(args.recorder_wavs),
+        "SUSPECT": _paths([*args.suspect_wav, *args.suspect_wavs]),
+        "INTERROGATOR": _paths([*args.interrogator_wav, *args.interrogator_wavs]),
+        "RECORDER": _paths([*args.recorder_wav, *args.recorder_wavs]),
     }
     groups = {identity: paths for identity, paths in groups.items() if paths}
     if len(groups) < 2:
         parser.error("calibration requires SUSPECT plus at least one distinct officer identity")
     for identity, paths in groups.items():
-        if len(paths) < MIN_UTTERANCES_PER_IDENTITY:
-            parser.error(f"{identity} requires at least {MIN_UTTERANCES_PER_IDENTITY} separate utterance WAVs")
+        if len(paths) < MIN_SAMPLES_PER_IDENTITY:
+            parser.error(f"{identity} requires at least {MIN_SAMPLES_PER_IDENTITY} separate utterance WAVs")
         for path in paths:
             if not path.is_file():
                 parser.error(f"a calibration WAV does not exist for {identity}")
@@ -318,13 +322,13 @@ def main() -> int:
     report = {
         "status": "safe" if metrics["false_accepts"] == 0 and metrics["false_rejects"] == 0 else "unsafe",
         "sample_rate": SAMPLE_RATE,
-        "minimum_utterances_per_identity": MIN_UTTERANCES_PER_IDENTITY,
-        "identities": {identity: {"utterances": len(samples[identity]), "vad_positive_ms": speech_ms_by_identity[identity]} for identity in sorted(samples)},
-        "threshold": threshold,
-        "margin": margin,
+        "minimum_samples_per_identity": MIN_SAMPLES_PER_IDENTITY,
+        "identities": {identity: {"samples": len(samples[identity]), "voiced_ms": speech_ms_by_identity[identity]} for identity in sorted(samples)},
+        "recommended_threshold": threshold,
+        "recommended_margin": margin,
         **metrics,
         "applied": bool(args.apply),
-        "privacy": "report contains aggregate scores only; no audio, file paths, or embeddings are persisted",
+        "privacy": "aggregate calibration metrics only",
     }
     encoded = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
     print(encoded)
@@ -334,6 +338,26 @@ def main() -> int:
         output_path.write_text(encoded + "\n", encoding="utf-8")
     return 0
 
+
+REPORT_PAYLOAD = (
+    "status",
+    "sample_rate",
+    "minimum_samples_per_identity",
+    "identities",
+    "recommended_threshold",
+    "recommended_margin",
+    "false_accepts",
+    "false_rejects",
+    "candidate_thresholds",
+    "candidate_margins",
+    "min_genuine_score",
+    "max_impostor_score",
+    "min_genuine_margin",
+    "max_impostor_margin",
+    "robustness",
+    "applied",
+    "privacy",
+)
 
 if __name__ == "__main__":
     raise SystemExit(main())
