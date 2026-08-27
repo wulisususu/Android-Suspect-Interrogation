@@ -10,6 +10,9 @@ Group=suspect-interrogation
 WorkingDirectory=/opt/suspect-interrogation/current/linux/backend
 EnvironmentFile=/etc/suspect-interrogation/runtime.env
 EnvironmentFile=-/etc/suspect-interrogation/ai-worker.env
+RuntimeDirectory=suspect-interrogation
+RuntimeDirectoryMode=0750
+ExecStartPre=/usr/bin/rm -f /run/suspect-interrogation/speech.sock
 ExecStart=/opt/suspect-interrogation/current/scripts/ai-worker-start.sh
 Restart=on-failure
 RestartSec=5s
@@ -26,7 +29,8 @@ LockPersonality=true
 RestrictSUIDSGID=true
 CapabilityBoundingSet=
 AmbientCapabilities=
-ReadWritePaths=/var/lib/suspect-interrogation /var/log/suspect-interrogation
+ReadWritePaths=/run/suspect-interrogation /var/lib/suspect-interrogation /var/log/suspect-interrogation
+ReadOnlyPaths=/opt/suspect-interrogation/models/funasr /opt/suspect-interrogation/runtime/funasr-env
 
 [Install]
 WantedBy=multi-user.target
