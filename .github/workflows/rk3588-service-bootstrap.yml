@@ -42,6 +42,8 @@ jobs:
           command -v npm
           command -v curl
           command -v systemctl
+          command -v findmnt
+          command -v mountpoint
           sudo -n true
           echo "default_target=$(systemctl get-default || true)"
           echo "x11_sockets:"
@@ -135,6 +137,61 @@ jobs:
             exit 1
           fi
           echo "TCP/${SUSPECT_DEPLOY_PORT} is free for interrogation-api.service"
+
+      - name: Prepare stable offline FunASR model and runtime layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          FUNASR_SOURCE=/home/youyeetoo/funasr-models
+          FUNASR_MODEL_ROOT=/opt/suspect-interrogation/models/funasr
+          FUNASR_RUNTIME=/opt/suspect-interrogation/runtime/funasr-env
+          FUNASR_SOURCE_PYTHON=/home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python
+          FUNASR_SOURCE_ENV="$(dirname "$(dirname "$FUNASR_SOURCE_PYTHON")")"
+
+          test -d "$FUNASR_SOURCE"
+          test -x "$FUNASR_SOURCE_PYTHON"
+          test -d "$FUNASR_SOURCE/paraformer"
+          test -d "$FUNASR_SOURCE/fsmn-vad"
+          test -d "$FUNASR_SOURCE/xvector"
+
+          sudo -n install -d -o root -g root -m 0755 \
+            /opt/suspect-interrogation/models \
+            /opt/suspect-interrogation/runtime \
+            "$FUNASR_MODEL_ROOT"
+
+          if ! mountpoint -q "$FUNASR_MODEL_ROOT"; then
+            sudo -n mount --bind "$FUNASR_SOURCE" "$FUNASR_MODEL_ROOT"
+          fi
+          sudo -n mount -o remount,bind,ro "$FUNASR_MODEL_ROOT"
+
+          FUNASR_MOUNT_OPTIONS="$(findmnt -no OPTIONS "$FUNASR_MODEL_ROOT")"
+          case ",$FUNASR_MOUNT_OPTIONS," in
+            *,ro,*) ;;
+            *) echo "FunASR bind mount is not read-only: $FUNASR_MOUNT_OPTIONS" >&2; exit 1 ;;
+          esac
+          test -d "$FUNASR_MODEL_ROOT/paraformer"
+          test -d "$FUNASR_MODEL_ROOT/fsmn-vad"
+          test -d "$FUNASR_MODEL_ROOT/xvector"
+
+          FSTAB_LINE="$FUNASR_SOURCE $FUNASR_MODEL_ROOT none bind,ro,nofail,x-systemd.before=ai-worker.service 0 0"
+          if ! sudo -n awk -v dst="$FUNASR_MODEL_ROOT" '$2 == dst { found=1 } END { exit(found ? 0 : 1) }' /etc/fstab; then
+            printf '%s\n' "$FSTAB_LINE" | sudo -n tee -a /etc/fstab >/dev/null
+          fi
+          sudo -n awk -v dst="$FUNASR_MODEL_ROOT" '$2 == dst { found=1 } END { exit(found ? 0 : 1) }' /etc/fstab
+
+          if [[ ! -x "$FUNASR_RUNTIME/bin/python" ]]; then
+            sudo -n install -d -o root -g root -m 0755 "$FUNASR_RUNTIME"
+            sudo -n cp -a "$FUNASR_SOURCE_ENV/." "$FUNASR_RUNTIME/"
+            sudo -n chown -R root:root "$FUNASR_RUNTIME"
+            sudo -n chmod -R go-w "$FUNASR_RUNTIME"
+          fi
+
+          sudo -n "$FUNASR_RUNTIME/bin/python" -c 'import funasr, torch; print(funasr.__version__)'
+          test -x "$FUNASR_RUNTIME/bin/python"
+          echo "funasr_models=$FUNASR_MODEL_ROOT"
+          echo "funasr_runtime=$FUNASR_RUNTIME"
+          echo 'TCP/8000 was not stopped or rebound by FunASR bootstrap.'
+          sudo -n ss -ltnp 'sport = :8000' || true
 
       - name: Install systemd units and production layout
         shell: bash
