@@ -27,6 +27,7 @@ jobs:
       SUSPECT_DEPLOY_PORT: '18080'
       FUNASR_PACKAGE_VERSION: '1.4.2'
       TORCH_CPU_VERSION: '2.13.0'
+      TORCHAUDIO_PACKAGE_VERSION: '2.11.0'
       CALIBRATION_ROOT: '/var/lib/suspect-interrogation/calibration'
 
     steps:
@@ -190,12 +191,12 @@ jobs:
           fi
           sudo -n awk -v dst="$FUNASR_MODEL_ROOT" '$2 == dst { found=1 } END { exit(found ? 0 : 1) }' /etc/fstab
 
-          runtime_ok=0
+          runtime_core_ok=0
           if [[ -x "$FUNASR_RUNTIME/bin/python" ]] && \
-             sudo -n "$FUNASR_RUNTIME/bin/python" -c 'import funasr, torch, modelscope; assert "+cpu" in str(torch.__version__)' >/dev/null 2>&1; then
-            runtime_ok=1
+             sudo -n "$FUNASR_RUNTIME/bin/python" -c 'import funasr, torch; assert "+cpu" in str(torch.__version__)' >/dev/null 2>&1; then
+            runtime_core_ok=1
           fi
-          if [[ "$runtime_ok" -ne 1 ]]; then
+          if [[ "$runtime_core_ok" -ne 1 ]]; then
             echo "Provisioning CPU-only isolated FunASR runtime under $FUNASR_RUNTIME"
             sudo -n rm -rf "$FUNASR_RUNTIME"
             sudo -n python3 -m venv "$FUNASR_RUNTIME"
@@ -205,12 +206,21 @@ jobs:
               "torch==${TORCH_CPU_VERSION}+cpu"
             sudo -n "$FUNASR_RUNTIME/bin/python" -m pip install --retries 3 --timeout 60 \
               "funasr==${FUNASR_PACKAGE_VERSION}"
-            sudo -n chown -R root:root "$FUNASR_RUNTIME"
-            sudo -n chmod -R go-w "$FUNASR_RUNTIME"
           fi
 
-          sudo -n "$FUNASR_RUNTIME/bin/python" -c 'import funasr, torch, modelscope; assert "+cpu" in str(torch.__version__); print("funasr=" + str(funasr.__version__)); print("torch=" + str(torch.__version__)); print("modelscope=" + str(modelscope.__version__))'
+          if ! sudo -n "$FUNASR_RUNTIME/bin/python" -c 'import torchaudio' >/dev/null 2>&1; then
+            echo "Installing TorchAudio ${TORCHAUDIO_PACKAGE_VERSION} into project-isolated FunASR runtime"
+            sudo -n "$FUNASR_RUNTIME/bin/python" -m pip install --retries 3 --timeout 60 \
+              --index-url https://download.pytorch.org/whl/cpu \
+              "torchaudio==${TORCHAUDIO_PACKAGE_VERSION}"
+          fi
+
+          sudo -n chown -R root:root "$FUNASR_RUNTIME"
+          sudo -n chmod -R go-w "$FUNASR_RUNTIME"
+          sudo -n "$FUNASR_RUNTIME/bin/python" -c 'import funasr, torch, torchaudio; assert "+cpu" in str(torch.__version__); print("funasr=" + str(funasr.__version__)); print("torch=" + str(torch.__version__)); print("torchaudio=" + str(torchaudio.__version__))'
           MODEL_ROOT="$FUNASR_MODEL_ROOT" sudo -n -E "$FUNASR_RUNTIME/bin/python" scripts/ci/probe-funasr-runtime.py \
+            --speech-wav "$FUNASR_MODEL_ROOT/paraformer/example/asr_example.wav" \
+            --speaker-wav "$FUNASR_MODEL_ROOT/xvector/example/sv_example_enroll.wav" \
             --output "$RUNNER_TEMP/bootstrap-funasr-probe.json"
           cat "$RUNNER_TEMP/bootstrap-funasr-probe.json"
           test -x "$FUNASR_RUNTIME/bin/python"
