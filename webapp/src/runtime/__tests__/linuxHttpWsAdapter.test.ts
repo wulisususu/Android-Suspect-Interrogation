@@ -85,6 +85,52 @@ describe('LinuxHttpWsAdapter', () => {
     ])
   })
 
+  it('maps voiceprint operations to canonical Linux endpoints and payloads', async () => {
+    const calls: Array<{ method: string; url: string; data?: unknown; params?: Record<string, unknown> }> = []
+    const adapter = new LinuxHttpWsAdapter({
+      request: async (config) => {
+        calls.push({
+          method: String(config.method),
+          url: String(config.url),
+          data: config.data,
+          params: config.params,
+        })
+        return { data: { ok: true, data: {} } }
+      },
+      origin: 'http://127.0.0.1:8080',
+    })
+
+    await adapter.invoke('voiceprint.readiness', { caseId: 'CASE-001' })
+    await adapter.invoke('voiceprint.suspect.enrollment.start', { caseId: 'CASE-001', actorId: 'actor-1' })
+    await adapter.invoke('voiceprint.suspect.enrollment.stop', { caseId: 'CASE-001', actorId: 'actor-1' })
+    await adapter.invoke('officerVoiceprint.list', { activeOnly: false })
+    await adapter.invoke('officerVoiceprint.enrollment.start', { officerId: 'POL-1', officerName: '李警官', actorId: 'actor-1' })
+    await adapter.invoke('officerVoiceprint.enrollment.stop', { officerId: 'POL-1', actorId: 'actor-1' })
+    await adapter.invoke('officerVoiceprint.revoke', { officerId: 'POL-1', actorId: 'actor-1' })
+    await adapter.invoke('voiceprint.assignments.update', {
+      caseId: 'CASE-001',
+      interrogatorOfficerId: 'POL-1',
+      recorderOfficerId: 'POL-2',
+      actorId: 'actor-1',
+    })
+
+    expect(calls).toEqual([
+      { method: 'GET', url: '/api/v1/cases/CASE-001/voiceprints/readiness', data: undefined, params: undefined },
+      { method: 'POST', url: '/api/v1/cases/CASE-001/voiceprints/suspect/enrollment/start', data: { actor_id: 'actor-1' }, params: undefined },
+      { method: 'POST', url: '/api/v1/cases/CASE-001/voiceprints/suspect/enrollment/stop', data: { actor_id: 'actor-1' }, params: undefined },
+      { method: 'GET', url: '/api/v1/officer-voiceprints', data: undefined, params: { active_only: false } },
+      { method: 'POST', url: '/api/v1/officer-voiceprints/POL-1/enrollment/start', data: { officer_name: '李警官', actor_id: 'actor-1' }, params: undefined },
+      { method: 'POST', url: '/api/v1/officer-voiceprints/POL-1/enrollment/stop', data: { actor_id: 'actor-1' }, params: undefined },
+      { method: 'DELETE', url: '/api/v1/officer-voiceprints/POL-1', data: undefined, params: { actor_id: 'actor-1' } },
+      {
+        method: 'PUT',
+        url: '/api/v1/cases/CASE-001/voiceprints/assignments',
+        data: { interrogator_officer_id: 'POL-1', recorder_officer_id: 'POL-2', actor_id: 'actor-1' },
+        params: undefined,
+      },
+    ])
+  })
+
   it('normalizes network failures to NOT_CONNECTED', async () => {
     const adapter = new LinuxHttpWsAdapter({
       request: async () => { throw Object.assign(new Error('offline'), { code: 'ERR_NETWORK' }) },
