@@ -9,6 +9,7 @@ User=suspect-interrogation
 Group=suspect-interrogation
 WorkingDirectory=/opt/suspect-interrogation/current/linux/backend
 EnvironmentFile=/etc/suspect-interrogation/runtime.env
+EnvironmentFile=-/etc/suspect-interrogation/ai-worker.env
 ExecStart=/bin/sh -c 'exec /opt/suspect-interrogation/current/.venv/bin/uvicorn app.main:app --host "$SUSPECT_API_HOST" --port "$SUSPECT_API_PORT"'
 Restart=on-failure
 RestartSec=2s
