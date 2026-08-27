@@ -6,6 +6,7 @@ import pytest
 
 from app.ai.errors import BackendUnavailableError, ModelNotInstalledError, WorkerCancelledError, WorkerTimeoutError
 from app.ai.registry import ModelRegistry
+from app.ai.speech.types import SpeechEventType
 from app.ai.supervisor import AISupervisor
 from app.ai.types import EngineState
 
@@ -157,5 +158,50 @@ def test_idle_sweep_unloads_unused_workers(tmp_path: Path):
         unloaded = supervisor.sweep_idle()
         assert "llm" in unloaded
         assert supervisor.health()["workers"]["llm"]["state"] == EngineState.STOPPED.value
+    finally:
+        supervisor.shutdown()
+
+
+def test_mock_supervisor_owns_deterministic_in_process_speech_pipeline(tmp_path: Path):
+    supervisor = AISupervisor(
+        _registry(tmp_path),
+        mode="mock",
+        request_timeout=2.0,
+        speaker_accept_threshold=0.70,
+        speaker_margin=0.10,
+    )
+    try:
+        opened = supervisor.open_speech_session("speech-1", sample_rate=16000)
+        events = supervisor.push_speech_pcm("speech-1", b"A")
+        final = supervisor.finalize_speech_session("speech-1")
+        embedding = supervisor.extract_speaker_embedding(b"voice", sample_rate=16000)
+        supervisor.close_speech_session("speech-1")
+
+        assert opened == {"session_id": "speech-1", "sample_rate": 16000}
+        assert [event.type for event in events] == [SpeechEventType.VAD_START, SpeechEventType.ASR_PARTIAL]
+        assert any(event.type == SpeechEventType.ASR_FINAL for event in final)
+        assert embedding["embedding"] == [1.0, 0.0, 0.0]
+        assert embedding["model_id"] == "mock-xvector"
+    finally:
+        supervisor.shutdown()
+
+
+def test_speech_health_and_capabilities_are_reported_per_business_capability(tmp_path: Path):
+    supervisor = AISupervisor(
+        _registry(tmp_path),
+        mode="mock",
+        request_timeout=2.0,
+        speaker_accept_threshold=0.70,
+        speaker_margin=0.10,
+    )
+    try:
+        health = supervisor.health()
+        capabilities = supervisor.capabilities()
+
+        assert health["speech"]["state"] == "READY"
+        assert health["speech"]["backend"] == "in-process-mock"
+        assert capabilities["vad"]["state"] == "AVAILABLE"
+        assert capabilities["speaker"]["state"] == "AVAILABLE"
+        assert capabilities["asr"]["speech_worker"] is True
     finally:
         supervisor.shutdown()
