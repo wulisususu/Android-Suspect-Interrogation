@@ -52,7 +52,9 @@ def test_bootstrap_prepares_read_only_funasr_model_and_self_healing_runtime_layo
     assert 'test -d "$FUNASR_MODEL_ROOT/xvector"' in workflow
     assert "/etc/fstab" in workflow
     assert "x-systemd.before=ai-worker.service" in workflow
-    assert 'if [[ ! -x "$FUNASR_RUNTIME/bin/python" ]]' in workflow
+    assert "runtime_ok=0" in workflow
+    assert 'if [[ -x "$FUNASR_RUNTIME/bin/python" ]]' in workflow
+    assert 'if [[ "$runtime_ok" -ne 1 ]]' in workflow
     assert 'sudo -n python3 -m venv "$FUNASR_RUNTIME"' in workflow
     assert "https://download.pytorch.org/whl/cpu" in workflow
     assert '"torch==${TORCH_CPU_VERSION}+cpu"' in workflow
