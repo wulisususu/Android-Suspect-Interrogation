@@ -266,3 +266,32 @@ def test_confirmation_rolls_back_official_message_if_fragment_link_fails(tmp_pat
         assert fragment.confirmed_message_id is None
         assert db.query(Message).count() == 0
     engine.dispose()
+
+
+def test_batch_confirmation_rolls_back_all_fragments_when_later_speaker_is_unresolved(tmp_path):
+    app, engine, factory, _ = _app(tmp_path)
+    case_id, _, _, first_id, second_id = _seed_fragment(factory)
+
+    with factory() as db:
+        second = db.get(ASRFragment, second_id)
+        second.speaker = "UNKNOWN"
+        second.speaker_source = "UNASSIGNED"
+        second.voiceprint_verified = False
+        second.low_confidence = True
+        db.commit()
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/cases/{case_id}/asr/fragments/confirm",
+            json={"fragment_ids": [first_id, second_id]},
+        )
+        assert response.status_code == 409
+        assert response.json()["code"] == "ASR_SPEAKER_CONFIRMATION_REQUIRED"
+
+    with factory() as db:
+        assert db.get(ASRFragment, first_id).state == "PENDING"
+        assert db.get(ASRFragment, first_id).confirmed_message_id is None
+        assert db.get(ASRFragment, second_id).state == "PENDING"
+        assert db.get(ASRFragment, second_id).confirmed_message_id is None
+        assert db.query(Message).count() == 0
+    engine.dispose()
