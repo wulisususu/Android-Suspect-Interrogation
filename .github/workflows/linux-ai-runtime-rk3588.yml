@@ -72,6 +72,7 @@ jobs:
       AI_MODE: mock
       PYTHONDONTWRITEBYTECODE: '1'
       TORCHAUDIO_PACKAGE_VERSION: '2.11.0'
+      MODELSCOPE_PACKAGE_VERSION: '1.39.1'
 
     steps:
       - name: Runner identity
@@ -173,7 +174,7 @@ jobs:
             echo 'pytest not preinstalled on runner; standard-library AI smoke already passed without downloads.'
           fi
 
-      - name: Ensure project FunASR runtime audio dependency
+      - name: Ensure project FunASR runtime dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -186,7 +187,12 @@ jobs:
                 --index-url https://download.pytorch.org/whl/cpu \
                 "torchaudio==${TORCHAUDIO_PACKAGE_VERSION}"
             fi
-            "$PROJECT_FUNASR_PYTHON" -c 'import funasr, torch, torchaudio; print("funasr=" + str(funasr.__version__)); print("torch=" + str(torch.__version__)); print("torchaudio=" + str(torchaudio.__version__))'
+            if ! "$PROJECT_FUNASR_PYTHON" -c 'import modelscope; assert modelscope.__version__ == "1.39.1"' >/dev/null 2>&1; then
+              echo 'Project-isolated FunASR runtime is missing pinned ModelScope legacy XVector support; repairing only the project runtime.'
+              sudo -n "$PROJECT_FUNASR_PYTHON" -m pip install --retries 3 --timeout 60 \
+                "modelscope==${MODELSCOPE_PACKAGE_VERSION}"
+            fi
+            "$PROJECT_FUNASR_PYTHON" -c 'import funasr, torch, torchaudio, modelscope; print("funasr=" + str(funasr.__version__)); print("torch=" + str(torch.__version__)); print("torchaudio=" + str(torchaudio.__version__)); print("modelscope=" + str(modelscope.__version__))'
           else
             echo 'Project FunASR runtime is not provisioned yet; read-only probe will diagnose other available interpreters.'
           fi
@@ -211,7 +217,7 @@ jobs:
             /home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python \
             python3; do
             if [[ "$candidate" = python3 ]] || [[ -x "$candidate" ]]; then
-              if diagnostic=$("$candidate" -c 'import funasr, torch, torchaudio; print("funasr=" + str(getattr(funasr, "__version__", "unknown"))); print("torch=" + str(getattr(torch, "__version__", "unknown"))); print("torchaudio=" + str(getattr(torchaudio, "__version__", "unknown")))' 2>&1); then
+              if diagnostic=$("$candidate" -c 'import funasr, torch, torchaudio, modelscope; print("funasr=" + str(getattr(funasr, "__version__", "unknown"))); print("torch=" + str(getattr(torch, "__version__", "unknown"))); print("torchaudio=" + str(getattr(torchaudio, "__version__", "unknown"))); print("modelscope=" + str(getattr(modelscope, "__version__", "unknown")))' 2>&1); then
                 echo "FunASR interpreter diagnostic: ${diagnostic}"
                 FUNASR_PYTHON="$candidate"
                 break
