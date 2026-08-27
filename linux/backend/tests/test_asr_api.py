@@ -190,7 +190,7 @@ def test_fragment_update_is_manual_and_preserves_raw_text_then_confirm_creates_o
         assert message is not None
         assert message.session_id == session_id
         assert message.text == "人工修订文本"
-        assert message.speaker == "INTERROGATOR"
+        assert message.speaker == "民警"
     engine.dispose()
 
 
