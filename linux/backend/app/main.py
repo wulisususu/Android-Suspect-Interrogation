@@ -15,6 +15,7 @@ from app.ai.speech.client import SpeechWorkerClient
 from app.ai.supervisor import AISupervisor
 from app.ai_gateway.mock import DeterministicAIGateway
 from app.api.ai_runtime import router as ai_router
+from app.api.asr import router as asr_router
 from app.api.cases import router as cases_router
 from app.api.compat import router as compat_router
 from app.api.device_events import router as device_router
@@ -28,6 +29,7 @@ from app.database.session import init_database, make_engine, make_session_factor
 from app.hardware_gateway.linux import LinuxHardwareGateway
 from app.health import router as health_router
 from app.runtime_settings import RuntimeSettings
+from app.services.asr_capture_service import AsrCaptureService
 from app.services.audio_capture_service import AudioCaptureService
 from app.websocket.manager import ConnectionManager, router as websocket_router
 from hardware.factory import create_device_manager
@@ -93,6 +95,17 @@ def create_app(
         payload = event.to_dict() if hasattr(event, "to_dict") else dict(event)
         loop.call_soon_threadsafe(lambda: asyncio.create_task(publish_hardware_event_async(payload)))
 
+    async def publish_asr_event_async(session_id: str, event: str, payload: dict) -> None:
+        await websocket_manager.broadcast(session_id, event, payload)
+
+    def publish_asr_event(session_id: str, event: str, payload: dict) -> None:
+        loop = event_loop["loop"]
+        if loop is None or not loop.is_running():
+            return
+        loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(publish_asr_event_async(session_id, event, payload))
+        )
+
     if manager is not None and manager.device_monitor is not None:
         manager.device_monitor.subscribe(publish_hardware_event)
 
@@ -101,12 +114,25 @@ def create_app(
         event_loop["loop"] = asyncio.get_running_loop()
         supervisor = ai_supervisor or _build_supervisor()
         app.state.ai_supervisor = supervisor
-        if manager is not None:
-            manager.open_all(strict=False)
-            manager.start_monitor()
+        capture_service = (
+            AsrCaptureService(
+                session_factory=app.state.session_factory,
+                device_manager=manager,
+                ai_supervisor=supervisor,
+                publish_event=publish_asr_event,
+            )
+            if manager is not None
+            else None
+        )
+        app.state.asr_capture_service = capture_service
         try:
+            if manager is not None:
+                manager.open_all(strict=False)
+                manager.start_monitor()
             yield
         finally:
+            if capture_service is not None:
+                capture_service.shutdown()
             if manager is not None:
                 try:
                     manager.stop_monitor()
@@ -126,6 +152,7 @@ def create_app(
     app.state.session_factory = make_session_factory(engine)
     app.state.hardware_manager = manager
     app.state.hardware_gateway = hardware_gateway
+    app.state.asr_capture_service = None
     # Construction is side-effect free: the AF_UNIX socket is opened only
     # when an enrollment or speech request is actually made.
     app.state.speech_client = SpeechWorkerClient(
@@ -157,6 +184,7 @@ def create_app(
     app.include_router(signature_router, prefix="/api/v1")
     app.include_router(device_router, prefix="/api/v1")
     app.include_router(ai_router, prefix="/api/v1")
+    app.include_router(asr_router, prefix="/api/v1")
     app.include_router(voiceprints_router, prefix="/api/v1")
     app.include_router(compat_router)
     app.include_router(websocket_router)
