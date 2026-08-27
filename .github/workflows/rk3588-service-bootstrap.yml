@@ -167,10 +167,10 @@ jobs:
 
           sudo -n install -d -o root -g root -m 0755 \
             /opt/suspect-interrogation/models \
-            /opt/suspect-interrogation/runtime \
-            "$FUNASR_MODEL_ROOT"
+            /opt/suspect-interrogation/runtime
 
           if ! mountpoint -q "$FUNASR_MODEL_ROOT"; then
+            sudo -n install -d -o root -g root -m 0755 "$FUNASR_MODEL_ROOT"
             sudo -n mount --bind "$FUNASR_SOURCE" "$FUNASR_MODEL_ROOT"
           fi
           sudo -n mount -o remount,bind,ro "$FUNASR_MODEL_ROOT"
