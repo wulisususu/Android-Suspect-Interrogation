@@ -1,0 +1,332 @@
+from __future__ import annotations
+
+import base64
+import binascii
+import errno
+import os
+import signal
+import socket
+import stat
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from app.ai.errors import AIError, ResourceBusyError, WorkerCrashedError
+from app.ai.speech.protocol import ProtocolError, recv_frame, send_frame
+from .funasr_runtime import DEFAULT_MODEL_ROOT, FunASRSpeechRuntime
+from .session import SpeechSession
+
+
+DEFAULT_SOCKET_PATH = Path("/run/suspect-interrogation/speech.sock")
+
+
+@dataclass
+class _SessionEntry:
+    session: SpeechSession
+    lock: threading.RLock
+
+
+class SpeechWorkerServer:
+    def __init__(self, socket_path: str | Path, runtime: Any) -> None:
+        self.socket_path = Path(socket_path)
+        self.runtime = runtime
+        self._server: socket.socket | None = None
+        self._owned_socket: tuple[int, int] | None = None
+        self._stop = threading.Event()
+        self._sessions: dict[str, _SessionEntry] = {}
+        self._sessions_lock = threading.RLock()
+        self._runtime_lock = threading.RLock()
+        self._client_threads: set[threading.Thread] = set()
+        self._client_threads_lock = threading.Lock()
+
+    def bind(self) -> None:
+        if self._server is not None:
+            return
+        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+        self._prepare_socket_path()
+
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            server.bind(os.fspath(self.socket_path))
+            os.chmod(self.socket_path, 0o660)
+            server.listen(16)
+            server.settimeout(0.2)
+            info = self.socket_path.lstat()
+            self._owned_socket = (info.st_dev, info.st_ino)
+            self._server = server
+            self._stop.clear()
+        except Exception:
+            server.close()
+            self._cleanup_socket_path()
+            raise
+
+    def serve_forever(self) -> None:
+        server = self._server
+        if server is None:
+            raise RuntimeError("speech worker server is not bound")
+        try:
+            while not self._stop.is_set():
+                try:
+                    conn, _ = server.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    if self._stop.is_set():
+                        break
+                    raise
+                thread = threading.Thread(
+                    target=self._handle_client_thread,
+                    args=(conn,),
+                    daemon=True,
+                )
+                with self._client_threads_lock:
+                    self._client_threads.add(thread)
+                thread.start()
+        finally:
+            self._close_listener()
+            self._join_client_threads()
+            self._cleanup_socket_path()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._close_listener()
+        self._join_client_threads()
+        with self._sessions_lock:
+            self._sessions.clear()
+        self._cleanup_socket_path()
+
+    def _prepare_socket_path(self) -> None:
+        try:
+            info = self.socket_path.lstat()
+        except FileNotFoundError:
+            return
+        if not stat.S_ISSOCK(info.st_mode):
+            raise ResourceBusyError(
+                "speech worker path exists and is not a Unix socket",
+                details={"socket": str(self.socket_path)},
+            )
+
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.settimeout(0.2)
+        try:
+            probe.connect(os.fspath(self.socket_path))
+        except OSError as exc:
+            if exc.errno not in {errno.ECONNREFUSED, errno.ENOENT}:
+                raise ResourceBusyError(
+                    "cannot prove existing speech worker socket is stale",
+                    details={"socket": str(self.socket_path), "errno": exc.errno},
+                ) from exc
+        else:
+            raise ResourceBusyError(
+                "an active speech worker is already listening on the Unix socket",
+                details={"socket": str(self.socket_path)},
+            )
+        finally:
+            probe.close()
+
+        self.socket_path.unlink(missing_ok=True)
+
+    def _handle_client_thread(self, conn: socket.socket) -> None:
+        current = threading.current_thread()
+        try:
+            with conn:
+                self._handle_connection(conn)
+        finally:
+            with self._client_threads_lock:
+                self._client_threads.discard(current)
+
+    def _handle_connection(self, conn: socket.socket) -> None:
+        request_id = ""
+        try:
+            request = recv_frame(conn)
+            request_id = str(request.get("request_id") or "")
+            result = self._dispatch(request)
+            response = {"request_id": request_id, "ok": True, "result": result}
+        except AIError as exc:
+            response = {
+                "request_id": request_id,
+                "ok": False,
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": dict(exc.details),
+                },
+            }
+        except ProtocolError as exc:
+            response = self._error_response(request_id, "WORKER_CRASHED", str(exc), {})
+        except (KeyError, TypeError, ValueError, binascii.Error) as exc:
+            response = self._error_response(
+                request_id,
+                "AI_ERROR",
+                str(exc),
+                {"error_type": type(exc).__name__},
+            )
+        except Exception as exc:
+            response = self._error_response(
+                request_id,
+                "WORKER_CRASHED",
+                "speech worker request failed unexpectedly",
+                {"error_type": type(exc).__name__},
+            )
+        try:
+            send_frame(conn, response)
+        except OSError:
+            return
+
+    def _dispatch(self, request: dict[str, Any]) -> Any:
+        op = str(request.get("op") or "")
+        if op == "health":
+            with self._runtime_lock:
+                health = dict(self.runtime.health())
+            with self._sessions_lock:
+                health["sessions"] = len(self._sessions)
+            return health
+
+        if op == "open_session":
+            session_id = self._required_session_id(request)
+            sample_rate = int(request.get("sample_rate") or 16000)
+            with self._sessions_lock:
+                if session_id in self._sessions:
+                    raise ResourceBusyError(
+                        "speech session is already open",
+                        details={"session_id": session_id},
+                    )
+                self._sessions[session_id] = _SessionEntry(
+                    session=SpeechSession(session_id, sample_rate, self.runtime),
+                    lock=threading.RLock(),
+                )
+            return {"session_id": session_id, "sample_rate": sample_rate}
+
+        if op == "push_pcm":
+            session_id = self._required_session_id(request)
+            pcm = self._decode_pcm(request)
+            entry = self._session_entry(session_id)
+            with entry.lock, self._runtime_lock:
+                events = entry.session.push_pcm(pcm)
+            return {"events": [event.to_dict() for event in events]}
+
+        if op == "finalize_session":
+            session_id = self._required_session_id(request)
+            entry = self._session_entry(session_id)
+            with entry.lock, self._runtime_lock:
+                events = entry.session.finalize()
+            return {"events": [event.to_dict() for event in events]}
+
+        if op == "close_session":
+            session_id = self._required_session_id(request)
+            with self._sessions_lock:
+                entry = self._sessions.pop(session_id, None)
+            if entry is None:
+                raise AIError(
+                    "speech session is not open",
+                    details={"session_id": session_id},
+                )
+            return {}
+
+        if op == "extract_embedding":
+            pcm = self._decode_pcm(request)
+            sample_rate = int(request.get("sample_rate") or 16000)
+            with self._runtime_lock:
+                return self.runtime.speaker_embedding(pcm, sample_rate)
+
+        raise AIError(
+            f"unknown speech operation: {op}",
+            details={"op": op},
+        )
+
+    @staticmethod
+    def _error_response(
+        request_id: str,
+        code: str,
+        message: str,
+        details: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "request_id": request_id,
+            "ok": False,
+            "error": {"code": code, "message": message, "details": details},
+        }
+
+    @staticmethod
+    def _required_session_id(request: dict[str, Any]) -> str:
+        session_id = str(request.get("session_id") or "")
+        if not session_id:
+            raise AIError("session_id is required")
+        return session_id
+
+    @staticmethod
+    def _decode_pcm(request: dict[str, Any]) -> bytes:
+        value = request.get("pcm_b64")
+        if not isinstance(value, str):
+            raise AIError("pcm_b64 is required")
+        try:
+            return base64.b64decode(value, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise AIError("pcm_b64 is invalid base64") from exc
+
+    def _session_entry(self, session_id: str) -> _SessionEntry:
+        with self._sessions_lock:
+            entry = self._sessions.get(session_id)
+        if entry is None:
+            raise AIError(
+                "speech session is not open",
+                details={"session_id": session_id},
+            )
+        return entry
+
+    def _close_listener(self) -> None:
+        server = self._server
+        self._server = None
+        if server is not None:
+            try:
+                server.close()
+            except OSError:
+                pass
+
+    def _join_client_threads(self) -> None:
+        current = threading.current_thread()
+        with self._client_threads_lock:
+            threads = list(self._client_threads)
+        for thread in threads:
+            if thread is current:
+                continue
+            thread.join(timeout=1.0)
+
+    def _cleanup_socket_path(self) -> None:
+        owned = self._owned_socket
+        if owned is None:
+            return
+        try:
+            info = self.socket_path.lstat()
+        except FileNotFoundError:
+            self._owned_socket = None
+            return
+        if stat.S_ISSOCK(info.st_mode) and (info.st_dev, info.st_ino) == owned:
+            self.socket_path.unlink(missing_ok=True)
+        self._owned_socket = None
+
+
+def main() -> int:
+    socket_path = Path(os.environ.get("SUSPECT_SPEECH_SOCKET", str(DEFAULT_SOCKET_PATH)))
+    model_root = Path(os.environ.get("SUSPECT_FUNASR_MODEL_ROOT", str(DEFAULT_MODEL_ROOT)))
+    runtime = FunASRSpeechRuntime(model_root=model_root)
+    runtime.load()
+    server = SpeechWorkerServer(socket_path, runtime)
+
+    def handle_signal(signum: int, frame: Any) -> None:
+        del signum, frame
+        server.stop()
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+    server.bind()
+    try:
+        server.serve_forever()
+    finally:
+        server.stop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
