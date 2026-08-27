@@ -1,8 +1,70 @@
 {
   "models": {
-    "asr.default": {"kind":"asr","backend":"sherpa-onnx","path":"asr/default","architecture":"paraformer","required_files":["model.onnx"],"device":"cpu","context":0,"memory_mb":768,"capabilities":["pcm","streaming","partial_result","final_result"]},
-    "ocr.default": {"kind":"ocr","backend":"paddleocr","path":"ocr/default","architecture":"ocr","required_files":["model.bin"],"device":"cpu","context":0,"memory_mb":768,"capabilities":["text","id_card"]},
-    "llm.default": {"kind":"llm","backend":"rkllm","path":"llm/default","architecture":"qwen","required_files":["model.rkllm"],"device":"npu","context":4096,"memory_mb":4096,"capabilities":["generate","stream","cancel"]},
-    "llm.llamacpp": {"kind":"llm","backend":"llama.cpp","path":"llm/llamacpp","architecture":"gguf","required_files":["model.gguf"],"device":"cpu","context":4096,"memory_mb":4096,"capabilities":["generate","stream","cancel"]}
+    "asr.default": {
+      "kind": "asr",
+      "backend": "funasr",
+      "path": "paraformer",
+      "architecture": "paraformer",
+      "required_files": ["model.pt", "config.yaml", "configuration.json", "am.mvn", "seg_dict", "tokens.json"],
+      "device": "cpu",
+      "context": 0,
+      "memory_mb": 1024,
+      "capabilities": ["pcm", "final_result"]
+    },
+    "vad.default": {
+      "kind": "vad",
+      "backend": "funasr",
+      "path": "fsmn-vad",
+      "architecture": "fsmn-vad",
+      "required_files": ["model.pt", "config.yaml", "configuration.json", "am.mvn"],
+      "device": "cpu",
+      "context": 0,
+      "memory_mb": 128,
+      "capabilities": ["speech_segments", "streaming_vad"]
+    },
+    "speaker.default": {
+      "kind": "speaker",
+      "backend": "funasr",
+      "path": "xvector",
+      "architecture": "xvector",
+      "required_files": ["sv.pth", "sv.yaml", "configuration.json"],
+      "device": "cpu",
+      "context": 0,
+      "memory_mb": 256,
+      "capabilities": ["embedding"]
+    },
+    "ocr.default": {
+      "kind": "ocr",
+      "backend": "paddleocr",
+      "path": "ocr/default",
+      "architecture": "ocr",
+      "required_files": ["model.bin"],
+      "device": "cpu",
+      "context": 0,
+      "memory_mb": 768,
+      "capabilities": ["text", "id_card"]
+    },
+    "llm.default": {
+      "kind": "llm",
+      "backend": "rkllm",
+      "path": "llm/default",
+      "architecture": "qwen",
+      "required_files": ["model.rkllm"],
+      "device": "npu",
+      "context": 4096,
+      "memory_mb": 4096,
+      "capabilities": ["generate", "stream", "cancel"]
+    },
+    "llm.llamacpp": {
+      "kind": "llm",
+      "backend": "llama.cpp",
+      "path": "llm/llamacpp",
+      "architecture": "gguf",
+      "required_files": ["model.gguf"],
+      "device": "cpu",
+      "context": 4096,
+      "memory_mb": 4096,
+      "capabilities": ["generate", "stream", "cancel"]
+    }
   }
 }
