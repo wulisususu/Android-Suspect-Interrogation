@@ -19,7 +19,7 @@ def test_api_unit_runs_non_root_and_is_hardened():
     assert "ProtectSystem=strict" in unit
     assert "ProtectHome=true" in unit
     assert "PrivateTmp=true" in unit
-    assert "ReadWritePaths=/var/lib/suspect-interrogation /var/log/suspect-interrogation /run/suspect-interrogation" in unit
+    assert "ReadWritePaths=/var/lib/suspect-interrogation /var/log/suspect-interrogation -/run/suspect-interrogation" in unit
     assert "0.0.0.0" not in unit
     assert "/home/youyeetoo/backend" not in unit
     assert ":8000" not in unit
