@@ -23,12 +23,13 @@ jobs:
           hostname
           uname -a
           sudo -n find "$GITHUB_WORKSPACE" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-      - name: Install ModelScope framework dependencies
+      - name: Install legacy-compatible ModelScope
         shell: bash
         run: |
           set -euo pipefail
           PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
-          sudo -n "$PY" -m pip install --retries 3 --timeout 60 'modelscope[framework]==1.39.1'
+          sudo -n "$PY" -m pip install --retries 3 --timeout 60 --no-deps 'modelscope==1.11.0'
+          "$PY" -c 'import modelscope; print("modelscope="+str(modelscope.__version__))'
       - name: Print ModelScope speaker pipeline traceback
         shell: bash
         run: |
@@ -52,8 +53,13 @@ jobs:
           try:
               p = pipeline(task=Tasks.speaker_verification, model='/opt/suspect-interrogation/models/funasr/xvector', device='cpu')
               print('MODELSCOPE_XVECTOR_PIPELINE_LOAD_OK', type(p).__name__)
+              out = p('/opt/suspect-interrogation/models/funasr/xvector/example/sv_example_enroll.wav')
+              print('MODELSCOPE_XVECTOR_INFERENCE_OK', type(out).__name__, sorted(out.keys()) if isinstance(out, dict) else type(out).__name__)
+              if isinstance(out, dict) and 'spk_embedding' in out:
+                  emb = out['spk_embedding']
+                  print('SPK_EMBEDDING_SHAPE', getattr(emb, 'shape', None))
           except Exception:
-              print('MODELSCOPE_XVECTOR_PIPELINE_LOAD_FAILED')
+              print('MODELSCOPE_XVECTOR_PIPELINE_LOAD_OR_INFER_FAILED')
               traceback.print_exc()
               raise
           PY
