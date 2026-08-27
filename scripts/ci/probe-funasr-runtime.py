@@ -66,7 +66,7 @@ def _safe_output_path(raw: str) -> Path:
         if value:
             allowed_roots.append(Path(value).expanduser().resolve())
     if not allowed_roots:
-        allowed_roots.append(Path.cwd().resolve())
+        raise RuntimeError("GITHUB_WORKSPACE or RUNNER_TEMP is required")
     if not any(output == root or root in output.parents for root in allowed_roots):
         roots = ", ".join(str(root) for root in allowed_roots)
         raise ValueError(f"--output must be inside an allowed runtime directory: {roots}")
