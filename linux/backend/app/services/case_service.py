@@ -7,37 +7,58 @@ from app.domain.errors import DomainError
 from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
 from app.repositories import facts as fact_repo
+from app.repositories import persons as person_repo
 from app.repositories import timeline as timeline_repo
-from app.services.serializers import audit_dict, case_dict, fact_dict, timeline_dict
+from app.services.serializers import audit_dict, case_dict, fact_dict, person_dict, timeline_dict
 
 
 class CaseService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _case_data(self, row) -> dict:
+        data = case_dict(row)
+        persons = person_repo.list_for_case(self.db, row.id)
+        if not persons:
+            return data
+        identity = persons[-1]
+        person = person_dict(identity)
+        data.update({
+            "suspectName": person["name"] or data["suspectName"],
+            "gender": person["gender"] or data["gender"],
+            "idNumber": person["idNumber"],
+            "nation": person["nation"],
+            "birthDate": person["birthDate"],
+            "address": person["address"],
+            "identitySource": person["source"],
+            "identityCapturedAt": identity.created_at.isoformat() if identity.created_at else None,
+        })
+        return data
+
     def create(self, payload: dict) -> dict:
         row = case_repo.create(self.db, payload)
         fact_repo.seed_defaults(self.db, row.id)
-        audit_repo.add(self.db, case_id=row.id, actor_id=row.operator_id, action="CASE_CREATE", target_type="CASE", target_id=row.id, after=case_dict(row))
+        data = self._case_data(row)
+        audit_repo.add(self.db, case_id=row.id, actor_id=row.operator_id, action="CASE_CREATE", target_type="CASE", target_id=row.id, after=data)
         self.db.commit()
-        return case_dict(row)
+        return data
 
     def get(self, case_id: str) -> dict:
-        return case_dict(case_repo.get(self.db, case_id))
+        return self._case_data(case_repo.get(self.db, case_id))
 
     def list(self, limit: int = 100) -> list[dict]:
-        return [case_dict(row) for row in case_repo.list_all(self.db, limit)]
+        return [self._case_data(row) for row in case_repo.list_all(self.db, limit)]
 
     def update(self, case_id: str, patch: dict, actor_id: str | None = None) -> dict:
         row = case_repo.get(self.db, case_id)
-        before = case_dict(row)
+        before = self._case_data(row)
         if "stage" in patch:
             try:
                 row.stage = InterrogationStage(str(patch["stage"])).value
             except ValueError as exc:
                 raise DomainError("INVALID_STAGE", "无效审讯阶段", 400) from exc
         case_repo.update_fields(self.db, row, patch)
-        after = case_dict(row)
+        after = self._case_data(row)
         audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="CASE_UPDATE", target_type="CASE", target_id=case_id, before=before, after=after, detail=patch)
         self.db.commit()
         return after
