@@ -5,7 +5,10 @@ import argparse
 import json
 import math
 import os
+import subprocess
 import sys
+import time
+import urllib.request
 import uuid
 import wave
 from pathlib import Path
@@ -25,6 +28,12 @@ SAMPLE_WIDTH = 2
 CHUNK_SIZE_MS = 200
 THRESHOLD_KEY = "SUSPECT_SPEAKER_ACCEPT_THRESHOLD"
 MARGIN_KEY = "SUSPECT_SPEAKER_MARGIN"
+DEFAULT_SOCKET = "/run/suspect-interrogation/speech.sock"
+DEFAULT_MODEL_ROOT = "/opt/suspect-interrogation/models/funasr"
+RESTART_COMMAND = "systemctl restart ai-worker.service"
+SUSPECT_ONLY = "SUSPECT_ONLY"
+SUSPECT_PLUS_INTERROGATOR = "SUSPECT_PLUS_INTERROGATOR"
+FULL = "FULL"
 
 
 def _normalize(values: Iterable[float]) -> list[float]:
@@ -63,7 +72,7 @@ def _read_pcm16_wav(path: Path) -> bytes:
 def _vad_positive_pcm(client: SpeechWorkerClient, pcm: bytes) -> bytes:
     segments = client.speech_segments(pcm, sample_rate=SAMPLE_RATE)
     if not segments:
-        raise RuntimeError("FSMN-VAD returned no speech segments")
+        raise RuntimeError("fsmn-vad returned no speech segments")
     bytes_per_ms = SAMPLE_RATE * SAMPLE_WIDTH / 1000.0
     duration_ms = int(round((len(pcm) / SAMPLE_WIDTH) * 1000.0 / SAMPLE_RATE))
     pieces: list[bytes] = []
@@ -75,7 +84,7 @@ def _vad_positive_pcm(client: SpeechWorkerClient, pcm: bytes) -> bytes:
         pieces.append(pcm[int(round(start * bytes_per_ms)) : int(round(end * bytes_per_ms))])
     speech = b"".join(pieces)
     if len(speech) < SAMPLE_RATE * SAMPLE_WIDTH:
-        raise RuntimeError("FSMN-VAD produced less than one second of usable speech")
+        raise RuntimeError("fsmn-vad produced less than one second of usable speech")
     return speech
 
 
@@ -84,7 +93,7 @@ def _embedding(client: SpeechWorkerClient, pcm: bytes) -> list[float]:
     payload = client.extract_embedding(speech, sample_rate=SAMPLE_RATE)
     values = payload.get("embedding")
     if not isinstance(values, list):
-        raise RuntimeError("XVector did not return an embedding array")
+        raise RuntimeError("xvector did not return an embedding array")
     return _normalize(values)
 
 
@@ -109,7 +118,7 @@ def _stream_smoke(client: SpeechWorkerClient, pcm: bytes) -> dict[str, object]:
         raise RuntimeError(f"real speech stream is missing expected events: {', '.join(missing)}")
     finals = [event for event in events if event.type is SpeechEventType.ASR_FINAL]
     if not any(str(event.text or "").strip() for event in finals):
-        raise RuntimeError("Paraformer produced no non-empty ASR_FINAL text")
+        raise RuntimeError("paraformer produced no non-empty ASR_FINAL text")
     return {
         "event_count": len(events),
         "asr_final_count": len(finals),
@@ -121,12 +130,7 @@ def _candidate(role: SpeakerRole, test: list[float], reference: list[float]) -> 
     return {"role": role, "score": _cosine(test, reference), "speaker_id": role.value, "speaker_name": role.value}
 
 
-def _assert_policy_modes(
-    *,
-    refs: dict[SpeakerRole, list[float]],
-    threshold: float,
-    margin: float,
-) -> dict[str, str]:
+def _assert_policy_modes(*, refs: dict[SpeakerRole, list[float]], threshold: float, margin: float) -> dict[str, str]:
     suspect = refs[SpeakerRole.SUSPECT]
     interrogator = refs[SpeakerRole.INTERROGATOR]
     recorder = refs[SpeakerRole.RECORDER]
@@ -140,7 +144,7 @@ def _assert_policy_modes(
         overlap=False,
     )
     if suspect_only_positive.role is not SpeakerRole.SUSPECT:
-        raise RuntimeError("suspect-only mode failed to recognize the suspect reference")
+        raise RuntimeError("SUSPECT_ONLY failed to recognize the suspect reference")
 
     suspect_only_officer = decide_speaker(
         candidates=[_candidate(SpeakerRole.SUSPECT, interrogator, suspect)],
@@ -151,7 +155,7 @@ def _assert_policy_modes(
         overlap=False,
     )
     if suspect_only_officer.role is not SpeakerRole.OFFICER_FALLBACK:
-        raise RuntimeError("suspect-only mode failed to classify non-suspect speech as officer fallback")
+        raise RuntimeError("SUSPECT_ONLY failed to preserve OFFICER_FALLBACK provenance")
 
     partial = decide_speaker(
         candidates=[
@@ -165,7 +169,7 @@ def _assert_policy_modes(
         overlap=False,
     )
     if partial.role is not SpeakerRole.INTERROGATOR:
-        raise RuntimeError("partial speaker mode failed to recognize the registered interrogator")
+        raise RuntimeError("SUSPECT_PLUS_INTERROGATOR failed to recognize the interrogator")
 
     full = decide_speaker(
         candidates=[
@@ -180,13 +184,32 @@ def _assert_policy_modes(
         overlap=False,
     )
     if full.role is not SpeakerRole.RECORDER:
-        raise RuntimeError("full speaker mode failed to recognize the recorder")
+        raise RuntimeError("FULL failed to recognize the recorder")
+
+    if margin <= 0.0:
+        raise RuntimeError("calibrated margin must be positive so ambiguous speech can become UNKNOWN")
+    ambiguous_score = max(0.0, min(1.0, threshold))
+    ambiguous = decide_speaker(
+        candidates=[
+            {"role": SpeakerRole.SUSPECT, "score": ambiguous_score},
+            {"role": SpeakerRole.INTERROGATOR, "score": ambiguous_score},
+            {"role": SpeakerRole.RECORDER, "score": max(-1.0, ambiguous_score - margin)},
+        ],
+        enabled_roles={SpeakerRole.SUSPECT, SpeakerRole.INTERROGATOR, SpeakerRole.RECORDER},
+        threshold=threshold,
+        margin=margin,
+        usable_duration_ms=2_000,
+        overlap=False,
+    )
+    if ambiguous.role is not SpeakerRole.UNKNOWN:
+        raise RuntimeError("FULL ambiguity gate forced a named identity instead of UNKNOWN")
 
     return {
-        "suspect-only": suspect_only_positive.role.value,
-        "suspect-only-officer": suspect_only_officer.role.value,
-        "partial": partial.role.value,
-        "full": full.role.value,
+        SUSPECT_ONLY: suspect_only_positive.role.value,
+        f"{SUSPECT_ONLY}_OFFICER": suspect_only_officer.role.value,
+        SUSPECT_PLUS_INTERROGATOR: partial.role.value,
+        FULL: full.role.value,
+        "AMBIGUOUS": ambiguous.role.value,
     }
 
 
@@ -213,26 +236,86 @@ def _calibration_value(cli_value: float | None, key: str, env_file: dict[str, st
     return value
 
 
+def _check_systemd_and_mount(*, socket_path: Path, model_root: Path) -> None:
+    subprocess.run(["systemctl", "is-active", "--quiet", "ai-worker.service"], check=True)
+    if not socket_path.is_socket():
+        raise RuntimeError("ai-worker.service is active but speech socket is missing")
+    result = subprocess.run(["findmnt", "-no", "OPTIONS", str(model_root)], check=True, capture_output=True, text=True)
+    options = {item.strip() for item in result.stdout.strip().split(",") if item.strip()}
+    if "ro" not in options:
+        raise RuntimeError("FunASR model mount is not read-only")
+
+
+def _check_api_capabilities(api_base: str) -> dict[str, str]:
+    with urllib.request.urlopen(api_base.rstrip("/") + "/health/ready", timeout=5) as response:
+        payload = json.load(response)
+    capabilities = payload.get("capabilities") if isinstance(payload, dict) else None
+    if not isinstance(capabilities, dict):
+        raise RuntimeError("health response does not contain capabilities")
+    states: dict[str, str] = {}
+    for name in ("asr", "vad", "speaker", "voiceprintCalibration", "audioCapture"):
+        detail = capabilities.get(name)
+        if not isinstance(detail, dict):
+            raise RuntimeError(f"health response is missing {name}")
+        states[name] = str(detail.get("state") or "")
+    if states["voiceprintCalibration"] != "READY":
+        raise RuntimeError("voiceprintCalibration is not READY")
+    if states["audioCapture"] != "READY":
+        raise RuntimeError("audioCapture is not READY")
+    if states["asr"] != "AVAILABLE" or states["vad"] != "AVAILABLE" or states["speaker"] != "AVAILABLE":
+        raise RuntimeError(f"speech capabilities are not all AVAILABLE: {states}")
+    return states
+
+
+def _restart_worker(socket_path: Path, timeout_seconds: float = 90.0) -> None:
+    subprocess.run(["sudo", "-n", *RESTART_COMMAND.split()], check=True)
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if socket_path.is_socket() and subprocess.run(["systemctl", "is-active", "--quiet", "ai-worker.service"]).returncode == 0:
+            return
+        time.sleep(1)
+    raise RuntimeError("ai-worker.service did not recover after restart")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the real RK3588 FSMN-VAD + Paraformer + XVector speech smoke.")
-    parser.add_argument("--socket", default="/run/suspect-interrogation/speech.sock")
+    parser.add_argument("--socket", default=DEFAULT_SOCKET)
+    parser.add_argument("--model-root", default=DEFAULT_MODEL_ROOT)
+    parser.add_argument("--api-base", default="http://127.0.0.1:18080")
     parser.add_argument("--env-file", default="/etc/suspect-interrogation/ai-worker.env")
     parser.add_argument("--threshold", type=float)
     parser.add_argument("--margin", type=float)
     parser.add_argument("--suspect-wav", required=True)
     parser.add_argument("--interrogator-wav", required=True)
     parser.add_argument("--recorder-wav", required=True)
+    parser.add_argument("--skip-systemd", action="store_true")
+    parser.add_argument("--skip-api", action="store_true")
+    parser.add_argument("--skip-mount", action="store_true")
     args = parser.parse_args()
+
+    socket_path = Path(args.socket)
+    model_root = Path(args.model_root)
+    if not args.skip_systemd or not args.skip_mount:
+        if args.skip_systemd:
+            result = subprocess.run(["findmnt", "-no", "OPTIONS", str(model_root)], check=True, capture_output=True, text=True)
+            if "ro" not in {item.strip() for item in result.stdout.strip().split(",")}:
+                raise RuntimeError("FunASR model mount is not read-only")
+        elif args.skip_mount:
+            subprocess.run(["systemctl", "is-active", "--quiet", "ai-worker.service"], check=True)
+            if not socket_path.is_socket():
+                raise RuntimeError("speech socket is missing")
+        else:
+            _check_systemd_and_mount(socket_path=socket_path, model_root=model_root)
 
     env_file = _read_env_file(Path(args.env_file))
     threshold = _calibration_value(args.threshold, THRESHOLD_KEY, env_file)
     margin = _calibration_value(args.margin, MARGIN_KEY, env_file)
 
-    client = SpeechWorkerClient(args.socket, timeout=45.0)
+    client = SpeechWorkerClient(socket_path, timeout=45.0)
     health = client.health()
     models = health.get("models") if isinstance(health, dict) else None
     if not isinstance(models, dict) or not all(models.get(name) for name in ("asr", "vad", "speaker")):
-        raise RuntimeError("speech worker health does not report Paraformer/FSMN-VAD/XVector ready")
+        raise RuntimeError("speech worker health does not report paraformer/fsmn-vad/xvector ready")
 
     pcm_by_role = {
         SpeakerRole.SUSPECT: _read_pcm16_wav(Path(args.suspect_wav)),
@@ -242,15 +325,27 @@ def main() -> int:
     refs = {role: _embedding(client, pcm) for role, pcm in pcm_by_role.items()}
     stream = _stream_smoke(client, pcm_by_role[SpeakerRole.SUSPECT])
     policy = _assert_policy_modes(refs=refs, threshold=threshold, margin=margin)
+    api_states = {} if args.skip_api else _check_api_capabilities(args.api_base)
+
+    restart_verified = False
+    if not args.skip_systemd:
+        _restart_worker(socket_path)
+        restarted = SpeechWorkerClient(socket_path, timeout=45.0).health()
+        restarted_models = restarted.get("models") if isinstance(restarted, dict) else None
+        if not isinstance(restarted_models, dict) or not all(restarted_models.get(name) for name in ("asr", "vad", "speaker")):
+            raise RuntimeError("speech worker model health did not recover after restart")
+        restart_verified = True
 
     report = {
         "status": "ok",
         "sample_rate": SAMPLE_RATE,
         "chunk_size_ms": CHUNK_SIZE_MS,
-        "models": {name: bool(models.get(name)) for name in ("asr", "vad", "speaker")},
+        "models": {"paraformer": bool(models.get("asr")), "fsmn-vad": bool(models.get("vad")), "xvector": bool(models.get("speaker"))},
         "stream": stream,
         "policy_modes": policy,
-        "privacy": "no WAV audio or embeddings are persisted by this smoke script",
+        "capabilities": api_states,
+        "restart_verified": restart_verified,
+        "privacy": "transient local acceptance inputs are not persisted by this script",
     }
     print(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2))
     return 0
