@@ -105,6 +105,33 @@ def _asr_status(request: Request) -> dict[str, Any]:
     }
 
 
+def _official_message_speaker(role: str) -> str:
+    """Map fine-grained ASR attribution to the existing official transcript vocabulary.
+
+    The official Message model deliberately supports only 民警/嫌疑人.  Keep the
+    richer INTERROGATOR/RECORDER/OFFICER_FALLBACK value on ASRFragment for
+    provenance; UNKNOWN must be resolved manually before formal confirmation.
+    """
+    try:
+        normalized = SpeakerRole(str(role))
+    except ValueError as exc:
+        raise DomainError("INVALID_SPEAKER_ROLE", "ASR 片段包含无效的说话人角色", 409) from exc
+
+    if normalized is SpeakerRole.SUSPECT:
+        return "嫌疑人"
+    if normalized in {
+        SpeakerRole.INTERROGATOR,
+        SpeakerRole.RECORDER,
+        SpeakerRole.OFFICER_FALLBACK,
+    }:
+        return "民警"
+    raise DomainError(
+        "ASR_SPEAKER_CONFIRMATION_REQUIRED",
+        "说话人尚未确认，请先人工指定嫌疑人或民警角色后再写入正式笔录",
+        409,
+    )
+
+
 @router.get("/asr/status")
 def asr_status(request: Request):
     return _asr_status(request)
@@ -221,10 +248,11 @@ def _confirm_one(
     if fragment.state == "CONFIRMED":
         return fragment, False
 
+    official_speaker = _official_message_speaker(fragment.speaker)
     message = MessageService(db).create(
         case_id,
         text=fragment.edited_text,
-        speaker=fragment.speaker,
+        speaker=official_speaker,
         actor_id=actor_id,
     )
     row = asr_repo.confirm_fragment(db, fragment_id=fragment.id, message_id=message["id"])
@@ -235,7 +263,12 @@ def _confirm_one(
         action="ASR_FRAGMENT_CONFIRM",
         target_type="ASR_FRAGMENT",
         target_id=row.id,
-        after={"message_id": message["id"], "speaker": row.speaker, "text": row.edited_text},
+        after={
+            "message_id": message["id"],
+            "speaker": row.speaker,
+            "official_speaker": official_speaker,
+            "text": row.edited_text,
+        },
         detail={"raw_text": row.raw_text},
     )
     db.commit()
