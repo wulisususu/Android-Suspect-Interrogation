@@ -15,6 +15,8 @@ on:
       - 'linux/backend/tests/**'
       - 'linux/docs/AI_RUNTIME.md'
       - 'scripts/ci/probe-funasr-runtime.py'
+      - 'scripts/ci/rk3588-speech-calibrate.py'
+      - 'scripts/ci/rk3588-speech-smoke.py'
       - 'scripts/ai-worker-start.sh'
       - 'systemd/ai-worker.service'
   pull_request:
@@ -31,9 +33,29 @@ on:
       - 'linux/backend/tests/**'
       - 'linux/docs/AI_RUNTIME.md'
       - 'scripts/ci/probe-funasr-runtime.py'
+      - 'scripts/ci/rk3588-speech-calibrate.py'
+      - 'scripts/ci/rk3588-speech-smoke.py'
       - 'scripts/ai-worker-start.sh'
       - 'systemd/ai-worker.service'
   workflow_dispatch:
+    inputs:
+      suspect_wavs:
+        description: 'Local RK3588 paths, one PCM16/16k/mono WAV per line; minimum 3'
+        required: false
+        type: string
+      interrogator_wavs:
+        description: 'Local RK3588 interrogator WAV paths, one per line; minimum 3 for calibration'
+        required: false
+        type: string
+      recorder_wavs:
+        description: 'Local RK3588 recorder WAV paths, one per line; minimum 3 for calibration'
+        required: false
+        type: string
+      apply_calibration:
+        description: 'Atomically write a safe calibration to /etc/suspect-interrogation/ai-worker.env'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -41,7 +63,7 @@ permissions:
 jobs:
   ai-runtime:
     runs-on: [self-hosted, rk3588]
-    timeout-minutes: 15
+    timeout-minutes: 45
     env:
       AI_MODE: mock
       PYTHONDONTWRITEBYTECODE: '1'
@@ -110,7 +132,10 @@ jobs:
           set -euo pipefail
           cd linux/backend
           PYTHONPATH=. python3 -m compileall -q app/ai app/api/ai_runtime.py app/main.py tests
-          python3 -m py_compile "$GITHUB_WORKSPACE/scripts/ci/probe-funasr-runtime.py"
+          python3 -m py_compile \
+            "$GITHUB_WORKSPACE/scripts/ci/probe-funasr-runtime.py" \
+            "$GITHUB_WORKSPACE/scripts/ci/rk3588-speech-calibrate.py" \
+            "$GITHUB_WORKSPACE/scripts/ci/rk3588-speech-smoke.py"
 
       - name: Standard-library runtime smoke
         shell: bash
@@ -158,26 +183,20 @@ jobs:
           echo '--- end FunASR model inventory ---'
 
           FUNASR_PYTHON=''
-          KNOWN_FUNASR_PYTHON=/home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python
-          if [[ -x "$KNOWN_FUNASR_PYTHON" ]]; then
-            if diagnostic=$("$KNOWN_FUNASR_PYTHON" -c 'import funasr, torch; print("funasr=" + str(getattr(funasr, "__version__", "unknown"))); print("torch=" + str(getattr(torch, "__version__", "unknown")))' 2>&1); then
-              echo "known FunASR interpreter diagnostic: ${diagnostic}"
-              FUNASR_PYTHON="$KNOWN_FUNASR_PYTHON"
-            else
-              echo "known FunASR interpreter diagnostic: ${diagnostic}" >&2
+          for candidate in \
+            /opt/suspect-interrogation/runtime/funasr-env/bin/python \
+            /home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python \
+            python3; do
+            if [[ "$candidate" = python3 ]] || [[ -x "$candidate" ]]; then
+              if diagnostic=$("$candidate" -c 'import funasr, torch; print("funasr=" + str(getattr(funasr, "__version__", "unknown"))); print("torch=" + str(getattr(torch, "__version__", "unknown")))' 2>&1); then
+                echo "FunASR interpreter diagnostic: ${diagnostic}"
+                FUNASR_PYTHON="$candidate"
+                break
+              else
+                echo "FunASR interpreter diagnostic (${candidate}): ${diagnostic}" >&2
+              fi
             fi
-          else
-            echo "known FunASR interpreter diagnostic: not executable: ${KNOWN_FUNASR_PYTHON}" >&2
-          fi
-
-          if [[ -z "$FUNASR_PYTHON" ]]; then
-            if diagnostic=$(python3 -c 'import funasr, torch; print("funasr=" + str(getattr(funasr, "__version__", "unknown"))); print("torch=" + str(getattr(torch, "__version__", "unknown")))' 2>&1); then
-              echo "system Python FunASR diagnostic: ${diagnostic}"
-              FUNASR_PYTHON=python3
-            else
-              echo "system Python FunASR diagnostic: ${diagnostic}" >&2
-            fi
-          fi
+          done
 
           if [[ -z "$FUNASR_PYTHON" ]]; then
             echo 'FunASR-capable Python interpreter not found; installed model assets cannot be validated.' >&2
@@ -188,3 +207,74 @@ jobs:
           MODEL_ROOT="$MODEL_ROOT" "$FUNASR_PYTHON" scripts/ci/probe-funasr-runtime.py \
             --output "$RUNNER_TEMP/funasr-probe.json"
           cat "$RUNNER_TEMP/funasr-probe.json"
+          echo "FUNASR_PROBE_PYTHON=$FUNASR_PYTHON" >> "$GITHUB_ENV"
+          echo "FUNASR_MODEL_ROOT=$MODEL_ROOT" >> "$GITHUB_ENV"
+
+      - name: Calibrate and smoke real speech stack from local WAVs
+        if: github.event_name == 'workflow_dispatch' && inputs.suspect_wavs != ''
+        shell: bash
+        env:
+          SUSPECT_WAV_INPUT: ${{ inputs.suspect_wavs }}
+          INTERROGATOR_WAV_INPUT: ${{ inputs.interrogator_wavs }}
+          RECORDER_WAV_INPUT: ${{ inputs.recorder_wavs }}
+          APPLY_CALIBRATION: ${{ inputs.apply_calibration }}
+        run: |
+          set -euo pipefail
+          test -n "${FUNASR_PROBE_PYTHON:-}"
+          test -n "$SUSPECT_WAV_INPUT"
+          test -n "$INTERROGATOR_WAV_INPUT"
+          test -n "$RECORDER_WAV_INPUT"
+
+          mapfile -t SUSPECT_WAVS < <(printf '%s\n' "$SUSPECT_WAV_INPUT" | sed '/^[[:space:]]*$/d')
+          mapfile -t INTERROGATOR_WAVS < <(printf '%s\n' "$INTERROGATOR_WAV_INPUT" | sed '/^[[:space:]]*$/d')
+          mapfile -t RECORDER_WAVS < <(printf '%s\n' "$RECORDER_WAV_INPUT" | sed '/^[[:space:]]*$/d')
+          test "${#SUSPECT_WAVS[@]}" -ge 3
+          test "${#INTERROGATOR_WAVS[@]}" -ge 3
+          test "${#RECORDER_WAVS[@]}" -ge 3
+
+          SOCKET="$RUNNER_TEMP/rk3588-speech.sock"
+          rm -f "$SOCKET"
+          export SUSPECT_SPEECH_SOCKET="$SOCKET"
+          export SUSPECT_FUNASR_MODEL_ROOT="$FUNASR_MODEL_ROOT"
+          export PYTHONPATH="$GITHUB_WORKSPACE/linux/backend"
+          "$FUNASR_PROBE_PYTHON" -m speech_worker.main >"$RUNNER_TEMP/rk3588-speech-worker.log" 2>&1 &
+          WORKER_PID=$!
+          cleanup() {
+            kill "$WORKER_PID" 2>/dev/null || true
+            wait "$WORKER_PID" 2>/dev/null || true
+            rm -f "$SOCKET"
+          }
+          trap cleanup EXIT
+          for _ in $(seq 1 60); do
+            [[ -S "$SOCKET" ]] && break
+            kill -0 "$WORKER_PID" 2>/dev/null || { cat "$RUNNER_TEMP/rk3588-speech-worker.log" >&2; exit 1; }
+            sleep 1
+          done
+          test -S "$SOCKET"
+
+          CALIBRATION_ARGS=(
+            --socket "$SOCKET"
+            --suspect-wavs "${SUSPECT_WAVS[@]}"
+            --interrogator-wavs "${INTERROGATOR_WAVS[@]}"
+            --recorder-wavs "${RECORDER_WAVS[@]}"
+            --output "$RUNNER_TEMP/rk3588-calibration.json"
+          )
+          if [[ "$APPLY_CALIBRATION" = true ]]; then
+            sudo -n env PYTHONPATH="$PYTHONPATH" \
+              "$FUNASR_PROBE_PYTHON" scripts/ci/rk3588-speech-calibrate.py \
+              "${CALIBRATION_ARGS[@]}" --apply >/dev/null
+          else
+            "$FUNASR_PROBE_PYTHON" scripts/ci/rk3588-speech-calibrate.py \
+              "${CALIBRATION_ARGS[@]}" >/dev/null
+          fi
+          cat "$RUNNER_TEMP/rk3588-calibration.json"
+          THRESHOLD=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["threshold"])' "$RUNNER_TEMP/rk3588-calibration.json")
+          MARGIN=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["margin"])' "$RUNNER_TEMP/rk3588-calibration.json")
+
+          "$FUNASR_PROBE_PYTHON" scripts/ci/rk3588-speech-smoke.py \
+            --socket "$SOCKET" \
+            --threshold "$THRESHOLD" \
+            --margin "$MARGIN" \
+            --suspect-wav "${SUSPECT_WAVS[0]}" \
+            --interrogator-wav "${INTERROGATOR_WAVS[0]}" \
+            --recorder-wav "${RECORDER_WAVS[0]}"
