@@ -1,3 +1,4 @@
+# Production bootstrap is intentionally explicit; workflow-file changes or manual dispatch trigger it.
 name: RK3588 Service Bootstrap
 
 on:
