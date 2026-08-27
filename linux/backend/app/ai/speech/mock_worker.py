@@ -200,6 +200,18 @@ class MockSpeechWorker:
             session_id = str(request.get("session_id") or "")
             self._sessions.pop(session_id, None)
             return self._ok_response(request_id, {})
+        if op == "speech_segments":
+            try:
+                base64.b64decode(str(request.get("pcm_b64") or ""), validate=True)
+            except (ValueError, TypeError) as exc:
+                return self._error_response(request_id, "AI_ERROR", f"invalid pcm_b64: {exc}", {})
+            return self._ok_response(
+                request_id,
+                {
+                    "segments": [[100, 900]],
+                    "sample_rate": int(request.get("sample_rate") or 16000),
+                },
+            )
         if op == "extract_embedding":
             try:
                 base64.b64decode(str(request.get("pcm_b64") or ""), validate=True)
