@@ -10,7 +10,7 @@ def ok(response):
     return body["data"]
 
 
-def test_websocket_can_reconnect_same_persisted_session_after_disconnect(tmp_path):
+def test_websocket_can_reconnect_same_persisted_session_after_disconnect(tmp_path, enroll_test_suspect_voiceprint):
     app = create_app(
         database_url=f"sqlite:///{tmp_path / 'reconnect-release.db'}",
         hardware_gateway=MockHardwareGateway(simulated=True),
@@ -19,6 +19,7 @@ def test_websocket_can_reconnect_same_persisted_session_after_disconnect(tmp_pat
     with TestClient(app) as client:
         case = ok(client.post("/api/v1/cases", json={"operator_id": "release-reconnect"}))
         ok(client.post("/api/v1/identity/read", json={"case_id": case["id"]}))
+        enroll_test_suspect_voiceprint(app, case["id"])
         session = ok(client.post(f"/api/v1/cases/{case['id']}/session/start", json={}))
         session_id = session["id"]
 
