@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Read-only RK3588 probe for local FunASR models.
 
-The probe never downloads or mutates model assets. It validates that the three
-approved local model directories can be opened by FunASR and optionally runs
-small inference checks against caller-supplied WAV files.
+The probe never downloads or mutates model assets. Paraformer/FSMN-VAD use
+FunASR AutoModel. The installed 2023 XVector checkpoint is also allowed to use
+its original local ModelScope speaker-verification pipeline when current
+AutoModel cannot register that legacy architecture.
 """
 
 from __future__ import annotations
@@ -15,12 +16,19 @@ import os
 import platform
 import sys
 import time
+import wave
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_ROOT = REPO_ROOT / "linux" / "backend"
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 from funasr import AutoModel
 import funasr
 import torch
+from speech_worker.funasr_runtime import _ModelScopeLegacyXVectorAdapter
 
 MODEL_ROOT = Path(os.environ.get("MODEL_ROOT", "/home/youyeetoo/funasr-models")).resolve()
 MODEL_DIRS = {
@@ -100,23 +108,44 @@ def _first_record(result: Any) -> dict[str, Any]:
 
 def _shape(value: Any) -> list[int] | None:
     shape = getattr(value, "shape", None)
-    if shape is None:
-        return None
-    try:
-        return [int(item) for item in shape]
-    except TypeError:
-        return None
+    if shape is not None:
+        try:
+            return [int(item) for item in shape]
+        except TypeError:
+            pass
+    current = value
+    tolist = getattr(current, "tolist", None)
+    if callable(tolist):
+        current = tolist()
+    if isinstance(current, list):
+        if current and isinstance(current[0], list):
+            return [len(current), len(current[0])]
+        return [len(current)]
+    return None
 
 
-def _load_model(path: Path) -> tuple[AutoModel, float]:
+def _load_model(name: str, path: Path) -> tuple[Any, float, str]:
     started = time.perf_counter()
-    model = AutoModel(
-        model=str(path),
-        device="cpu",
-        disable_update=True,
-        disable_pbar=True,
-    )
-    return model, time.perf_counter() - started
+    try:
+        model = AutoModel(
+            model=str(path),
+            device="cpu",
+            disable_update=True,
+            disable_pbar=True,
+        )
+        return model, time.perf_counter() - started, "funasr-automodel"
+    except Exception:
+        if name != "xvector" or not (path / "sv.pth").is_file() or not (path / "sv.yaml").is_file():
+            raise
+    model = _ModelScopeLegacyXVectorAdapter(path)
+    return model, time.perf_counter() - started, "modelscope-legacy-xvector"
+
+
+def _pcm16_from_wav(path: Path) -> bytes:
+    with wave.open(str(path), "rb") as wav:
+        if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getframerate() != 16000 or wav.getcomptype() != "NONE":
+            raise RuntimeError("legacy xvector probe WAV must be uncompressed 16 kHz mono PCM16")
+        return wav.readframes(wav.getnframes())
 
 
 def _probe_model(name: str, path: Path, speech_wav: Path | None, speaker_wav: Path | None) -> dict[str, Any]:
@@ -125,13 +154,17 @@ def _probe_model(name: str, path: Path, speech_wav: Path | None, speaker_wav: Pa
         "files": _metadata(path),
         "load_ok": False,
     }
-    model, load_seconds = _load_model(path)
+    model, load_seconds, backend = _load_model(name, path)
     report["load_ok"] = True
     report["load_seconds"] = round(load_seconds, 6)
+    report["backend"] = backend
 
     try:
         if name == "xvector" and speaker_wav is not None:
-            result = model.generate(input=str(speaker_wav))
+            if backend == "modelscope-legacy-xvector":
+                result = model.generate(input=_pcm16_from_wav(speaker_wav), fs=16000, embedding=True)
+            else:
+                result = model.generate(input=str(speaker_wav), embedding=True)
             first = _first_record(result)
             report["inference"] = {
                 "keys": _result_keys(result),
@@ -201,7 +234,7 @@ def main() -> int:
         except InferenceProbeError as exc:
             report["models"][name] = exc.report
             failures.append(f"{name}: {type(exc.cause).__name__}: {exc.cause}")
-        except Exception as exc:  # diagnostic output must preserve per-model failure
+        except Exception as exc:
             report["models"][name] = {
                 "path": str(model_path),
                 "load_ok": False,
