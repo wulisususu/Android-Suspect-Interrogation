@@ -224,6 +224,13 @@ class SpeechWorkerServer:
                 )
             return {}
 
+        if op == "speech_segments":
+            pcm = self._decode_pcm(request)
+            sample_rate = int(request.get("sample_rate") or 16000)
+            with self._runtime_lock:
+                segments = self.runtime.vad(pcm, sample_rate)
+            return {"segments": segments, "sample_rate": sample_rate}
+
         if op == "extract_embedding":
             pcm = self._decode_pcm(request)
             sample_rate = int(request.get("sample_rate") or 16000)
