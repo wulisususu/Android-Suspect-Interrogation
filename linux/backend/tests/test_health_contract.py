@@ -19,8 +19,30 @@ def test_readiness_reports_required_checks_and_capabilities():
     payload = response.json()
     assert payload["status"] in {"ready", "degraded"}
     assert set(payload["checks"]) >= {"storage", "database"}
-    assert set(payload["capabilities"]) >= {"hardware", "ai"}
+    assert set(payload["capabilities"]) >= {
+        "hardware",
+        "ai",
+        "asr",
+        "vad",
+        "speaker",
+        "voiceprintCalibration",
+        "audioCapture",
+    }
     assert payload["checks"]["storage"]["required"] is True
     assert payload["checks"]["database"]["required"] is True
     assert payload["capabilities"]["hardware"]["required"] is False
     assert payload["capabilities"]["ai"]["required"] is False
+    for name in ("asr", "vad", "speaker", "voiceprintCalibration", "audioCapture"):
+        assert payload["capabilities"][name]["required"] is False
+
+
+def test_voiceprint_calibration_health_is_fail_closed_until_both_values_exist(monkeypatch):
+    monkeypatch.delenv("SUSPECT_SPEAKER_ACCEPT_THRESHOLD", raising=False)
+    monkeypatch.delenv("SUSPECT_SPEAKER_MARGIN", raising=False)
+    missing = client.get("/health/ready").json()["capabilities"]["voiceprintCalibration"]
+    assert missing["state"] == "NOT_CONFIGURED"
+
+    monkeypatch.setenv("SUSPECT_SPEAKER_ACCEPT_THRESHOLD", "0.73")
+    monkeypatch.setenv("SUSPECT_SPEAKER_MARGIN", "0.08")
+    calibrated = client.get("/health/ready").json()["capabilities"]["voiceprintCalibration"]
+    assert calibrated["state"] == "READY"
