@@ -60,11 +60,12 @@ def test_bootstrap_prepares_read_only_funasr_model_and_self_healing_runtime_layo
     assert '"torch==${TORCH_CPU_VERSION}+cpu"' in workflow
     assert '"funasr==${FUNASR_PACKAGE_VERSION}"' in workflow
     assert '"torchaudio==${TORCHAUDIO_PACKAGE_VERSION}"' in workflow
+    assert "MODELSCOPE_PACKAGE_VERSION: '1.39.1'" in workflow
+    assert '"modelscope==${MODELSCOPE_PACKAGE_VERSION}"' in workflow
+    assert 'import funasr, torch, torchaudio, modelscope' in workflow
     assert 'MODEL_ROOT="$FUNASR_MODEL_ROOT"' in workflow
     assert "scripts/ci/probe-funasr-runtime.py" in workflow
     assert 'sudo -n chown -R root:root "$FUNASR_RUNTIME"' in workflow
-    assert "import funasr, torch, torchaudio" in workflow
-    assert "modelscope" not in workflow
 
 
 def test_install_upserts_funasr_runtime_env_for_existing_installations():
