@@ -89,17 +89,18 @@ def test_ai_runtime_workflow_has_explicit_local_calibration_inputs_and_never_upl
     assert "sudo -n ss -ltnp 'sport = :8000'" in workflow
 
 
-def test_bootstrap_starts_real_speech_only_after_layout_and_calibration_gate():
+def test_bootstrap_starts_real_worker_and_keeps_voice_capture_fail_closed_without_calibration():
     workflow = BOOTSTRAP.read_text(encoding="utf-8")
     assert "Prepare stable offline FunASR model and runtime layout" in workflow
     assert "SUSPECT_SPEAKER_ACCEPT_THRESHOLD" in workflow
     assert "SUSPECT_SPEAKER_MARGIN" in workflow
+    assert "upsert AI_MODE real" in workflow
     assert "systemctl enable --now ai-worker.service" in workflow
     assert "systemctl is-active --quiet ai-worker.service" in workflow
     assert "/run/suspect-interrogation/speech.sock" in workflow
     assert "rk3588-speech-smoke.py" in workflow
-    assert "voiceprintCalibration" in workflow
-    assert "core API/frontend remain operational" in workflow
+    assert "speaker_calibration=NOT_CONFIGURED" in workflow
+    assert "formal ASR capture stays fail-closed" in workflow
     assert "Existing TCP/8000 owner is preserved" in workflow
     assert "sudo -n ss -ltnp 'sport = :8000'" in workflow
 
