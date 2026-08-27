@@ -29,6 +29,10 @@ install_runtime() {
   fi
   ensure_dir "$SUSPECT_OPT_DIR" 0755
   ensure_dir "$SUSPECT_RELEASES_DIR" 0755
+  # Stable AI assets live outside versioned release directories. The RK3588
+  # bootstrap owns the read-only FunASR bind mount and one-time runtime copy.
+  ensure_dir "$SUSPECT_OPT_DIR/models" 0755
+  ensure_dir "$SUSPECT_OPT_DIR/runtime" 0755
   ensure_dir "$SUSPECT_ETC_DIR" 0750
   ensure_dir "$SUSPECT_DATA_DIR" 0750
   ensure_dir "$SUSPECT_BACKUP_DIR" 0750
