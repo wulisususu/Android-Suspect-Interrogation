@@ -13,6 +13,8 @@ def test_rk3588_service_bootstrap_workflow_installs_deploys_and_verifies_runtime
     assert "workflow_dispatch:" in workflow
     assert "runs-on: [self-hosted, rk3588]" in workflow
     assert "sudo -n true" in workflow
+    assert "git sparse-checkout init --cone" in workflow
+    assert "git sparse-checkout set .github linux webapp deploy scripts systemd tests docs" in workflow
     assert "sudo -n bash deploy/control.sh install" in workflow
     assert 'sudo -n bash deploy/control.sh deploy "$GITHUB_WORKSPACE"' in workflow
     assert "systemctl is-enabled --quiet interrogation-api.service" in workflow
