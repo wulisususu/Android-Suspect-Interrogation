@@ -34,6 +34,15 @@ METADATA_SUFFIXES = {
 }
 
 
+class InferenceProbeError(RuntimeError):
+    """Carry successful load evidence when an optional inference check fails."""
+
+    def __init__(self, report: dict[str, Any], cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.report = report
+        self.cause = cause
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -120,29 +129,36 @@ def _probe_model(name: str, path: Path, speech_wav: Path | None, speaker_wav: Pa
     report["load_ok"] = True
     report["load_seconds"] = round(load_seconds, 6)
 
-    if name == "xvector" and speaker_wav is not None:
-        result = model.generate(input=str(speaker_wav))
-        first = _first_record(result)
-        report["inference"] = {
-            "keys": _result_keys(result),
-            "spk_embedding_shape": _shape(first.get("spk_embedding")),
-        }
-        if "spk_embedding" not in first:
-            raise RuntimeError("xvector inference did not return spk_embedding")
-    elif name == "fsmn-vad" and speech_wav is not None:
-        result = model.generate(input=str(speech_wav))
-        first = _first_record(result)
-        report["inference"] = {
-            "keys": _result_keys(result),
-            "segments": first.get("value"),
-        }
-    elif name == "paraformer" and speech_wav is not None:
-        result = model.generate(input=str(speech_wav))
-        first = _first_record(result)
-        report["inference"] = {
-            "keys": _result_keys(result),
-            "text": first.get("text"),
-        }
+    try:
+        if name == "xvector" and speaker_wav is not None:
+            result = model.generate(input=str(speaker_wav))
+            first = _first_record(result)
+            report["inference"] = {
+                "keys": _result_keys(result),
+                "spk_embedding_shape": _shape(first.get("spk_embedding")),
+            }
+            if "spk_embedding" not in first:
+                raise RuntimeError("xvector inference did not return spk_embedding")
+        elif name == "fsmn-vad" and speech_wav is not None:
+            result = model.generate(input=str(speech_wav))
+            first = _first_record(result)
+            report["inference"] = {
+                "keys": _result_keys(result),
+                "segments": first.get("value"),
+            }
+        elif name == "paraformer" and speech_wav is not None:
+            result = model.generate(input=str(speech_wav))
+            first = _first_record(result)
+            report["inference"] = {
+                "keys": _result_keys(result),
+                "text": first.get("text"),
+            }
+    except Exception as exc:
+        report["inference_ok"] = False
+        report["inference_error"] = f"{type(exc).__name__}: {exc}"
+        raise InferenceProbeError(report, exc) from exc
+    if "inference" in report:
+        report["inference_ok"] = True
     return report
 
 
@@ -182,6 +198,9 @@ def main() -> int:
             continue
         try:
             report["models"][name] = _probe_model(name, model_path, speech_wav, speaker_wav)
+        except InferenceProbeError as exc:
+            report["models"][name] = exc.report
+            failures.append(f"{name}: {type(exc.cause).__name__}: {exc.cause}")
         except Exception as exc:  # diagnostic output must preserve per-model failure
             report["models"][name] = {
                 "path": str(model_path),
