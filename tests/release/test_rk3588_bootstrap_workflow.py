@@ -13,6 +13,7 @@ def test_rk3588_service_bootstrap_workflow_installs_deploys_and_verifies_runtime
     assert "workflow_dispatch:" in workflow
     assert "runs-on: [self-hosted, rk3588]" in workflow
     assert "cancel-in-progress: true" in workflow
+    assert "SUSPECT_DEPLOY_PORT: '18080'" in workflow
     assert "sudo -n true" in workflow
     assert "git sparse-checkout init --cone" in workflow
     assert "git sparse-checkout set .github linux webapp deploy scripts systemd tests docs" in workflow
@@ -21,11 +22,14 @@ def test_rk3588_service_bootstrap_workflow_installs_deploys_and_verifies_runtime
     assert 'export SUSPECT_DATA_DIR="$TEST_RUNTIME_ROOT/data"' in workflow
     assert 'export SUSPECT_LOG_DIR="$TEST_RUNTIME_ROOT/log"' in workflow
     assert "sudo -n systemctl stop interrogation-api.service" in workflow
-    assert "sudo -n ss -ltnp 'sport = :8000'" in workflow
+    assert "sudo -n ss -ltnp \"sport = :${SUSPECT_DEPLOY_PORT}\"" in workflow
+    assert "SUSPECT_API_PORT=${SUSPECT_DEPLOY_PORT}" in workflow
+    assert "SUSPECT_KIOSK_READY_URL=http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" in workflow
+    assert "SUSPECT_KIOSK_URL=http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/" in workflow
     assert "sudo -n bash deploy/control.sh install" in workflow
-    assert 'sudo -n bash deploy/control.sh deploy "$GITHUB_WORKSPACE"' in workflow
+    assert "SUSPECT_HEALTH_BASE_URL=\"http://127.0.0.1:${SUSPECT_DEPLOY_PORT}\"" in workflow
     assert "systemctl is-enabled --quiet interrogation-api.service" in workflow
     assert "systemctl is-active --quiet interrogation-api.service" in workflow
     assert "systemctl is-enabled --quiet kiosk.service" in workflow
-    assert "curl -fsS http://127.0.0.1:8000/health/ready" in workflow
-    assert "curl -fsS http://127.0.0.1:8000/" in workflow
+    assert "curl -fsS \"http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready\"" in workflow
+    assert "curl -fsS \"http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/\"" in workflow
