@@ -49,6 +49,7 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
   const caseId = encode(payload.caseId)
   const messageId = encode(payload.messageId)
   const fragmentId = encode(payload.fragmentId)
+  const officerId = encode(payload.officerId)
 
   switch (operation) {
     case 'case.create': return { method: 'POST', url: '/api/v1/cases', data: payload }
@@ -121,6 +122,46 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
     case 'asr.fragment.confirmBatch': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/fragments/confirm`, data: { fragment_ids: payload.fragmentIds } }
     case 'asr.fragment.applyToRecord': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/fragments/apply`, data: payload }
     case 'asr.fragment.discard': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/fragments/${fragmentId}/discard`, data: {} }
+    case 'voiceprint.readiness': return { method: 'GET', url: `/api/v1/cases/${caseId}/voiceprints/readiness` }
+    case 'voiceprint.suspect.enrollment.start': return {
+      method: 'POST',
+      url: `/api/v1/cases/${caseId}/voiceprints/suspect/enrollment/start`,
+      data: { actor_id: payload.actorId },
+    }
+    case 'voiceprint.suspect.enrollment.stop': return {
+      method: 'POST',
+      url: `/api/v1/cases/${caseId}/voiceprints/suspect/enrollment/stop`,
+      data: { actor_id: payload.actorId },
+    }
+    case 'officerVoiceprint.list': return {
+      method: 'GET',
+      url: '/api/v1/officer-voiceprints',
+      params: { active_only: payload.activeOnly ?? true },
+    }
+    case 'officerVoiceprint.enrollment.start': return {
+      method: 'POST',
+      url: `/api/v1/officer-voiceprints/${officerId}/enrollment/start`,
+      data: { officer_name: payload.officerName, actor_id: payload.actorId },
+    }
+    case 'officerVoiceprint.enrollment.stop': return {
+      method: 'POST',
+      url: `/api/v1/officer-voiceprints/${officerId}/enrollment/stop`,
+      data: { actor_id: payload.actorId },
+    }
+    case 'officerVoiceprint.revoke': return {
+      method: 'DELETE',
+      url: `/api/v1/officer-voiceprints/${officerId}`,
+      params: { actor_id: payload.actorId },
+    }
+    case 'voiceprint.assignments.update': return {
+      method: 'PUT',
+      url: `/api/v1/cases/${caseId}/voiceprints/assignments`,
+      data: {
+        interrogator_officer_id: payload.interrogatorOfficerId,
+        recorder_officer_id: payload.recorderOfficerId,
+        actor_id: payload.actorId,
+      },
+    }
     case 'ocr.status': return { method: 'GET', url: '/api/v1/ocr/status' }
     case 'ocr.image.pick': return { method: 'POST', url: '/api/v1/ocr/image/pick', data: {} }
     case 'ocr.camera.capture': return { method: 'POST', url: '/api/v1/ocr/camera/capture', data: {} }
