@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, inspect
 REQUIRED_TABLES = {
     "cases", "persons", "interrogation_sessions", "messages", "message_revisions",
     "facts", "timeline_events", "audit_logs", "device_events", "document_snapshots", "signature_records",
+    "suspect_voiceprints", "officer_voiceprints", "session_voice_assignments", "asr_capture_sessions", "asr_fragments",
 }
 
 
