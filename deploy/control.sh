@@ -21,6 +21,16 @@ Commands:
 EOF
 }
 
+upsert_runtime_env() {
+  local key="$1" value="$2" runtime_env="$SUSPECT_ETC_DIR/runtime.env"
+  [[ -f "$runtime_env" ]] || die "runtime env does not exist: $runtime_env"
+  if grep -q "^${key}=" "$runtime_env"; then
+    sed -i -E "s|^${key}=.*|${key}=${value}|" "$runtime_env"
+  else
+    printf '%s=%s\n' "$key" "$value" >>"$runtime_env"
+  fi
+}
+
 install_runtime() {
   require_root
   if [[ "$SUSPECT_DRY_RUN" != "1" ]]; then
@@ -43,6 +53,11 @@ install_runtime() {
     if [[ ! -f "$SUSPECT_ETC_DIR/runtime.env" ]]; then
       install -o root -g "$SUSPECT_SERVICE_GROUP" -m 0640 "$SCRIPT_DIR/suspect-interrogation.env.example" "$SUSPECT_ETC_DIR/runtime.env"
     fi
+    upsert_runtime_env "SUSPECT_FUNASR_MODEL_ROOT" "/opt/suspect-interrogation/models/funasr"
+    upsert_runtime_env "SUSPECT_FUNASR_PYTHON" "/opt/suspect-interrogation/runtime/funasr-env/bin/python"
+    upsert_runtime_env "SUSPECT_SPEECH_SOCKET" "/run/suspect-interrogation/speech.sock"
+    chown root:"$SUSPECT_SERVICE_GROUP" "$SUSPECT_ETC_DIR/runtime.env"
+    chmod 0640 "$SUSPECT_ETC_DIR/runtime.env"
     install -m 0644 "$REPO_ROOT/systemd/interrogation-api.service" "$SUSPECT_SYSTEMD_DIR/interrogation-api.service"
     install -m 0644 "$REPO_ROOT/systemd/ai-worker.service" "$SUSPECT_SYSTEMD_DIR/ai-worker.service"
     install -m 0644 "$REPO_ROOT/systemd/kiosk.service" "$SUSPECT_SYSTEMD_DIR/kiosk.service"
