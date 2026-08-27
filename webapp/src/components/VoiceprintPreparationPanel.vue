@@ -236,3 +236,204 @@ function beginOfficerEnrollment() {
     </footer>
   </section>
 </template>
+
+<style scoped>
+.voiceprint-preparation-panel {
+  padding: 16px 18px;
+  border-bottom: 1px solid #c9d7e2;
+  background: linear-gradient(180deg, #f8fbfe 0%, #eef5fa 100%);
+  color: #21384d;
+}
+.voiceprint-preparation-header,
+.voiceprint-preparation-footer,
+.officer-enrollment-box header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.voiceprint-preparation-header h2 {
+  margin: 3px 0 0;
+  font-size: 22px;
+}
+.section-kicker {
+  color: #5d7184;
+  font-size: 12px;
+  letter-spacing: .08em;
+}
+.voiceprint-mode-chip,
+.voiceprint-status {
+  border: 1px solid #b7c8d7;
+  border-radius: 999px;
+  padding: 5px 10px;
+  background: #fff;
+  color: #566b7e;
+  font-size: 12px;
+  font-weight: 700;
+}
+.voiceprint-mode-chip.ready,
+.voiceprint-status.ok {
+  border-color: #8fc6a6;
+  background: #edf8f1;
+  color: #267647;
+}
+.voiceprint-warning {
+  margin-top: 10px;
+  padding: 9px 12px;
+  border: 1px solid #e5b763;
+  border-radius: 7px;
+  background: #fff8e8;
+  color: #8b5c0a;
+  font-weight: 700;
+}
+.voiceprint-preparation-grid {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.voiceprint-person-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(220px, 1.4fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 50px;
+  padding: 9px 12px;
+  border: 1px solid #d0dde8;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .9);
+}
+.voiceprint-person-row.required {
+  border-left: 4px solid #2d78bb;
+}
+.voiceprint-person-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.voiceprint-person-main > span {
+  color: #73879a;
+  font-size: 12px;
+}
+.voiceprint-person-row select,
+.officer-enrollment-form input {
+  min-height: 38px;
+  border: 1px solid #b9c9d7;
+  border-radius: 6px;
+  padding: 0 10px;
+  background: #fff;
+  color: #243c52;
+}
+.voiceprint-action,
+.officer-enrollment-form button,
+.voiceprint-preparation-footer button,
+.officer-library-item button {
+  min-height: 38px;
+  border: 1px solid #9eb3c5;
+  border-radius: 6px;
+  padding: 0 13px;
+  background: #fff;
+  color: #29465f;
+  font-weight: 700;
+}
+.voiceprint-action.primary,
+.voiceprint-preparation-footer > button {
+  border-color: #2476c9;
+  background: #2476c9;
+  color: #fff;
+}
+.voiceprint-action.danger,
+.officer-enrollment-form .danger {
+  border-color: #d95045;
+  color: #b02d24;
+}
+button:disabled,
+select:disabled,
+input:disabled {
+  opacity: .5;
+}
+.officer-enrollment-box {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #d2dee8;
+  border-radius: 8px;
+  background: #fff;
+}
+.officer-enrollment-box header span {
+  color: #6c8193;
+  font-size: 12px;
+}
+.officer-enrollment-form {
+  display: grid;
+  grid-template-columns: minmax(130px, .8fr) minmax(130px, 1fr) auto;
+  gap: 8px;
+  margin-top: 8px;
+}
+.officer-library-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 9px;
+}
+.officer-library-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #d5e0e8;
+  border-radius: 999px;
+  padding: 4px 5px 4px 10px;
+  background: #f6f9fb;
+  font-size: 12px;
+}
+.officer-library-item button {
+  min-height: 26px;
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+  color: #a23830;
+}
+.voiceprint-enrollment-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: 7px;
+  background: #eaf3fb;
+  color: #315d82;
+}
+.voiceprint-enrollment-progress.error {
+  background: #fff0ef;
+  color: #a3352e;
+}
+.voiceprint-enrollment-progress.complete {
+  background: #edf8f1;
+  color: #267647;
+}
+.voiceprint-enrollment-progress small {
+  margin-left: auto;
+}
+.voiceprint-preparation-footer {
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid #d2dee8;
+}
+.voiceprint-preparation-footer > div {
+  display: grid;
+  gap: 3px;
+}
+.voiceprint-preparation-footer span {
+  color: #657a8c;
+  font-size: 12px;
+}
+@media (max-width: 980px) {
+  .voiceprint-person-row,
+  .officer-enrollment-form {
+    grid-template-columns: 1fr;
+  }
+  .voiceprint-preparation-footer,
+  .voiceprint-preparation-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+</style>
