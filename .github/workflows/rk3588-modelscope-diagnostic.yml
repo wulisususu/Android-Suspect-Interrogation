@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
-          sudo -n "$PY" -m pip install --retries 3 --timeout 60 --no-deps 'modelscope==1.11.0'
+          sudo -n "$PY" -m pip install --retries 3 --timeout 60 'modelscope==1.11.0'
           "$PY" -c 'import modelscope; print("modelscope="+str(modelscope.__version__))'
       - name: Print ModelScope speaker pipeline traceback
         shell: bash
