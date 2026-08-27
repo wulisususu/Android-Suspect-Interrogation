@@ -1,7 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import {
-  applyAsrFragmentsToRecord,
   backendErrorMessage,
   changeSessionStage,
   connectRuntimeSession,
@@ -10,29 +9,37 @@ import {
   createCase,
   discardAsrFragment,
   fetchAsrCaptureStatus,
-  fetchRuntimeCapabilities,
   fetchCase,
   fetchCaseAiAnalyses,
   fetchFacts,
   fetchMessages,
+  fetchOfficerVoiceprints,
   fetchRevisions,
+  fetchRuntimeCapabilities,
   fetchSessionState,
   fetchTimeline,
+  fetchVoiceprintReadiness,
   finishSession as finishSessionApi,
   generateCaseAiAnalysis,
   markTranscriptMessage,
+  normalizeTemporaryAsrFragment,
   pauseSession as pauseSessionApi,
   persistQuestionOrAnswer,
   resumeSession as resumeSessionApi,
+  revokeOfficerVoiceprint as revokeOfficerVoiceprintApi,
   startAsrCapture,
+  startOfficerVoiceprintEnrollment as startOfficerVoiceprintEnrollmentApi,
   startSession as startSessionApi,
+  startSuspectVoiceprintEnrollment as startSuspectVoiceprintEnrollmentApi,
   stopAsrCapture,
+  stopOfficerVoiceprintEnrollment as stopOfficerVoiceprintEnrollmentApi,
+  stopSuspectVoiceprintEnrollment as stopSuspectVoiceprintEnrollmentApi,
   streamInquiry,
   updateAsrFragment,
   updateTranscriptMessage,
+  updateVoiceprintAssignments,
 } from '../api/interrogation'
 import type { RuntimeSessionConnection } from '../runtime'
-import { buildAsrInsertion, isAsrTargetUsable } from '../utils/asrInsertion'
 import type {
   AsrCaptureStatus,
   AsrInsertionReceipt,
@@ -41,11 +48,15 @@ import type {
   CaseSummary,
   FactItem,
   InterrogationStage,
+  OfficerVoiceprint,
   RecordRevision,
   SessionState,
+  TemporaryAsrFragment,
   TemporaryAsrSpeaker,
   TimelineEvent,
   TranscriptMessage,
+  VoiceprintEnrollmentState,
+  VoiceprintReadiness,
 } from '../types/interrogation'
 
 const uid = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -113,6 +124,20 @@ function emptyCapture(caseId = ''): AsrCaptureStatus {
   }
 }
 
+function emptyVoiceprintReadiness(): VoiceprintReadiness {
+  return {
+    suspectReady: false,
+    interrogatorReady: false,
+    recorderReady: false,
+    recognitionMode: 'SUSPECT_ONLY',
+    canStart: false,
+  }
+}
+
+function idleEnrollmentState(): VoiceprintEnrollmentState {
+  return { phase: 'IDLE', kind: null, subjectId: null, officerName: null, usableDurationMs: null, message: null }
+}
+
 export const useInterrogationStore = defineStore('interrogation', () => {
   const params = new URLSearchParams(location.search)
   const caseId = ref(params.get('caseId') || '')
@@ -137,6 +162,12 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   const caseAiAnalyses = ref<CaseAiAnalysis[]>([])
   const caseAiBusy = ref(false)
   const caseAiError = ref('')
+  const voiceprintReadiness = ref<VoiceprintReadiness>(emptyVoiceprintReadiness())
+  const officerVoiceprints = ref<OfficerVoiceprint[]>([])
+  const selectedInterrogatorOfficerId = ref<string | null>(null)
+  const selectedRecorderOfficerId = ref<string | null>(null)
+  const voiceprintEnrollmentState = ref<VoiceprintEnrollmentState>(idleEnrollmentState())
+  const voiceprintBusy = ref(false)
 
   let caseGeneration = 0
   let feedbackTimer: ReturnType<typeof setTimeout> | undefined
@@ -201,6 +232,12 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     caseAiAnalyses.value = []
     caseAiBusy.value = false
     caseAiError.value = ''
+    voiceprintReadiness.value = emptyVoiceprintReadiness()
+    officerVoiceprints.value = []
+    selectedInterrogatorOfficerId.value = null
+    selectedRecorderOfficerId.value = null
+    voiceprintEnrollmentState.value = idleEnrollmentState()
+    voiceprintBusy.value = false
   }
 
   function feedback(message: string, isError = false) {
@@ -235,6 +272,14 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     }
   }
 
+  function upsertAsrFragment(fragment: TemporaryAsrFragment, scope = currentScope()) {
+    if (!isCurrentScope(scope) || fragment.caseId !== scope.caseId) return
+    const index = capture.value.fragments.findIndex((item) => item.id === fragment.id)
+    if (index >= 0) capture.value.fragments[index] = fragment
+    else capture.value.fragments = [...capture.value.fragments, fragment].sort((left, right) => left.ordinal - right.ordinal)
+    if (!capture.value.captureSessionId) capture.value.captureSessionId = fragment.captureSessionId
+  }
+
   function initializeRuntimeEvents(scope: CaseScope) {
     if (sessionConnection || !scope.caseId || !session.value.id) return
     sessionConnection = connectRuntimeSession(session.value.id, (event) => {
@@ -247,6 +292,11 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       if (event.event === 'ASR_FINAL') {
         const payload = event.payload as { text?: string }
         if (payload.text) capture.value.partialText = payload.text
+        return
+      }
+      if (event.event === 'ASR_FRAGMENT') {
+        const fragment = normalizeTemporaryAsrFragment(event.payload)
+        upsertAsrFragment(fragment, scope)
         return
       }
       if (event.event === 'RECORDING_STATE' || event.event === 'asr.capture.status') {
@@ -295,13 +345,15 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
       const runtimeCapabilities = await fetchRuntimeCapabilities()
       captureAvailable.value = runtimeCapabilities.recording.state === 'AVAILABLE' || runtimeCapabilities.asr.state === 'AVAILABLE'
-      const [messages, factItems, timelineItems, sessionState, captureStatus, analyses] = await Promise.all([
+      const [messages, factItems, timelineItems, sessionState, captureStatus, analyses, readiness, officers] = await Promise.all([
         fetchMessages(requestedCaseId),
         fetchFacts(requestedCaseId),
         fetchTimeline(requestedCaseId),
         fetchSessionState(requestedCaseId),
         captureAvailable.value ? fetchAsrCaptureStatus(requestedCaseId) : Promise.resolve(null),
         fetchCaseAiAnalyses(requestedCaseId),
+        fetchVoiceprintReadiness(requestedCaseId),
+        fetchOfficerVoiceprints(true),
       ])
 
       if (!isCurrentScope(scope)) return
@@ -313,6 +365,8 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       facts.value = factItems
       timeline.value = timelineItems
       session.value = sessionState
+      voiceprintReadiness.value = readiness
+      officerVoiceprints.value = officers
       initializeRuntimeEvents(scope)
       if (captureStatus) applyCaptureStatus(captureStatus, scope)
       caseAiAnalyses.value = analyses.filter((item) => item.caseId === requestedCaseId)
@@ -327,16 +381,15 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     }
   }
 
-  function mergeConfirmedRecord(record: TranscriptMessage, scope = currentScope()) {
+  async function refreshTranscript(scope = currentScope()) {
+    const messages = await fetchMessages(scope.caseId)
     if (!isCurrentScope(scope)) return
-    const index = transcript.value.findIndex((item) => item.id === record.id)
-    if (index >= 0) transcript.value[index] = record
-    else transcript.value.push(record)
-    transcript.value.sort((left, right) => (left.seq || Number.MAX_SAFE_INTEGER) - (right.seq || Number.MAX_SAFE_INTEGER))
+    transcript.value = messages
   }
 
   async function startCapture() {
     if (!captureAvailable.value) return feedback('连续离线录音 Runtime 当前不可用，请检查 ASR/麦克风能力状态', true)
+    if (!voiceprintReadiness.value.canStart) return feedback('请先完成嫌疑人声纹注册，再启动正式语音采集', true)
     if (!canRecord.value) return feedback('请先开始审讯再录音', true)
     if (captureBusy.value || capture.value.running) return
 
@@ -345,7 +398,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     try {
       const status = await startAsrCapture(scope.caseId)
       applyCaptureStatus(status, scope)
-      feedbackIfCurrent(scope, '录音已开始，停止后将写入所选问答位置')
+      feedbackIfCurrent(scope, '录音已开始；每个语音片段需确认后才写入正式笔录')
     } catch (err) {
       feedbackIfCurrent(scope, backendErrorMessage(err), true)
     } finally {
@@ -353,50 +406,15 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     }
   }
 
-  async function stopCapture(target?: AsrInsertionTarget, showFeedback = true) {
+  async function stopCapture(_target?: AsrInsertionTarget, showFeedback = true) {
     if (!captureAvailable.value || captureBusy.value || !capture.value.running) return
 
     const scope = currentScope()
-    const captureSessionId = capture.value.captureSessionId
     captureBusy.value = true
     try {
       const status = await stopAsrCapture(scope.caseId)
       applyCaptureStatus(status, scope)
-      if (!isCurrentScope(scope)) return
-
-      if (!target) {
-        if (showFeedback) feedbackIfCurrent(scope, '录音已停止，待确认片段仍保留')
-        return
-      }
-      if (!captureSessionId || !isAsrTargetUsable(target, scope.caseId, transcript.value)) {
-        feedbackIfCurrent(scope, '录音目标已经变化，识别结果已保留为待确认片段', true)
-        return
-      }
-
-      const insertion = buildAsrInsertion(target, captureSessionId, status.fragments)
-      if (!insertion) {
-        feedbackIfCurrent(scope, '本次录音未识别到有效文字', true)
-        return
-      }
-
-      const applied = await applyAsrFragmentsToRecord(
-        scope.caseId,
-        captureSessionId,
-        target.recordId,
-        insertion.fragmentIds,
-        insertion.text,
-      )
-      if (!isCurrentScope(scope) || applied.record.id !== target.recordId) return
-      mergeConfirmedRecord(applied.record, scope)
-      const appliedIds = new Set(applied.fragments.map((item) => item.id))
-      capture.value.fragments = capture.value.fragments.filter((item) => !appliedIds.has(item.id))
-      captureInsertionReceipt.value = {
-        caseId: scope.caseId,
-        recordId: target.recordId,
-        caretPosition: insertion.caretPosition,
-        appliedAt: Date.now(),
-      }
-      feedbackIfCurrent(scope, `语音文字已写入第 ${applied.record.seq} 条记录`)
+      if (showFeedback) feedbackIfCurrent(scope, '录音已停止，识别结果保留为待确认片段，不会自动改写正式笔录')
     } catch (err) {
       feedbackIfCurrent(scope, backendErrorMessage(err), true)
     } finally {
@@ -408,9 +426,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     const scope = currentScope()
     try {
       const updated = await updateAsrFragment(scope.caseId, fragmentId, editedText, speaker)
-      if (!isCurrentScope(scope) || updated.caseId !== scope.caseId) return
-      const index = capture.value.fragments.findIndex((item) => item.id === fragmentId)
-      if (index >= 0) capture.value.fragments[index] = updated
+      upsertAsrFragment(updated, scope)
     } catch (err) {
       feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
@@ -419,12 +435,13 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   async function confirmPendingFragment(fragmentId: string) {
     const scope = currentScope()
     try {
-      const result = await confirmAsrFragment(scope.caseId, fragmentId)
-      if (!isCurrentScope(scope) || result.fragment.caseId !== scope.caseId) return
-      mergeConfirmedRecord(result.record, scope)
-      capture.value.fragments = capture.value.fragments.filter((fragment) => fragment.id !== fragmentId)
-      selectedFragmentIds.value = selectedFragmentIds.value.filter((id) => id !== fragmentId)
-      feedbackIfCurrent(scope, `片段已确认并保存为第 ${result.record.seq} 条正式记录`)
+      const confirmed = await confirmAsrFragment(scope.caseId, fragmentId)
+      if (!isCurrentScope(scope) || confirmed.caseId !== scope.caseId) return
+      await refreshTranscript(scope)
+      if (!isCurrentScope(scope)) return
+      capture.value.fragments = capture.value.fragments.filter((fragment) => fragment.id !== confirmed.id)
+      selectedFragmentIds.value = selectedFragmentIds.value.filter((id) => id !== confirmed.id)
+      feedbackIfCurrent(scope, '片段已确认并写入正式笔录')
     } catch (err) {
       feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
@@ -437,16 +454,13 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     const fragmentIds = [...selectedFragmentIds.value]
     try {
       const result = await confirmAsrFragmentBatch(scope.caseId, fragmentIds)
-      if (!isCurrentScope(scope) || result.confirmed.some((item) => item.fragment.caseId !== scope.caseId)) return
-      result.confirmed.forEach((item) => mergeConfirmedRecord(item.record, scope))
-      const confirmedIds = new Set(result.confirmed.map((item) => item.fragment.id))
+      if (!isCurrentScope(scope) || result.fragments.some((item) => item.caseId !== scope.caseId)) return
+      await refreshTranscript(scope)
+      if (!isCurrentScope(scope)) return
+      const confirmedIds = new Set(result.fragments.map((item) => item.id))
       capture.value.fragments = capture.value.fragments.filter((fragment) => !confirmedIds.has(fragment.id))
-      selectedFragmentIds.value = result.failures.map((item) => item.fragmentId)
-      if (result.failures.length) {
-        feedbackIfCurrent(scope, `已确认 ${result.confirmed.length} 条，${result.failures.length} 条需补充说话人或文本`, true)
-      } else {
-        feedbackIfCurrent(scope, `已确认并入库 ${result.confirmed.length} 条片段`)
-      }
+      selectedFragmentIds.value = selectedFragmentIds.value.filter((id) => !confirmedIds.has(id))
+      feedbackIfCurrent(scope, `已确认并入库 ${result.confirmedCount} 条片段`)
     } catch (err) {
       feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
@@ -475,6 +489,153 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     const summary = await fetchCase(scope.caseId)
     if (!isCurrentScope(scope) || summary.id !== scope.caseId) return
     caseSummary.value = summary
+  }
+
+  async function refreshVoiceprintState(scope = currentScope()) {
+    const [readiness, officers] = await Promise.all([
+      fetchVoiceprintReadiness(scope.caseId),
+      fetchOfficerVoiceprints(true),
+    ])
+    if (!isCurrentScope(scope)) return
+    voiceprintReadiness.value = readiness
+    officerVoiceprints.value = officers
+  }
+
+  function selectInterrogatorOfficer(officerId: string | null) {
+    selectedInterrogatorOfficerId.value = officerId || null
+  }
+
+  function selectRecorderOfficer(officerId: string | null) {
+    selectedRecorderOfficerId.value = officerId || null
+  }
+
+  async function startSuspectVoiceprintEnrollment(actorId?: string) {
+    if (voiceprintBusy.value) return
+    const scope = currentScope()
+    voiceprintBusy.value = true
+    voiceprintEnrollmentState.value = { phase: 'RECORDING', kind: 'SUSPECT', subjectId: scope.caseId, message: '正在录制嫌疑人声纹' }
+    try {
+      const result = await startSuspectVoiceprintEnrollmentApi(scope.caseId, actorId)
+      if (!isCurrentScope(scope)) return
+      voiceprintEnrollmentState.value = {
+        ...voiceprintEnrollmentState.value,
+        phase: 'RECORDING',
+        simulated: Boolean(result.simulated),
+      }
+    } catch (err) {
+      if (isCurrentScope(scope)) voiceprintEnrollmentState.value = { phase: 'ERROR', kind: 'SUSPECT', subjectId: scope.caseId, message: backendErrorMessage(err) }
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
+    } finally {
+      if (isCurrentScope(scope)) voiceprintBusy.value = false
+    }
+  }
+
+  async function stopSuspectVoiceprintEnrollment(actorId?: string) {
+    if (voiceprintBusy.value) return
+    const scope = currentScope()
+    voiceprintBusy.value = true
+    voiceprintEnrollmentState.value = { ...voiceprintEnrollmentState.value, phase: 'PROCESSING' }
+    try {
+      const result = await stopSuspectVoiceprintEnrollmentApi(scope.caseId, actorId)
+      if (!isCurrentScope(scope)) return
+      await refreshVoiceprintState(scope)
+      if (!isCurrentScope(scope)) return
+      voiceprintEnrollmentState.value = {
+        phase: 'COMPLETE',
+        kind: 'SUSPECT',
+        subjectId: scope.caseId,
+        usableDurationMs: Number(result.usableDurationMs ?? 0),
+        simulated: Boolean(result.simulated),
+        message: result.simulated ? '浏览器开发模拟完成；未形成真实声纹验证' : '嫌疑人声纹已注册',
+      }
+      feedbackIfCurrent(scope, voiceprintEnrollmentState.value.message || '嫌疑人声纹已注册')
+    } catch (err) {
+      if (isCurrentScope(scope)) voiceprintEnrollmentState.value = { phase: 'ERROR', kind: 'SUSPECT', subjectId: scope.caseId, message: backendErrorMessage(err) }
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
+    } finally {
+      if (isCurrentScope(scope)) voiceprintBusy.value = false
+    }
+  }
+
+  async function startOfficerVoiceprintEnrollment(officerId: string, officerName: string, actorId?: string) {
+    if (voiceprintBusy.value) return
+    const scope = currentScope()
+    voiceprintBusy.value = true
+    voiceprintEnrollmentState.value = { phase: 'RECORDING', kind: 'OFFICER', subjectId: officerId, officerName, message: '正在录制民警声纹' }
+    try {
+      const result = await startOfficerVoiceprintEnrollmentApi(officerId, officerName, actorId)
+      if (!isCurrentScope(scope)) return
+      voiceprintEnrollmentState.value = { ...voiceprintEnrollmentState.value, phase: 'RECORDING', simulated: Boolean(result.simulated) }
+    } catch (err) {
+      if (isCurrentScope(scope)) voiceprintEnrollmentState.value = { phase: 'ERROR', kind: 'OFFICER', subjectId: officerId, officerName, message: backendErrorMessage(err) }
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
+    } finally {
+      if (isCurrentScope(scope)) voiceprintBusy.value = false
+    }
+  }
+
+  async function stopOfficerVoiceprintEnrollment(officerId: string, actorId?: string) {
+    if (voiceprintBusy.value) return
+    const scope = currentScope()
+    voiceprintBusy.value = true
+    voiceprintEnrollmentState.value = { ...voiceprintEnrollmentState.value, phase: 'PROCESSING' }
+    try {
+      const result = await stopOfficerVoiceprintEnrollmentApi(officerId, actorId)
+      if (!isCurrentScope(scope)) return
+      await refreshVoiceprintState(scope)
+      if (!isCurrentScope(scope)) return
+      voiceprintEnrollmentState.value = {
+        phase: 'COMPLETE',
+        kind: 'OFFICER',
+        subjectId: officerId,
+        officerName: String(result.officerName ?? voiceprintEnrollmentState.value.officerName ?? ''),
+        usableDurationMs: Number(result.usableDurationMs ?? 0),
+        simulated: Boolean(result.simulated),
+        message: result.simulated ? '浏览器开发模拟完成；未形成真实民警声纹' : '民警声纹已保存',
+      }
+      feedbackIfCurrent(scope, voiceprintEnrollmentState.value.message || '民警声纹已保存')
+    } catch (err) {
+      if (isCurrentScope(scope)) voiceprintEnrollmentState.value = { ...voiceprintEnrollmentState.value, phase: 'ERROR', message: backendErrorMessage(err) }
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
+    } finally {
+      if (isCurrentScope(scope)) voiceprintBusy.value = false
+    }
+  }
+
+  async function revokeOfficerVoiceprint(officerId: string, actorId?: string) {
+    const scope = currentScope()
+    try {
+      await revokeOfficerVoiceprintApi(officerId, actorId)
+      if (!isCurrentScope(scope)) return
+      if (selectedInterrogatorOfficerId.value === officerId) selectedInterrogatorOfficerId.value = null
+      if (selectedRecorderOfficerId.value === officerId) selectedRecorderOfficerId.value = null
+      await refreshVoiceprintState(scope)
+      feedbackIfCurrent(scope, '民警声纹已撤销')
+    } catch (err) {
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
+    }
+  }
+
+  async function bindVoiceprintRoles(actorId?: string) {
+    const scope = currentScope()
+    if (session.value.status === 'READY') {
+      feedbackIfCurrent(scope, '民警角色选择已暂存；开始审讯后会绑定到本次 session')
+      return
+    }
+    try {
+      const readiness = await updateVoiceprintAssignments(
+        scope.caseId,
+        selectedInterrogatorOfficerId.value,
+        selectedRecorderOfficerId.value,
+        actorId,
+      )
+      if (!isCurrentScope(scope)) return
+      voiceprintReadiness.value = readiness
+      feedbackIfCurrent(scope, '本次审讯的民警声纹角色已绑定')
+    } catch (err) {
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
+      throw err
+    }
   }
 
   async function ask(text: string) {
@@ -599,14 +760,31 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   async function startSession() {
     const scope = currentScope()
+    if (!voiceprintReadiness.value.canStart) {
+      feedbackIfCurrent(scope, voiceprintReadiness.value.simulated ? '浏览器模拟声纹不能解锁正式审讯' : '请先完成嫌疑人声纹注册', true)
+      return
+    }
     try {
       const nextSession = await startSessionApi(scope.caseId)
       if (!isCurrentScope(scope) || nextSession.caseId !== scope.caseId) return
       session.value = nextSession
+      try {
+        await bindVoiceprintRoles()
+      } catch {
+        if (!isCurrentScope(scope)) return
+        try {
+          const paused = await pauseSessionApi(scope.caseId)
+          if (isCurrentScope(scope) && paused.caseId === scope.caseId) session.value = paused
+        } catch {
+          // Keep the original role-binding failure visible; capture remains blocked while not RUNNING.
+        }
+        return
+      }
+      if (!isCurrentScope(scope)) return
       disposeCaptureEvents()
       initializeRuntimeEvents(scope)
       await refreshCase(scope)
-      feedbackIfCurrent(scope, '审讯已开始：录入问答和本地 AI 主链路已解锁')
+      feedbackIfCurrent(scope, '审讯已开始：嫌疑人声纹门禁已通过，民警角色已绑定到本次 session')
     } catch (err) {
       feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }
@@ -696,6 +874,12 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     captureInsertionReceipt,
     captureElapsedMs,
     selectedFragmentIds,
+    voiceprintReadiness,
+    officerVoiceprints,
+    selectedInterrogatorOfficerId,
+    selectedRecorderOfficerId,
+    voiceprintEnrollmentState,
+    voiceprintBusy,
     resetCaseContext,
     initialize,
     ask,
@@ -717,6 +901,15 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     confirmSelectedFragments,
     discardPendingFragment,
     toggleFragmentSelection,
+    refreshVoiceprintState,
+    selectInterrogatorOfficer,
+    selectRecorderOfficer,
+    startSuspectVoiceprintEnrollment,
+    stopSuspectVoiceprintEnrollment,
+    startOfficerVoiceprintEnrollment,
+    stopOfficerVoiceprintEnrollment,
+    revokeOfficerVoiceprint,
+    bindVoiceprintRoles,
     disposeCaptureEvents,
     feedback,
   }
