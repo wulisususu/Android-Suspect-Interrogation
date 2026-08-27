@@ -62,6 +62,8 @@ jobs:
           git config --local http.version HTTP/1.1
           git config --local http.lowSpeedLimit 1024
           git config --local http.lowSpeedTime 15
+          git sparse-checkout init --cone
+          git sparse-checkout set .github linux webapp deploy scripts systemd tests docs
 
           fetched=0
           for attempt in 1 2 3 4 5; do
