@@ -173,16 +173,16 @@ def test_disconnect_then_restart_does_not_leak_session_state(tmp_path: Path):
 def test_ai_settings_support_speech_socket_and_unconfigured_speaker_thresholds(monkeypatch, tmp_path: Path):
     socket_path = tmp_path / "speech.sock"
     monkeypatch.setenv("SUSPECT_SPEECH_SOCKET", str(socket_path))
-    monkeypatch.delenv("SPEAKER_ACCEPT_THRESHOLD", raising=False)
-    monkeypatch.delenv("SPEAKER_MARGIN", raising=False)
+    monkeypatch.delenv("SUSPECT_SPEAKER_ACCEPT_THRESHOLD", raising=False)
+    monkeypatch.delenv("SUSPECT_SPEAKER_MARGIN", raising=False)
 
     settings = AISettings.from_env()
     assert settings.speech_socket == socket_path
     assert settings.speaker_accept_threshold is None
     assert settings.speaker_margin is None
 
-    monkeypatch.setenv("SPEAKER_ACCEPT_THRESHOLD", "0.73")
-    monkeypatch.setenv("SPEAKER_MARGIN", "0.08")
+    monkeypatch.setenv("SUSPECT_SPEAKER_ACCEPT_THRESHOLD", "0.73")
+    monkeypatch.setenv("SUSPECT_SPEAKER_MARGIN", "0.08")
     calibrated = AISettings.from_env()
     assert calibrated.speaker_accept_threshold == pytest.approx(0.73)
     assert calibrated.speaker_margin == pytest.approx(0.08)
