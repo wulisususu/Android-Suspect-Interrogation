@@ -70,11 +70,11 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
     case 'timeline.list': return { method: 'GET', url: `/api/v1/cases/${caseId}/timeline` }
     case 'audit.list': return { method: 'GET', url: `/api/v1/cases/${caseId}/audit` }
     case 'session.get': return { method: 'GET', url: `/api/v1/cases/${caseId}/session` }
-    case 'session.start': return { method: 'POST', url: '/api/v1/interrogation/start', data: { case_id: payload.caseId } }
-    case 'session.pause': return { method: 'POST', url: `/api/v1/interrogation/${caseId}/pause`, data: {} }
-    case 'session.resume': return { method: 'POST', url: `/api/v1/interrogation/${caseId}/resume`, data: {} }
-    case 'session.finish': return { method: 'POST', url: `/api/v1/interrogation/${caseId}/finish`, data: {} }
-    case 'session.stage': return { method: 'POST', url: `/api/v1/interrogation/${caseId}/stage`, data: { stage: payload.stage } }
+    case 'session.start': return { method: 'POST', url: `/api/v1/cases/${caseId}/session/start`, data: {} }
+    case 'session.pause': return { method: 'POST', url: `/api/v1/cases/${caseId}/session/pause`, data: {} }
+    case 'session.resume': return { method: 'POST', url: `/api/v1/cases/${caseId}/session/resume`, data: {} }
+    case 'session.finish': return { method: 'POST', url: `/api/v1/cases/${caseId}/session/finish`, data: {} }
+    case 'session.stage': return { method: 'POST', url: `/api/v1/cases/${caseId}/session/stage`, data: { stage: payload.stage } }
     case 'identity.read': return {
       method: 'POST',
       url: '/api/v1/identity/read',
