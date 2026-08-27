@@ -3,7 +3,7 @@ name: Linux AI Runtime RK3588
 on:
   push:
     branches:
-      - linux-ai-runtime
+      - linux-adaptation
     paths:
       - '.github/workflows/linux-ai-runtime-rk3588.yml'
       - 'linux/backend/app/ai/**'
@@ -11,8 +11,12 @@ on:
       - 'linux/backend/app/main.py'
       - 'linux/backend/config/model-registry.yaml'
       - 'linux/backend/models/**'
+      - 'linux/backend/speech_worker/**'
       - 'linux/backend/tests/**'
       - 'linux/docs/AI_RUNTIME.md'
+      - 'scripts/ci/probe-funasr-runtime.py'
+      - 'scripts/ai-worker-start.sh'
+      - 'systemd/ai-worker.service'
   workflow_dispatch:
 
 permissions:
@@ -53,7 +57,7 @@ jobs:
           git config --local http.lowSpeedLimit 1024
           git config --local http.lowSpeedTime 15
           git sparse-checkout init --cone
-          git sparse-checkout set .github linux docs
+          git sparse-checkout set .github linux docs scripts systemd tests
 
           fetched=0
           for attempt in 1 2 3 4 5; do
@@ -64,7 +68,7 @@ jobs:
               --prune \
               --no-recurse-submodules \
               --depth=1 \
-              origin "+${GITHUB_SHA}:refs/remotes/origin/linux-ai-runtime"; then
+              origin "+${GITHUB_SHA}:refs/remotes/origin/__ai_runtime_target"; then
               fetched=1
               break
             fi
@@ -78,7 +82,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if find linux/backend/models -type f \( -name '*.rkllm' -o -name '*.gguf' -o -name '*.onnx' -o -name '*.bin' \) | grep -q .; then
+          if find linux/backend/models -type f \( -name '*.rkllm' -o -name '*.gguf' -o -name '*.onnx' -o -name '*.bin' -o -name '*.pt' -o -name '*.pth' \) | grep -q .; then
             echo 'Unexpected model weight found in repository.' >&2
             exit 1
           fi
@@ -90,6 +94,7 @@ jobs:
           set -euo pipefail
           cd linux/backend
           PYTHONPATH=. python3 -m compileall -q app/ai app/api/ai_runtime.py app/main.py tests
+          python3 -m py_compile "$GITHUB_WORKSPACE/scripts/ci/probe-funasr-runtime.py"
 
       - name: Standard-library runtime smoke
         shell: bash
@@ -108,3 +113,31 @@ jobs:
           else
             echo 'pytest not preinstalled on runner; smoke suite already passed without downloads.'
           fi
+
+      - name: Probe installed FunASR models without downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODEL_ROOT=/home/youyeetoo/funasr-models
+          if [[ ! -d "$MODEL_ROOT" ]]; then
+            echo "FunASR model root is not installed at ${MODEL_ROOT}; real-model probe skipped."
+            exit 0
+          fi
+
+          FUNASR_PYTHON=''
+          KNOWN_FUNASR_PYTHON=/home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python
+          if [[ -x "$KNOWN_FUNASR_PYTHON" ]] && "$KNOWN_FUNASR_PYTHON" -c 'import funasr, torch' >/dev/null 2>&1; then
+            FUNASR_PYTHON="$KNOWN_FUNASR_PYTHON"
+          elif python3 -c 'import funasr, torch' >/dev/null 2>&1; then
+            FUNASR_PYTHON=python3
+          fi
+
+          if [[ -z "$FUNASR_PYTHON" ]]; then
+            echo 'FunASR-capable Python interpreter not found; real-model probe skipped.'
+            exit 0
+          fi
+
+          echo "funasr_python=${FUNASR_PYTHON}"
+          MODEL_ROOT="$MODEL_ROOT" "$FUNASR_PYTHON" scripts/ci/probe-funasr-runtime.py \
+            --output "$RUNNER_TEMP/funasr-probe.json"
+          cat "$RUNNER_TEMP/funasr-probe.json"
