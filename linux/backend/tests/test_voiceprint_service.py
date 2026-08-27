@@ -28,6 +28,13 @@ def pcm16(duration_ms: int, sample: int = 1200) -> bytes:
     return struct.pack(f"<{samples}h", *([sample] * samples))
 
 
+def clipped_pcm16(duration_ms: int) -> bytes:
+    samples = duration_ms * SAMPLE_RATE // 1000
+    clipped = max(1, samples // 10)
+    values = [32767] * clipped + [1200] * (samples - clipped)
+    return struct.pack(f"<{samples}h", *values)
+
+
 class FakeSpeechClient:
     def __init__(self, segments, embeddings=None):
         self.segments = segments
@@ -104,6 +111,24 @@ def test_suspect_enrollment_rejects_silence_before_model_calls(tmp_path):
                 actor_id="op-1",
             )
         assert exc_info.value.code == "VOICEPRINT_AUDIO_SILENT"
+        assert speech.segment_calls == 0
+        assert speech.embedding_calls == 0
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_suspect_enrollment_rejects_clearly_clipped_audio_before_model_calls(tmp_path):
+    engine, db = make_db(tmp_path)
+    try:
+        speech = FakeSpeechClient([[0, 30000]])
+        with pytest.raises(DomainError) as exc_info:
+            VoiceprintService(db, speech_client=speech).enroll_suspect(
+                "CASE-1",
+                clipped_pcm16(1000),
+                actor_id="op-1",
+            )
+        assert exc_info.value.code == "VOICEPRINT_AUDIO_CLIPPED"
         assert speech.segment_calls == 0
         assert speech.embedding_calls == 0
     finally:
