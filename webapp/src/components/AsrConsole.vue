@@ -77,7 +77,7 @@ onUnmounted(() => {
       <div><span>初始化耗时</span><strong>{{ metric(status.initializationMs) }}</strong></div>
       <div><span>首字延迟</span><strong>{{ metric(status.firstTokenLatencyMs) }}</strong></div>
       <div><span>单句耗时</span><strong>{{ metric(status.utteranceLatencyMs) }}</strong></div>
-      <div><span>Runtime</span><strong>sherpa {{ status.sherpaVersion }} · {{ status.sampleRate }} Hz</strong></div>
+      <div><span>Runtime</span><strong>Linux 本地离线运行时 · {{ status.sampleRate }} Hz</strong></div>
       <div><span>首选输入</span><strong>{{ status.preferredAudioInput || '系统默认' }}</strong></div>
       <div><span>实际输入</span><strong>{{ status.routedAudioInput || '等待路由' }}</strong></div>
       <div><span>输入信号</span><strong>{{ signal(status) }}</strong></div>
