@@ -21,6 +21,45 @@ describe('LinuxHttpWsAdapter', () => {
     })
   })
 
+  it('maps reviewed identity fields to the canonical confirmation endpoint', async () => {
+    const calls: Array<{ method: string; url: string; data?: unknown }> = []
+    const adapter = new LinuxHttpWsAdapter({
+      request: async (config) => {
+        calls.push({ method: String(config.method), url: String(config.url), data: config.data })
+        return { data: { name: '赵某', caseId: 'CASE-001' } }
+      },
+      origin: 'http://127.0.0.1:8080',
+    })
+
+    await adapter.invoke('identity.confirm', {
+      caseId: 'CASE-001',
+      actorId: 'officer-01',
+      name: '赵某',
+      idNumber: '320101199001010011',
+      gender: '男',
+      nation: '汉',
+      birthDate: '1990-01-01',
+      address: '测试地址',
+      source: 'MANUAL',
+    })
+
+    expect(calls[0]).toMatchObject({
+      method: 'POST',
+      url: '/api/v1/identity/confirm',
+      data: {
+        case_id: 'CASE-001',
+        actor_id: 'officer-01',
+        name: '赵某',
+        id_number: '320101199001010011',
+        gender: '男',
+        nation: '汉',
+        birth_date: '1990-01-01',
+        address: '测试地址',
+        source: 'MANUAL',
+      },
+    })
+  })
+
   it('uses the canonical case session endpoints exposed by FastAPI', async () => {
     const calls: Array<{ method: string; url: string; data?: unknown }> = []
     const adapter = new LinuxHttpWsAdapter({
