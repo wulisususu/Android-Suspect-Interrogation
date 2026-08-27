@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The current Linux skeleton does not yet own a production migration framework.
-# When the backend agent adds Alembic, this gate automatically exercises it.
+# Exercise Alembic against a clean, isolated database. Do not reuse the
+# application's default SQLite file because earlier test imports may initialize
+# it from current ORM metadata, which would bypass historical migrations.
 if [[ -f linux/backend/alembic.ini ]]; then
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
-  export SUSPECT_DB_PATH="$tmp/migration.db"
+  export DATABASE_URL="sqlite:///$tmp/migration.db"
   (
     cd linux/backend
     python3 -m alembic -c alembic.ini upgrade head
