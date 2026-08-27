@@ -10,6 +10,7 @@ Group=suspect-interrogation
 WorkingDirectory=/opt/suspect-interrogation/current/linux/backend
 EnvironmentFile=/etc/suspect-interrogation/runtime.env
 EnvironmentFile=-/etc/suspect-interrogation/ai-worker.env
+Environment=SUSPECT_SPEECH_SOCKET=/run/suspect-interrogation/speech.sock
 RuntimeDirectory=suspect-interrogation
 RuntimeDirectoryMode=0750
 ExecStart=/opt/suspect-interrogation/current/scripts/ai-worker-start.sh
