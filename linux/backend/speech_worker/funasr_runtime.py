@@ -13,6 +13,62 @@ _CRITICAL_MODEL_NAMES = ("paraformer", "fsmn-vad")
 _OPTIONAL_MODEL_NAMES = ("xvector",)
 _MODEL_NAMES = _CRITICAL_MODEL_NAMES + _OPTIONAL_MODEL_NAMES
 ModelFactory = Callable[..., Any]
+LegacySpeakerFactory = Callable[[Path], Any]
+
+
+class _ModelScopeLegacyXVectorAdapter:
+    """Compatibility adapter for the 2023 ModelScope XVector checkpoint.
+
+    The local ``sv.pth``/``sv.yaml`` model predates FunASR 1.x ``AutoModel``.
+    Its original supported inference surface is ModelScope's
+    ``Tasks.speaker_verification`` pipeline. Keep this adapter local-only and
+    expose the same ``generate`` contract used by the rest of the worker.
+    """
+
+    def __init__(self, model_path: Path) -> None:
+        try:
+            from modelscope.pipelines import pipeline
+            from modelscope.utils.constant import Tasks
+        except Exception as exc:
+            raise BackendUnavailableError(
+                "ModelScope legacy speaker runtime is unavailable",
+                details={"model": "xvector", "error_type": type(exc).__name__},
+            ) from exc
+        try:
+            self._pipeline = pipeline(
+                task=Tasks.speaker_verification,
+                model=str(model_path),
+                device="cpu",
+            )
+        except Exception as exc:
+            raise BackendUnavailableError(
+                "failed to load local ModelScope legacy xvector model",
+                details={"model": "xvector", "error_type": type(exc).__name__},
+            ) from exc
+
+    def generate(self, **kwargs: Any) -> list[dict[str, Any]]:
+        pcm = kwargs.get("input")
+        sample_rate = int(kwargs.get("fs", 16000))
+        if sample_rate != 16000:
+            raise ValueError("legacy xvector requires 16 kHz PCM")
+        if not isinstance(pcm, (bytes, bytearray, memoryview)):
+            raise TypeError("legacy xvector input must be PCM bytes")
+        raw = bytes(pcm)
+        if not raw or len(raw) % 2:
+            raise ValueError("legacy xvector requires complete PCM16 samples")
+        try:
+            import numpy as np
+
+            waveform = np.frombuffer(raw, dtype="<i2").copy()
+            result = self._pipeline(audio_in=waveform)
+        except Exception as exc:
+            raise BackendUnavailableError(
+                "ModelScope legacy xvector inference failed",
+                details={"model": "xvector", "error_type": type(exc).__name__},
+            ) from exc
+        if not isinstance(result, dict):
+            raise WorkerCrashedError("ModelScope legacy xvector result must be an object")
+        return [result]
 
 
 class FunASRSpeechRuntime:
@@ -22,9 +78,11 @@ class FunASRSpeechRuntime:
     deliberately isolated: a missing or broken speaker model degrades speaker
     attribution but must not discard otherwise valid ASR/VAD output.
 
-    Real FunASR is imported lazily so hosted/unit tests do not need the vendor
-    runtime installed. Production always resolves models from a local path and
-    disables update/download behavior.
+    The installed 2023 XVector checkpoint is a legacy ModelScope speaker model.
+    Production first tries FunASR ``AutoModel`` for forward compatibility and,
+    only when that fails, falls back to the model's original local ModelScope
+    speaker-verification pipeline. No model downloads are requested by either
+    path because the model argument is always the installed local directory.
     """
 
     def __init__(
@@ -32,22 +90,19 @@ class FunASRSpeechRuntime:
         *,
         model_root: str | Path = DEFAULT_MODEL_ROOT,
         model_factory: ModelFactory | None = None,
+        legacy_speaker_factory: LegacySpeakerFactory | None = None,
     ) -> None:
         self.model_root = Path(model_root)
         self._model_factory = model_factory
+        self._legacy_speaker_factory = legacy_speaker_factory
         self.asr_model: Any | None = None
         self.vad_model: Any | None = None
         self.speaker_model: Any | None = None
+        self.speaker_backend: str | None = None
         self.model_errors: dict[str, dict[str, str]] = {}
 
     @property
     def loaded(self) -> bool:
-        """Return True only when all three models are loaded.
-
-        Keep the historical meaning of ``loaded`` for callers that care about
-        full speaker capability. ``core_loaded`` identifies the ASR/VAD path
-        that can legitimately continue when XVector is unavailable.
-        """
         return self.core_loaded and self.speaker_model is not None
 
     @property
@@ -91,13 +146,26 @@ class FunASRSpeechRuntime:
                 "error_type": "MissingModelDirectory",
             }
             return
+
+        primary_error: Exception | None = None
         try:
             self.speaker_model = self._load_model(factory, speaker_path)
+            self.speaker_backend = "funasr-automodel"
+            return
+        except Exception as exc:
+            primary_error = exc
+
+        try:
+            legacy_factory = self._legacy_speaker_factory or self._load_legacy_speaker
+            self.speaker_model = legacy_factory(speaker_path)
+            self.speaker_backend = "modelscope-legacy-xvector"
         except Exception as exc:
             self.speaker_model = None
+            self.speaker_backend = None
             self.model_errors["xvector"] = {
                 "code": "BACKEND_UNAVAILABLE",
                 "error_type": type(exc).__name__,
+                "primary_error_type": type(primary_error).__name__ if primary_error is not None else "Unknown",
             }
 
     @staticmethod
@@ -108,6 +176,15 @@ class FunASRSpeechRuntime:
             disable_update=True,
             disable_pbar=True,
         )
+
+    @staticmethod
+    def _load_legacy_speaker(model_path: Path) -> Any:
+        if not (model_path / "sv.pth").is_file() or not (model_path / "sv.yaml").is_file():
+            raise ModelNotInstalledError(
+                "legacy xvector checkpoint files are missing",
+                details={"model": "xvector"},
+            )
+        return _ModelScopeLegacyXVectorAdapter(model_path)
 
     def health(self) -> dict[str, Any]:
         if self.loaded:
@@ -124,6 +201,7 @@ class FunASRSpeechRuntime:
                 "vad": self.vad_model is not None,
                 "speaker": self.speaker_model is not None,
             },
+            "speaker_backend": self.speaker_backend,
             "errors": dict(self.model_errors),
         }
 
@@ -221,6 +299,8 @@ class FunASRSpeechRuntime:
         try:
             return model.generate(**kwargs)
         except Exception as exc:
+            if isinstance(exc, (BackendUnavailableError, WorkerCrashedError)):
+                raise
             raise BackendUnavailableError(
                 f"FunASR inference failed for {name}: {exc}",
                 details={"model": name, "error_type": type(exc).__name__},
@@ -245,6 +325,7 @@ class FunASRSpeechRuntime:
         self.asr_model = None
         self.vad_model = None
         self.speaker_model = None
+        self.speaker_backend = None
 
 
 def _first_record(result: Any) -> dict[str, Any]:
