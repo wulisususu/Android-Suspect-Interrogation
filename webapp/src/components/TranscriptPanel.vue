@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import { AlertTriangle, Check, Mic, Square, Trash2 } from '@lucide/vue'
+import { temporarySpeakerPresentation } from './VoiceprintPreparationPanel.vue'
 import type { AsrCaptureStatus, TemporaryAsrFragment, TemporaryAsrSpeaker, TranscriptMessage } from '../types/interrogation'
 
 const props = defineProps<{
@@ -94,6 +95,11 @@ function confidenceLabel(fragment: TemporaryAsrFragment) {
   return fragment.confidence == null ? '置信度不可用' : `置信度 ${Math.round(fragment.confidence * 100)}%`
 }
 
+function speakerPresentation(fragment: TemporaryAsrFragment) {
+  if (fragment.lowConfidence) return temporarySpeakerPresentation('UNKNOWN')
+  return temporarySpeakerPresentation(fragment.speaker, fragment.speakerName)
+}
+
 function updateFragmentText(fragment: TemporaryAsrFragment, event: Event) {
   emit('updateFragment', fragment.id, (event.target as HTMLTextAreaElement).value, fragment.speaker)
 }
@@ -184,12 +190,14 @@ function updateFragmentSpeaker(fragment: TemporaryAsrFragment, event: Event) {
             >
             <div class="fragment-main">
               <div class="fragment-meta">
+                <strong>{{ speakerPresentation(fragment).label }}</strong>
+                <span>{{ speakerPresentation(fragment).detail }}</span>
                 <span>{{ formatTimestamp(fragment.startedAtMs) }} - {{ formatTimestamp(fragment.endedAtMs) }}</span>
                 <span :class="{ warning: fragment.lowConfidence }">
                   <AlertTriangle v-if="fragment.lowConfidence" :size="14" />
                   {{ confidenceLabel(fragment) }}
                 </span>
-                <span>{{ fragment.audio.available ? '音频已记录' : '音频不可用' }}</span>
+                <span>{{ fragment.voiceprintVerified ? '声纹已验证' : '身份未由声纹验证' }}</span>
               </div>
               <textarea
                 :value="fragment.editedText"
@@ -199,19 +207,21 @@ function updateFragmentSpeaker(fragment: TemporaryAsrFragment, event: Event) {
               />
             </div>
             <select
-              :value="fragment.speaker"
+              :value="fragment.lowConfidence ? 'UNKNOWN' : fragment.speaker"
               aria-label="说话人"
               @change="updateFragmentSpeaker(fragment, $event)"
             >
-              <option value="UNKNOWN">待指定</option>
-              <option value="OFFICER">民警</option>
+              <option value="UNKNOWN">待确认</option>
+              <option value="OFFICER_FALLBACK">民警（非嫌疑人规则）</option>
+              <option value="INTERROGATOR">主审民警</option>
+              <option value="RECORDER">记录民警</option>
               <option value="SUSPECT">嫌疑人</option>
             </select>
             <button
               class="fragment-icon-button confirm"
               title="确认并正式入库"
               aria-label="确认并正式入库"
-              :disabled="!fragment.editedText.trim() || fragment.speaker === 'UNKNOWN'"
+              :disabled="!fragment.editedText.trim() || fragment.lowConfidence || fragment.speaker === 'UNKNOWN'"
               @click="$emit('confirmFragment', fragment.id)"
             >
               <Check :size="17" />
@@ -233,7 +243,7 @@ function updateFragmentSpeaker(fragment: TemporaryAsrFragment, event: Event) {
           class="capture-toggle"
           :class="{ active: capture.running }"
           :disabled="captureBusy || !canRecord || !nativeCaptureAvailable"
-          :title="nativeCaptureAvailable ? (capture.running ? '停止连续录音' : '开始连续录音') : '连续录音仅在 Android APK 中可用'"
+          :title="nativeCaptureAvailable ? (capture.running ? '停止连续录音' : '开始连续录音') : 'Linux 连续离线录音 Runtime 当前不可用'"
           :aria-label="capture.running ? '停止连续录音' : '开始连续录音'"
           @click="capture.running ? $emit('captureStop') : $emit('captureStart')"
         >
