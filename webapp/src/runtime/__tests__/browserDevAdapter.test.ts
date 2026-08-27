@@ -35,4 +35,21 @@ describe('BrowserDevAdapter', () => {
     })
     expect(mocks.request).not.toHaveBeenCalled()
   })
+
+  it('simulates voiceprint UI state without ever claiming biometric readiness', async () => {
+    const adapter = new BrowserDevAdapter()
+
+    const readiness = await adapter.invoke<{
+      suspectReady: boolean
+      canStart: boolean
+      simulated: boolean
+    }>('voiceprint.readiness', { caseId: 'case-1' })
+
+    expect(readiness).toMatchObject({
+      suspectReady: false,
+      canStart: false,
+      simulated: true,
+    })
+    expect(mocks.request).not.toHaveBeenCalled()
+  })
 })
