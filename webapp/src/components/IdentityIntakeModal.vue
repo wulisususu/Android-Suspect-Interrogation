@@ -12,13 +12,31 @@ import {
   selectLocalModel,
 } from '../api/interrogation'
 import { updateCaseFact } from '../api/caseProfile'
-import type { RuntimeCapabilities } from '../runtime'
+import { getRuntimeAdapter, type RuntimeCapabilities } from '../runtime'
 import type { CaseSummary, LocalModelDescriptor, OcrResult } from '../types/interrogation'
 import { calculateAge, parseIdentityCardOcr } from '../utils/identityOcr'
 
 const emit = defineEmits<{ close: []; created: [item: CaseSummary] }>()
 
-const method = ref<'manual' | 'ocr'>('ocr')
+type IntakeMethod = 'card' | 'ocr' | 'manual'
+interface IdentityReadResponse {
+  person?: Record<string, unknown>
+  identity?: {
+    name?: string
+    id_number?: string
+    sex?: string
+    nation?: string
+    birth_date?: string
+    address?: string
+    issuer?: string
+    valid_from?: string
+    valid_to?: string
+    portrait?: string
+    source?: string
+  }
+}
+
+const method = ref<IntakeMethod>('card')
 const busy = ref('')
 const error = ref('')
 const previewError = ref('')
@@ -29,6 +47,10 @@ const previewUri = ref('')
 const rawOcrText = ref('')
 const lastOcr = ref<OcrResult | null>(null)
 const ocrApplied = ref(false)
+const cardApplied = ref(false)
+const cardPortrait = ref('')
+const cardIssuer = ref('')
+const cardValidity = ref('')
 
 const form = reactive({
   suspectName: '',
@@ -44,19 +66,30 @@ const form = reactive({
 })
 
 const usableOcrModels = computed(() => ocrModels.value.filter((item) => item.runtimeReady && item.complete !== false))
+const identityCapability = computed(() => capabilities.value?.identity)
+const identityAvailable = computed(() => identityCapability.value?.state === 'AVAILABLE')
 const ocrCapability = computed(() => capabilities.value?.ocr)
 const ocrAvailable = computed(() => ocrCapability.value?.state === 'AVAILABLE')
-const ocrReason = computed(() => {
-  const item = ocrCapability.value
-  if (!item || item.state === 'AVAILABLE') return ''
-  return item.reason || ({
-    NOT_CONNECTED: 'Linux 本地后端未连接',
-    NOT_CONFIGURED: 'OCR Runtime 尚未配置',
-    MODEL_NOT_INSTALLED: 'OCR 模型尚未安装',
-    BUSY: 'OCR Runtime 正忙',
-    ERROR: 'OCR Runtime 当前异常',
-  }[item.state] || item.state)
+const identityReason = computed(() => capabilityReason(identityCapability.value, '身份证读卡器尚未配置'))
+const ocrReason = computed(() => capabilityReason(ocrCapability.value, 'OCR Runtime 尚未配置'))
+const portraitSrc = computed(() => {
+  const value = cardPortrait.value.trim()
+  if (!value) return ''
+  if (/^(data:|blob:|https?:)/i.test(value)) return value
+  return `data:image/jpeg;base64,${value}`
 })
+
+function capabilityReason(item: { state?: string; reason?: string } | undefined, fallback: string) {
+  if (!item || item.state === 'AVAILABLE') return ''
+  if (item.reason) return item.reason
+  return ({
+    NOT_CONNECTED: 'Linux 本地后端未连接',
+    NOT_CONFIGURED: fallback,
+    MODEL_NOT_INSTALLED: '所需本地模型尚未安装',
+    BUSY: '设备 / Runtime 正忙',
+    ERROR: '设备 / Runtime 当前异常',
+  } as Record<string, string>)[item.state || ''] || item.state || fallback
+}
 
 function modelLabel(item: LocalModelDescriptor) {
   const format = item.modelFormat ? ` · ${item.modelFormat}` : ''
@@ -67,6 +100,52 @@ function modelLabel(item: LocalModelDescriptor) {
 
 function syncAge() {
   form.age = calculateAge(form.birthDate)
+}
+
+function setIdentityFields(identity: IdentityReadResponse['identity']) {
+  if (!identity) return
+  if (identity.name) form.suspectName = identity.name
+  if (identity.sex) form.gender = identity.sex
+  if (identity.nation) form.nation = identity.nation
+  if (identity.birth_date) form.birthDate = identity.birth_date
+  if (identity.id_number) form.idNumber = identity.id_number.toUpperCase()
+  if (identity.address) form.idCardAddress = identity.address
+  if (identity.portrait) cardPortrait.value = identity.portrait
+  cardIssuer.value = identity.issuer || ''
+  cardValidity.value = [identity.valid_from, identity.valid_to].filter(Boolean).join(' 至 ')
+  syncAge()
+}
+
+async function readIdentityCard() {
+  if (!identityAvailable.value) {
+    error.value = identityReason.value || '身份证读卡器当前不可用，请使用 OCR 或手工录入。'
+    return
+  }
+  busy.value = 'card'
+  error.value = ''
+  try {
+    const result = await getRuntimeAdapter().invoke<IdentityReadResponse>('identity.read', {
+      actorId: form.officerName.trim() || '当前警官',
+    }, { timeoutMs: 30_000 })
+    setIdentityFields(result.identity)
+    if (!form.suspectName && result.person) {
+      const person = result.person
+      form.suspectName = String(person.name ?? person.suspect_name ?? '')
+      form.idNumber = String(person.id_number ?? person.idNumber ?? '').toUpperCase()
+      form.gender = String(person.sex ?? person.gender ?? '')
+      form.nation = String(person.nation ?? '')
+      form.birthDate = String(person.birth_date ?? person.birthDate ?? '')
+      form.idCardAddress = String(person.address ?? '')
+      syncAge()
+    }
+    if (!form.suspectName && !form.idNumber) throw new Error('读卡器返回成功，但未返回可核对的身份字段')
+    cardApplied.value = true
+    ocrApplied.value = false
+  } catch (e) {
+    error.value = backendErrorMessage(e)
+  } finally {
+    busy.value = ''
+  }
 }
 
 async function loadOcrModels() {
@@ -119,8 +198,9 @@ function applyOcr(result: OcrResult) {
   if (parsed.idNumber) form.idNumber = parsed.idNumber
   if (parsed.address) form.idCardAddress = parsed.address
   ocrApplied.value = true
+  cardApplied.value = false
   if (!parsed.suspectName && !parsed.idNumber) {
-    error.value = 'OCR 已完成，但未能可靠定位身份证关键字段。请检查图片方向/清晰度，或直接手动修正。'
+    error.value = 'OCR 已完成，但未能可靠定位身份证关键字段。请检查图片清晰度，或使用读卡器 / 手工修正。'
   }
 }
 
@@ -154,7 +234,7 @@ async function submit() {
   error.value = ''
   const name = form.suspectName.trim()
   if (!name) {
-    error.value = '请先录入被询问人的姓名。'
+    error.value = '请先读取或录入被询问人的姓名。'
     return
   }
   const idNumber = form.idNumber.trim().toUpperCase()
@@ -175,7 +255,7 @@ async function submit() {
       idNumber,
       address: form.idCardAddress.trim(),
       officerName: form.officerName.trim() || '当前警官',
-      identitySource: ocrApplied.value ? 'OCR' : 'MANUAL',
+      identitySource: cardApplied.value ? 'ID_CARD_READER' : ocrApplied.value ? 'OCR' : 'MANUAL',
       identityCapturedAt,
     }
     const item = await createCase(payload)
@@ -213,21 +293,44 @@ onMounted(() => {
 
 <template>
   <div class="identity-mask" @click.self="emit('close')">
-    <section class="identity-modal">
+    <section class="identity-modal" role="dialog" aria-modal="true" aria-label="身份证读取与身份确认">
       <header class="identity-header">
         <div>
-          <h2>新建询问 · 身份与案件信息</h2>
-          <p>首次建档在这里完成：优先用高拍仪读取身份证，再补充现住址、案件类型和主审民警。</p>
+          <span class="step-kicker">新建询问 · 身份核验</span>
+          <h2>请放置身份证</h2>
+          <p>优先使用 Linux 身份证读卡器。读取后先核对人员信息，再确认创建案件并进入审讯工作台。</p>
         </div>
         <button class="close-btn" type="button" :disabled="!!busy" @click="emit('close')">关闭</button>
       </header>
 
-      <div class="identity-methods">
+      <nav class="identity-methods" aria-label="身份录入方式">
+        <button type="button" :class="{ active: method === 'card' }" @click="method = 'card'">身份证读卡器</button>
         <button type="button" :class="{ active: method === 'ocr' }" @click="method = 'ocr'">高拍仪 / OCR</button>
         <button type="button" :class="{ active: method === 'manual' }" @click="method = 'manual'">手动录入</button>
-      </div>
+      </nav>
 
-      <div v-if="method === 'ocr'" class="ocr-intake-card">
+      <section v-if="method === 'card'" class="card-reader-panel">
+        <div class="reader-illustration" :class="{ ready: identityAvailable, success: cardApplied }">
+          <div class="id-card-shape">
+            <div class="portrait-placeholder">证件</div>
+            <div><i></i><i></i><i></i><i></i></div>
+          </div>
+          <div class="reader-wave"></div>
+        </div>
+        <div class="reader-copy">
+          <h3>{{ cardApplied ? '身份证读取完成' : '将身份证平放在读卡区域' }}</h3>
+          <p v-if="identityAvailable">读卡器已就绪。点击“读取身份证”后保持证件静止，直到人员信息显示。</p>
+          <p v-else class="warning-text">{{ identityReason || '正在查询身份证读卡器状态…' }}。可切换到 OCR 或手动录入继续。</p>
+          <button class="read-card-button" type="button" :disabled="!!busy || !identityAvailable" @click="readIdentityCard">
+            {{ busy === 'card' ? '正在读取，请勿移动证件…' : cardApplied ? '重新读取身份证' : '读取身份证' }}
+          </button>
+          <div class="reader-state" :class="{ available: identityAvailable }">
+            <span></span>{{ identityAvailable ? 'Linux 读卡器：已连接' : 'Linux 读卡器：未就绪' }}
+          </div>
+        </div>
+      </section>
+
+      <section v-else-if="method === 'ocr'" class="ocr-intake-card">
         <div v-if="!ocrAvailable" class="identity-note warning">
           {{ ocrReason || '正在查询 Linux 本地 OCR 能力…' }}。手动录入始终可用。
         </div>
@@ -244,7 +347,7 @@ onMounted(() => {
             </label>
             <div class="capture-actions">
               <button type="button" :disabled="!!busy || !selectedOcrModelId" @click="runOcr('camera')">
-                {{ busy === 'camera' || busy === 'recognize' ? '读取识别中…' : '▣ 高拍仪读取身份证' }}
+                {{ busy === 'camera' || busy === 'recognize' ? '读取识别中…' : '高拍仪读取身份证' }}
               </button>
               <button type="button" :disabled="!!busy || !selectedOcrModelId" @click="runOcr('pick')">选择身份证图片</button>
             </div>
@@ -269,64 +372,52 @@ onMounted(() => {
             </div>
           </div>
         </template>
-      </div>
+      </section>
 
       <form class="identity-form" @submit.prevent="submit">
-        <div class="identity-grid">
-          <label class="wide">
-            <span>姓名 *</span>
-            <input v-model.trim="form.suspectName" autocomplete="off" placeholder="请输入姓名" />
-          </label>
-          <label>
-            <span>性别</span>
-            <select v-model="form.gender">
-              <option value="">请选择</option>
-              <option value="男">男</option>
-              <option value="女">女</option>
-            </select>
-          </label>
-          <label>
-            <span>民族</span>
-            <input v-model.trim="form.nation" autocomplete="off" placeholder="如：汉" />
-          </label>
-          <label>
-            <span>出生日期</span>
-            <input v-model="form.birthDate" type="date" @change="syncAge" />
-          </label>
-          <label>
-            <span>年龄</span>
-            <input v-model.trim="form.age" inputmode="numeric" placeholder="自动计算 / 可修正" />
-          </label>
-          <label class="wide">
-            <span>身份证号码</span>
-            <input v-model.trim="form.idNumber" autocomplete="off" maxlength="18" placeholder="18 位身份证号码" />
-          </label>
-          <label class="full">
-            <span>身份证住址</span>
-            <textarea v-model.trim="form.idCardAddress" rows="2" placeholder="由身份证 OCR 自动回填，也可人工修正"></textarea>
-          </label>
-          <label class="full">
-            <span>现住址</span>
-            <textarea v-model.trim="form.currentAddress" rows="2" placeholder="填写当前实际居住地址；与身份证住址相同也可再次确认"></textarea>
-          </label>
-          <label class="wide">
-            <span>案件类型</span>
-            <input v-model.trim="form.caseType" autocomplete="off" placeholder="如：盗窃、诈骗、故意伤害等" />
-          </label>
-          <label class="wide">
-            <span>主审民警</span>
-            <input v-model.trim="form.officerName" autocomplete="off" />
-          </label>
+        <div class="identity-result-title">
+          <div><strong>身份信息</strong><span>请人工核对后确认</span></div>
+          <span v-if="cardApplied" class="source-chip success">读卡器已读取</span>
+          <span v-else-if="ocrApplied" class="source-chip">OCR 已识别</span>
+          <span v-else class="source-chip muted">待录入</span>
+        </div>
+
+        <div class="identity-details-layout">
+          <div class="identity-portrait">
+            <img v-if="portraitSrc" :src="portraitSrc" alt="身份证头像" />
+            <div v-else>证件照</div>
+          </div>
+          <div class="identity-grid">
+            <label class="wide"><span>姓名 *</span><input v-model.trim="form.suspectName" autocomplete="off" placeholder="请输入姓名" /></label>
+            <label><span>性别</span><select v-model="form.gender"><option value="">请选择</option><option value="男">男</option><option value="女">女</option></select></label>
+            <label><span>民族</span><input v-model.trim="form.nation" autocomplete="off" placeholder="如：汉" /></label>
+            <label><span>出生日期</span><input v-model="form.birthDate" type="date" @change="syncAge" /></label>
+            <label><span>年龄</span><input v-model.trim="form.age" inputmode="numeric" placeholder="自动计算 / 可修正" /></label>
+            <label class="full"><span>身份证号码</span><input v-model.trim="form.idNumber" autocomplete="off" maxlength="18" placeholder="18 位身份证号码" /></label>
+            <label class="full"><span>身份证住址</span><textarea v-model.trim="form.idCardAddress" rows="2" placeholder="身份证登记住址"></textarea></label>
+          </div>
+        </div>
+
+        <div v-if="cardIssuer || cardValidity" class="card-extra">
+          <span v-if="cardIssuer"><b>签发机关</b>{{ cardIssuer }}</span>
+          <span v-if="cardValidity"><b>有效期限</b>{{ cardValidity }}</span>
+        </div>
+
+        <div class="case-extra-grid">
+          <label><span>现住址</span><textarea v-model.trim="form.currentAddress" rows="2" placeholder="当前实际居住地址"></textarea></label>
+          <label><span>案件类型</span><input v-model.trim="form.caseType" autocomplete="off" placeholder="如：盗窃、诈骗、故意伤害等" /></label>
+          <label><span>主审民警</span><input v-model.trim="form.officerName" autocomplete="off" /></label>
         </div>
 
         <div v-if="error" class="identity-note error">{{ error }}</div>
-        <div v-else-if="ocrApplied" class="identity-note success">身份证字段已由高拍仪 / OCR 回填，请核对后补充案件信息并创建询问。</div>
+        <div v-else-if="cardApplied" class="identity-note success">身份证读取完成。请核对姓名、证件号、住址和照片后确认。</div>
+        <div v-else-if="ocrApplied" class="identity-note success">身份证字段已由高拍仪 / OCR 回填，请核对后确认。</div>
 
         <footer class="identity-footer">
-          <span>创建后直接进入案件工作台；A 页用于后续查看和修正身份资料。</span>
+          <span>确认后创建案件并进入工作台；开始审讯仍需操作员在审讯页手动点击。</span>
           <div>
             <button type="button" :disabled="!!busy" @click="emit('close')">取消</button>
-            <button class="primary" type="submit" :disabled="!!busy">{{ busy === 'submit' ? '创建中…' : '确认信息并创建询问' }}</button>
+            <button class="primary" type="submit" :disabled="!!busy">{{ busy === 'submit' ? '创建中…' : '确认身份并创建询问' }}</button>
           </div>
         </footer>
       </form>
@@ -335,44 +426,71 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.identity-mask { position: fixed; inset: 0; z-index: 1200; background: rgba(15, 23, 42, .56); display: grid; place-items: center; padding: 22px; }
-.identity-modal { width: min(920px, 96vw); max-height: 94vh; overflow: auto; border-radius: 16px; background: #f8fafc; box-shadow: 0 24px 70px rgba(15, 23, 42, .28); }
-.identity-header { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; padding: 20px 22px 14px; background: #fff; border-bottom: 1px solid #e5e7eb; }
-.identity-header h2 { margin: 0; color: #172033; font-size: 21px; }
-.identity-header p { margin: 6px 0 0; color: #64748b; font-size: 13px; }
-.close-btn { border: 0; background: #f1f5f9; border-radius: 8px; padding: 7px 12px; cursor: pointer; }
-.identity-methods { display: flex; gap: 8px; padding: 16px 22px 8px; }
-.identity-methods button { border: 1px solid #cbd5e1; background: #fff; color: #475569; border-radius: 9px; padding: 8px 15px; cursor: pointer; }
-.identity-methods button.active { border-color: #2563eb; background: #eff6ff; color: #1d4ed8; font-weight: 700; }
-.ocr-intake-card { margin: 4px 22px 12px; padding: 14px; border: 1px solid #dbeafe; border-radius: 12px; background: #f5f9ff; }
-.ocr-toolbar { display: flex; align-items: end; gap: 12px; justify-content: space-between; }
-.ocr-toolbar label { flex: 1; }
-.ocr-toolbar span, .identity-form label > span, .ocr-raw > span { display: block; margin-bottom: 5px; color: #475569; font-size: 12px; font-weight: 700; }
-.ocr-toolbar select, .identity-form input, .identity-form select, .identity-form textarea { width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; padding: 9px 10px; color: #1e293b; outline: none; }
-.ocr-toolbar select:focus, .identity-form input:focus, .identity-form select:focus, .identity-form textarea:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, .1); }
-.capture-actions { display: flex; gap: 8px; }
-.capture-actions button { border: 1px solid #93c5fd; background: #fff; color: #1d4ed8; border-radius: 8px; padding: 9px 12px; white-space: nowrap; cursor: pointer; }
-.capture-actions button:first-child { background: #2563eb; color: #fff; border-color: #2563eb; font-weight: 700; }
-button:disabled { opacity: .55; cursor: not-allowed; }
-.ocr-review { display: grid; grid-template-columns: minmax(230px, 36%) 1fr; gap: 12px; margin-top: 12px; }
-.id-preview { min-height: 150px; border: 1px dashed #94a3b8; border-radius: 10px; display: grid; place-items: center; overflow: hidden; background: #fff; color: #94a3b8; }
-.id-preview img { width: 100%; max-height: 230px; object-fit: contain; }
+.identity-mask { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; padding: 20px; background: rgba(8, 22, 35, .68); }
+.identity-modal { width: min(1180px, calc(100vw - 60px)); max-height: calc(100vh - 54px); overflow: auto; border: 1px solid #b9cad8; border-radius: 8px; background: #edf3f7; box-shadow: 0 24px 70px rgba(0,0,0,.32); color: #203447; }
+.identity-header { position: sticky; top: 0; z-index: 3; display: flex; justify-content: space-between; gap: 24px; align-items: center; padding: 18px 22px; border-bottom: 1px solid #bccbd6; background: #f9fcfe; }
+.step-kicker { display: block; margin-bottom: 4px; color: #47728f; font-size: 13px; font-weight: 700; }
+.identity-header h2 { margin: 0; font-size: 25px; color: #173d5b; }
+.identity-header p { margin: 5px 0 0; color: #62798a; font-size: 14px; }
+.close-btn, .identity-methods button, .capture-actions button, .read-card-button, .identity-footer button { min-height: 48px; border: 1px solid #aabcc9; border-radius: 6px; background: #fff; color: #28495f; font-weight: 700; font-size: 15px; touch-action: manipulation; }
+.close-btn { min-width: 86px; }
+.identity-methods { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; padding: 0 22px; background: #b9c8d3; border-bottom: 1px solid #b9c8d3; }
+.identity-methods button { border: 0; border-radius: 0; background: #f8fbfd; }
+.identity-methods button.active { background: #1f6597; color: #fff; box-shadow: inset 0 -4px 0 #f4b03b; }
+.card-reader-panel { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 34px; align-items: center; margin: 22px; padding: 26px 34px; border: 1px solid #b5c8d6; border-radius: 8px; background: #fff; }
+.reader-illustration { position: relative; height: 210px; display: grid; place-items: center; border: 2px dashed #91a8b8; border-radius: 10px; background: #f4f8fa; }
+.reader-illustration.ready { border-color: #4a8b67; background: #f1faf5; }
+.reader-illustration.success { box-shadow: inset 0 0 0 3px rgba(46,126,79,.14); }
+.id-card-shape { width: 240px; height: 145px; display: grid; grid-template-columns: 74px 1fr; gap: 15px; padding: 17px; box-sizing: border-box; border: 2px solid #7b93a4; border-radius: 10px; background: linear-gradient(145deg,#fff,#eaf2f7); transform: rotate(-2deg); }
+.portrait-placeholder { display: grid; place-items: center; border: 1px solid #aab9c4; background: #dfe8ee; color: #768896; font-size: 13px; }
+.id-card-shape i { display: block; height: 7px; margin: 8px 0; border-radius: 8px; background: #b8c5ce; }
+.reader-wave { position: absolute; width: 280px; height: 22px; bottom: 19px; border-bottom: 3px solid #4b83a8; border-radius: 50%; opacity: .55; }
+.reader-copy h3 { margin: 0 0 8px; color: #173e5c; font-size: 22px; }
+.reader-copy p { margin: 0 0 17px; color: #607889; line-height: 1.7; }
+.read-card-button { min-width: 210px; border-color: #1f6597; background: #1f6597; color: #fff; font-size: 17px; }
+.reader-state { margin-top: 14px; color: #8c4b3a; font-size: 13px; }
+.reader-state span { display: inline-block; width: 9px; height: 9px; margin-right: 7px; border-radius: 50%; background: #b75b4f; }
+.reader-state.available { color: #30734a; }
+.reader-state.available span { background: #3e955e; }
+.warning-text { color: #a04d2e !important; }
+.ocr-intake-card { margin: 22px; padding: 20px; border: 1px solid #b8c9d5; border-radius: 8px; background: #fff; }
+.ocr-toolbar { display: grid; grid-template-columns: minmax(280px,1fr) auto; gap: 18px; align-items: end; }
+.ocr-toolbar label, .identity-grid label, .case-extra-grid label { display: grid; gap: 6px; color: #4a6273; font-size: 13px; font-weight: 700; }
+.ocr-toolbar select, .identity-grid input, .identity-grid select, .identity-grid textarea, .case-extra-grid input, .case-extra-grid textarea { width: 100%; box-sizing: border-box; min-height: 44px; padding: 9px 11px; border: 1px solid #aebfcb; border-radius: 5px; background: #fff; color: #203447; font: 15px/1.45 "Microsoft YaHei", sans-serif; }
+.capture-actions { display: flex; gap: 10px; }
+.capture-actions button { padding: 0 16px; }
+.ocr-review { display: grid; grid-template-columns: 360px 1fr; gap: 16px; margin-top: 18px; }
+.id-preview { min-height: 180px; display: grid; place-items: center; border: 1px solid #c3d0d9; background: #eef3f6; }
+.id-preview img { max-width: 100%; max-height: 240px; object-fit: contain; }
 .ocr-raw { min-width: 0; }
-.ocr-raw pre { min-height: 116px; max-height: 190px; overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-all; border-radius: 9px; background: #0f172a; color: #e2e8f0; padding: 10px; font-size: 12px; }
-.ocr-raw small { display: block; margin-top: 5px; color: #64748b; }
-.identity-form { padding: 8px 22px 20px; }
-.identity-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.identity-grid label.wide { grid-column: span 2; }
-.identity-grid label.full { grid-column: 1 / -1; }
-.identity-form textarea { resize: vertical; }
-.identity-note { margin-top: 10px; border-radius: 8px; padding: 9px 11px; font-size: 13px; }
-.identity-note.warning { background: #fff7ed; color: #9a3412; }
-.identity-note.error { background: #fef2f2; color: #b91c1c; }
-.identity-note.success { background: #ecfdf5; color: #047857; }
-.identity-footer { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-top: 18px; padding-top: 14px; border-top: 1px solid #e2e8f0; }
-.identity-footer > span { color: #64748b; font-size: 12px; }
-.identity-footer > div { display: flex; gap: 8px; }
-.identity-footer button { border: 1px solid #cbd5e1; border-radius: 8px; padding: 9px 15px; background: #fff; cursor: pointer; white-space: nowrap; }
-.identity-footer button.primary { border-color: #2563eb; background: #2563eb; color: #fff; font-weight: 700; }
-@media (max-width: 760px) { .identity-mask { padding: 8px; } .identity-modal { width: 100%; max-height: 98vh; } .identity-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ocr-toolbar, .identity-footer { align-items: stretch; flex-direction: column; } .capture-actions { display: grid; grid-template-columns: 1fr 1fr; } .ocr-review { grid-template-columns: 1fr; } }
+.ocr-raw > span { color: #526c7e; font-size: 13px; font-weight: 700; }
+.ocr-raw pre { min-height: 130px; max-height: 210px; overflow: auto; white-space: pre-wrap; word-break: break-all; padding: 12px; border: 1px solid #c7d2da; background: #f8fafb; }
+.identity-form { padding: 0 22px 22px; }
+.identity-result-title { display: flex; justify-content: space-between; align-items: center; padding: 16px 2px 10px; }
+.identity-result-title > div { display: flex; align-items: baseline; gap: 10px; }
+.identity-result-title strong { color: #173f5d; font-size: 20px; }
+.identity-result-title span { color: #738696; font-size: 13px; }
+.source-chip { padding: 5px 9px; border: 1px solid #8bb2cf; border-radius: 4px; background: #edf7ff; color: #24618e !important; font-weight: 700; }
+.source-chip.success { border-color: #8bb99c; background: #eff9f2; color: #31734a !important; }
+.source-chip.muted { border-color: #c7d0d7; background: #f4f6f7; color: #75848f !important; }
+.identity-details-layout { display: grid; grid-template-columns: 168px minmax(0,1fr); gap: 20px; padding: 20px; border: 1px solid #b9cad6; background: #fff; }
+.identity-portrait { height: 210px; display: grid; place-items: center; border: 1px solid #9fb2bf; background: #e7edf1; color: #7c8e9b; }
+.identity-portrait img { width: 100%; height: 100%; object-fit: cover; }
+.identity-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 14px; }
+.identity-grid .wide { grid-column: span 2; }
+.identity-grid .full { grid-column: 1 / -1; }
+.identity-grid textarea, .case-extra-grid textarea { resize: vertical; }
+.card-extra { display: flex; gap: 34px; padding: 10px 20px; border: 1px solid #b9cad6; border-top: 0; background: #f8fbfd; color: #526979; font-size: 13px; }
+.card-extra b { margin-right: 9px; color: #28485d; }
+.case-extra-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px; margin-top: 14px; padding: 18px 20px; border: 1px solid #b9cad6; background: #fff; }
+.identity-note { margin-top: 14px; padding: 11px 13px; border-radius: 5px; font-size: 14px; }
+.identity-note.warning { border: 1px solid #e5c58f; background: #fff8e8; color: #8b5a13; }
+.identity-note.error { border: 1px solid #e4aaa2; background: #fff0ee; color: #9a3027; }
+.identity-note.success { border: 1px solid #9fc7ad; background: #eff9f2; color: #2f7048; }
+.identity-footer { position: sticky; bottom: -22px; display: flex; justify-content: space-between; gap: 18px; align-items: center; margin: 18px -22px -22px; padding: 15px 22px; border-top: 1px solid #b9c8d3; background: #f9fcfe; }
+.identity-footer > span { color: #687e8e; font-size: 13px; }
+.identity-footer > div { display: flex; gap: 10px; }
+.identity-footer button { min-width: 120px; padding: 0 16px; }
+.identity-footer button.primary { min-width: 230px; border-color: #1f6597; background: #1f6597; color: #fff; }
+button:disabled { opacity: .46; cursor: not-allowed; }
 </style>
