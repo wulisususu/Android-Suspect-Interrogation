@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onUnmounted, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import AiSettingsPanel from '../components/AiSettingsPanel.vue'
 import CaseOverviewPage from '../components/CaseOverviewPage.vue'
 import CaseProfilePage from '../components/CaseProfilePage.vue'
 import DeviceStatusBar from '../components/DeviceStatusBar.vue'
 import InterrogationPage from '../components/InterrogationPage.vue'
 import SessionControls from '../components/SessionControls.vue'
+import VoiceprintPreparationPanel, { voiceprintStartGuard } from '../components/VoiceprintPreparationPanel.vue'
 import { useInterrogationStore } from '../stores/interrogation'
 
 type WorkspacePage = 'profile' | 'overview' | 'interrogation'
@@ -14,6 +15,7 @@ const props = defineProps<{ caseId: string }>()
 defineEmits<{ back: [] }>()
 const store = useInterrogationStore()
 const activePage = ref<WorkspacePage>('profile')
+const voiceprintGuard = computed(() => voiceprintStartGuard(store.voiceprintReadiness))
 
 watch(
   () => props.caseId,
@@ -51,7 +53,7 @@ async function generateCaseOverview() {
   <main class="workspace">
     <section v-if="store.loading" class="case-loading" aria-live="polite" aria-busy="true">
       <h1>正在加载案件</h1>
-      <p>正在读取案件身份、审讯记录和案件梳理数据…</p>
+      <p>正在读取案件身份、审讯记录、声纹状态和案件梳理数据…</p>
     </section>
 
     <template v-else>
@@ -107,9 +109,31 @@ async function generateCaseOverview() {
         />
 
         <div v-else class="interrogation-workspace-stack">
+          <VoiceprintPreparationPanel
+            v-if="store.session.status === 'READY'"
+            :suspect-name="store.caseSummary.suspectName"
+            :readiness="store.voiceprintReadiness"
+            :officers="store.officerVoiceprints"
+            :selected-interrogator-officer-id="store.selectedInterrogatorOfficerId"
+            :selected-recorder-officer-id="store.selectedRecorderOfficerId"
+            :enrollment-state="store.voiceprintEnrollmentState"
+            :busy="store.voiceprintBusy"
+            :session-status="store.session.status"
+            @suspect-start="store.startSuspectVoiceprintEnrollment()"
+            @suspect-stop="store.stopSuspectVoiceprintEnrollment()"
+            @select-interrogator="store.selectInterrogatorOfficer($event)"
+            @select-recorder="store.selectRecorderOfficer($event)"
+            @officer-start="(id, name) => store.startOfficerVoiceprintEnrollment(id, name)"
+            @officer-stop="store.stopOfficerVoiceprintEnrollment($event)"
+            @revoke-officer="store.revokeOfficerVoiceprint($event)"
+            @bind-roles="store.bindVoiceprintRoles()"
+          />
+
           <SessionControls
             :session="store.session"
             :stage-text="store.stageText"
+            :start-disabled="voiceprintGuard.disabled"
+            :start-disabled-reason="voiceprintGuard.reason"
             @start="store.startSession"
             @toggle-pause="store.togglePause"
             @finish="store.finishSession"
@@ -149,10 +173,17 @@ async function generateCaseOverview() {
   min-height: 0;
   height: 100%;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+.interrogation-workspace-stack > :deep(.voiceprint-preparation-panel) {
+  max-height: 44vh;
+  overflow: auto;
+}
+.interrogation-workspace-stack > :deep(.session-controls):first-child,
+.interrogation-workspace-stack > :deep(.voiceprint-preparation-panel) + :deep(.session-controls) {
+  min-height: 68px;
 }
 .interrogation-workspace-stack :deep(.session-controls) {
-  min-height: 68px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -163,9 +194,15 @@ async function generateCaseOverview() {
 }
 .interrogation-workspace-stack :deep(.session-state) {
   display: flex;
-  gap: 20px;
+  flex-wrap: wrap;
+  gap: 12px 20px;
   color: #43586c;
   font-size: 14px;
+}
+.interrogation-workspace-stack :deep(.session-start-guard) {
+  flex-basis: 100%;
+  color: #ad3c32;
+  font-weight: 700;
 }
 .interrogation-workspace-stack :deep(.session-buttons) {
   display: flex;
