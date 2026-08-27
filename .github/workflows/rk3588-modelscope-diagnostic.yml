@@ -1,0 +1,58 @@
+name: RK3588 ModelScope XVector Diagnostic
+
+on:
+  push:
+    branches:
+      - feature/funasr-asr-capture
+    paths:
+      - '.github/workflows/rk3588-modelscope-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 20
+    steps:
+      - name: Exact checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git sparse-checkout init --cone
+          git sparse-checkout set linux scripts
+          git fetch --filter=blob:none --no-tags --depth=1 origin "+${GITHUB_SHA}:refs/remotes/origin/__diag"
+          git checkout --force --detach "$GITHUB_SHA"
+      - name: Print ModelScope speaker pipeline traceback
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
+          MODEL=/opt/suspect-interrogation/models/funasr/xvector
+          "$PY" - <<'PY'
+          import traceback
+          try:
+              from modelscope.pipelines import pipeline
+              from modelscope.utils.constant import Tasks
+              print('MODELSCOPE_PIPELINE_IMPORT_OK', Tasks.speaker_verification)
+          except Exception:
+              print('MODELSCOPE_PIPELINE_IMPORT_FAILED')
+              traceback.print_exc()
+              raise
+          PY
+          "$PY" - <<'PY'
+          import traceback
+          from modelscope.pipelines import pipeline
+          from modelscope.utils.constant import Tasks
+          try:
+              p = pipeline(task=Tasks.speaker_verification, model='/opt/suspect-interrogation/models/funasr/xvector', device='cpu')
+              print('MODELSCOPE_XVECTOR_PIPELINE_LOAD_OK', type(p).__name__)
+          except Exception:
+              print('MODELSCOPE_XVECTOR_PIPELINE_LOAD_FAILED')
+              traceback.print_exc()
+              raise
+          PY
