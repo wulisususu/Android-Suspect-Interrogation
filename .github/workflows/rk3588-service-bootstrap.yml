@@ -24,6 +24,7 @@ jobs:
     env:
       GIT_TERMINAL_PROMPT: '0'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      SUSPECT_DEPLOY_PORT: '18080'
 
     steps:
       - name: RK3588 and privilege preflight
@@ -46,9 +47,10 @@ jobs:
           echo "x11_sockets:"
           ls -la /tmp/.X11-unix 2>/dev/null || true
           echo "browser_candidates:"
-          for browser in chromium-browser chromium google-chrome; do
+          for browser in chromium-browser chromium google-chrome firefox; do
             command -v "$browser" 2>/dev/null || true
           done
+          test -x /snap/bin/firefox && echo /snap/bin/firefox || true
           loginctl list-sessions --no-legend 2>/dev/null || true
 
       - name: Robust checkout exact commit
@@ -119,27 +121,20 @@ jobs:
           bash tests/release/test_control_shell.sh
           scripts/ci/rk3588-smoke.sh
 
-      - name: Inspect API port before production takeover
+      - name: Inspect dedicated API port before production takeover
         shell: bash
         run: |
           set -euo pipefail
           sudo -n systemctl stop interrogation-api.service || true
           sleep 1
-          if sudo -n ss -ltnp 'sport = :8000' | grep -q ':8000'; then
-            echo 'TCP/8000 remains occupied after stopping interrogation-api.service' >&2
-            sudo -n ss -ltnp 'sport = :8000' || true
-            if command -v fuser >/dev/null 2>&1; then
-              sudo -n fuser -v 8000/tcp || true
-              for pid in $(sudo -n fuser 8000/tcp 2>/dev/null || true); do
-                echo "--- port owner pid=$pid ---"
-                sudo -n ps -fp "$pid" || true
-                printf 'cwd='; sudo -n readlink -f "/proc/$pid/cwd" || true
-                printf 'cmdline='; sudo -n tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true; echo
-              done
-            fi
+          echo 'Existing TCP/8000 owner is preserved:'
+          sudo -n ss -ltnp 'sport = :8000' || true
+          if sudo -n ss -ltnp "sport = :${SUSPECT_DEPLOY_PORT}" | grep -q ":${SUSPECT_DEPLOY_PORT}"; then
+            echo "TCP/${SUSPECT_DEPLOY_PORT} is already occupied; refusing destructive takeover" >&2
+            sudo -n ss -ltnp "sport = :${SUSPECT_DEPLOY_PORT}" || true
             exit 1
           fi
-          echo 'TCP/8000 is free for interrogation-api.service'
+          echo "TCP/${SUSPECT_DEPLOY_PORT} is free for interrogation-api.service"
 
       - name: Install systemd units and production layout
         shell: bash
@@ -150,11 +145,31 @@ jobs:
           systemctl is-enabled --quiet interrogation-api.service
           systemctl is-enabled --quiet kiosk.service
 
+      - name: Configure dedicated production port
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUNTIME_ENV=/etc/suspect-interrogation/runtime.env
+          if sudo -n grep -q '^SUSPECT_API_PORT=' "$RUNTIME_ENV"; then
+            sudo -n sed -i -E "s/^SUSPECT_API_PORT=.*/SUSPECT_API_PORT=${SUSPECT_DEPLOY_PORT}/" "$RUNTIME_ENV"
+          else
+            printf 'SUSPECT_API_PORT=%s\n' "$SUSPECT_DEPLOY_PORT" | sudo -n tee -a "$RUNTIME_ENV" >/dev/null
+          fi
+          sudo -n grep -q "^SUSPECT_API_PORT=${SUSPECT_DEPLOY_PORT}$" "$RUNTIME_ENV"
+
+          printf '%s\n' \
+            "SUSPECT_KIOSK_READY_URL=http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" \
+            "SUSPECT_KIOSK_URL=http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/" \
+            | sudo -n tee /etc/suspect-interrogation/kiosk.env >/dev/null
+          sudo -n chown root:suspect-interrogation /etc/suspect-interrogation/kiosk.env
+          sudo -n chmod 0640 /etc/suspect-interrogation/kiosk.env
+
       - name: Build and deploy production release
         shell: bash
         run: |
           set -euo pipefail
-          sudo -n bash deploy/control.sh deploy "$GITHUB_WORKSPACE"
+          sudo -n env SUSPECT_HEALTH_BASE_URL="http://127.0.0.1:${SUSPECT_DEPLOY_PORT}" \
+            bash deploy/control.sh deploy "$GITHUB_WORKSPACE"
 
       - name: Verify backend and built frontend
         shell: bash
@@ -164,18 +179,18 @@ jobs:
           systemctl is-active --quiet interrogation-api.service
 
           for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8000/health/ready >/tmp/suspect-ready.json; then
+            if curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" >/tmp/suspect-ready.json; then
               break
             fi
             sleep 1
           done
-          curl -fsS http://127.0.0.1:8000/health/live >/dev/null
-          curl -fsS http://127.0.0.1:8000/health/ready | tee /tmp/suspect-ready.json
-          curl -fsS http://127.0.0.1:8000/ | tee /tmp/suspect-index.html >/dev/null
+          curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/live" >/dev/null
+          curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" | tee /tmp/suspect-ready.json
+          curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/" | tee /tmp/suspect-index.html >/dev/null
           grep -q '<div id="app"></div>' /tmp/suspect-index.html
           test -f /opt/suspect-interrogation/current/webapp/dist/index.html
-          echo "backend_service=active"
-          echo "frontend_bundle=served"
+          echo "backend_service=active port=${SUSPECT_DEPLOY_PORT}"
+          echo "frontend_bundle=served port=${SUSPECT_DEPLOY_PORT}"
 
       - name: Verify kiosk boot service
         shell: bash
@@ -202,7 +217,7 @@ jobs:
             fi
             echo "kiosk_service=active"
           else
-            echo "kiosk_service=enabled (graphical session/browser unavailable to CI runner; HTTP frontend is verified)"
+            echo "kiosk_service=enabled (no supported Chromium binary detected; HTTP frontend is verified)"
             sudo -n systemctl --no-pager --full status kiosk.service || true
           fi
 
@@ -213,13 +228,17 @@ jobs:
           set +e
           echo '--- current release ---'
           readlink -f /opt/suspect-interrogation/current || true
+          echo '--- runtime port ---'
+          sudo -n grep '^SUSPECT_API_PORT=' /etc/suspect-interrogation/runtime.env || true
           echo '--- API enabled/active ---'
           systemctl is-enabled interrogation-api.service || true
           systemctl is-active interrogation-api.service || true
           echo '--- kiosk enabled/active ---'
           systemctl is-enabled kiosk.service || true
           systemctl is-active kiosk.service || true
-          echo '--- port 8000 ---'
+          echo "--- interrogation port ${SUSPECT_DEPLOY_PORT} ---"
+          sudo -n ss -ltnp "sport = :${SUSPECT_DEPLOY_PORT}" || true
+          echo '--- preserved port 8000 ---'
           sudo -n ss -ltnp 'sport = :8000' || true
           echo '--- service status ---'
           sudo -n systemctl --no-pager --full status interrogation-api.service kiosk.service || true
