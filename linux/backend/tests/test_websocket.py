@@ -10,17 +10,18 @@ def ok(response):
     return body["data"]
 
 
-def create_running_case(client):
+def create_running_case(client, app, enroll_test_suspect_voiceprint):
     case = ok(client.post("/api/v1/cases", json={"operator_id": "op-ws"}))
     ok(client.post("/api/v1/identity/read", json={"case_id": case["id"]}))
+    enroll_test_suspect_voiceprint(app, case["id"])
     session = ok(client.post(f"/api/v1/cases/{case['id']}/session/start", json={}))
     return case["id"], session["id"]
 
 
-def test_websocket_initial_sync_ai_and_protocol_error(tmp_path):
+def test_websocket_initial_sync_ai_and_protocol_error(tmp_path, enroll_test_suspect_voiceprint):
     app = create_app(database_url=f"sqlite:///{tmp_path / 'ws.db'}", hardware_gateway=MockHardwareGateway(simulated=True))
     with TestClient(app) as client:
-        case_id, session_id = create_running_case(client)
+        case_id, session_id = create_running_case(client, app, enroll_test_suspect_voiceprint)
         with client.websocket_connect(f"/ws/interrogation/{session_id}") as ws:
             first = ws.receive_json()
             assert first["session_id"] == session_id
@@ -43,10 +44,10 @@ def test_websocket_initial_sync_ai_and_protocol_error(tmp_path):
             assert error["payload"]["code"] == "INVALID_WEBSOCKET_ENVELOPE"
 
 
-def test_websocket_reconnect_sync_comes_from_persisted_database(tmp_path):
+def test_websocket_reconnect_sync_comes_from_persisted_database(tmp_path, enroll_test_suspect_voiceprint):
     app = create_app(database_url=f"sqlite:///{tmp_path / 'reconnect.db'}", hardware_gateway=MockHardwareGateway(simulated=True))
     with TestClient(app) as client:
-        case_id, session_id = create_running_case(client)
+        case_id, session_id = create_running_case(client, app, enroll_test_suspect_voiceprint)
         with client.websocket_connect(f"/ws/interrogation/{session_id}") as ws:
             assert ws.receive_json()["payload"]["session"]["state"] == "QUESTIONING"
 
