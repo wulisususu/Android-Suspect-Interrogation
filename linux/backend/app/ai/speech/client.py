@@ -64,6 +64,31 @@ class SpeechWorkerClient:
     def close_session(self, session_id: str) -> None:
         self._request("close_session", session_id=session_id)
 
+    def speech_segments(self, pcm: bytes, sample_rate: int = 16000) -> list[list[int]]:
+        result = self._require_dict(
+            self._request(
+                "speech_segments",
+                sample_rate=int(sample_rate),
+                pcm_b64=base64.b64encode(pcm).decode("ascii"),
+            )
+        )
+        segments = result.get("segments")
+        if not isinstance(segments, list):
+            raise WorkerCrashedError("speech worker VAD result must contain a segment array")
+        normalized: list[list[int]] = []
+        for item in segments:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise WorkerCrashedError("speech worker VAD segment must contain [start_ms, end_ms]")
+            try:
+                start_ms = int(item[0])
+                end_ms = int(item[1])
+            except (TypeError, ValueError) as exc:
+                raise WorkerCrashedError("speech worker VAD segment bounds must be integers") from exc
+            if start_ms < 0 or end_ms < start_ms:
+                raise WorkerCrashedError("speech worker VAD segment bounds are invalid")
+            normalized.append([start_ms, end_ms])
+        return normalized
+
     def extract_embedding(self, pcm: bytes, sample_rate: int = 16000) -> dict[str, Any]:
         return self._require_dict(
             self._request(
