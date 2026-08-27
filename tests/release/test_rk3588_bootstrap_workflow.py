@@ -22,6 +22,8 @@ def test_rk3588_service_bootstrap_workflow_installs_deploys_and_verifies_runtime
     assert 'export SUSPECT_DATA_DIR="$TEST_RUNTIME_ROOT/data"' in workflow
     assert 'export SUSPECT_LOG_DIR="$TEST_RUNTIME_ROOT/log"' in workflow
     assert "sudo -n systemctl stop interrogation-api.service" in workflow
+    assert "Existing TCP/8000 owner is preserved" in workflow
+    assert "sudo -n ss -ltnp 'sport = :8000'" in workflow
     assert "sudo -n ss -ltnp \"sport = :${SUSPECT_DEPLOY_PORT}\"" in workflow
     assert "SUSPECT_API_PORT=${SUSPECT_DEPLOY_PORT}" in workflow
     assert "SUSPECT_KIOSK_READY_URL=http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" in workflow
@@ -33,3 +35,23 @@ def test_rk3588_service_bootstrap_workflow_installs_deploys_and_verifies_runtime
     assert "systemctl is-enabled --quiet kiosk.service" in workflow
     assert "curl -fsS \"http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready\"" in workflow
     assert "curl -fsS \"http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/\"" in workflow
+
+
+def test_bootstrap_prepares_read_only_funasr_model_and_runtime_layout():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "FUNASR_SOURCE=/home/youyeetoo/funasr-models" in workflow
+    assert "FUNASR_MODEL_ROOT=/opt/suspect-interrogation/models/funasr" in workflow
+    assert "FUNASR_RUNTIME=/opt/suspect-interrogation/runtime/funasr-env" in workflow
+    assert "FUNASR_SOURCE_PYTHON=/home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python" in workflow
+    assert 'sudo -n mount --bind "$FUNASR_SOURCE" "$FUNASR_MODEL_ROOT"' in workflow
+    assert 'sudo -n mount -o remount,bind,ro "$FUNASR_MODEL_ROOT"' in workflow
+    assert 'findmnt -no OPTIONS "$FUNASR_MODEL_ROOT"' in workflow
+    assert 'test -d "$FUNASR_MODEL_ROOT/paraformer"' in workflow
+    assert 'test -d "$FUNASR_MODEL_ROOT/fsmn-vad"' in workflow
+    assert 'test -d "$FUNASR_MODEL_ROOT/xvector"' in workflow
+    assert "/etc/fstab" in workflow
+    assert "x-systemd.before=ai-worker.service" in workflow
+    assert 'if [[ ! -x "$FUNASR_RUNTIME/bin/python" ]]' in workflow
+    assert 'sudo -n cp -a "$FUNASR_SOURCE_ENV/." "$FUNASR_RUNTIME/"' in workflow
+    assert 'sudo -n chown -R root:root "$FUNASR_RUNTIME"' in workflow
+    assert "import funasr, torch" in workflow
