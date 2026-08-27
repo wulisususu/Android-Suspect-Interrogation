@@ -4,12 +4,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-
-def _optional_float(name: str) -> float | None:
-    value = os.getenv(name)
-    if value is None or not value.strip():
-        return None
-    return float(value)
+from .speech.calibration import SpeakerCalibration
 
 
 @dataclass(frozen=True)
@@ -33,6 +28,7 @@ class AISettings:
         mode = os.getenv("AI_MODE", "mock").strip().lower()
         if mode not in {"mock", "real"}:
             raise ValueError("AI_MODE must be 'mock' or 'real'")
+        calibration = SpeakerCalibration.from_env()
         return cls(
             mode=mode,
             model_root=Path(os.getenv("MODEL_ROOT", str(backend_dir / "models"))).expanduser(),
@@ -43,8 +39,8 @@ class AISettings:
             speech_socket=Path(
                 os.getenv("SUSPECT_SPEECH_SOCKET", "/run/suspect-interrogation/speech.sock")
             ).expanduser(),
-            speaker_accept_threshold=_optional_float("SPEAKER_ACCEPT_THRESHOLD"),
-            speaker_margin=_optional_float("SPEAKER_MARGIN"),
+            speaker_accept_threshold=calibration.accept_threshold,
+            speaker_margin=calibration.margin,
             asr_backend=os.getenv("ASR_BACKEND"),
             ocr_backend=os.getenv("OCR_BACKEND"),
             llm_backend=os.getenv("LLM_BACKEND"),
