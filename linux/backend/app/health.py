@@ -6,16 +6,19 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
+from .ai.speech.calibration import SpeakerCalibration
 from .runtime_settings import RuntimeSettings
 
 
 router = APIRouter(prefix="/health", tags=["health"])
 
 
-def _result(state: str, *, required: bool, detail: str) -> dict[str, Any]:
-    return {"state": state, "required": required, "detail": detail}
+def _result(state: str, *, required: bool, detail: str, **extra: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"state": state, "required": required, "detail": detail}
+    payload.update(extra)
+    return payload
 
 
 def _storage_check(settings: RuntimeSettings) -> dict[str, Any]:
@@ -93,15 +96,89 @@ def _ai_capability(settings: RuntimeSettings) -> dict[str, Any]:
     return _result("READY", required=False, detail="local model assets are present")
 
 
-def readiness_snapshot() -> dict[str, Any]:
+def _calibration_capability(supervisor: Any | None) -> dict[str, Any]:
+    if supervisor is not None:
+        threshold = getattr(supervisor, "speaker_accept_threshold", None)
+        margin = getattr(supervisor, "speaker_margin", None)
+        configured = threshold is not None and margin is not None
+    else:
+        calibration = SpeakerCalibration.from_env()
+        threshold = calibration.accept_threshold
+        margin = calibration.margin
+        configured = calibration.configured
+
+    return _result(
+        "READY" if configured else "NOT_CONFIGURED",
+        required=False,
+        detail=(
+            "speaker threshold and margin are calibrated"
+            if configured
+            else "speaker threshold and margin require RK3588 microphone calibration"
+        ),
+        thresholdConfigured=threshold is not None,
+        marginConfigured=margin is not None,
+    )
+
+
+def _audio_capture_capability(manager: Any | None) -> dict[str, Any]:
+    if manager is None:
+        return _result("UNAVAILABLE", required=False, detail="hardware manager is not active")
+    recorder = getattr(manager, "audio_recorder", None)
+    if recorder is None:
+        return _result("UNAVAILABLE", required=False, detail="audio recorder is not configured")
+    return _result("READY", required=False, detail="audio recorder is configured")
+
+
+def _speech_capability(
+    name: str,
+    *,
+    supervisor: Any | None,
+    calibration: dict[str, Any],
+) -> dict[str, Any]:
+    if supervisor is None:
+        if name == "speaker" and calibration["state"] == "NOT_CONFIGURED":
+            return _result(
+                "NOT_CONFIGURED",
+                required=False,
+                detail="speaker verification is disabled until calibration is configured",
+            )
+        return _result("UNAVAILABLE", required=False, detail="AI supervisor is not active")
+
+    try:
+        capability = dict((supervisor.capabilities() or {}).get(name) or {})
+    except Exception as exc:
+        return _result(
+            "ERROR",
+            required=False,
+            detail=f"{name} capability check failed: {exc.__class__.__name__}",
+        )
+
+    state = str(capability.pop("state", "UNAVAILABLE"))
+    detail = str(capability.pop("detail", f"{name} capability reported by AI supervisor"))
+    return _result(state, required=False, detail=detail, **capability)
+
+
+def readiness_snapshot(request: Request | None = None) -> dict[str, Any]:
     settings = RuntimeSettings()
+    supervisor = None
+    manager = None
+    if request is not None:
+        supervisor = getattr(request.app.state, "ai_supervisor", None)
+        manager = getattr(request.app.state, "hardware_manager", None)
+
     checks = {
         "storage": _storage_check(settings),
         "database": _database_check(settings),
     }
+    calibration = _calibration_capability(supervisor)
     capabilities = {
         "hardware": _hardware_capability(),
         "ai": _ai_capability(settings),
+        "asr": _speech_capability("asr", supervisor=supervisor, calibration=calibration),
+        "vad": _speech_capability("vad", supervisor=supervisor, calibration=calibration),
+        "speaker": _speech_capability("speaker", supervisor=supervisor, calibration=calibration),
+        "voiceprintCalibration": calibration,
+        "audioCapture": _audio_capture_capability(manager),
     }
     required_ok = all(item["state"] == "READY" for item in checks.values() if item["required"])
     return {
@@ -117,5 +194,5 @@ def live() -> dict[str, str]:
 
 
 @router.get("/ready")
-def ready() -> dict[str, Any]:
-    return readiness_snapshot()
+def ready(request: Request) -> dict[str, Any]:
+    return readiness_snapshot(request)
