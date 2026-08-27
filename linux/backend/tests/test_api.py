@@ -109,6 +109,12 @@ def test_confirmed_identity_intake_allows_session_start_without_hardware_reread(
 
         case = payload(client.get(f"/api/v1/cases/{case_id}"))
         assert case["workflowState"] == "IDENTITY_READY"
+        assert case["suspectName"] == "赵某"
+        assert case["idNumber"] == "320101199001010011"
+        assert case["nation"] == "汉"
+        assert case["birthDate"] == "1990-01-01"
+        assert case["address"] == "测试地址"
+        assert case["identitySource"] == "MANUAL"
 
         session = payload(client.post(f"/api/v1/cases/{case_id}/session/start", json={"actor_id": "op-2"}))
         assert session["status"] == "RUNNING"
