@@ -14,6 +14,64 @@ function unavailable(operation: string): never {
   )
 }
 
+function voiceprintMock<T>(operation: string, payload: Record<string, unknown>): T | undefined {
+  const simulated = true
+  switch (operation) {
+    case 'voiceprint.readiness':
+      return {
+        suspectReady: false,
+        interrogatorReady: false,
+        recorderReady: false,
+        recognitionMode: 'SUSPECT_ONLY',
+        canStart: false,
+        simulated,
+      } as T
+    case 'voiceprint.suspect.enrollment.start':
+      return { state: 'RECORDING', caseId: String(payload.caseId ?? ''), ready: false, simulated } as T
+    case 'voiceprint.suspect.enrollment.stop':
+      return { state: 'SIMULATED', caseId: String(payload.caseId ?? ''), ready: false, simulated } as T
+    case 'officerVoiceprint.list':
+      return [] as T
+    case 'officerVoiceprint.enrollment.start':
+      return {
+        state: 'RECORDING',
+        officerId: String(payload.officerId ?? ''),
+        officerName: String(payload.officerName ?? ''),
+        active: false,
+        simulated,
+      } as T
+    case 'officerVoiceprint.enrollment.stop':
+      return {
+        state: 'SIMULATED',
+        officerId: String(payload.officerId ?? ''),
+        active: false,
+        simulated,
+      } as T
+    case 'officerVoiceprint.revoke':
+      return {
+        officerId: String(payload.officerId ?? ''),
+        officerName: '浏览器模拟民警',
+        active: false,
+        modelId: 'browser-dev-simulated',
+        modelVersion: null,
+        quality: 'SIMULATED',
+        usableDurationMs: 0,
+        simulated,
+      } as T
+    case 'voiceprint.assignments.update':
+      return {
+        suspectReady: false,
+        interrogatorReady: false,
+        recorderReady: false,
+        recognitionMode: 'SUSPECT_ONLY',
+        canStart: false,
+        simulated,
+      } as T
+    default:
+      return undefined
+  }
+}
+
 function legacyConfig(operation: string, payload: Record<string, unknown>): AxiosRequestConfig | undefined {
   const caseId = encode(payload.caseId)
   const messageId = encode(payload.messageId)
@@ -48,6 +106,8 @@ export class BrowserDevAdapter implements RuntimeAdapter {
   readonly kind = 'browser-dev' as const
 
   async invoke<T>(operation: RuntimeOperation, payload: Record<string, unknown> = {}, options: RuntimeInvokeOptions = {}): Promise<T> {
+    const simulated = voiceprintMock<T>(operation, payload)
+    if (simulated !== undefined) return simulated
     const config = legacyConfig(operation, payload)
     if (!config) return unavailable(operation)
     const response = await http.request<T>({ ...config, ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}) })
