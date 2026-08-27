@@ -28,7 +28,7 @@ RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
 AmbientCapabilities=
-ReadWritePaths=/var/lib/suspect-interrogation /var/log/suspect-interrogation
+ReadWritePaths=/var/lib/suspect-interrogation /var/log/suspect-interrogation /run/suspect-interrogation
 
 [Install]
 WantedBy=multi-user.target
