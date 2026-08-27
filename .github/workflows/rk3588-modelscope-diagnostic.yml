@@ -13,7 +13,7 @@ permissions:
 jobs:
   diagnose:
     runs-on: [self-hosted, rk3588]
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Runner hygiene and identity
         shell: bash
@@ -23,12 +23,12 @@ jobs:
           hostname
           uname -a
           sudo -n find "$GITHUB_WORKSPACE" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-      - name: Install first missing ModelScope pipeline dependency
+      - name: Install ModelScope framework dependencies
         shell: bash
         run: |
           set -euo pipefail
           PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
-          sudo -n "$PY" -m pip install --retries 3 --timeout 60 'addict==2.4.0'
+          sudo -n "$PY" -m pip install --retries 3 --timeout 60 'modelscope[framework]==1.39.1'
       - name: Print ModelScope speaker pipeline traceback
         shell: bash
         run: |
