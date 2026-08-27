@@ -26,6 +26,7 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
       SUSPECT_DEPLOY_PORT: '18080'
       FUNASR_PACKAGE_VERSION: '1.4.2'
+      TORCH_CPU_VERSION: '2.13.0'
       CALIBRATION_ROOT: '/var/lib/suspect-interrogation/calibration'
 
     steps:
@@ -125,20 +126,31 @@ jobs:
           bash tests/release/test_control_shell.sh
           scripts/ci/rk3588-smoke.sh
 
-      - name: Inspect dedicated API port before production takeover
+      - name: Inspect dedicated API port without disrupting current release
         shell: bash
         run: |
           set -euo pipefail
-          sudo -n systemctl stop interrogation-api.service || true
-          sleep 1
           echo 'Existing TCP/8000 owner is preserved:'
           sudo -n ss -ltnp 'sport = :8000' || true
-          if sudo -n ss -ltnp "sport = :${SUSPECT_DEPLOY_PORT}" | grep -q ":${SUSPECT_DEPLOY_PORT}"; then
-            echo "TCP/${SUSPECT_DEPLOY_PORT} is already occupied; refusing destructive takeover" >&2
-            sudo -n ss -ltnp "sport = :${SUSPECT_DEPLOY_PORT}" || true
-            exit 1
+
+          if ! systemctl is-active --quiet interrogation-api.service && [[ -L /opt/suspect-interrogation/current ]]; then
+            echo 'Project API is inactive after an earlier failed deploy; attempting to restore the current release before speech preflight.'
+            sudo -n systemctl start interrogation-api.service || true
+            sleep 2
           fi
-          echo "TCP/${SUSPECT_DEPLOY_PORT} is free for interrogation-api.service"
+
+          if sudo -n ss -ltnp "sport = :${SUSPECT_DEPLOY_PORT}" | grep -q ":${SUSPECT_DEPLOY_PORT}"; then
+            if systemctl is-active --quiet interrogation-api.service; then
+              echo 'existing project API on TCP/18080 is preserved during speech preflight'
+              sudo -n ss -ltnp "sport = :${SUSPECT_DEPLOY_PORT}" || true
+            else
+              echo "TCP/${SUSPECT_DEPLOY_PORT} is occupied by a non-project process; refusing destructive takeover" >&2
+              sudo -n ss -ltnp "sport = :${SUSPECT_DEPLOY_PORT}" || true
+              exit 1
+            fi
+          else
+            echo "TCP/${SUSPECT_DEPLOY_PORT} is free; speech preflight can proceed without stopping the existing release."
+          fi
 
       - name: Prepare stable offline FunASR model and runtime layout
         shell: bash
@@ -178,19 +190,26 @@ jobs:
           fi
           sudo -n awk -v dst="$FUNASR_MODEL_ROOT" '$2 == dst { found=1 } END { exit(found ? 0 : 1) }' /etc/fstab
 
-          if [[ ! -x "$FUNASR_RUNTIME/bin/python" ]] || \
-             ! sudo -n "$FUNASR_RUNTIME/bin/python" -c 'import funasr, torch, torchaudio' >/dev/null 2>&1; then
-            echo "Provisioning isolated FunASR runtime under $FUNASR_RUNTIME"
+          runtime_ok=0
+          if [[ -x "$FUNASR_RUNTIME/bin/python" ]] && \
+             sudo -n "$FUNASR_RUNTIME/bin/python" -c 'import funasr, torch, modelscope; assert "+cpu" in str(torch.__version__)' >/dev/null 2>&1; then
+            runtime_ok=1
+          fi
+          if [[ "$runtime_ok" -ne 1 ]]; then
+            echo "Provisioning CPU-only isolated FunASR runtime under $FUNASR_RUNTIME"
             sudo -n rm -rf "$FUNASR_RUNTIME"
             sudo -n python3 -m venv "$FUNASR_RUNTIME"
             sudo -n "$FUNASR_RUNTIME/bin/python" -m pip install --upgrade pip
-            sudo -n "$FUNASR_RUNTIME/bin/python" -m pip install --retries 3 --timeout 60 torch torchaudio
-            sudo -n "$FUNASR_RUNTIME/bin/python" -m pip install --retries 3 --timeout 60 "funasr==${FUNASR_PACKAGE_VERSION}"
+            sudo -n "$FUNASR_RUNTIME/bin/python" -m pip install --retries 3 --timeout 60 \
+              --index-url https://download.pytorch.org/whl/cpu \
+              "torch==${TORCH_CPU_VERSION}+cpu"
+            sudo -n "$FUNASR_RUNTIME/bin/python" -m pip install --retries 3 --timeout 60 \
+              "funasr==${FUNASR_PACKAGE_VERSION}"
             sudo -n chown -R root:root "$FUNASR_RUNTIME"
             sudo -n chmod -R go-w "$FUNASR_RUNTIME"
           fi
 
-          sudo -n "$FUNASR_RUNTIME/bin/python" -c 'import funasr, torch, torchaudio; print("funasr=" + str(funasr.__version__)); print("torch=" + str(torch.__version__)); print("torchaudio=" + str(torchaudio.__version__))'
+          sudo -n "$FUNASR_RUNTIME/bin/python" -c 'import funasr, torch, modelscope; assert "+cpu" in str(torch.__version__); print("funasr=" + str(funasr.__version__)); print("torch=" + str(torch.__version__)); print("modelscope=" + str(modelscope.__version__))'
           MODEL_ROOT="$FUNASR_MODEL_ROOT" sudo -n -E "$FUNASR_RUNTIME/bin/python" scripts/ci/probe-funasr-runtime.py \
             --output "$RUNNER_TEMP/bootstrap-funasr-probe.json"
           cat "$RUNNER_TEMP/bootstrap-funasr-probe.json"
@@ -304,8 +323,6 @@ jobs:
           fi
 
           if [[ -n "$SUSPECT_SPEAKER_ACCEPT_THRESHOLD" && -n "$SUSPECT_SPEAKER_MARGIN" ]]; then
-            test -n "$SUSPECT_SPEAKER_ACCEPT_THRESHOLD"
-            test -n "$SUSPECT_SPEAKER_MARGIN"
             python3 - "$SUSPECT_SPEAKER_ACCEPT_THRESHOLD" "$SUSPECT_SPEAKER_MARGIN" <<'PY'
           import math, sys
           threshold, margin = map(float, sys.argv[1:])
