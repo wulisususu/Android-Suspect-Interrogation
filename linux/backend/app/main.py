@@ -44,6 +44,9 @@ def _build_supervisor() -> AISupervisor:
         request_timeout=settings.request_timeout,
         idle_unload_seconds=settings.idle_unload_seconds,
         memory_budget_mb=settings.memory_budget_mb,
+        speech_socket=settings.speech_socket,
+        speaker_accept_threshold=settings.speaker_accept_threshold,
+        speaker_margin=settings.speaker_margin,
     )
 
 
