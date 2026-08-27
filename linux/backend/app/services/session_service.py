@@ -6,6 +6,7 @@ from app.domain.errors import DomainError
 from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
 from app.repositories import sessions as session_repo
+from app.repositories import voiceprints as voiceprint_repo
 from app.services.serializers import session_dict
 from app.workflow.state import StateMachine
 
@@ -39,6 +40,12 @@ class SessionService:
             state = WorkflowState.CASE_CREATED
         if state != WorkflowState.CASE_CREATED:
             raise DomainError("SESSION_START_NOT_ALLOWED", f"当前状态不可开始审讯：{state.value}", 409)
+        if voiceprint_repo.get_suspect(self.db, case_id) is None:
+            raise DomainError(
+                "SUSPECT_VOICEPRINT_REQUIRED",
+                "请先完成嫌疑人声纹注册再开始审讯",
+                409,
+            )
         self._advance(case, WorkflowState.QUESTIONING)
         row = session_repo.create(self.db, case_id, case.stage)
         audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="SESSION_START", target_type="SESSION", target_id=row.id)
