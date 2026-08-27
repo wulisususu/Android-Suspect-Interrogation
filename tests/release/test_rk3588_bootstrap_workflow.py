@@ -52,18 +52,19 @@ def test_bootstrap_prepares_read_only_funasr_model_and_self_healing_runtime_layo
     assert 'test -d "$FUNASR_MODEL_ROOT/xvector"' in workflow
     assert "/etc/fstab" in workflow
     assert "x-systemd.before=ai-worker.service" in workflow
-    assert "runtime_ok=0" in workflow
+    assert "runtime_core_ok=0" in workflow
     assert 'if [[ -x "$FUNASR_RUNTIME/bin/python" ]]' in workflow
-    assert 'if [[ "$runtime_ok" -ne 1 ]]' in workflow
+    assert 'if [[ "$runtime_core_ok" -ne 1 ]]' in workflow
     assert 'sudo -n python3 -m venv "$FUNASR_RUNTIME"' in workflow
     assert "https://download.pytorch.org/whl/cpu" in workflow
     assert '"torch==${TORCH_CPU_VERSION}+cpu"' in workflow
     assert '"funasr==${FUNASR_PACKAGE_VERSION}"' in workflow
+    assert '"torchaudio==${TORCHAUDIO_PACKAGE_VERSION}"' in workflow
     assert 'MODEL_ROOT="$FUNASR_MODEL_ROOT"' in workflow
     assert "scripts/ci/probe-funasr-runtime.py" in workflow
     assert 'sudo -n chown -R root:root "$FUNASR_RUNTIME"' in workflow
-    assert "import funasr, torch, modelscope" in workflow
-    assert "torchaudio" not in workflow
+    assert "import funasr, torch, torchaudio" in workflow
+    assert "modelscope" not in workflow
 
 
 def test_install_upserts_funasr_runtime_env_for_existing_installations():
