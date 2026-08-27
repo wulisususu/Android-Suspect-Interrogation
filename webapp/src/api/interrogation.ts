@@ -26,6 +26,7 @@ import type {
   ModelImportSource,
   OcrResult,
   OcrRuntimeStatus,
+  OfficerVoiceprint,
   RecordMark,
   RecordRevision,
   SessionState,
@@ -34,6 +35,9 @@ import type {
   TemporaryAsrSpeaker,
   TimelineEvent,
   TranscriptMessage,
+  VoiceprintEnrollmentResult,
+  VoiceprintReadiness,
+  VoiceRecognitionMode,
 } from '../types/interrogation'
 
 const runtime = () => getRuntimeAdapter()
@@ -89,6 +93,35 @@ function normalizeSessionState(value: unknown, caseId: string): SessionState {
     pausedAt: toTimestamp(raw.pausedAt ?? raw.paused_at) ?? null,
     endedAt: toTimestamp(raw.endedAt ?? raw.ended_at) ?? null,
     updatedAt: toTimestamp(raw.updatedAt ?? raw.updated_at) ?? Date.now(),
+  }
+}
+
+function normalizeVoiceprintReadiness(value: unknown): VoiceprintReadiness {
+  const raw = asRecord(value)
+  const mode = String(raw.recognitionMode ?? 'SUSPECT_ONLY') as VoiceRecognitionMode
+  return {
+    suspectReady: Boolean(raw.suspectReady),
+    interrogatorReady: Boolean(raw.interrogatorReady),
+    recorderReady: Boolean(raw.recorderReady),
+    recognitionMode: mode,
+    canStart: Boolean(raw.canStart),
+    ...(raw.simulated === undefined ? {} : { simulated: Boolean(raw.simulated) }),
+  }
+}
+
+function normalizeOfficerVoiceprint(value: unknown): OfficerVoiceprint {
+  const raw = asRecord(value)
+  return {
+    voiceprintId: raw.voiceprintId == null ? undefined : String(raw.voiceprintId),
+    officerId: String(raw.officerId ?? ''),
+    officerName: String(raw.officerName ?? ''),
+    active: Boolean(raw.active),
+    modelId: String(raw.modelId ?? ''),
+    modelVersion: raw.modelVersion == null ? null : String(raw.modelVersion),
+    enrollmentQuality: String(raw.enrollmentQuality ?? raw.quality ?? ''),
+    usableDurationMs: Number(raw.usableDurationMs ?? 0),
+    revokedAt: raw.revokedAt == null ? null : String(raw.revokedAt),
+    ...(raw.simulated === undefined ? {} : { simulated: Boolean(raw.simulated) }),
   }
 }
 
@@ -254,6 +287,50 @@ export function startAsr(): Promise<AsrRuntimeStatus> {
 
 export function stopAsr(): Promise<AsrRuntimeStatus> {
   return runtime().invoke<AsrRuntimeStatus>('asr.stop', {}, { timeoutMs: 30_000 })
+}
+
+export async function fetchVoiceprintReadiness(caseId: string): Promise<VoiceprintReadiness> {
+  return normalizeVoiceprintReadiness(await runtime().invoke<unknown>('voiceprint.readiness', { caseId }))
+}
+
+export function startSuspectVoiceprintEnrollment(caseId: string, actorId?: string): Promise<VoiceprintEnrollmentResult> {
+  return runtime().invoke<VoiceprintEnrollmentResult>('voiceprint.suspect.enrollment.start', { caseId, actorId })
+}
+
+export function stopSuspectVoiceprintEnrollment(caseId: string, actorId?: string): Promise<VoiceprintEnrollmentResult> {
+  return runtime().invoke<VoiceprintEnrollmentResult>('voiceprint.suspect.enrollment.stop', { caseId, actorId }, { timeoutMs: 120_000 })
+}
+
+export async function fetchOfficerVoiceprints(activeOnly = true): Promise<OfficerVoiceprint[]> {
+  const result = await runtime().invoke<unknown[]>('officerVoiceprint.list', { activeOnly })
+  return Array.isArray(result) ? result.map(normalizeOfficerVoiceprint) : []
+}
+
+export function startOfficerVoiceprintEnrollment(officerId: string, officerName: string, actorId?: string): Promise<VoiceprintEnrollmentResult> {
+  return runtime().invoke<VoiceprintEnrollmentResult>('officerVoiceprint.enrollment.start', { officerId, officerName, actorId })
+}
+
+export function stopOfficerVoiceprintEnrollment(officerId: string, actorId?: string): Promise<VoiceprintEnrollmentResult> {
+  return runtime().invoke<VoiceprintEnrollmentResult>('officerVoiceprint.enrollment.stop', { officerId, actorId }, { timeoutMs: 120_000 })
+}
+
+export async function revokeOfficerVoiceprint(officerId: string, actorId?: string): Promise<OfficerVoiceprint> {
+  return normalizeOfficerVoiceprint(await runtime().invoke<unknown>('officerVoiceprint.revoke', { officerId, actorId }))
+}
+
+export async function updateVoiceprintAssignments(
+  caseId: string,
+  interrogatorOfficerId?: string | null,
+  recorderOfficerId?: string | null,
+  actorId?: string,
+): Promise<VoiceprintReadiness> {
+  const result = await runtime().invoke<unknown>('voiceprint.assignments.update', {
+    caseId,
+    interrogatorOfficerId: interrogatorOfficerId ?? null,
+    recorderOfficerId: recorderOfficerId ?? null,
+    actorId,
+  })
+  return normalizeVoiceprintReadiness(result)
 }
 
 export function fetchOcrStatus(): Promise<OcrRuntimeStatus> {
