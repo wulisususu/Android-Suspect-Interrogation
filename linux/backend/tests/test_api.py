@@ -11,7 +11,7 @@ def payload(response):
     return body["data"]
 
 
-def test_canonical_api_full_case_flow(tmp_path):
+def test_canonical_api_full_case_flow(tmp_path, enroll_test_suspect_voiceprint):
     db_url = f"sqlite:///{tmp_path / 'api.db'}"
     app = create_app(database_url=db_url, hardware_gateway=MockHardwareGateway(simulated=True))
     with TestClient(app) as client:
@@ -32,6 +32,7 @@ def test_canonical_api_full_case_flow(tmp_path):
         identity = payload(client.post("/api/v1/identity/read", json={"case_id": case_id, "actor_id": "op-1"}))
         assert identity["name"] == "联调测试对象"
         assert payload(client.get(f"/api/v1/cases/{case_id}"))["workflowState"] == "IDENTITY_READY"
+        enroll_test_suspect_voiceprint(app, case_id)
 
         session = payload(client.post(f"/api/v1/cases/{case_id}/session/start", json={"actor_id": "op-1"}))
         assert session["status"] == "RUNNING"
@@ -82,7 +83,7 @@ def test_canonical_api_full_case_flow(tmp_path):
         assert update_audit["after"]["text"] == "请说明你的姓名。"
 
 
-def test_confirmed_identity_intake_allows_session_start_without_hardware_reread(tmp_path):
+def test_confirmed_identity_intake_allows_session_start_without_hardware_reread(tmp_path, enroll_test_suspect_voiceprint):
     app = create_app(
         database_url=f"sqlite:///{tmp_path / 'identity-confirm.db'}",
         hardware_gateway=MockHardwareGateway(simulated=False),
@@ -115,6 +116,7 @@ def test_confirmed_identity_intake_allows_session_start_without_hardware_reread(
         assert case["birthDate"] == "1990-01-01"
         assert case["address"] == "测试地址"
         assert case["identitySource"] == "MANUAL"
+        enroll_test_suspect_voiceprint(app, case_id)
 
         session = payload(client.post(f"/api/v1/cases/{case_id}/session/start", json={"actor_id": "op-2"}))
         assert session["status"] == "RUNNING"
