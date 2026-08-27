@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any, Protocol
 
-from app.ai.errors import WorkerCrashedError
+from app.ai.errors import AIError, WorkerCrashedError
 from app.ai.speech.types import SpeechEvent, SpeechEventType
 
 
@@ -221,11 +221,22 @@ class SpeechSession:
                 )
             ]
 
+        # ASR is authoritative for text. Its failure must propagate so callers
+        # never fabricate a transcript. Speaker attribution is independent and
+        # is allowed to degrade to UNKNOWN when XVector is unavailable.
         asr = self.runtime.transcribe(utterance_pcm, self.sample_rate)
-        speaker = self.runtime.speaker_embedding(utterance_pcm, self.sample_rate)
-        common_details = {"forced_final": True} if forced_final else {}
+        common_details: dict[str, Any] = {"forced_final": True} if forced_final else {}
+        speaker: dict[str, Any] | None = None
+        try:
+            speaker = self.runtime.speaker_embedding(utterance_pcm, self.sample_rate)
+        except AIError as exc:
+            common_details = {
+                **common_details,
+                "speaker_unavailable": True,
+                "speaker_error_code": exc.code,
+            }
 
-        return [
+        events = [
             SpeechEvent(
                 type=SpeechEventType.VAD_END,
                 session_id=self.session_id,
@@ -243,16 +254,20 @@ class SpeechSession:
                 model_id=str(asr.get("model_id") or "paraformer"),
                 details=common_details,
             ),
-            SpeechEvent(
-                type=SpeechEventType.SPEAKER_RESULT,
-                session_id=self.session_id,
-                start_ms=start_ms,
-                end_ms=end_ms,
-                embedding=[float(value) for value in speaker.get("embedding", [])],
-                model_id=str(speaker.get("model_id") or "xvector"),
-                details=common_details,
-            ),
         ]
+        if speaker is not None:
+            events.append(
+                SpeechEvent(
+                    type=SpeechEventType.SPEAKER_RESULT,
+                    session_id=self.session_id,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    embedding=[float(value) for value in speaker.get("embedding", [])],
+                    model_id=str(speaker.get("model_id") or "xvector"),
+                    details={"forced_final": True} if forced_final else {},
+                )
+            )
+        return events
 
     def _append_pre_roll(self, pcm: bytes, end_ms: int) -> None:
         max_bytes = self._ms_to_bytes(self.pre_roll_ms)
