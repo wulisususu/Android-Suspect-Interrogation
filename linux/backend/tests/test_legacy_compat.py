@@ -10,16 +10,17 @@ def data(response):
     return body["data"]
 
 
-def test_backend_dev_smoke_contract_is_preserved(tmp_path):
+def test_backend_dev_smoke_contract_is_preserved(tmp_path, enroll_test_suspect_voiceprint):
     app = create_app(database_url=f"sqlite:///{tmp_path / 'legacy.db'}", hardware_gateway=MockHardwareGateway(simulated=False))
     with TestClient(app) as client:
         assert client.get("/api/health").status_code == 200
 
         created = data(client.post("/api/cases/create", json={"suspectName": "测试对象", "officerName": "测试警官"}))
         case_id = created["id"]
+        enroll_test_suspect_voiceprint(app, case_id)
 
-        # Legacy browser route is permitted to enter questioning without the new identity call,
-        # but the service records an explicit compatibility-bypass audit event.
+        # Legacy browser route may bypass only the historical identity call.
+        # The mandatory suspect voiceprint prerequisite remains explicit.
         session = data(client.post(f"/api/cases/{case_id}/session/start", json={}))
         assert session["status"] == "RUNNING"
 
