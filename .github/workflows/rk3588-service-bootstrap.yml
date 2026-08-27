@@ -119,6 +119,28 @@ jobs:
           bash tests/release/test_control_shell.sh
           scripts/ci/rk3588-smoke.sh
 
+      - name: Inspect API port before production takeover
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n systemctl stop interrogation-api.service || true
+          sleep 1
+          if sudo -n ss -ltnp 'sport = :8000' | grep -q ':8000'; then
+            echo 'TCP/8000 remains occupied after stopping interrogation-api.service' >&2
+            sudo -n ss -ltnp 'sport = :8000' || true
+            if command -v fuser >/dev/null 2>&1; then
+              sudo -n fuser -v 8000/tcp || true
+              for pid in $(sudo -n fuser 8000/tcp 2>/dev/null || true); do
+                echo "--- port owner pid=$pid ---"
+                sudo -n ps -fp "$pid" || true
+                printf 'cwd='; sudo -n readlink -f "/proc/$pid/cwd" || true
+                printf 'cmdline='; sudo -n tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true; echo
+              done
+            fi
+            exit 1
+          fi
+          echo 'TCP/8000 is free for interrogation-api.service'
+
       - name: Install systemd units and production layout
         shell: bash
         run: |
@@ -197,6 +219,8 @@ jobs:
           echo '--- kiosk enabled/active ---'
           systemctl is-enabled kiosk.service || true
           systemctl is-active kiosk.service || true
+          echo '--- port 8000 ---'
+          sudo -n ss -ltnp 'sport = :8000' || true
           echo '--- service status ---'
           sudo -n systemctl --no-pager --full status interrogation-api.service kiosk.service || true
           echo '--- API journal ---'
