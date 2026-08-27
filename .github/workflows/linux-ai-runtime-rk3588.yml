@@ -67,6 +67,7 @@ jobs:
     env:
       AI_MODE: mock
       PYTHONDONTWRITEBYTECODE: '1'
+      TORCHAUDIO_PACKAGE_VERSION: '2.11.0'
 
     steps:
       - name: Runner identity
@@ -168,6 +169,24 @@ jobs:
             echo 'pytest not preinstalled on runner; standard-library AI smoke already passed without downloads.'
           fi
 
+      - name: Ensure project FunASR runtime audio dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_FUNASR_PYTHON=/opt/suspect-interrogation/runtime/funasr-env/bin/python
+          if [[ -x "$PROJECT_FUNASR_PYTHON" ]] && \
+             "$PROJECT_FUNASR_PYTHON" -c 'import funasr, torch' >/dev/null 2>&1; then
+            if ! "$PROJECT_FUNASR_PYTHON" -c 'import torchaudio' >/dev/null 2>&1; then
+              echo 'Project-isolated FunASR runtime is missing TorchAudio; repairing only /opt/suspect-interrogation/runtime/funasr-env.'
+              sudo -n "$PROJECT_FUNASR_PYTHON" -m pip install --retries 3 --timeout 60 \
+                --index-url https://download.pytorch.org/whl/cpu \
+                "torchaudio==${TORCHAUDIO_PACKAGE_VERSION}"
+            fi
+            "$PROJECT_FUNASR_PYTHON" -c 'import funasr, torch, torchaudio; print("funasr=" + str(funasr.__version__)); print("torch=" + str(torch.__version__)); print("torchaudio=" + str(torchaudio.__version__))'
+          else
+            echo 'Project FunASR runtime is not provisioned yet; read-only probe will diagnose other available interpreters.'
+          fi
+
       - name: Probe installed FunASR models without downloads
         shell: bash
         run: |
@@ -188,7 +207,7 @@ jobs:
             /home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python \
             python3; do
             if [[ "$candidate" = python3 ]] || [[ -x "$candidate" ]]; then
-              if diagnostic=$("$candidate" -c 'import funasr, torch; print("funasr=" + str(getattr(funasr, "__version__", "unknown"))); print("torch=" + str(getattr(torch, "__version__", "unknown")))' 2>&1); then
+              if diagnostic=$("$candidate" -c 'import funasr, torch, torchaudio; print("funasr=" + str(getattr(funasr, "__version__", "unknown"))); print("torch=" + str(getattr(torch, "__version__", "unknown"))); print("torchaudio=" + str(getattr(torchaudio, "__version__", "unknown")))' 2>&1); then
                 echo "FunASR interpreter diagnostic: ${diagnostic}"
                 FUNASR_PYTHON="$candidate"
                 break
@@ -205,6 +224,8 @@ jobs:
 
           echo "funasr_python=${FUNASR_PYTHON}"
           MODEL_ROOT="$MODEL_ROOT" "$FUNASR_PYTHON" scripts/ci/probe-funasr-runtime.py \
+            --speech-wav "$MODEL_ROOT/paraformer/example/asr_example.wav" \
+            --speaker-wav "$MODEL_ROOT/xvector/example/sv_example_enroll.wav" \
             --output "$RUNNER_TEMP/funasr-probe.json"
           cat "$RUNNER_TEMP/funasr-probe.json"
           echo "FUNASR_PROBE_PYTHON=$FUNASR_PYTHON" >> "$GITHUB_ENV"
