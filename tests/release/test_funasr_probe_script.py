@@ -59,6 +59,13 @@ def test_rk3588_ai_pytest_is_focused_and_uses_isolated_mutable_paths():
     assert "PYTHONPATH=. python3 -m pytest -q" not in workflow
 
 
+def test_rk3588_ai_runtime_heals_pinned_modelscope_for_legacy_xvector():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "MODELSCOPE_PACKAGE_VERSION: '1.39.1'" in workflow
+    assert '"modelscope==${MODELSCOPE_PACKAGE_VERSION}"' in workflow
+    assert "import funasr, torch, torchaudio, modelscope" in workflow
+
+
 def test_probe_preserves_successful_load_evidence_when_optional_inference_fails(tmp_path: Path):
     model_root = tmp_path / "models"
     for name in ("paraformer", "fsmn-vad", "xvector"):
