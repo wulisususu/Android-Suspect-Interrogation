@@ -75,7 +75,11 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
     case 'session.resume': return { method: 'POST', url: `/api/v1/interrogation/${caseId}/resume`, data: {} }
     case 'session.finish': return { method: 'POST', url: `/api/v1/interrogation/${caseId}/finish`, data: {} }
     case 'session.stage': return { method: 'POST', url: `/api/v1/interrogation/${caseId}/stage`, data: { stage: payload.stage } }
-    case 'identity.read': return { method: 'POST', url: '/api/v1/identity/read', data: {} }
+    case 'identity.read': return {
+      method: 'POST',
+      url: '/api/v1/identity/read',
+      data: { case_id: payload.caseId, actor_id: payload.actorId },
+    }
     case 'device.action': return { method: 'POST', url: '/api/v1/device/action', data: { type: payload.type } }
     case 'model.list': return { method: 'GET', url: '/api/v1/models' }
     case 'model.scan': return { method: 'GET', url: '/api/v1/models', params: { rescan: true } }
