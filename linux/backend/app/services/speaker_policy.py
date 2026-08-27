@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 from typing import Collection, Iterable, Mapping, Any
+
+
+class _StrEnumCompat(str, Enum):
+    """String enum compatible with the RK3588 Python 3.10 runtime."""
+
+    def __str__(self) -> str:
+        return str(self.value)
 
 
 _MIN_USABLE_DURATION_MS = 1000
 _REFERENCE_ROLES = frozenset({"SUSPECT", "INTERROGATOR", "RECORDER"})
 
 
-class SpeakerRole(StrEnum):
+class SpeakerRole(_StrEnumCompat):
     SUSPECT = "SUSPECT"
     INTERROGATOR = "INTERROGATOR"
     RECORDER = "RECORDER"
@@ -18,7 +25,7 @@ class SpeakerRole(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
-class SpeakerSource(StrEnum):
+class SpeakerSource(_StrEnumCompat):
     X_VECTOR = "X_VECTOR"
     SUSPECT_EXCLUSION = "SUSPECT_EXCLUSION"
     MANUAL = "MANUAL"
@@ -101,7 +108,7 @@ def decide_speaker(
     second = ranked[1] if len(ranked) > 1 else None
     second_score = second.score if second is not None else None
     passes_threshold = best.score >= threshold
-    passes_margin = second is None or (best.score - second.score) >= margin
+    passes_margin = second is None or (best.score - second_score) >= margin
 
     if passes_threshold and passes_margin:
         return _verified(best, second_score, threshold, margin)
