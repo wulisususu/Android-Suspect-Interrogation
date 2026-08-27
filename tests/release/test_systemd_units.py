@@ -17,17 +17,31 @@ def test_api_unit_runs_non_root_and_is_hardened():
     assert "Restart=on-failure" in unit
     assert "NoNewPrivileges=true" in unit
     assert "ProtectSystem=strict" in unit
+    assert "ProtectHome=true" in unit
     assert "PrivateTmp=true" in unit
-    assert "ReadWritePaths=/var/lib/suspect-interrogation /var/log/suspect-interrogation" in unit
+    assert "ReadWritePaths=/var/lib/suspect-interrogation /var/log/suspect-interrogation /run/suspect-interrogation" in unit
     assert "0.0.0.0" not in unit
+    assert "/home/youyeetoo/backend" not in unit
+    assert ":8000" not in unit
 
 
-def test_ai_worker_is_optional_and_non_root():
+def test_ai_worker_is_optional_non_root_and_sandboxed_for_funasr():
     unit = _read("ai-worker.service")
     assert "User=suspect-interrogation" in unit
     assert "EnvironmentFile=-/etc/suspect-interrogation/ai-worker.env" in unit
     assert "Restart=on-failure" in unit
     assert "ConditionPathExists=/opt/suspect-interrogation/current/linux/backend" in unit
+    assert "RuntimeDirectory=suspect-interrogation" in unit
+    assert "RuntimeDirectoryMode=0750" in unit
+    assert "ProtectHome=true" in unit
+    assert "ReadWritePaths=/run/suspect-interrogation /var/lib/suspect-interrogation /var/log/suspect-interrogation" in unit
+    assert "ReadOnlyPaths=/opt/suspect-interrogation/models/funasr /opt/suspect-interrogation/runtime/funasr-env" in unit
+    assert "/opt/suspect-interrogation/models/funasr" in unit
+    assert "/opt/suspect-interrogation/runtime/funasr-env" in unit
+    assert "/run/suspect-interrogation/speech.sock" in unit
+    assert "/home/youyeetoo/backend" not in unit
+    assert ":8000" not in unit
+    assert "systemctl stop" not in unit
 
 
 def test_kiosk_orders_after_api_and_uses_launcher():
