@@ -33,6 +33,7 @@ jobs:
           mkdir -p "$LEGACY"
           "$PY" -m pip install --retries 3 --timeout 60 --no-deps --target "$LEGACY" \
             'funasr==0.5.8' 'modelscope==1.6.1'
+          "$PY" -m pip install --retries 3 --timeout 60 --target "$LEGACY" 'humanfriendly==10.0'
           PYTHONPATH="$LEGACY" "$PY" - <<'PY'
           import funasr, modelscope
           print('legacy_funasr=', getattr(funasr, '__version__', 'unknown'))
