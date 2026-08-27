@@ -1,4 +1,4 @@
-"""Create the authoritative Linux backend schema.
+"""Create the authoritative Linux backend core schema.
 
 Revision ID: 0001_linux_core_schema
 Revises: None
@@ -14,13 +14,34 @@ down_revision = None
 branch_labels = None
 depends_on = None
 
+CORE_TABLE_NAMES = (
+    "cases",
+    "persons",
+    "interrogation_sessions",
+    "messages",
+    "message_revisions",
+    "facts",
+    "timeline_events",
+    "audit_logs",
+    "device_events",
+    "document_snapshots",
+    "signature_records",
+)
+
+
+def _core_tables():
+    return [Base.metadata.tables[name] for name in CORE_TABLE_NAMES]
+
 
 def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "sqlite":
         bind.exec_driver_sql("PRAGMA foreign_keys=ON")
-    Base.metadata.create_all(bind=bind)
+    Base.metadata.create_all(bind=bind, tables=_core_tables())
 
 
 def downgrade() -> None:
-    Base.metadata.drop_all(bind=op.get_bind())
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        bind.exec_driver_sql("PRAGMA foreign_keys=ON")
+    Base.metadata.drop_all(bind=bind, tables=list(reversed(_core_tables())))
