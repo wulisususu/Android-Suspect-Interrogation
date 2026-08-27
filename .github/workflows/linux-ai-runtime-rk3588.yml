@@ -17,6 +17,22 @@ on:
       - 'scripts/ci/probe-funasr-runtime.py'
       - 'scripts/ai-worker-start.sh'
       - 'systemd/ai-worker.service'
+  pull_request:
+    branches:
+      - linux-adaptation
+    paths:
+      - '.github/workflows/linux-ai-runtime-rk3588.yml'
+      - 'linux/backend/app/ai/**'
+      - 'linux/backend/app/api/ai_runtime.py'
+      - 'linux/backend/app/main.py'
+      - 'linux/backend/config/model-registry.yaml'
+      - 'linux/backend/models/**'
+      - 'linux/backend/speech_worker/**'
+      - 'linux/backend/tests/**'
+      - 'linux/docs/AI_RUNTIME.md'
+      - 'scripts/ci/probe-funasr-runtime.py'
+      - 'scripts/ai-worker-start.sh'
+      - 'systemd/ai-worker.service'
   workflow_dispatch:
 
 permissions:
