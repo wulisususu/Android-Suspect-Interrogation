@@ -20,11 +20,13 @@ jobs:
   bootstrap-services:
     name: Bootstrap RK3588 services
     runs-on: [self-hosted, rk3588]
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       GIT_TERMINAL_PROMPT: '0'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
       SUSPECT_DEPLOY_PORT: '18080'
+      FUNASR_PACKAGE_VERSION: '1.4.2'
+      CALIBRATION_ROOT: '/var/lib/suspect-interrogation/calibration'
 
     steps:
       - name: RK3588 and privilege preflight
@@ -145,11 +147,8 @@ jobs:
           FUNASR_SOURCE=/home/youyeetoo/funasr-models
           FUNASR_MODEL_ROOT=/opt/suspect-interrogation/models/funasr
           FUNASR_RUNTIME=/opt/suspect-interrogation/runtime/funasr-env
-          FUNASR_SOURCE_PYTHON=/home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python
-          FUNASR_SOURCE_ENV="$(dirname "$(dirname "$FUNASR_SOURCE_PYTHON")")"
 
           test -d "$FUNASR_SOURCE"
-          test -x "$FUNASR_SOURCE_PYTHON"
           test -d "$FUNASR_SOURCE/paraformer"
           test -d "$FUNASR_SOURCE/fsmn-vad"
           test -d "$FUNASR_SOURCE/xvector"
@@ -179,14 +178,22 @@ jobs:
           fi
           sudo -n awk -v dst="$FUNASR_MODEL_ROOT" '$2 == dst { found=1 } END { exit(found ? 0 : 1) }' /etc/fstab
 
-          if [[ ! -x "$FUNASR_RUNTIME/bin/python" ]]; then
-            sudo -n install -d -o root -g root -m 0755 "$FUNASR_RUNTIME"
-            sudo -n cp -a "$FUNASR_SOURCE_ENV/." "$FUNASR_RUNTIME/"
+          if [[ ! -x "$FUNASR_RUNTIME/bin/python" ]] || \
+             ! sudo -n "$FUNASR_RUNTIME/bin/python" -c 'import funasr, torch, torchaudio' >/dev/null 2>&1; then
+            echo "Provisioning isolated FunASR runtime under $FUNASR_RUNTIME"
+            sudo -n rm -rf "$FUNASR_RUNTIME"
+            sudo -n python3 -m venv "$FUNASR_RUNTIME"
+            sudo -n "$FUNASR_RUNTIME/bin/python" -m pip install --upgrade pip
+            sudo -n "$FUNASR_RUNTIME/bin/python" -m pip install --retries 3 --timeout 60 torch torchaudio
+            sudo -n "$FUNASR_RUNTIME/bin/python" -m pip install --retries 3 --timeout 60 "funasr==${FUNASR_PACKAGE_VERSION}"
             sudo -n chown -R root:root "$FUNASR_RUNTIME"
             sudo -n chmod -R go-w "$FUNASR_RUNTIME"
           fi
 
-          sudo -n "$FUNASR_RUNTIME/bin/python" -c 'import funasr, torch; print(funasr.__version__)'
+          sudo -n "$FUNASR_RUNTIME/bin/python" -c 'import funasr, torch, torchaudio; print("funasr=" + str(funasr.__version__)); print("torch=" + str(torch.__version__)); print("torchaudio=" + str(torchaudio.__version__))'
+          MODEL_ROOT="$FUNASR_MODEL_ROOT" sudo -n -E "$FUNASR_RUNTIME/bin/python" scripts/ci/probe-funasr-runtime.py \
+            --output "$RUNNER_TEMP/bootstrap-funasr-probe.json"
+          cat "$RUNNER_TEMP/bootstrap-funasr-probe.json"
           test -x "$FUNASR_RUNTIME/bin/python"
           echo "funasr_models=$FUNASR_MODEL_ROOT"
           echo "funasr_runtime=$FUNASR_RUNTIME"
@@ -202,17 +209,23 @@ jobs:
           systemctl is-enabled --quiet interrogation-api.service
           systemctl is-enabled --quiet kiosk.service
 
-      - name: Configure dedicated production port
+      - name: Configure dedicated production port and real AI mode
         shell: bash
         run: |
           set -euo pipefail
           RUNTIME_ENV=/etc/suspect-interrogation/runtime.env
-          if sudo -n grep -q '^SUSPECT_API_PORT=' "$RUNTIME_ENV"; then
-            sudo -n sed -i -E "s/^SUSPECT_API_PORT=.*/SUSPECT_API_PORT=${SUSPECT_DEPLOY_PORT}/" "$RUNTIME_ENV"
-          else
-            printf 'SUSPECT_API_PORT=%s\n' "$SUSPECT_DEPLOY_PORT" | sudo -n tee -a "$RUNTIME_ENV" >/dev/null
-          fi
+          upsert() {
+            local key="$1" value="$2"
+            if sudo -n grep -q "^${key}=" "$RUNTIME_ENV"; then
+              sudo -n sed -i -E "s|^${key}=.*|${key}=${value}|" "$RUNTIME_ENV"
+            else
+              printf '%s=%s\n' "$key" "$value" | sudo -n tee -a "$RUNTIME_ENV" >/dev/null
+            fi
+          }
+          upsert SUSPECT_API_PORT "$SUSPECT_DEPLOY_PORT"
+          upsert AI_MODE real
           sudo -n grep -q "^SUSPECT_API_PORT=${SUSPECT_DEPLOY_PORT}$" "$RUNTIME_ENV"
+          sudo -n grep -q '^AI_MODE=real$' "$RUNTIME_ENV"
 
           printf '%s\n' \
             "SUSPECT_KIOSK_READY_URL=http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" \
@@ -221,6 +234,13 @@ jobs:
           sudo -n chown root:suspect-interrogation /etc/suspect-interrogation/kiosk.env
           sudo -n chmod 0640 /etc/suspect-interrogation/kiosk.env
 
+          AI_ENV=/etc/suspect-interrogation/ai-worker.env
+          if [[ ! -f "$AI_ENV" ]]; then
+            sudo -n install -o root -g suspect-interrogation -m 0640 /dev/null "$AI_ENV"
+          fi
+          sudo -n chown root:suspect-interrogation "$AI_ENV"
+          sudo -n chmod 0640 "$AI_ENV"
+
       - name: Build and deploy production release
         shell: bash
         run: |
@@ -228,12 +248,102 @@ jobs:
           sudo -n env SUSPECT_HEALTH_BASE_URL="http://127.0.0.1:${SUSPECT_DEPLOY_PORT}" \
             bash deploy/control.sh deploy "$GITHUB_WORKSPACE"
 
+      - name: Start and verify real speech worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n systemctl enable --now ai-worker.service
+          for _ in $(seq 1 90); do
+            systemctl is-active --quiet ai-worker.service || true
+            [[ -S /run/suspect-interrogation/speech.sock ]] && break
+            sleep 1
+          done
+          systemctl is-active --quiet ai-worker.service
+          test -S /run/suspect-interrogation/speech.sock
+          PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \
+            /opt/suspect-interrogation/runtime/funasr-env/bin/python - <<'PY'
+          from app.ai.speech.client import SpeechWorkerClient
+          health = SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=30).health()
+          models = health.get('models') or {}
+          assert models.get('asr') is True, health
+          assert models.get('vad') is True, health
+          assert models.get('speaker') is True, health
+          print(health)
+          PY
+          echo 'TCP/8000 remains preserved after speech-worker activation:'
+          sudo -n ss -ltnp 'sport = :8000' || true
+
+      - name: Apply protected local calibration when available
+        shell: bash
+        run: |
+          set -euo pipefail
+          AI_ENV=/etc/suspect-interrogation/ai-worker.env
+          SUSPECT_SPEAKER_ACCEPT_THRESHOLD="$(sudo -n awk -F= '$1=="SUSPECT_SPEAKER_ACCEPT_THRESHOLD" {print $2}' "$AI_ENV" | tail -n1)"
+          SUSPECT_SPEAKER_MARGIN="$(sudo -n awk -F= '$1=="SUSPECT_SPEAKER_MARGIN" {print $2}' "$AI_ENV" | tail -n1)"
+
+          mapfile -d '' SUSPECT_WAVS < <(find "$CALIBRATION_ROOT/suspect" -maxdepth 1 -type f -name '*.wav' -print0 2>/dev/null | sort -z || true)
+          mapfile -d '' INTERROGATOR_WAVS < <(find "$CALIBRATION_ROOT/interrogator" -maxdepth 1 -type f -name '*.wav' -print0 2>/dev/null | sort -z || true)
+          mapfile -d '' RECORDER_WAVS < <(find "$CALIBRATION_ROOT/recorder" -maxdepth 1 -type f -name '*.wav' -print0 2>/dev/null | sort -z || true)
+
+          if [[ -z "$SUSPECT_SPEAKER_ACCEPT_THRESHOLD" || -z "$SUSPECT_SPEAKER_MARGIN" ]]; then
+            if [[ "${#SUSPECT_WAVS[@]}" -ge 3 && "${#INTERROGATOR_WAVS[@]}" -ge 3 && "${#RECORDER_WAVS[@]}" -ge 3 ]]; then
+              sudo -n env PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \
+                /opt/suspect-interrogation/runtime/funasr-env/bin/python \
+                /opt/suspect-interrogation/current/scripts/ci/rk3588-speech-calibrate.py \
+                --socket /run/suspect-interrogation/speech.sock \
+                --suspect-wavs "${SUSPECT_WAVS[@]}" \
+                --interrogator-wavs "${INTERROGATOR_WAVS[@]}" \
+                --recorder-wavs "${RECORDER_WAVS[@]}" \
+                --env-file "$AI_ENV" \
+                --output "$RUNNER_TEMP/production-calibration.json" \
+                --apply >/dev/null
+              cat "$RUNNER_TEMP/production-calibration.json"
+              SUSPECT_SPEAKER_ACCEPT_THRESHOLD="$(sudo -n awk -F= '$1=="SUSPECT_SPEAKER_ACCEPT_THRESHOLD" {print $2}' "$AI_ENV" | tail -n1)"
+              SUSPECT_SPEAKER_MARGIN="$(sudo -n awk -F= '$1=="SUSPECT_SPEAKER_MARGIN" {print $2}' "$AI_ENV" | tail -n1)"
+            fi
+          fi
+
+          if [[ -n "$SUSPECT_SPEAKER_ACCEPT_THRESHOLD" && -n "$SUSPECT_SPEAKER_MARGIN" ]]; then
+            test -n "$SUSPECT_SPEAKER_ACCEPT_THRESHOLD"
+            test -n "$SUSPECT_SPEAKER_MARGIN"
+            python3 - "$SUSPECT_SPEAKER_ACCEPT_THRESHOLD" "$SUSPECT_SPEAKER_MARGIN" <<'PY'
+          import math, sys
+          threshold, margin = map(float, sys.argv[1:])
+          assert math.isfinite(threshold) and 0.0 <= threshold <= 1.0
+          assert math.isfinite(margin) and 0.0 <= margin <= 1.0
+          PY
+            sudo -n systemctl restart interrogation-api.service
+            echo "speaker_calibration=configured threshold=${SUSPECT_SPEAKER_ACCEPT_THRESHOLD} margin=${SUSPECT_SPEAKER_MARGIN}"
+          else
+            echo 'speaker_calibration=NOT_CONFIGURED'
+            echo "Place at least 3 protected 16k/mono/PCM16 WAVs for each identity under ${CALIBRATION_ROOT}/{suspect,interrogator,recorder}/ and rerun calibration."
+            echo 'Core API/frontend and real speech worker remain installed; formal ASR capture stays fail-closed.'
+          fi
+
+          if [[ -n "$SUSPECT_SPEAKER_ACCEPT_THRESHOLD" && -n "$SUSPECT_SPEAKER_MARGIN" && \
+                "${#SUSPECT_WAVS[@]}" -ge 1 && "${#INTERROGATOR_WAVS[@]}" -ge 1 && "${#RECORDER_WAVS[@]}" -ge 1 ]]; then
+            PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \
+              /opt/suspect-interrogation/runtime/funasr-env/bin/python \
+              /opt/suspect-interrogation/current/scripts/ci/rk3588-speech-smoke.py \
+              --socket /run/suspect-interrogation/speech.sock \
+              --threshold "$SUSPECT_SPEAKER_ACCEPT_THRESHOLD" \
+              --margin "$SUSPECT_SPEAKER_MARGIN" \
+              --suspect-wav "${SUSPECT_WAVS[0]}" \
+              --interrogator-wav "${INTERROGATOR_WAVS[0]}" \
+              --recorder-wav "${RECORDER_WAVS[0]}"
+          else
+            echo 'real_speech_policy_smoke=pending_local_calibration_samples'
+          fi
+
       - name: Verify backend and built frontend
         shell: bash
         run: |
           set -euo pipefail
           systemctl is-enabled --quiet interrogation-api.service
           systemctl is-active --quiet interrogation-api.service
+          systemctl is-enabled --quiet ai-worker.service
+          systemctl is-active --quiet ai-worker.service
+          test -S /run/suspect-interrogation/speech.sock
 
           for attempt in $(seq 1 30); do
             if curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" >/tmp/suspect-ready.json; then
@@ -247,7 +357,10 @@ jobs:
           grep -q '<div id="app"></div>' /tmp/suspect-index.html
           test -f /opt/suspect-interrogation/current/webapp/dist/index.html
           echo "backend_service=active port=${SUSPECT_DEPLOY_PORT}"
+          echo "speech_worker=active socket=/run/suspect-interrogation/speech.sock"
           echo "frontend_bundle=served port=${SUSPECT_DEPLOY_PORT}"
+          echo 'Existing TCP/8000 owner after production deploy:'
+          sudo -n ss -ltnp 'sport = :8000' || true
 
       - name: Verify kiosk boot service
         shell: bash
@@ -285,11 +398,17 @@ jobs:
           set +e
           echo '--- current release ---'
           readlink -f /opt/suspect-interrogation/current || true
-          echo '--- runtime port ---'
-          sudo -n grep '^SUSPECT_API_PORT=' /etc/suspect-interrogation/runtime.env || true
+          echo '--- runtime config ---'
+          sudo -n grep -E '^(SUSPECT_API_PORT|AI_MODE)=' /etc/suspect-interrogation/runtime.env || true
+          echo '--- speaker calibration ---'
+          sudo -n grep -E '^SUSPECT_SPEAKER_(ACCEPT_THRESHOLD|MARGIN)=' /etc/suspect-interrogation/ai-worker.env || true
           echo '--- API enabled/active ---'
           systemctl is-enabled interrogation-api.service || true
           systemctl is-active interrogation-api.service || true
+          echo '--- AI worker enabled/active/socket ---'
+          systemctl is-enabled ai-worker.service || true
+          systemctl is-active ai-worker.service || true
+          ls -l /run/suspect-interrogation/speech.sock 2>/dev/null || true
           echo '--- kiosk enabled/active ---'
           systemctl is-enabled kiosk.service || true
           systemctl is-active kiosk.service || true
@@ -298,8 +417,10 @@ jobs:
           echo '--- preserved port 8000 ---'
           sudo -n ss -ltnp 'sport = :8000' || true
           echo '--- service status ---'
-          sudo -n systemctl --no-pager --full status interrogation-api.service kiosk.service || true
+          sudo -n systemctl --no-pager --full status interrogation-api.service ai-worker.service kiosk.service || true
           echo '--- API journal ---'
           sudo -n journalctl -u interrogation-api.service -n 80 --no-pager || true
+          echo '--- AI worker journal ---'
+          sudo -n journalctl -u ai-worker.service -n 120 --no-pager || true
           echo '--- kiosk journal ---'
           sudo -n journalctl -u kiosk.service -n 80 --no-pager || true
