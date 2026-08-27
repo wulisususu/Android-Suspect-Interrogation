@@ -5,6 +5,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _optional_float(name: str) -> float | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    return float(value)
+
+
 @dataclass(frozen=True)
 class AISettings:
     mode: str
@@ -13,6 +20,9 @@ class AISettings:
     request_timeout: float
     idle_unload_seconds: float
     memory_budget_mb: int
+    speech_socket: Path
+    speaker_accept_threshold: float | None
+    speaker_margin: float | None
     asr_backend: str | None
     ocr_backend: str | None
     llm_backend: str | None
@@ -30,6 +40,11 @@ class AISettings:
             request_timeout=max(0.05, float(os.getenv("AI_REQUEST_TIMEOUT", "30"))),
             idle_unload_seconds=max(0.0, float(os.getenv("AI_IDLE_UNLOAD_SECONDS", "300"))),
             memory_budget_mb=max(0, int(os.getenv("AI_MEMORY_BUDGET_MB", "6144"))),
+            speech_socket=Path(
+                os.getenv("SUSPECT_SPEECH_SOCKET", "/run/suspect-interrogation/speech.sock")
+            ).expanduser(),
+            speaker_accept_threshold=_optional_float("SPEAKER_ACCEPT_THRESHOLD"),
+            speaker_margin=_optional_float("SPEAKER_MARGIN"),
             asr_backend=os.getenv("ASR_BACKEND"),
             ocr_backend=os.getenv("OCR_BACKEND"),
             llm_backend=os.getenv("LLM_BACKEND"),
