@@ -20,6 +20,8 @@ def test_rk3588_service_bootstrap_workflow_installs_deploys_and_verifies_runtime
     assert 'export SUSPECT_DB_PATH="$TEST_RUNTIME_ROOT/interrogation.db"' in workflow
     assert 'export SUSPECT_DATA_DIR="$TEST_RUNTIME_ROOT/data"' in workflow
     assert 'export SUSPECT_LOG_DIR="$TEST_RUNTIME_ROOT/log"' in workflow
+    assert "sudo -n systemctl stop interrogation-api.service" in workflow
+    assert "sudo -n ss -ltnp 'sport = :8000'" in workflow
     assert "sudo -n bash deploy/control.sh install" in workflow
     assert 'sudo -n bash deploy/control.sh deploy "$GITHUB_WORKSPACE"' in workflow
     assert "systemctl is-enabled --quiet interrogation-api.service" in workflow
