@@ -38,12 +38,11 @@ def test_rk3588_service_bootstrap_workflow_installs_deploys_and_verifies_runtime
     assert "curl -fsS \"http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/\"" in workflow
 
 
-def test_bootstrap_prepares_read_only_funasr_model_and_runtime_layout():
+def test_bootstrap_prepares_read_only_funasr_model_and_self_healing_runtime_layout():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "FUNASR_SOURCE=/home/youyeetoo/funasr-models" in workflow
     assert "FUNASR_MODEL_ROOT=/opt/suspect-interrogation/models/funasr" in workflow
     assert "FUNASR_RUNTIME=/opt/suspect-interrogation/runtime/funasr-env" in workflow
-    assert "FUNASR_SOURCE_PYTHON=/home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python" in workflow
     assert 'sudo -n mount --bind "$FUNASR_SOURCE" "$FUNASR_MODEL_ROOT"' in workflow
     assert 'sudo -n mount -o remount,bind,ro "$FUNASR_MODEL_ROOT"' in workflow
     assert 'findmnt -no OPTIONS "$FUNASR_MODEL_ROOT"' in workflow
@@ -53,9 +52,13 @@ def test_bootstrap_prepares_read_only_funasr_model_and_runtime_layout():
     assert "/etc/fstab" in workflow
     assert "x-systemd.before=ai-worker.service" in workflow
     assert 'if [[ ! -x "$FUNASR_RUNTIME/bin/python" ]]' in workflow
-    assert 'sudo -n cp -a "$FUNASR_SOURCE_ENV/." "$FUNASR_RUNTIME/"' in workflow
+    assert 'sudo -n python3 -m venv "$FUNASR_RUNTIME"' in workflow
+    assert 'pip install --retries 3 --timeout 60 torch torchaudio' in workflow
+    assert '"funasr==${FUNASR_PACKAGE_VERSION}"' in workflow
+    assert 'MODEL_ROOT="$FUNASR_MODEL_ROOT"' in workflow
+    assert "scripts/ci/probe-funasr-runtime.py" in workflow
     assert 'sudo -n chown -R root:root "$FUNASR_RUNTIME"' in workflow
-    assert "import funasr, torch" in workflow
+    assert "import funasr, torch, torchaudio" in workflow
 
 
 def test_install_upserts_funasr_runtime_env_for_existing_installations():
