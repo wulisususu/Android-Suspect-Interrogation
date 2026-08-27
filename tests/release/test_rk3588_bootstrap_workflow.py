@@ -55,3 +55,14 @@ def test_bootstrap_prepares_read_only_funasr_model_and_runtime_layout():
     assert 'sudo -n cp -a "$FUNASR_SOURCE_ENV/." "$FUNASR_RUNTIME/"' in workflow
     assert 'sudo -n chown -R root:root "$FUNASR_RUNTIME"' in workflow
     assert "import funasr, torch" in workflow
+
+
+def test_bootstrap_upserts_funasr_runtime_env_for_existing_installations():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'SUSPECT_FUNASR_MODEL_ROOT=/opt/suspect-interrogation/models/funasr' in workflow
+    assert 'SUSPECT_FUNASR_PYTHON=/opt/suspect-interrogation/runtime/funasr-env/bin/python' in workflow
+    assert 'SUSPECT_SPEECH_SOCKET=/run/suspect-interrogation/speech.sock' in workflow
+    assert 'grep -q "^${key}=" "$RUNTIME_ENV"' in workflow
+    assert 'sed -i -E "s|^${key}=.*|${key}=${value}|" "$RUNTIME_ENV"' in workflow
+    assert 'printf \'%s=%s\\n\' "$key" "$value"' in workflow
