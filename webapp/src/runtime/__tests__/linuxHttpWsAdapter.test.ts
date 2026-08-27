@@ -21,6 +21,31 @@ describe('LinuxHttpWsAdapter', () => {
     })
   })
 
+  it('uses the canonical case session endpoints exposed by FastAPI', async () => {
+    const calls: Array<{ method: string; url: string; data?: unknown }> = []
+    const adapter = new LinuxHttpWsAdapter({
+      request: async (config) => {
+        calls.push({ method: String(config.method), url: String(config.url), data: config.data })
+        return { data: { status: 'RUNNING', case_id: 'CASE-001', stage: 'IDENTITY' } }
+      },
+      origin: 'http://127.0.0.1:8080',
+    })
+
+    await adapter.invoke('session.start', { caseId: 'CASE-001' })
+    await adapter.invoke('session.pause', { caseId: 'CASE-001' })
+    await adapter.invoke('session.resume', { caseId: 'CASE-001' })
+    await adapter.invoke('session.stage', { caseId: 'CASE-001', stage: 'STATEMENT' })
+    await adapter.invoke('session.finish', { caseId: 'CASE-001' })
+
+    expect(calls).toEqual([
+      { method: 'POST', url: '/api/v1/cases/CASE-001/session/start', data: {} },
+      { method: 'POST', url: '/api/v1/cases/CASE-001/session/pause', data: {} },
+      { method: 'POST', url: '/api/v1/cases/CASE-001/session/resume', data: {} },
+      { method: 'POST', url: '/api/v1/cases/CASE-001/session/stage', data: { stage: 'STATEMENT' } },
+      { method: 'POST', url: '/api/v1/cases/CASE-001/session/finish', data: {} },
+    ])
+  })
+
   it('normalizes network failures to NOT_CONNECTED', async () => {
     const adapter = new LinuxHttpWsAdapter({
       request: async () => { throw Object.assign(new Error('offline'), { code: 'ERR_NETWORK' }) },
