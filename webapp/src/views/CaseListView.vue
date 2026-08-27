@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { fetchCases } from '../api/interrogation'
-import { backendErrorMessage } from '../api/interrogation'
+import { backendErrorMessage, fetchCases } from '../api/interrogation'
 import IdentityIntakeModal from '../components/IdentityIntakeModal.vue'
 import type { CaseSummary } from '../types/interrogation'
 
@@ -41,6 +40,13 @@ function maskedId(idNumber?: string) {
   return `${idNumber.slice(0, 3)}***********${idNumber.slice(-4)}`
 }
 
+function identitySourceText(source?: string) {
+  if (source === 'ID_CARD_READER') return '读卡器身份'
+  if (source === 'OCR') return 'OCR 身份'
+  if (source === 'MANUAL') return '人工身份'
+  return source || ''
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -64,44 +70,68 @@ onMounted(load)
 
 <template>
   <main class="case-list-page">
-    <header class="topbar">
-      <div class="case-meta">
-        <div>
-          <h1>嫌疑人询问系统</h1>
-          <p>案件历史记录</p>
-        </div>
-        <span class="state-chip">共 {{ cases.length }} 起</span>
+    <header class="case-list-header">
+      <div class="system-title">
+        <span>公安业务终端</span>
+        <h1>嫌疑人询问系统</h1>
+        <p>案件历史记录与询问入口</p>
       </div>
-      <div class="operator-meta">
+      <div class="case-list-actions">
+        <div class="case-count"><strong>{{ cases.length }}</strong><span>案件总数</span></div>
         <button class="btn-primary" @click="identityOpen = true">＋ 新建询问</button>
       </div>
     </header>
 
-    <div v-if="loading" class="demo-banner">正在加载案件历史…</div>
-    <div v-else-if="error" class="feedback-banner error">{{ error }}</div>
-    <div v-else-if="!cases.length" class="demo-banner">暂无案件记录。点击右上角“新建询问”，先录入身份后再开始审讯。</div>
+    <section class="case-list-toolbar">
+      <div>
+        <strong>案件列表</strong>
+        <span>选择案件进入工作台，或新建询问后先完成身份核验</span>
+      </div>
+      <button class="refresh-button" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新列表' }}</button>
+    </section>
 
-    <section v-else class="case-list">
-      <article v-for="item in cases" :key="item.id" class="case-card" @click="emit('open', item.id)">
-        <div class="case-card-main">
-          <div class="case-card-title">
-            <span class="suspect-name">{{ item.suspectName }}</span>
-            <span v-if="item.gender || item.age" class="suspect-meta">{{ item.gender || '' }} {{ item.age ? `${item.age}岁` : '' }}</span>
-          </div>
-          <div class="case-card-sub">
-            <span>主审：{{ item.officerName }}</span>
-            <span>案号：{{ item.id }}</span>
-            <span v-if="item.idNumber">身份证：{{ maskedId(item.idNumber) }}</span>
-            <span v-if="item.updatedAt">更新：{{ fmtTime(item.updatedAt) }}</span>
+    <div v-if="loading" class="status-banner">正在加载案件历史…</div>
+    <div v-else-if="error" class="status-banner error">{{ error }}</div>
+    <div v-else-if="!cases.length" class="empty-state">
+      <strong>暂无案件记录</strong>
+      <p>点击右上角“新建询问”，先读取并核对身份证，再进入案件工作台。</p>
+      <button class="btn-primary" @click="identityOpen = true">新建第一起询问</button>
+    </div>
+
+    <section v-else class="case-list" aria-label="案件列表">
+      <button v-for="item in cases" :key="item.id" class="case-row" type="button" @click="emit('open', item.id)">
+        <div class="person-cell">
+          <div class="person-avatar">{{ (item.suspectName || '待')[0] }}</div>
+          <div>
+            <div class="case-row-title">
+              <strong>{{ item.suspectName || '待录入人员' }}</strong>
+              <span v-if="item.gender || item.age">{{ item.gender || '' }} {{ item.age ? `${item.age}岁` : '' }}</span>
+            </div>
+            <small v-if="item.idNumber">身份证：{{ maskedId(item.idNumber) }}</small>
+            <small v-else>身份证：未录入</small>
           </div>
         </div>
-        <div class="case-card-tags">
-          <span v-if="item.identitySource" class="tag identity">{{ item.identitySource === 'OCR' ? 'OCR身份' : '人工身份' }}</span>
-          <span class="tag">{{ stageTextMap[item.stage] || item.stage }}</span>
-          <span class="tag" :class="item.state">{{ stateTextMap[item.state] || item.state }}</span>
-          <span class="arrow">›</span>
+
+        <div class="case-info-cell">
+          <span>案件编号</span>
+          <strong>{{ item.id }}</strong>
         </div>
-      </article>
+        <div class="case-info-cell">
+          <span>主审民警</span>
+          <strong>{{ item.officerName || '当前警官' }}</strong>
+        </div>
+        <div class="case-info-cell">
+          <span>最后更新</span>
+          <strong>{{ fmtTime(item.updatedAt) || '暂无' }}</strong>
+        </div>
+
+        <div class="case-status-cell">
+          <span v-if="item.identitySource" class="tag identity">{{ identitySourceText(item.identitySource) }}</span>
+          <span class="tag stage">{{ stageTextMap[item.stage] || item.stage }}</span>
+          <span class="tag state" :data-state="item.state">{{ stateTextMap[item.state] || item.state }}</span>
+        </div>
+        <span class="enter-arrow">进入 ›</span>
+      </button>
     </section>
   </main>
 
@@ -109,28 +139,102 @@ onMounted(load)
 </template>
 
 <style scoped>
-.case-list-page { max-width: 1040px; margin: 0 auto; padding: 16px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-.topbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-radius: 12px; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .08); margin-bottom: 16px; }
-.topbar h1 { margin: 0; font-size: 20px; color: #1f2c38; }
-.topbar p { margin: 2px 0 0; color: #888; font-size: 13px; }
-.state-chip { background: #e8f0fe; color: #1a56db; border-radius: 999px; padding: 4px 12px; font-size: 13px; font-weight: 600; }
-.btn-primary { background: #1a56db; color: #fff; border: none; border-radius: 8px; padding: 8px 16px; font-size: 14px; cursor: pointer; }
-.demo-banner, .feedback-banner { padding: 16px; border-radius: 10px; text-align: center; font-size: 14px; background: #f2f6ff; color: #555; margin-bottom: 12px; }
-.feedback-banner.error { background: #fdecec; color: #c0392b; }
-.case-list { display: flex; flex-direction: column; gap: 10px; overflow: auto; min-height: 0; }
-.case-card { display: flex; justify-content: space-between; align-items: center; gap: 16px; background: #fff; border-radius: 12px; padding: 14px 16px; box-shadow: 0 1px 4px rgba(0, 0, 0, .08); cursor: pointer; transition: box-shadow .15s ease; }
-.case-card:hover { box-shadow: 0 3px 10px rgba(0, 0, 0, .14); }
-.case-card-main { min-width: 0; }
-.case-card-title { display: flex; align-items: baseline; gap: 8px; }
-.suspect-name { font-size: 17px; font-weight: 700; }
-.suspect-meta { color: #888; font-size: 13px; }
-.case-card-sub { margin-top: 4px; display: flex; gap: 14px; flex-wrap: wrap; color: #999; font-size: 12px; }
-.case-card-tags { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-.tag { background: #f2f6ff; color: #1a56db; border-radius: 999px; padding: 3px 10px; font-size: 12px; }
-.tag.identity { background: #f0fdf4; color: #15803d; }
-.tag.INTERROGATING { background: #fff4e5; color: #b45309; }
-.tag.REVIEWING, .tag.COMPLETED { background: #e6f9f0; color: #047857; }
-.tag.DRAFT { background: #f3f4f6; color: #6b7280; }
-.arrow { color: #ccc; font-size: 20px; }
-@media (max-width: 720px) { .case-card { align-items: flex-start; flex-direction: column; } .case-card-tags { justify-content: flex-start; } }
+.case-list-page {
+  --list-blue: #123f60;
+  --list-accent: #1f6597;
+  --list-line: #b9cad6;
+  width: 100%;
+  min-width: 1320px;
+  height: 100vh;
+  display: grid;
+  grid-template-rows: 94px 64px minmax(0, 1fr);
+  overflow: hidden;
+  background: #dfe9ef;
+  color: #21394a;
+}
+.case-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  padding: 0 32px;
+  background: #102d46;
+  color: #fff;
+  border-bottom: 4px solid #d79b31;
+}
+.system-title > span { display: block; color: #a9c0d1; font-size: 12px; letter-spacing: .14em; }
+.system-title h1 { margin: 3px 0 2px; font-size: 25px; letter-spacing: .04em; }
+.system-title p { margin: 0; color: #b9cbd8; font-size: 13px; }
+.case-list-actions { display: flex; align-items: center; gap: 18px; }
+.case-count { min-width: 94px; display: flex; align-items: baseline; justify-content: center; gap: 7px; padding: 8px 12px; border: 1px solid #45657e; background: #173b57; }
+.case-count strong { font-size: 22px; }
+.case-count span { color: #bfd0dc; font-size: 12px; }
+.btn-primary, .refresh-button {
+  min-height: 50px;
+  border: 1px solid #9eb5c5;
+  border-radius: 5px;
+  padding: 0 20px;
+  background: #fff;
+  color: #284b62;
+  font-size: 15px;
+  font-weight: 700;
+  touch-action: manipulation;
+}
+.btn-primary { min-width: 170px; border-color: #2b79ae; background: #2371a6; color: #fff; }
+.case-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 0 32px;
+  border-bottom: 1px solid var(--list-line);
+  background: #f7fafc;
+}
+.case-list-toolbar > div { display: flex; align-items: baseline; gap: 14px; }
+.case-list-toolbar strong { color: #183f5b; font-size: 18px; }
+.case-list-toolbar span { color: #718594; font-size: 13px; }
+.refresh-button { min-width: 112px; min-height: 44px; }
+.status-banner { margin: 18px 32px; padding: 18px; border: 1px solid #b7cad8; background: #f7fbfe; text-align: center; color: #526b7d; }
+.status-banner.error { border-color: #dfaaa3; background: #fff3f1; color: #9b3229; }
+.empty-state { align-self: center; justify-self: center; width: 520px; padding: 42px; text-align: center; border: 1px solid #b8c9d5; background: #fff; }
+.empty-state strong { display: block; color: #244b66; font-size: 20px; }
+.empty-state p { margin: 12px 0 22px; color: #718492; line-height: 1.7; }
+.case-list { min-height: 0; overflow: auto; padding: 18px 32px 30px; }
+.case-row {
+  width: 100%;
+  min-height: 104px;
+  display: grid;
+  grid-template-columns: minmax(280px, 1.25fr) minmax(180px, .8fr) minmax(130px, .55fr) minmax(160px, .7fr) minmax(330px, 1.3fr) 76px;
+  align-items: center;
+  gap: 18px;
+  margin: 0 0 10px;
+  padding: 12px 18px;
+  border: 1px solid #b7c8d4;
+  border-left: 5px solid #2d729f;
+  border-radius: 4px;
+  background: #fff;
+  color: #233d50;
+  text-align: left;
+  font: inherit;
+  touch-action: manipulation;
+}
+.case-row:focus-visible { outline: 3px solid rgba(31,101,151,.25); outline-offset: 2px; }
+.person-cell { min-width: 0; display: grid; grid-template-columns: 58px minmax(0,1fr); align-items: center; gap: 12px; }
+.person-avatar { width: 58px; height: 66px; display: grid; place-items: center; border: 1px solid #9eb2bf; background: #e7eef2; color: #5e7585; font-size: 22px; font-weight: 700; }
+.case-row-title { display: flex; align-items: baseline; gap: 9px; }
+.case-row-title strong { color: #193f5a; font-size: 18px; }
+.case-row-title span, .person-cell small { color: #758896; font-size: 12px; }
+.person-cell small { display: block; margin-top: 6px; }
+.case-info-cell { min-width: 0; display: grid; gap: 7px; }
+.case-info-cell span { color: #7c8e9a; font-size: 11px; }
+.case-info-cell strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #354f62; font-size: 13px; white-space: nowrap; }
+.case-status-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; justify-content: flex-end; }
+.tag { padding: 6px 9px; border: 1px solid #b8c9d5; border-radius: 3px; background: #f4f8fb; color: #43657b; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.tag.identity { border-color: #9fc5ac; background: #f1f9f3; color: #327249; }
+.tag.stage { border-color: #9ebed5; background: #f0f7fc; color: #28668f; }
+.tag.state[data-state="INTERROGATING"] { border-color: #dab57a; background: #fff8e9; color: #875b16; }
+.tag.state[data-state="REVIEWING"], .tag.state[data-state="COMPLETED"] { border-color: #9cc5aa; background: #f1f9f3; color: #2f7047; }
+.tag.state[data-state="DRAFT"] { border-color: #c4cdd3; background: #f4f6f7; color: #687984; }
+.enter-arrow { justify-self: end; color: #2b6d99; font-size: 14px; font-weight: 700; white-space: nowrap; }
+button:disabled { opacity: .48; cursor: not-allowed; }
 </style>
