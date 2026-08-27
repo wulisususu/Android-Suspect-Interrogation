@@ -1,0 +1,195 @@
+name: RK3588 Service Bootstrap
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - linux-adaptation
+    paths:
+      - '.github/workflows/rk3588-service-bootstrap.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rk3588-service-bootstrap-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bootstrap-services:
+    name: Bootstrap RK3588 services
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 45
+    env:
+      GIT_TERMINAL_PROMPT: '0'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+    steps:
+      - name: RK3588 and privilege preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner_name=${RUNNER_NAME:-unknown}"
+          echo "runner_os=${RUNNER_OS:-unknown}"
+          echo "runner_arch=${RUNNER_ARCH:-unknown}"
+          echo "hostname=$(hostname)"
+          uname -a
+          test "$(uname -m)" = "aarch64" -o "$(uname -m)" = "arm64"
+          command -v git
+          command -v python3
+          command -v npm
+          command -v curl
+          command -v systemctl
+          sudo -n true
+          echo "default_target=$(systemctl get-default || true)"
+          echo "x11_sockets:"
+          ls -la /tmp/.X11-unix 2>/dev/null || true
+          echo "browser_candidates:"
+          for browser in chromium-browser chromium google-chrome; do
+            command -v "$browser" 2>/dev/null || true
+          done
+          loginctl list-sessions --no-legend 2>/dev/null || true
+
+      - name: Robust checkout exact commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --local gc.auto 0
+          git config --local http.version HTTP/1.1
+          git config --local http.lowSpeedLimit 1024
+          git config --local http.lowSpeedTime 15
+
+          fetched=0
+          for attempt in 1 2 3 4 5; do
+            echo "fetch attempt ${attempt}/5"
+            if timeout 120s git -c protocol.version=2 fetch \
+                --filter=blob:none \
+                --no-tags \
+                --prune \
+                --no-recurse-submodules \
+                --depth=1 \
+                origin "+${GITHUB_SHA}:refs/remotes/origin/__bootstrap_target"; then
+              fetched=1
+              break
+            fi
+            sleep $((attempt * 3))
+          done
+          test "$fetched" -eq 1
+          git checkout --force --detach "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Prepare validation runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          if python3 -c 'import fastapi, pydantic_settings, sqlalchemy, alembic, pytest' >/dev/null 2>&1; then
+            echo 'runner already has validation Python packages'
+          else
+            python3 -m venv .bootstrap-venv
+            .bootstrap-venv/bin/python -m pip install --retries 3 --timeout 20 \
+              -r linux/backend/requirements.txt pytest httpx
+            echo "$PWD/.bootstrap-venv/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Pre-deploy ARM64 release gate
+        shell: bash
+        env:
+          HARDWARE_MODE: mock
+          DEVICE_SIMULATOR: '1'
+          AI_MODE: mock
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/linux/backend"
+          python3 -m pytest linux/backend/tests -q
+          python3 -m pytest tests/release tests/e2e tests/reliability -q
+          bash tests/release/test_control_shell.sh
+          scripts/ci/rk3588-smoke.sh
+
+      - name: Install systemd units and production layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n bash deploy/control.sh install
+          sudo -n systemctl daemon-reload
+          systemctl is-enabled --quiet interrogation-api.service
+          systemctl is-enabled --quiet kiosk.service
+
+      - name: Build and deploy production release
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n bash deploy/control.sh deploy "$GITHUB_WORKSPACE"
+
+      - name: Verify backend and built frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemctl is-enabled --quiet interrogation-api.service
+          systemctl is-active --quiet interrogation-api.service
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health/ready >/tmp/suspect-ready.json; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/health/live >/dev/null
+          curl -fsS http://127.0.0.1:8000/health/ready | tee /tmp/suspect-ready.json
+          curl -fsS http://127.0.0.1:8000/ | tee /tmp/suspect-index.html >/dev/null
+          grep -q '<div id="app"></div>' /tmp/suspect-index.html
+          test -f /opt/suspect-interrogation/current/webapp/dist/index.html
+          echo "backend_service=active"
+          echo "frontend_bundle=served"
+
+      - name: Verify kiosk boot service
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemctl is-enabled --quiet kiosk.service
+
+          browser=''
+          for candidate in chromium-browser chromium google-chrome; do
+            if command -v "$candidate" >/dev/null 2>&1; then
+              browser="$candidate"
+              break
+            fi
+          done
+
+          if [[ -n "$browser" && -S /tmp/.X11-unix/X0 ]]; then
+            sudo -n systemctl restart kiosk.service
+            sleep 3
+            if ! systemctl is-active --quiet kiosk.service; then
+              sudo -n systemctl --no-pager --full status kiosk.service || true
+              sudo -n journalctl -u kiosk.service -n 80 --no-pager || true
+              echo 'kiosk service failed despite browser and X11 display being present' >&2
+              exit 1
+            fi
+            echo "kiosk_service=active"
+          else
+            echo "kiosk_service=enabled (graphical session/browser unavailable to CI runner; HTTP frontend is verified)"
+            sudo -n systemctl --no-pager --full status kiosk.service || true
+          fi
+
+      - name: Final installed runtime status
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          echo '--- current release ---'
+          readlink -f /opt/suspect-interrogation/current || true
+          echo '--- API enabled/active ---'
+          systemctl is-enabled interrogation-api.service || true
+          systemctl is-active interrogation-api.service || true
+          echo '--- kiosk enabled/active ---'
+          systemctl is-enabled kiosk.service || true
+          systemctl is-active kiosk.service || true
+          echo '--- service status ---'
+          sudo -n systemctl --no-pager --full status interrogation-api.service kiosk.service || true
+          echo '--- API journal ---'
+          sudo -n journalctl -u interrogation-api.service -n 80 --no-pager || true
+          echo '--- kiosk journal ---'
+          sudo -n journalctl -u kiosk.service -n 80 --no-pager || true
