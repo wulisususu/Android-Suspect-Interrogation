@@ -30,3 +30,14 @@ def test_rk3588_ai_runtime_probe_runs_before_merge_on_pull_requests():
     assert "branches:\n      - linux-adaptation" in workflow
     assert "Probe installed FunASR models without downloads" in workflow
     assert "KNOWN_FUNASR_PYTHON=/home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python" in workflow
+
+
+def test_rk3588_ai_pytest_is_focused_and_uses_isolated_mutable_paths():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert 'AI_TEST_ROOT="$RUNNER_TEMP/suspect-ai-runtime-test"' in workflow
+    assert 'export SUSPECT_DATA_DIR="$AI_TEST_ROOT/data"' in workflow
+    assert 'export SUSPECT_LOG_DIR="$AI_TEST_ROOT/log"' in workflow
+    assert 'export SUSPECT_DB_PATH="$AI_TEST_ROOT/interrogation.db"' in workflow
+    assert "tests/test_speech_protocol.py" in workflow
+    assert "tests/test_supervisor.py" in workflow
+    assert "PYTHONPATH=. python3 -m pytest -q" not in workflow
