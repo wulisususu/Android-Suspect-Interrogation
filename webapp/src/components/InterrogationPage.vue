@@ -12,6 +12,7 @@ import {
   freezeDocument,
   signDocument,
 } from '../api/documentSigning'
+import { temporarySpeakerPresentation } from './VoiceprintPreparationPanel.vue'
 import type {
   AsrCaptureStatus,
   AsrInsertionReceipt,
@@ -21,6 +22,7 @@ import type {
   DocumentSigningState,
   FactItem,
   SessionState,
+  TemporaryAsrFragment,
   TranscriptMessage,
 } from '../types/interrogation'
 
@@ -166,6 +168,11 @@ function rowsFor(value: string | undefined, minimum = 2) {
   return Math.max(minimum, Math.min(10, visualLines))
 }
 
+function fragmentSpeakerPresentation(fragment: TemporaryAsrFragment) {
+  if (fragment.lowConfidence) return temporarySpeakerPresentation('UNKNOWN')
+  return temporarySpeakerPresentation(fragment.speaker, fragment.speakerName)
+}
+
 function markEditing(id: string, editing: boolean) {
   if (editing && !editingIds.value.includes(id)) editingIds.value.push(id)
   if (!editing) editingIds.value = editingIds.value.filter((item) => item !== id)
@@ -267,22 +274,12 @@ function toggleCapture() {
     localError.value = '笔录已经冻结，不能继续录音。'
     return
   }
-  if (props.capture.running) {
-    const target = recordingTarget.value
-    if (!target) localError.value = '当前录音缺少写入目标，停止后将保留为待确认片段。'
-    emit('captureStop', target || undefined)
-    return
-  }
-  const target = insertionTarget.value
-  const valid = target
-    && target.caseId === props.caseId
-    && formalRecords.value.some((item) => item.id === target.recordId)
-  if (!valid) {
-    localError.value = '请先点击要写入的问或答，并放置输入光标。'
-    return
-  }
   localError.value = ''
-  recordingTarget.value = { ...target }
+  recordingTarget.value = null
+  if (props.capture.running) {
+    emit('captureStop', undefined)
+    return
+  }
   emit('captureStart')
 }
 
@@ -474,7 +471,7 @@ async function confirmSignature() {
         <div class="conversation-scroll">
           <div v-if="!qaPairs.length && !capture.partialText && !capture.fragments.length" class="conversation-empty">
             <strong>尚未开始记录问答</strong>
-            <p>使用上方“开始审讯”后，在底部选择“民警问 / 嫌疑人答”录入；语音识别会写入当前光标位置。</p>
+            <p>使用上方“开始审讯”后，可手工录入问答；语音识别先进入待确认片段，人工确认后才写入正式笔录。</p>
           </div>
 
           <section v-for="(pair, index) in qaPairs" :key="`${pair.question?.id || 'q'}-${pair.answer?.id || 'a'}-${index}`" class="qa-turn">
@@ -487,7 +484,7 @@ async function confirmSignature() {
                 <textarea
                   v-model="drafts[pair.question.id]"
                   class="record-editor"
-                  :class="{ locked: documentFrozen, 'recording-target': (recordingTarget || insertionTarget)?.recordId === pair.question.id }"
+                  :class="{ locked: documentFrozen }"
                   :data-record-id="pair.question.id"
                   :disabled="documentFrozen"
                   :rows="rowsFor(drafts[pair.question.id], 2)"
@@ -500,7 +497,7 @@ async function confirmSignature() {
                   @blur="saveEdit(pair.question)"
                 ></textarea>
                 <div class="record-actions">
-                  <span>点击正文可修订并定位语音写入点</span>
+                  <span>点击正文可修订正式笔录</span>
                   <button :disabled="documentFrozen" @click="toggleConflict(pair.question)">{{ pair.question.mark === 'conflict' ? '取消标记' : '标记矛盾' }}</button>
                 </div>
               </div>
@@ -513,7 +510,7 @@ async function confirmSignature() {
                 <textarea
                   v-model="drafts[pair.answer.id]"
                   class="record-editor answer-editor"
-                  :class="{ locked: documentFrozen, 'recording-target': (recordingTarget || insertionTarget)?.recordId === pair.answer.id }"
+                  :class="{ locked: documentFrozen }"
                   :data-record-id="pair.answer.id"
                   :disabled="documentFrozen"
                   :rows="rowsFor(drafts[pair.answer.id], 3)"
@@ -535,8 +532,20 @@ async function confirmSignature() {
 
           <section v-if="capture.fragments.length || capture.partialText" class="voice-draft-section">
             <header><strong>语音转写暂存区</strong><span>未确认内容不会冒充正式笔录</span></header>
-            <div v-for="fragment in capture.fragments" :key="fragment.id" class="voice-draft-row">
-              {{ fragment.editedText || fragment.rawText || '等待识别文本……' }}
+            <div
+              v-for="fragment in capture.fragments"
+              :key="fragment.id"
+              class="voice-draft-row"
+              :class="{ 'needs-confirmation': fragmentSpeakerPresentation(fragment).needsConfirmation }"
+            >
+              <div class="voice-draft-meta">
+                <strong>{{ fragmentSpeakerPresentation(fragment).label }}</strong>
+                <span>{{ fragmentSpeakerPresentation(fragment).detail }}</span>
+                <b v-if="fragmentSpeakerPresentation(fragment).needsConfirmation">待确认</b>
+                <small v-else-if="fragment.voiceprintVerified">声纹已验证</small>
+                <small v-else>身份未由民警声纹验证</small>
+              </div>
+              <p>{{ fragment.editedText || fragment.rawText || '等待识别文本……' }}</p>
             </div>
             <div v-if="capture.partialText" class="voice-live-row"><b>实时：</b>{{ capture.partialText }}</div>
           </section>
@@ -551,7 +560,7 @@ async function confirmSignature() {
             class="record-button"
             :class="{ active: capture.running }"
             :disabled="captureBusy || !nativeCaptureAvailable || (!canRecord && !capture.running)"
-            :title="nativeCaptureAvailable ? '开始 / 停止离线录音' : '连续离线录音 Runtime 当前不可用'"
+            :title="nativeCaptureAvailable ? '开始 / 停止离线连续录音；识别片段需人工确认' : '连续离线录音 Runtime 当前不可用'"
             @click="toggleCapture"
           >
             <span class="record-dot">●</span>
@@ -721,6 +730,12 @@ async function confirmSignature() {
 .voice-draft-section header { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .voice-draft-section header span { color: #7b8e9b; font-size: 11px; }
 .voice-draft-row, .voice-live-row { margin-top: 7px; padding: 9px 10px; border-left: 3px solid #8aaac0; background: #fff; font-size: 13px; line-height: 1.6; }
+.voice-draft-row.needs-confirmation { border-left-color: #d09736; background: #fffaf0; }
+.voice-draft-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 5px; }
+.voice-draft-meta strong { color: #244c68; }
+.voice-draft-meta span, .voice-draft-meta small { color: #788b98; font-size: 11px; }
+.voice-draft-meta b { padding: 2px 6px; border-radius: 3px; background: #fff0c9; color: #8a5a08; font-size: 11px; }
+.voice-draft-row p { margin: 0; color: #263f51; }
 .voice-live-row { border-left-color: #cf6357; background: #fff8f7; }
 .workbench-error { margin: 0 18px 8px; padding: 10px 12px; border: 1px solid #e0aaa3; background: #fff3f1; color: #962e26; font-size: 13px; }
 .interrogation-composer { display: grid; grid-template-columns: auto auto minmax(280px,1fr) auto; gap: 9px; align-items: center; padding: 11px 14px; border-top: 1px solid #b9c8d3; background: #f9fcfe; }
