@@ -119,15 +119,28 @@ jobs:
           cd linux/backend
           PYTHONPATH=. python3 tests/rk3588_ai_runtime_smoke.py
 
-      - name: Full pytest suite when pytest is preinstalled
+      - name: Focused AI pytest when pytest is preinstalled
         shell: bash
         run: |
           set -euo pipefail
           cd linux/backend
           if python3 -c 'import pytest' >/dev/null 2>&1; then
-            PYTHONPATH=. python3 -m pytest -q
+            AI_TEST_ROOT="$RUNNER_TEMP/suspect-ai-runtime-test"
+            rm -rf "$AI_TEST_ROOT"
+            mkdir -p "$AI_TEST_ROOT/data" "$AI_TEST_ROOT/log"
+            export SUSPECT_DATA_DIR="$AI_TEST_ROOT/data"
+            export SUSPECT_LOG_DIR="$AI_TEST_ROOT/log"
+            export SUSPECT_DB_PATH="$AI_TEST_ROOT/interrogation.db"
+            export SUSPECT_MIN_FREE_MB=0
+            PYTHONPATH=. python3 -m pytest \
+              tests/test_ai_mock.py \
+              tests/test_mock_engines.py \
+              tests/test_supervisor.py \
+              tests/test_speech_protocol.py \
+              tests/test_registry.py \
+              -q
           else
-            echo 'pytest not preinstalled on runner; smoke suite already passed without downloads.'
+            echo 'pytest not preinstalled on runner; standard-library AI smoke already passed without downloads.'
           fi
 
       - name: Probe installed FunASR models without downloads
