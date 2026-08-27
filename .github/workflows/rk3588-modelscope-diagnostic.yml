@@ -33,11 +33,13 @@ jobs:
           mkdir -p "$LEGACY"
           "$PY" -m pip install --retries 3 --timeout 60 --no-deps --target "$LEGACY" \
             'funasr==0.5.8' 'modelscope==1.6.1'
-          "$PY" -m pip install --retries 3 --timeout 60 --target "$LEGACY" 'humanfriendly==10.0'
+          "$PY" -m pip install --retries 3 --timeout 60 --target "$LEGACY" \
+            'humanfriendly==10.0' 'typeguard==2.13.3'
           PYTHONPATH="$LEGACY" "$PY" - <<'PY'
-          import funasr, modelscope
+          import funasr, modelscope, typeguard
           print('legacy_funasr=', getattr(funasr, '__version__', 'unknown'))
           print('legacy_modelscope=', getattr(modelscope, '__version__', 'unknown'))
+          print('legacy_typeguard=', getattr(typeguard, '__version__', 'unknown'))
           from funasr.bin import sv_inference_launch
           print('SV_INFERENCE_LAUNCH_IMPORT_OK', sv_inference_launch.__file__)
           PY
