@@ -15,7 +15,8 @@ stage_source_tree() {
 }
 
 install_python_dependencies() {
-  local release="$1" venv="$release/.venv"
+  local release="$1"
+  local venv="$release/.venv"
   python3 -m venv "$venv"
   [[ "${SUSPECT_SKIP_DEP_INSTALL:-0}" == "1" ]] && return 0
   local pip_args=(install -r "$release/linux/backend/requirements.txt")
