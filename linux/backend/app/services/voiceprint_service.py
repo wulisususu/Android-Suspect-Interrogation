@@ -19,6 +19,8 @@ _MIN_SEGMENT_MS = 1000
 _MAX_SEGMENT_MS = 8000
 _MIN_EMBEDDING_SEGMENTS = 3
 _FLOAT32_BYTES = 4
+_CLIP_LEVEL = 32760
+_MAX_CLIPPED_SAMPLE_RATIO = 0.01
 
 
 class VoiceprintService:
@@ -125,6 +127,9 @@ class VoiceprintService:
         samples = memoryview(audio).cast("h")
         if all(sample == 0 for sample in samples):
             raise DomainError("VOICEPRINT_AUDIO_SILENT", "未检测到有效声音，请重新录制声纹", 400)
+        clipped_count = sum(1 for sample in samples if abs(int(sample)) >= _CLIP_LEVEL)
+        if clipped_count / len(samples) >= _MAX_CLIPPED_SAMPLE_RATIO:
+            raise DomainError("VOICEPRINT_AUDIO_CLIPPED", "录音存在明显削波，请降低输入增益后重新录制", 400)
         return audio
 
     @staticmethod
