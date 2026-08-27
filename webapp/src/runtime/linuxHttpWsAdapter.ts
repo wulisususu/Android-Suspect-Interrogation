@@ -80,6 +80,25 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
       url: '/api/v1/identity/read',
       data: { case_id: payload.caseId, actor_id: payload.actorId },
     }
+    case 'identity.confirm': return {
+      method: 'POST',
+      url: '/api/v1/identity/confirm',
+      data: {
+        case_id: payload.caseId,
+        actor_id: payload.actorId,
+        name: payload.name,
+        id_number: payload.idNumber,
+        gender: payload.gender,
+        nation: payload.nation,
+        birth_date: payload.birthDate,
+        address: payload.address,
+        source: payload.source,
+        portrait: payload.portrait,
+        issuer: payload.issuer,
+        valid_from: payload.validFrom,
+        valid_to: payload.validTo,
+      },
+    }
     case 'device.action': return { method: 'POST', url: '/api/v1/device/action', data: { type: payload.type } }
     case 'model.list': return { method: 'GET', url: '/api/v1/models' }
     case 'model.scan': return { method: 'GET', url: '/api/v1/models', params: { rescan: true } }
