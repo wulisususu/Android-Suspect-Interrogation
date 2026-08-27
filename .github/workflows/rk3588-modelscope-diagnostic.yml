@@ -15,24 +15,19 @@ jobs:
     runs-on: [self-hosted, rk3588]
     timeout-minutes: 20
     steps:
-      - name: Exact checkout
+      - name: Runner hygiene and identity
         shell: bash
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          git init .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git sparse-checkout init --cone
-          git sparse-checkout set linux scripts
-          git fetch --filter=blob:none --no-tags --depth=1 origin "+${GITHUB_SHA}:refs/remotes/origin/__diag"
-          git checkout --force --detach "$GITHUB_SHA"
+          echo "runner_name=${RUNNER_NAME:-unknown}"
+          hostname
+          uname -a
+          sudo -n find "$GITHUB_WORKSPACE" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
       - name: Print ModelScope speaker pipeline traceback
         shell: bash
         run: |
           set -euo pipefail
           PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
-          MODEL=/opt/suspect-interrogation/models/funasr/xvector
           "$PY" - <<'PY'
           import traceback
           try:
