@@ -1,4 +1,4 @@
-name: RK3588 ModelScope XVector Diagnostic
+name: RK3588 Legacy XVector Diagnostic
 
 on:
   push:
@@ -9,6 +9,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: rk3588-legacy-xvector-diagnostic
+  cancel-in-progress: true
 
 jobs:
   diagnose:
@@ -23,7 +27,7 @@ jobs:
           hostname
           uname -a
           sudo -n find "$GITHUB_WORKSPACE" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-      - name: Build isolated legacy package overlay
+      - name: Build isolated legacy FunASR overlay
         shell: bash
         run: |
           set -euo pipefail
@@ -31,19 +35,19 @@ jobs:
           LEGACY="$RUNNER_TEMP/xvector-legacy-overlay"
           rm -rf "$LEGACY"
           mkdir -p "$LEGACY"
-          "$PY" -m pip install --retries 3 --timeout 60 --no-deps --target "$LEGACY" \
-            'funasr==0.5.8' 'modelscope==1.6.1'
+          "$PY" -m pip install --retries 3 --timeout 60 --no-deps --target "$LEGACY" 'funasr==0.5.8'
           "$PY" -m pip install --retries 3 --timeout 60 --target "$LEGACY" \
             'humanfriendly==10.0' 'typeguard==2.13.3'
           PYTHONPATH="$LEGACY" "$PY" - <<'PY'
-          import funasr, modelscope, typeguard
+          import funasr, typeguard
           print('legacy_funasr=', getattr(funasr, '__version__', 'unknown'))
-          print('legacy_modelscope=', getattr(modelscope, '__version__', 'unknown'))
-          print('legacy_typeguard=', getattr(typeguard, '__version__', 'unknown'))
+          print('legacy_typeguard_module=', typeguard.__file__)
           from funasr.bin import sv_inference_launch
+          from funasr.bin.sv_infer import Speech2Xvector
           print('SV_INFERENCE_LAUNCH_IMPORT_OK', sv_inference_launch.__file__)
+          print('SPEECH2XVECTOR_IMPORT_OK', Speech2Xvector)
           PY
-      - name: Run legacy XVector locally without network
+      - name: Run direct local XVector without ModelScope or network
         shell: bash
         run: |
           set -euo pipefail
@@ -54,23 +58,51 @@ jobs:
           test -f "$WAV"
           PYTHONPATH="$LEGACY" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 MODELSCOPE_OFFLINE=1 \
             "$PY" - <<'PY'
+          import json
           import socket
+          from pathlib import Path
+          import soundfile as sf
+
+          model_root = Path('/opt/suspect-interrogation/models/funasr/xvector')
+          print('MODEL_FILES')
+          for p in sorted(model_root.rglob('*')):
+              if p.is_file():
+                  print(p.relative_to(model_root), p.stat().st_size)
+          cfg_json = model_root / 'configuration.json'
+          if cfg_json.is_file():
+              print('CONFIGURATION_JSON', json.dumps(json.loads(cfg_json.read_text(encoding='utf-8')), ensure_ascii=False, indent=2))
+
+          configs = [p for p in model_root.rglob('*') if p.is_file() and p.suffix.lower() in {'.yaml', '.yml'}]
+          weights = [p for p in model_root.rglob('*') if p.is_file() and p.suffix.lower() in {'.pb', '.pt', '.pth'}]
+          assert configs, 'no local XVector YAML config found'
+          assert weights, 'no local XVector weight found'
+          config = next((p for p in configs if p.name == 'sv.yaml'), configs[0])
+          weight = next((p for p in weights if p.name in {'model.pb', 'sv.pb'}), weights[0])
+          print('DIRECT_XVECTOR_CONFIG', config)
+          print('DIRECT_XVECTOR_WEIGHT', weight)
+
           original_connect = socket.socket.connect
           def blocked(self, address):
-              raise RuntimeError(f'network disabled during legacy XVector inference: {address}')
+              raise RuntimeError(f'network disabled during direct legacy XVector inference: {address}')
           socket.socket.connect = blocked
           try:
-              from modelscope.pipelines import pipeline
-              from modelscope.utils.constant import Tasks
-              p = pipeline(task=Tasks.speaker_verification,
-                           model='/opt/suspect-interrogation/models/funasr/xvector',
-                           device='cpu', ngpu=0)
-              out = p('/opt/suspect-interrogation/models/funasr/xvector/example/sv_example_enroll.wav')
+              from funasr.bin.sv_infer import Speech2Xvector
+              runtime = Speech2Xvector(
+                  sv_train_config=str(config),
+                  sv_model_file=str(weight),
+                  device='cpu',
+                  dtype='float32',
+                  embedding_node='resnet1_dense',
+              )
+              audio, sr = sf.read(str(model_root / 'example' / 'sv_example_enroll.wav'), dtype='float32')
+              assert sr == 16000, sr
+              if getattr(audio, 'ndim', 1) > 1:
+                  audio = audio.mean(axis=1)
+              emb = runtime.calculate_embedding(audio).squeeze(0).cpu().numpy()
           finally:
               socket.socket.connect = original_connect
-          print('LEGACY_XVECTOR_OUTPUT_KEYS', sorted(out.keys()))
-          emb = out.get('spk_embedding')
-          assert emb is not None, out
-          print('LEGACY_XVECTOR_EMBEDDING_SHAPE', getattr(emb, 'shape', None))
-          print('LEGACY_XVECTOR_OFFLINE_OK')
+          assert emb.ndim == 1 and emb.size > 0, emb.shape
+          print('DIRECT_XVECTOR_EMBEDDING_SHAPE', emb.shape)
+          print('DIRECT_XVECTOR_EMBEDDING_NORM', float((emb * emb).sum() ** 0.5))
+          print('DIRECT_XVECTOR_OFFLINE_OK')
           PY
