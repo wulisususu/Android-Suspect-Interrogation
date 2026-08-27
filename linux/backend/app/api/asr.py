@@ -241,6 +241,7 @@ def _confirm_one(
     case_id: str,
     fragment_id: str,
     actor_id: str | None,
+    commit: bool = True,
 ) -> tuple[ASRFragment, bool]:
     fragment = _fragment_for_case(db, case_id, fragment_id)
     if fragment.state == "DISCARDED":
@@ -272,7 +273,8 @@ def _confirm_one(
         },
         detail={"raw_text": row.raw_text},
     )
-    db.commit()
+    if commit:
+        db.commit()
     return row, True
 
 
@@ -298,9 +300,16 @@ def _confirm_batch(
     confirmed = 0
     rows: list[ASRFragment] = []
     for fragment_id in unique_ids:
-        row, created = _confirm_one(db, case_id=case_id, fragment_id=fragment_id, actor_id=actor_id)
+        row, created = _confirm_one(
+            db,
+            case_id=case_id,
+            fragment_id=fragment_id,
+            actor_id=actor_id,
+            commit=False,
+        )
         rows.append(row)
         confirmed += int(created)
+    db.commit()
     return {
         "confirmedCount": confirmed,
         "fragments": [_fragment_payload(row) for row in rows],
