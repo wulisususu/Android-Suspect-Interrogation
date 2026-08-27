@@ -86,7 +86,10 @@ def test_ai_runtime_workflow_has_explicit_local_calibration_inputs_and_never_upl
     assert "--apply" in workflow
     assert "actions/upload-artifact" not in _speech_calibration_workflow_section(workflow)
     assert "*.wav" not in _speech_calibration_workflow_section(workflow)
-    assert "sudo -n ss -ltnp 'sport = :8000'" in workflow
+    # Port ownership is a production-bootstrap invariant; the read-only probe
+    # workflow never needs to bind or stop either TCP service.
+    bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
+    assert "sudo -n ss -ltnp 'sport = :8000'" in bootstrap
 
 
 def test_bootstrap_starts_real_worker_and_keeps_voice_capture_fail_closed_without_calibration():
