@@ -167,6 +167,34 @@ jobs:
           curl -fsS -X POST http://127.0.0.1:8080/api/v1/identity/read \
             -H 'Content-Type: application/json' \
             -d "{\"case_id\":\"${CASE_ID}\",\"actor_id\":\"李警官\"}" >/dev/null
+
+          # Visual QA is not a biometric-quality test. Explicitly seed the
+          # mandatory prerequisite in this isolated temporary SQLite database;
+          # production session-start behavior remains fail-closed.
+          CASE_ID="$CASE_ID" python - <<'PY'
+          import os
+          import struct
+
+          from app.database.session import make_engine, make_session_factory
+          from app.repositories import voiceprints as voiceprint_repo
+
+          engine = make_engine(f"sqlite:///{os.environ['SUSPECT_DB_PATH']}")
+          session_factory = make_session_factory(engine)
+          with session_factory() as db:
+              voiceprint_repo.enroll_suspect(
+                  db,
+                  case_id=os.environ["CASE_ID"],
+                  embedding=struct.pack("<4f", 1.0, 0.0, 0.0, 0.0),
+                  embedding_dim=4,
+                  model_id="visual-qa-xvector",
+                  model_version="ci-fixture",
+                  enrollment_quality="CI_FIXTURE",
+                  usable_duration_ms=20_000,
+              )
+              db.commit()
+          engine.dispose()
+          PY
+
           curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/session/start" \
             -H 'Content-Type: application/json' -d '{}' >/dev/null
           curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/messages" \
