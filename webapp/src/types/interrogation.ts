@@ -160,9 +160,21 @@ export interface AsrRuntimeStatus {
   audioSignalState?: 'WAITING' | 'ACTIVE' | 'SILENT'
 }
 
-export type TemporaryAsrSpeaker = 'UNKNOWN' | 'OFFICER' | 'SUSPECT'
-export type TemporaryAsrFragmentState = 'PENDING' | 'CONFIRMED' | 'DISCARDED'
-export type AsrConfidenceSource = 'SHERPA_TOKEN_LOG_PROBS' | 'UNAVAILABLE'
+export type TemporaryAsrSpeaker =
+  | 'UNKNOWN'
+  | 'OFFICER_FALLBACK'
+  | 'INTERROGATOR'
+  | 'RECORDER'
+  | 'SUSPECT'
+
+export type AsrSpeakerSource =
+  | 'UNASSIGNED'
+  | 'X_VECTOR'
+  | 'SUSPECT_EXCLUSION'
+  | 'MANUAL'
+
+export type TemporaryAsrFragmentState = 'PENDING' | 'EDITED' | 'CONFIRMED' | 'DISCARDED'
+export type AsrConfidenceSource = 'SHERPA_TOKEN_LOG_PROBS' | 'FUNASR' | 'UNAVAILABLE'
 
 export interface AsrAudioReference {
   captureSessionId: string
@@ -181,12 +193,22 @@ export interface TemporaryAsrFragment {
   rawText: string
   editedText: string
   speaker: TemporaryAsrSpeaker
-  speakerSource: 'UNASSIGNED' | 'MANUAL' | 'DIARIZATION'
+  speakerId?: string | null
+  speakerName?: string | null
+  speakerScore?: number | null
+  secondBestScore?: number | null
+  speakerThreshold?: number | null
+  speakerMargin?: number | null
+  speakerSource: AsrSpeakerSource
+  voiceprintVerified: boolean
   confidence?: number | null
   confidenceSource: AsrConfidenceSource
   lowConfidence: boolean
   state: TemporaryAsrFragmentState
   confirmedQaId?: string | null
+  confirmedMessageId?: string | null
+  modelId?: string | null
+  modelVersion?: string | null
   audio: AsrAudioReference
   createdAt: number
   updatedAt: number
@@ -205,6 +227,63 @@ export interface AsrCaptureStatus {
   partialText: string
   fragments: TemporaryAsrFragment[]
   error?: string | null
+}
+
+export type VoiceRecognitionMode =
+  | 'SUSPECT_ONLY'
+  | 'SUSPECT_PLUS_INTERROGATOR'
+  | 'SUSPECT_PLUS_RECORDER'
+  | 'FULL'
+
+export interface VoiceprintReadiness {
+  suspectReady: boolean
+  interrogatorReady: boolean
+  recorderReady: boolean
+  recognitionMode: VoiceRecognitionMode
+  canStart: boolean
+  simulated?: boolean
+}
+
+export interface OfficerVoiceprint {
+  voiceprintId?: string
+  officerId: string
+  officerName: string
+  active: boolean
+  modelId: string
+  modelVersion?: string | null
+  enrollmentQuality: string
+  usableDurationMs: number
+  revokedAt?: number | string | null
+  simulated?: boolean
+}
+
+export type VoiceprintEnrollmentKind = 'SUSPECT' | 'OFFICER'
+export type VoiceprintEnrollmentPhase = 'IDLE' | 'RECORDING' | 'PROCESSING' | 'COMPLETE' | 'ERROR'
+
+export interface VoiceprintEnrollmentState {
+  phase: VoiceprintEnrollmentPhase
+  kind?: VoiceprintEnrollmentKind | null
+  subjectId?: string | null
+  officerName?: string | null
+  usableDurationMs?: number | null
+  message?: string | null
+  simulated?: boolean
+}
+
+export interface VoiceprintEnrollmentResult {
+  ready?: boolean
+  state?: string
+  caseId?: string
+  voiceprintId?: string
+  officerId?: string
+  officerName?: string
+  active?: boolean
+  usableDurationMs?: number
+  modelId?: string
+  modelVersion?: string | null
+  quality?: string
+  simulated?: boolean
+  [key: string]: unknown
 }
 
 export interface AsrInsertionTarget {
