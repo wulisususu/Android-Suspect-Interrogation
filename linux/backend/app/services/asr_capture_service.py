@@ -17,6 +17,7 @@ from app.database.models import (
 )
 from app.domain.errors import DomainError
 from app.repositories import asr_fragments as asr_repo
+from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
 from app.repositories import sessions as session_repo
 from app.repositories import voiceprints as voiceprint_repo
@@ -304,11 +305,65 @@ class AsrCaptureService:
                 model_id=str(asr_event.model_id or "paraformer"),
                 model_version=self._optional_text((asr_event.details or {}).get("model_version")),
             )
+            self._audit_speaker_decision(
+                db,
+                case_id=runtime.case_id,
+                fragment_id=fragment.id,
+                decision=decision,
+                usable_duration_ms=max(0, end_ms - start_ms),
+                asr_event=asr_event,
+            )
             db.commit()
             payload = self._fragment_payload(fragment)
 
         runtime.ordinal += 1
         self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)
+
+    @staticmethod
+    def _audit_speaker_decision(
+        db,
+        *,
+        case_id: str,
+        fragment_id: str,
+        decision,
+        usable_duration_ms: int,
+        asr_event: SpeechEvent,
+    ) -> None:
+        if decision.role is SpeakerRole.OFFICER_FALLBACK:
+            action = "ASR_SPEAKER_FALLBACK"
+        elif decision.low_confidence:
+            action = "ASR_SPEAKER_LOW_CONFIDENCE"
+        else:
+            return
+
+        event_details = asr_event.details or {}
+        detail: dict[str, Any] = {
+            "score": decision.score,
+            "second_best_score": decision.second_best_score,
+            "threshold": decision.threshold,
+            "margin": decision.margin,
+            "usable_duration_ms": int(usable_duration_ms),
+        }
+        if event_details.get("speaker_unavailable"):
+            detail["speaker_unavailable"] = True
+            error_code = event_details.get("speaker_error_code")
+            if error_code:
+                detail["speaker_error_code"] = str(error_code)
+
+        audit_repo.add(
+            db,
+            case_id=case_id,
+            action=action,
+            target_type="ASR_FRAGMENT",
+            target_id=fragment_id,
+            after={
+                "speaker": decision.role.value,
+                "speaker_source": decision.source.value,
+                "voiceprint_verified": decision.voiceprint_verified,
+                "low_confidence": decision.low_confidence,
+            },
+            detail=detail,
+        )
 
     def _speaker_candidates(
         self,
