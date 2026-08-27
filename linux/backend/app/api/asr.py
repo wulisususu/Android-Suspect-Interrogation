@@ -108,7 +108,7 @@ def _asr_status(request: Request) -> dict[str, Any]:
 def _official_message_speaker(role: str) -> str:
     """Map fine-grained ASR attribution to the existing official transcript vocabulary.
 
-    The official Message model deliberately supports only 民警/嫌疑人.  Keep the
+    The official Message model deliberately supports only 民警/嫌疑人. Keep the
     richer INTERROGATOR/RECORDER/OFFICER_FALLBACK value on ASRFragment for
     provenance; UNKNOWN must be resolved manually before formal confirmation.
     """
@@ -254,6 +254,7 @@ def _confirm_one(
         text=fragment.edited_text,
         speaker=official_speaker,
         actor_id=actor_id,
+        commit=False,
     )
     row = asr_repo.confirm_fragment(db, fragment_id=fragment.id, message_id=message["id"])
     audit_repo.add(
