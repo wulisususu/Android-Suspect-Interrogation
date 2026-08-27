@@ -82,6 +82,39 @@ def test_canonical_api_full_case_flow(tmp_path):
         assert update_audit["after"]["text"] == "请说明你的姓名。"
 
 
+def test_confirmed_identity_intake_allows_session_start_without_hardware_reread(tmp_path):
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'identity-confirm.db'}",
+        hardware_gateway=MockHardwareGateway(simulated=False),
+    )
+    with TestClient(app) as client:
+        created = payload(client.post("/api/v1/cases", json={"operator_id": "op-2", "suspectName": "赵某"}))
+        case_id = created["id"]
+
+        confirmed = payload(client.post("/api/v1/identity/confirm", json={
+            "case_id": case_id,
+            "actor_id": "op-2",
+            "name": "赵某",
+            "id_number": "320101199001010011",
+            "gender": "男",
+            "nation": "汉",
+            "birth_date": "1990-01-01",
+            "address": "测试地址",
+            "source": "MANUAL",
+        }))
+        assert confirmed["caseId"] == case_id
+        assert confirmed["name"] == "赵某"
+        assert confirmed["idNumber"] == "320101199001010011"
+        assert confirmed["source"] == "MANUAL"
+
+        case = payload(client.get(f"/api/v1/cases/{case_id}"))
+        assert case["workflowState"] == "IDENTITY_READY"
+
+        session = payload(client.post(f"/api/v1/cases/{case_id}/session/start", json={"actor_id": "op-2"}))
+        assert session["status"] == "RUNNING"
+        assert session["state"] == "QUESTIONING"
+
+
 def test_canonical_api_errors_are_structured(tmp_path):
     app = create_app(database_url=f"sqlite:///{tmp_path / 'errors.db'}", hardware_gateway=MockHardwareGateway(simulated=False))
     with TestClient(app) as client:
