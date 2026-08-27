@@ -16,6 +16,10 @@ def test_rk3588_service_bootstrap_workflow_installs_deploys_and_verifies_runtime
     assert "sudo -n true" in workflow
     assert "git sparse-checkout init --cone" in workflow
     assert "git sparse-checkout set .github linux webapp deploy scripts systemd tests docs" in workflow
+    assert 'TEST_RUNTIME_ROOT="$RUNNER_TEMP/suspect-bootstrap-test"' in workflow
+    assert 'export SUSPECT_DB_PATH="$TEST_RUNTIME_ROOT/interrogation.db"' in workflow
+    assert 'export SUSPECT_DATA_DIR="$TEST_RUNTIME_ROOT/data"' in workflow
+    assert 'export SUSPECT_LOG_DIR="$TEST_RUNTIME_ROOT/log"' in workflow
     assert "sudo -n bash deploy/control.sh install" in workflow
     assert 'sudo -n bash deploy/control.sh deploy "$GITHUB_WORKSPACE"' in workflow
     assert "systemctl is-enabled --quiet interrogation-api.service" in workflow
