@@ -22,7 +22,8 @@ def test_rk3588_service_bootstrap_workflow_installs_deploys_and_verifies_runtime
     assert 'export SUSPECT_DB_PATH="$TEST_RUNTIME_ROOT/interrogation.db"' in workflow
     assert 'export SUSPECT_DATA_DIR="$TEST_RUNTIME_ROOT/data"' in workflow
     assert 'export SUSPECT_LOG_DIR="$TEST_RUNTIME_ROOT/log"' in workflow
-    assert "sudo -n systemctl stop interrogation-api.service" in workflow
+    assert "sudo -n systemctl stop interrogation-api.service" not in workflow
+    assert "existing project API on TCP/18080 is preserved during speech preflight" in workflow
     assert "Existing TCP/8000 owner is preserved" in workflow
     assert "sudo -n ss -ltnp 'sport = :8000'" in workflow
     assert "sudo -n ss -ltnp \"sport = :${SUSPECT_DEPLOY_PORT}\"" in workflow
@@ -53,12 +54,14 @@ def test_bootstrap_prepares_read_only_funasr_model_and_self_healing_runtime_layo
     assert "x-systemd.before=ai-worker.service" in workflow
     assert 'if [[ ! -x "$FUNASR_RUNTIME/bin/python" ]]' in workflow
     assert 'sudo -n python3 -m venv "$FUNASR_RUNTIME"' in workflow
-    assert 'pip install --retries 3 --timeout 60 torch torchaudio' in workflow
+    assert "https://download.pytorch.org/whl/cpu" in workflow
+    assert '"torch==${TORCH_CPU_VERSION}+cpu"' in workflow
     assert '"funasr==${FUNASR_PACKAGE_VERSION}"' in workflow
     assert 'MODEL_ROOT="$FUNASR_MODEL_ROOT"' in workflow
     assert "scripts/ci/probe-funasr-runtime.py" in workflow
     assert 'sudo -n chown -R root:root "$FUNASR_RUNTIME"' in workflow
-    assert "import funasr, torch, torchaudio" in workflow
+    assert "import funasr, torch, modelscope" in workflow
+    assert "torchaudio" not in workflow
 
 
 def test_install_upserts_funasr_runtime_env_for_existing_installations():
