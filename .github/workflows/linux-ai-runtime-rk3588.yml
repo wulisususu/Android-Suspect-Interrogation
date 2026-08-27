@@ -210,7 +210,7 @@ jobs:
           echo "FUNASR_PROBE_PYTHON=$FUNASR_PYTHON" >> "$GITHUB_ENV"
           echo "FUNASR_MODEL_ROOT=$MODEL_ROOT" >> "$GITHUB_ENV"
 
-      - name: Calibrate and smoke real speech stack from local WAVs
+      - name: RK3588 speech calibration and real smoke
         if: github.event_name == 'workflow_dispatch' && inputs.suspect_wavs != ''
         shell: bash
         env:
@@ -268,13 +268,17 @@ jobs:
               "${CALIBRATION_ARGS[@]}" >/dev/null
           fi
           cat "$RUNNER_TEMP/rk3588-calibration.json"
-          THRESHOLD=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["threshold"])' "$RUNNER_TEMP/rk3588-calibration.json")
-          MARGIN=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["margin"])' "$RUNNER_TEMP/rk3588-calibration.json")
+          THRESHOLD=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["recommended_threshold"])' "$RUNNER_TEMP/rk3588-calibration.json")
+          MARGIN=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["recommended_margin"])' "$RUNNER_TEMP/rk3588-calibration.json")
 
           "$FUNASR_PROBE_PYTHON" scripts/ci/rk3588-speech-smoke.py \
             --socket "$SOCKET" \
+            --model-root "$FUNASR_MODEL_ROOT" \
             --threshold "$THRESHOLD" \
             --margin "$MARGIN" \
+            --skip-systemd \
+            --skip-api \
+            --skip-mount \
             --suspect-wav "${SUSPECT_WAVS[0]}" \
             --interrogator-wav "${INTERROGATOR_WAVS[0]}" \
             --recorder-wav "${RECORDER_WAVS[0]}"
