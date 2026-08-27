@@ -72,7 +72,7 @@ def test_probe_preserves_successful_load_evidence_when_optional_inference_fails(
         "__version__ = 'test'\n"
         "class AutoModel:\n"
         "    def __init__(self, *, model, **kwargs): self.model = model\n"
-        "    def generate(self, *, input):\n"
+        "    def generate(self, *, input, **kwargs):\n"
         "        if self.model.endswith('xvector'): raise RuntimeError('bad embedding contract')\n"
         "        return [{}]\n",
         encoding="utf-8",
