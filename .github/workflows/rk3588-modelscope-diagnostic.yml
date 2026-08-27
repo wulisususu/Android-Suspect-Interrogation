@@ -23,6 +23,12 @@ jobs:
           hostname
           uname -a
           sudo -n find "$GITHUB_WORKSPACE" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+      - name: Install first missing ModelScope pipeline dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
+          sudo -n "$PY" -m pip install --retries 3 --timeout 60 'addict==2.4.0'
       - name: Print ModelScope speaker pipeline traceback
         shell: bash
         run: |
