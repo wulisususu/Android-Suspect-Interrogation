@@ -32,6 +32,15 @@ class FakeAutoModel:
         return value
 
 
+class FakeLegacySpeaker:
+    def __init__(self) -> None:
+        self.generate_calls: list[dict] = []
+
+    def generate(self, **kwargs):
+        self.generate_calls.append(dict(kwargs))
+        return [{"spk_embedding": [[3.0, 4.0]]}]
+
+
 @pytest.fixture(autouse=True)
 def reset_fake_model():
     FakeAutoModel.calls = []
@@ -108,6 +117,35 @@ def test_speaker_embedding_is_flat_normalized_float_list(tmp_path: Path):
     assert embedding == pytest.approx([0.6, 0.8], abs=1e-6)
     assert all(isinstance(value, float) for value in embedding)
     assert math.sqrt(sum(value * value for value in embedding)) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_legacy_xvector_falls_back_without_downgrading_asr_vad_runtime(tmp_path: Path):
+    root = tmp_path / "funasr"
+    for name in ("paraformer", "fsmn-vad", "xvector"):
+        (root / name).mkdir(parents=True, exist_ok=True)
+    (root / "xvector" / "sv.pth").write_bytes(b"checkpoint")
+    (root / "xvector" / "sv.yaml").write_text("model: xvector\n", encoding="utf-8")
+    FakeAutoModel.fail_for["xvector"] = RuntimeError("legacy xvector is not registered")
+    legacy = FakeLegacySpeaker()
+    calls: list[Path] = []
+
+    def legacy_factory(path: Path):
+        calls.append(path)
+        return legacy
+
+    runtime = FunASRSpeechRuntime(
+        model_root=root,
+        model_factory=FakeAutoModel,
+        legacy_speaker_factory=legacy_factory,
+    )
+    runtime.load()
+
+    assert runtime.health()["status"] == "ready"
+    assert runtime.health()["models"] == {"asr": True, "vad": True, "speaker": True}
+    assert calls == [root / "xvector"]
+    assert runtime.speaker_backend == "modelscope-legacy-xvector"
+    assert runtime.speaker_embedding(b"\x00\x00" * 1600, 16000)["embedding"] == pytest.approx([0.6, 0.8])
+    assert legacy.generate_calls[-1]["fs"] == 16000
 
 
 def test_speaker_embedding_rejects_missing_contract(tmp_path: Path):
