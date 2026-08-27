@@ -48,3 +48,11 @@ def test_feature_deploy_does_not_chown_existing_read_only_model_mount():
 
 def test_production_bootstrap_does_not_chown_existing_read_only_model_mount():
     _assert_read_only_model_mount_is_rerunnable(BOOTSTRAP.read_text(encoding="utf-8"))
+
+
+def test_feature_and_bootstrap_pin_modelscope_for_legacy_xvector():
+    for workflow in (FEATURE, BOOTSTRAP):
+        source = workflow.read_text(encoding="utf-8")
+        assert "MODELSCOPE_PACKAGE_VERSION: '1.39.1'" in source
+        assert '"modelscope==${MODELSCOPE_PACKAGE_VERSION}"' in source
+        assert "import funasr" in source and "modelscope" in source
