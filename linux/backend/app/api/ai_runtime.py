@@ -126,10 +126,14 @@ async def asr_stream(websocket: WebSocket):
             chunk = message.get("bytes")
             text = message.get("text")
             if chunk is not None:
+                # Keep one whole-utterance buffer only for finalization. The
+                # streaming path must consume each newly received PCM chunk
+                # exactly once; passing the accumulated buffer reprocessed old
+                # samples as A, AB, ABC, ... on successive messages.
                 audio.extend(chunk)
                 try:
                     partials = await asyncio.to_thread(
-                        lambda: list(supervisor.stream_asr(bytes(audio), session_id=session_id))
+                        lambda: list(supervisor.stream_asr(bytes(chunk), session_id=session_id))
                     )
                     if partials:
                         payload = asdict(partials[-1])
