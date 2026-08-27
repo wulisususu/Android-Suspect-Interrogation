@@ -180,15 +180,19 @@ async function loadNormalizedFragments(caseId: string, includeConfirmed = false)
 
 async function normalizeCaptureStatus(caseId: string, value: unknown): Promise<AsrCaptureStatus> {
   const raw = asRecord(value)
+  const normalizedCaseId = String(raw.caseId ?? caseId)
+  const fragments = Array.isArray(raw.fragments)
+    ? raw.fragments.map(normalizeTemporaryAsrFragment)
+    : await loadNormalizedFragments(normalizedCaseId)
   return {
-    caseId: String(raw.caseId ?? caseId),
+    caseId: normalizedCaseId,
     captureSessionId: raw.captureSessionId == null ? null : String(raw.captureSessionId),
     running: Boolean(raw.running ?? raw.active),
     startedAt: toTimestamp(raw.startedAt) ?? null,
     endedAt: toTimestamp(raw.endedAt) ?? null,
     sampleRate: Number(raw.sampleRate ?? 16_000),
     partialText: String(raw.partialText ?? ''),
-    fragments: await loadNormalizedFragments(caseId),
+    fragments,
     error: raw.error == null && raw.lastError == null ? null : String(raw.error ?? raw.lastError),
   }
 }
