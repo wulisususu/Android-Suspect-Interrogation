@@ -93,6 +93,13 @@ def test_ai_runtime_workflow_has_explicit_local_calibration_inputs_and_never_upl
     assert "sudo -n ss -ltnp 'sport = :8000'" in bootstrap
 
 
+def test_ai_runtime_cancels_stale_pr_runs_before_they_starve_single_rk3588_runner():
+    workflow = AI_WORKFLOW.read_text(encoding="utf-8")
+    assert "concurrency:" in workflow
+    assert "group: linux-ai-runtime-rk3588-${{ github.event.pull_request.number || github.ref }}" in workflow
+    assert "cancel-in-progress: true" in workflow
+
+
 def test_bootstrap_starts_real_worker_and_keeps_voice_capture_fail_closed_without_calibration():
     workflow = BOOTSTRAP.read_text(encoding="utf-8")
     assert "Prepare stable offline FunASR model and runtime layout" in workflow
