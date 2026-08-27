@@ -84,6 +84,22 @@ On the RK3588 runner:
 - Vite transformed 115 modules and produced the production `dist/` bundle;
 - final smoke line: `rk3588 smoke: ok`.
 
+## FunASR discovery probe gate
+
+The approved speech-pipeline work adds `scripts/ci/probe-funasr-runtime.py` as a read-only hardware discovery gate for the existing RK3588-local model root `/home/youyeetoo/funasr-models`.
+
+The probe contract requires:
+
+- local-only `AutoModel` construction with `device="cpu"` and `disable_update=True`;
+- separate validation of `paraformer`, `fsmn-vad`, and `xvector` directories;
+- no model downloads and no writes under the model root;
+- optional Paraformer/VAD speech inference and XVector `spk_embedding` shape inspection when sample WAV files are explicitly supplied;
+- JSON evidence written only under the Actions workspace or runner temporary directory.
+
+TDD RED evidence for PR `#21`: hosted Actions run `33037785535`, job `98404277509`, failed exactly at `test_probe_exists_and_is_offline_and_non_destructive` because `scripts/ci/probe-funasr-runtime.py` did not yet exist (`1 failed, 12 passed`). This proves the new contract test detects the missing probe before implementation.
+
+A successful real-model load is **not claimed in this section yet**. The `Linux AI Runtime RK3588` workflow now targets `linux-adaptation`; after the implementation reaches that branch, the self-hosted runner will probe the already-installed local models when a FunASR-capable interpreter is available. The existing TCP/8000 service is not called, stopped, restarted, reconfigured, or used as the probe target.
+
 ## Conclusion
 
 The implementation commit above passed both the hosted Linux release gate and the real RK3588 self-hosted smoke chain. Subsequent documentation/configuration-only commits must still pass the PR gate before merge; the final PR status is the authoritative merge criterion.
