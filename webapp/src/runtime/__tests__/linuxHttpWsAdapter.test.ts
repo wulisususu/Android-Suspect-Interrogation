@@ -3,7 +3,7 @@ import { LinuxHttpWsAdapter, buildRuntimeWebSocketUrl } from '../linuxHttpWsAdap
 import { RuntimeAdapterError } from '../errors'
 
 describe('LinuxHttpWsAdapter', () => {
-  it('routes Linux operations through /api/v1', async () => {
+  it('routes Linux operations through /api/v1 and preserves identity case binding', async () => {
     const calls: Array<{ method: string; url: string; data?: unknown }> = []
     const adapter = new LinuxHttpWsAdapter({
       request: async (config) => {
@@ -13,8 +13,12 @@ describe('LinuxHttpWsAdapter', () => {
       origin: 'http://127.0.0.1:8080',
     })
 
-    await adapter.invoke('identity.read')
-    expect(calls[0]).toMatchObject({ method: 'POST', url: '/api/v1/identity/read' })
+    await adapter.invoke('identity.read', { caseId: 'CASE-001', actorId: 'officer-01' })
+    expect(calls[0]).toMatchObject({
+      method: 'POST',
+      url: '/api/v1/identity/read',
+      data: { case_id: 'CASE-001', actor_id: 'officer-01' },
+    })
   })
 
   it('normalizes network failures to NOT_CONNECTED', async () => {
