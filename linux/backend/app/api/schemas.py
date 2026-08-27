@@ -37,6 +37,21 @@ class IdentityReadRequest(ActorRequest):
     case_id: str | None = None
 
 
+class IdentityConfirmRequest(ActorRequest):
+    case_id: str
+    name: str
+    id_number: str = ""
+    gender: str | None = None
+    nation: str | None = None
+    birth_date: str | None = None
+    address: str | None = None
+    source: str = "MANUAL"
+    portrait: str | None = None
+    issuer: str | None = None
+    valid_from: str | None = None
+    valid_to: str | None = None
+
+
 class MessageCreateRequest(ActorRequest):
     text: str
     speaker: str
