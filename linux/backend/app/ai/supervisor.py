@@ -354,6 +354,19 @@ class AISupervisor:
             "speech": self._speech_health(),
         }
 
+    @staticmethod
+    def _speech_model_available(speech: dict[str, Any], model: str) -> bool:
+        if speech.get("state") != "READY":
+            return False
+        detail = speech.get("detail")
+        if not isinstance(detail, dict):
+            return True
+        models = detail.get("models")
+        if not isinstance(models, dict) or model not in models:
+            # Mock/older compatible clients may not expose per-model health.
+            return True
+        return bool(models.get(model))
+
     def capabilities(self) -> dict[str, Any]:
         by_kind = {}
         for kind, worker in self._workers.items():
@@ -361,27 +374,29 @@ class AISupervisor:
             by_kind[kind] = {"model_id": spec.model_id, "backend": spec.backend, "architecture": spec.architecture, "device": spec.device, "context": spec.context, "memory_mb": spec.memory_mb, "capabilities": list(spec.capabilities), "installed": True if self.mode == "mock" else install.installed, "model_files_present": install.installed, "state": worker.health()["state"]}
 
         speech = self._speech_health()
-        speech_available = speech["state"] == "READY"
+        asr_available = self._speech_model_available(speech, "asr")
+        vad_available = self._speech_model_available(speech, "vad")
+        speaker_available = self._speech_model_available(speech, "speaker")
         if "asr" in by_kind:
             by_kind["asr"] = {
                 **by_kind["asr"],
                 "speech_worker": True,
-                "speech_state": "AVAILABLE" if speech_available else "ERROR",
+                "speech_state": "AVAILABLE" if asr_available else "ERROR",
             }
         else:
             by_kind["asr"] = {
-                "state": "AVAILABLE" if speech_available else "ERROR",
+                "state": "AVAILABLE" if asr_available else "ERROR",
                 "speech_worker": True,
                 "backend": self._speech_backend,
             }
         by_kind["vad"] = {
-            "state": "AVAILABLE" if speech_available else "ERROR",
+            "state": "AVAILABLE" if vad_available else "ERROR",
             "speech_worker": True,
             "backend": self._speech_backend,
         }
         speaker_configured = self.speaker_accept_threshold is not None and self.speaker_margin is not None
         by_kind["speaker"] = {
-            "state": "AVAILABLE" if speech_available and speaker_configured else "NOT_CONFIGURED" if not speaker_configured else "ERROR",
+            "state": "AVAILABLE" if speaker_available and speaker_configured else "NOT_CONFIGURED" if not speaker_configured else "ERROR",
             "speech_worker": True,
             "backend": self._speech_backend,
             "threshold_configured": self.speaker_accept_threshold is not None,
