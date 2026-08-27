@@ -222,3 +222,27 @@ def test_batch_confirm_apply_and_discard_never_duplicate_official_messages(tmp_p
         assert db.get(ASRFragment, first_id).state == "CONFIRMED"
         assert db.get(ASRFragment, second_id).state == "DISCARDED"
     engine.dispose()
+
+
+def test_unknown_speaker_must_be_resolved_before_official_confirmation(tmp_path):
+    app, engine, factory, _ = _app(tmp_path)
+    case_id, _, _, fragment_id, _ = _seed_fragment(factory)
+
+    with factory() as db:
+        fragment = db.get(ASRFragment, fragment_id)
+        fragment.speaker = "UNKNOWN"
+        fragment.speaker_source = "UNASSIGNED"
+        fragment.voiceprint_verified = False
+        fragment.low_confidence = True
+        db.commit()
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/v1/cases/{case_id}/asr/fragments/{fragment_id}/confirm")
+        assert response.status_code == 409
+        error = response.json()
+        assert error["code"] == "ASR_SPEAKER_CONFIRMATION_REQUIRED"
+
+    with factory() as db:
+        assert db.get(ASRFragment, fragment_id).state == "PENDING"
+        assert db.query(Message).count() == 0
+    engine.dispose()
