@@ -121,6 +121,27 @@ def test_confirmed_identity_intake_allows_session_start_without_hardware_reread(
         assert session["state"] == "QUESTIONING"
 
 
+def test_session_start_requires_suspect_voiceprint_after_identity(tmp_path):
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'voiceprint-required.db'}",
+        hardware_gateway=MockHardwareGateway(simulated=False),
+    )
+    with TestClient(app) as client:
+        created = payload(client.post("/api/v1/cases", json={"operator_id": "op", "suspectName": "钱某"}))
+        case_id = created["id"]
+        payload(client.post("/api/v1/identity/confirm", json={
+            "case_id": case_id,
+            "actor_id": "op",
+            "name": "钱某",
+            "id_number": "320101199001010022",
+            "source": "MANUAL",
+        }))
+
+        start = client.post(f"/api/v1/cases/{case_id}/session/start", json={"actor_id": "op"})
+        assert start.status_code == 409
+        assert start.json()["code"] == "SUSPECT_VOICEPRINT_REQUIRED"
+
+
 def test_canonical_api_errors_are_structured(tmp_path):
     app = create_app(database_url=f"sqlite:///{tmp_path / 'errors.db'}", hardware_gateway=MockHardwareGateway(simulated=False))
     with TestClient(app) as client:
