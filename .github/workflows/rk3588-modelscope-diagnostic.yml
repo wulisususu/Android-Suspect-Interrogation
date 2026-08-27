@@ -23,43 +23,51 @@ jobs:
           hostname
           uname -a
           sudo -n find "$GITHUB_WORKSPACE" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-      - name: Install legacy-compatible ModelScope
+      - name: Build isolated legacy package overlay
         shell: bash
         run: |
           set -euo pipefail
           PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
-          sudo -n "$PY" -m pip install --retries 3 --timeout 60 'modelscope==1.11.0'
-          "$PY" -c 'import modelscope; print("modelscope="+str(modelscope.__version__))'
-      - name: Print ModelScope speaker pipeline traceback
+          LEGACY="$RUNNER_TEMP/xvector-legacy-overlay"
+          rm -rf "$LEGACY"
+          mkdir -p "$LEGACY"
+          "$PY" -m pip install --retries 3 --timeout 60 --no-deps --target "$LEGACY" \
+            'funasr==0.5.7' 'modelscope==1.6.1'
+          PYTHONPATH="$LEGACY" "$PY" - <<'PY'
+          import funasr, modelscope
+          print('legacy_funasr=', getattr(funasr, '__version__', 'unknown'))
+          print('legacy_modelscope=', getattr(modelscope, '__version__', 'unknown'))
+          from funasr.bin import sv_inference_launch
+          print('SV_INFERENCE_LAUNCH_IMPORT_OK', sv_inference_launch.__file__)
+          PY
+      - name: Run legacy XVector locally without network
         shell: bash
         run: |
           set -euo pipefail
           PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
-          "$PY" - <<'PY'
-          import traceback
+          LEGACY="$RUNNER_TEMP/xvector-legacy-overlay"
+          MODEL=/opt/suspect-interrogation/models/funasr/xvector
+          WAV="$MODEL/example/sv_example_enroll.wav"
+          test -f "$WAV"
+          PYTHONPATH="$LEGACY" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 MODELSCOPE_OFFLINE=1 \
+            "$PY" - <<'PY'
+          import socket
+          original_connect = socket.socket.connect
+          def blocked(self, address):
+              raise RuntimeError(f'network disabled during legacy XVector inference: {address}')
+          socket.socket.connect = blocked
           try:
               from modelscope.pipelines import pipeline
               from modelscope.utils.constant import Tasks
-              print('MODELSCOPE_PIPELINE_IMPORT_OK', Tasks.speaker_verification)
-          except Exception:
-              print('MODELSCOPE_PIPELINE_IMPORT_FAILED')
-              traceback.print_exc()
-              raise
-          PY
-          "$PY" - <<'PY'
-          import traceback
-          from modelscope.pipelines import pipeline
-          from modelscope.utils.constant import Tasks
-          try:
-              p = pipeline(task=Tasks.speaker_verification, model='/opt/suspect-interrogation/models/funasr/xvector', device='cpu')
-              print('MODELSCOPE_XVECTOR_PIPELINE_LOAD_OK', type(p).__name__)
+              p = pipeline(task=Tasks.speaker_verification,
+                           model='/opt/suspect-interrogation/models/funasr/xvector',
+                           device='cpu', ngpu=0)
               out = p('/opt/suspect-interrogation/models/funasr/xvector/example/sv_example_enroll.wav')
-              print('MODELSCOPE_XVECTOR_INFERENCE_OK', type(out).__name__, sorted(out.keys()) if isinstance(out, dict) else type(out).__name__)
-              if isinstance(out, dict) and 'spk_embedding' in out:
-                  emb = out['spk_embedding']
-                  print('SPK_EMBEDDING_SHAPE', getattr(emb, 'shape', None))
-          except Exception:
-              print('MODELSCOPE_XVECTOR_PIPELINE_LOAD_OR_INFER_FAILED')
-              traceback.print_exc()
-              raise
+          finally:
+              socket.socket.connect = original_connect
+          print('LEGACY_XVECTOR_OUTPUT_KEYS', sorted(out.keys()))
+          emb = out.get('spk_embedding')
+          assert emb is not None, out
+          print('LEGACY_XVECTOR_EMBEDDING_SHAPE', getattr(emb, 'shape', None))
+          print('LEGACY_XVECTOR_OFFLINE_OK')
           PY
