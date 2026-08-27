@@ -11,7 +11,7 @@ def unwrap(response):
     return body["data"]
 
 
-def test_required_flow_survives_backend_restart(tmp_path):
+def test_required_flow_survives_backend_restart(tmp_path, enroll_test_suspect_voiceprint):
     db_file = tmp_path / "restart.db"
     url = f"sqlite:///{db_file}"
 
@@ -20,6 +20,7 @@ def test_required_flow_survives_backend_restart(tmp_path):
         case = unwrap(client.post("/api/v1/cases", json={"operator_id": "officer-1", "suspectName": "重启测试对象"}))
         case_id = case["id"]
         unwrap(client.post("/api/v1/identity/read", json={"case_id": case_id, "actor_id": "officer-1"}))
+        enroll_test_suspect_voiceprint(first_app, case_id)
         unwrap(client.post(f"/api/v1/cases/{case_id}/session/start", json={}))
         message = unwrap(client.post(f"/api/v1/cases/{case_id}/messages", json={"text": "原始回答", "speaker": "嫌疑人"}))
         message_id = message["id"]
