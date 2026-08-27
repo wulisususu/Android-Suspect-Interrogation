@@ -153,17 +153,35 @@ jobs:
             exit 0
           fi
 
+          echo '--- installed FunASR model inventory (relative path, bytes) ---'
+          find "$MODEL_ROOT" -type f -printf '%P\t%s\n' | sort
+          echo '--- end FunASR model inventory ---'
+
           FUNASR_PYTHON=''
           KNOWN_FUNASR_PYTHON=/home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python
-          if [[ -x "$KNOWN_FUNASR_PYTHON" ]] && "$KNOWN_FUNASR_PYTHON" -c 'import funasr, torch' >/dev/null 2>&1; then
-            FUNASR_PYTHON="$KNOWN_FUNASR_PYTHON"
-          elif python3 -c 'import funasr, torch' >/dev/null 2>&1; then
-            FUNASR_PYTHON=python3
+          if [[ -x "$KNOWN_FUNASR_PYTHON" ]]; then
+            if diagnostic=$("$KNOWN_FUNASR_PYTHON" -c 'import funasr, torch; print("funasr=" + str(getattr(funasr, "__version__", "unknown"))); print("torch=" + str(getattr(torch, "__version__", "unknown")))' 2>&1); then
+              echo "known FunASR interpreter diagnostic: ${diagnostic}"
+              FUNASR_PYTHON="$KNOWN_FUNASR_PYTHON"
+            else
+              echo "known FunASR interpreter diagnostic: ${diagnostic}" >&2
+            fi
+          else
+            echo "known FunASR interpreter diagnostic: not executable: ${KNOWN_FUNASR_PYTHON}" >&2
           fi
 
           if [[ -z "$FUNASR_PYTHON" ]]; then
-            echo 'FunASR-capable Python interpreter not found; real-model probe skipped.'
-            exit 0
+            if diagnostic=$(python3 -c 'import funasr, torch; print("funasr=" + str(getattr(funasr, "__version__", "unknown"))); print("torch=" + str(getattr(torch, "__version__", "unknown")))' 2>&1); then
+              echo "system Python FunASR diagnostic: ${diagnostic}"
+              FUNASR_PYTHON=python3
+            else
+              echo "system Python FunASR diagnostic: ${diagnostic}" >&2
+            fi
+          fi
+
+          if [[ -z "$FUNASR_PYTHON" ]]; then
+            echo 'FunASR-capable Python interpreter not found; installed model assets cannot be validated.' >&2
+            exit 1
           fi
 
           echo "funasr_python=${FUNASR_PYTHON}"
