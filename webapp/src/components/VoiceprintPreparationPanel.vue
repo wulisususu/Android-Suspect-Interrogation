@@ -1,7 +1,7 @@
 <script lang="ts">
-import type { TemporaryAsrSpeaker, VoiceprintReadiness, VoiceRecognitionMode } from '../types/interrogation'
+import type { TemporaryAsrSpeaker, VoiceprintReadiness as VoiceprintReadinessModel, VoiceRecognitionMode } from '../types/interrogation'
 
-export function voiceprintStartGuard(readiness: VoiceprintReadiness) {
+export function voiceprintStartGuard(readiness: VoiceprintReadinessModel) {
   if (!readiness.suspectReady || !readiness.canStart) {
     return {
       disabled: true,
