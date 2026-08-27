@@ -1,6 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ -n "${SUSPECT_AI_WORKER_COMMAND:-}" ]]; then exec /bin/sh -c "$SUSPECT_AI_WORKER_COMMAND"; fi
-if [[ -z "${SUSPECT_MODEL_PATH:-}" || ! -e "${SUSPECT_MODEL_PATH}" ]]; then echo "AI capability NOT_INSTALLED; worker remains optional" >&2; exit 0; fi
-echo "AI model path exists but SUSPECT_AI_WORKER_COMMAND is not configured" >&2
-exit 0
+
+require_env() {
+  local name="$1"
+  if [[ -z "${!name:-}" ]]; then
+    echo "${name} is required for the FunASR speech worker" >&2
+    exit 78
+  fi
+}
+
+require_env SUSPECT_FUNASR_PYTHON
+require_env SUSPECT_FUNASR_MODEL_ROOT
+require_env SUSPECT_SPEECH_SOCKET
+
+if [[ ! -x "$SUSPECT_FUNASR_PYTHON" ]]; then
+  echo "SUSPECT_FUNASR_PYTHON is not executable: $SUSPECT_FUNASR_PYTHON" >&2
+  exit 78
+fi
+
+if [[ ! -d "$SUSPECT_FUNASR_MODEL_ROOT" ]]; then
+  echo "SUSPECT_FUNASR_MODEL_ROOT is not a directory: $SUSPECT_FUNASR_MODEL_ROOT" >&2
+  exit 78
+fi
+
+for model_dir in paraformer fsmn-vad xvector; do
+  if [[ ! -d "$SUSPECT_FUNASR_MODEL_ROOT/$model_dir" ]]; then
+    echo "required FunASR model directory is missing: $SUSPECT_FUNASR_MODEL_ROOT/$model_dir" >&2
+    exit 78
+  fi
+done
+
+export PYTHONPATH=/opt/suspect-interrogation/current/linux/backend
+exec "$SUSPECT_FUNASR_PYTHON" -m speech_worker.main
