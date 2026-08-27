@@ -3,6 +3,7 @@ import { computed, nextTick, reactive, ref, watch } from 'vue'
 import {
   backendErrorMessage,
   finishSession,
+  markTranscriptMessage,
   persistQuestionOrAnswer,
   updateTranscriptMessage,
 } from '../api/interrogation'
@@ -92,7 +93,6 @@ const qaPairs = computed<QaPair[]>(() => {
   if (current?.question || current?.answer) pairs.push(current)
   return pairs
 })
-
 const elapsed = computed(() => {
   const total = Math.floor(props.captureElapsedMs / 1000)
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
@@ -100,12 +100,10 @@ const elapsed = computed(() => {
 const isDemo = computed(() => props.caseId.startsWith('CASE-DEMO-'))
 const documentFrozen = computed(() => !!signingState.value)
 const documentLocked = computed(() => signingState.value?.status === 'LOCKED')
-const interrogationRound = computed(() => headerFact('interrogation_round', '1'))
-const interrogationTime = computed(() => {
-  const start = formatDateTime(props.session.startedAt)
-  const end = props.session.endedAt ? formatDateTime(props.session.endedAt) : '____年__月__日 __时__分'
-  return `${start} 至 ${end}`
-})
+const currentQuestion = computed(() => [...formalRecords.value].reverse().find((item) => item.speaker === '民警')?.text || '等待民警提出问题')
+const answeredCount = computed(() => qaPairs.value.filter((item) => item.answer).length)
+const conflictCount = computed(() => formalRecords.value.filter((item) => item.mark === 'conflict').length)
+const sessionStatusText = computed(() => ({ READY: '待开始', RUNNING: '审讯中', PAUSED: '已暂停', COMPLETED: '已结束' }[props.session.status] || props.session.status))
 
 watch(
   () => props.messages,
@@ -154,13 +152,6 @@ function headerFact(key: string, fallback = '') {
   return value
 }
 
-function formatDateTime(value?: number | null) {
-  if (!value) return '____年__月__日 __时__分'
-  const date = new Date(value)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}时${pad(date.getMinutes())}分`
-}
-
 function formatSignedAt(value?: number) {
   if (!value) return ''
   return new Intl.DateTimeFormat('zh-CN', {
@@ -171,8 +162,8 @@ function formatSignedAt(value?: number) {
 
 function rowsFor(value: string | undefined, minimum = 2) {
   const textValue = value || ''
-  const visualLines = textValue.split('\n').reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / 38)), 0)
-  return Math.max(minimum, Math.min(14, visualLines))
+  const visualLines = textValue.split('\n').reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / 42)), 0)
+  return Math.max(minimum, Math.min(10, visualLines))
 }
 
 function markEditing(id: string, editing: boolean) {
@@ -236,6 +227,17 @@ async function saveEdit(item?: TranscriptMessage) {
   }
 }
 
+async function toggleConflict(item: TranscriptMessage) {
+  if (documentFrozen.value) return
+  localError.value = ''
+  try {
+    await markTranscriptMessage(props.caseId, item.id, item.mark === 'conflict' ? '' : 'conflict')
+    emit('saved')
+  } catch (err) {
+    localError.value = backendErrorMessage(err)
+  }
+}
+
 async function appendRecord() {
   const clean = text.value.trim()
   if (!clean || saving.value) return
@@ -244,7 +246,7 @@ async function appendRecord() {
     return
   }
   if (!props.canRecord) {
-    localError.value = '当前审讯未处于可记录状态。'
+    localError.value = '当前审讯未处于可记录状态。请先使用上方“开始审讯/恢复”按钮。'
     return
   }
   saving.value = true
@@ -432,179 +434,193 @@ async function confirmSignature() {
 </script>
 
 <template>
-  <section ref="pageRoot" class="interrogation-page page-card document-mode">
-    <div class="document-actions">
-      <button
-        class="finish-interrogation-button"
-        :disabled="!!signingBusy || documentFrozen || capture.running"
-        @click="finishAndFreeze"
-      >
-        {{ signingBusy === 'freeze' ? '正在冻结…' : '结束审讯' }}
-      </button>
-      <button class="ai-generate-button" :disabled="aiBusy" @click="$emit('generateAi')">
-        {{ aiBusy ? 'AI 梳理中…' : '✦ 生成 AI 案件梳理' }}
-      </button>
-    </div>
+  <section ref="pageRoot" class="interrogation-page workbench-mode">
+    <div class="interrogation-grid">
+      <aside class="subject-panel">
+        <header class="panel-title">
+          <span>案件信息</span>
+          <strong>{{ sessionStatusText }}</strong>
+        </header>
+        <div class="subject-photo">人员<br />信息</div>
+        <h2>{{ summary.suspectName || '待录入人员' }}</h2>
+        <dl>
+          <div><dt>案件编号</dt><dd>{{ summary.id || caseId }}</dd></div>
+          <div><dt>性别</dt><dd>{{ summary.gender || '未录入' }}</dd></div>
+          <div><dt>民族</dt><dd>{{ summary.nation || '未录入' }}</dd></div>
+          <div><dt>出生日期</dt><dd>{{ summary.birthDate || '未录入' }}</dd></div>
+          <div class="full"><dt>身份证号</dt><dd>{{ summary.idNumber || '未录入' }}</dd></div>
+          <div class="full"><dt>住址</dt><dd>{{ summary.address || headerFact('current_address', '未录入') }}</dd></div>
+          <div class="full"><dt>主审民警</dt><dd>{{ summary.officerName || '当前警官' }}</dd></div>
+        </dl>
+        <div class="subject-stats">
+          <div><strong>{{ qaPairs.length }}</strong><span>问答轮次</span></div>
+          <div><strong>{{ answeredCount }}</strong><span>已回答</span></div>
+          <div><strong>{{ conflictCount }}</strong><span>矛盾标记</span></div>
+        </div>
+        <div v-if="isDemo" class="demo-chip">模拟案件</div>
+      </aside>
 
-    <div class="document-scroll">
-      <article class="interrogation-paper" aria-label="询问笔录文档">
-        <div class="document-round">第 {{ interrogationRound }} 次</div>
-        <div v-if="isDemo" class="demo-watermark">模拟案件 · 全部信息均为虚构</div>
-        <h1>询 问 笔 录</h1>
+      <main class="conversation-panel">
+        <header class="conversation-header">
+          <div>
+            <span class="section-kicker">审讯记录</span>
+            <h1>问答工作区</h1>
+          </div>
+          <div class="conversation-status" :class="session.status.toLowerCase()">
+            <span></span>{{ sessionStatusText }}
+          </div>
+        </header>
 
-        <div class="official-header">
-          <div class="full-row"><span>时间</span><strong>{{ interrogationTime }}</strong></div>
-          <div class="full-row"><span>地点</span><strong>{{ headerFact('interrogation_place', '________________') }}</strong></div>
-          <div><span>询问人</span><strong>{{ summary.officerName || '________' }}</strong></div>
-          <div><span>工作单位</span><strong>{{ headerFact('officer_unit', '________________') }}</strong></div>
-          <div><span>记录人</span><strong>{{ headerFact('recorder_name', '________') }}</strong></div>
-          <div><span>工作单位</span><strong>{{ headerFact('recorder_unit', '________________') }}</strong></div>
-          <div class="full-row"><span>被询问人</span><strong>{{ summary.suspectName || '________' }}</strong></div>
-          <div class="full-row"><span>身份证件种类及号码</span><strong>{{ headerFact('id_document_type', '身份证') }}　{{ summary.idNumber || '__________________' }}</strong></div>
-          <div><span>性别</span><strong>{{ summary.gender || '____' }}</strong></div>
-          <div><span>出生日期</span><strong>{{ summary.birthDate || '____-__-__' }}</strong></div>
-          <div class="full-row"><span>人大代表</span><strong>{{ headerFact('peoples_representative', '否') }}</strong></div>
-          <div class="full-row"><span>联系方式</span><strong>{{ headerFact('contact', '________________') }}</strong></div>
-          <div class="full-row"><span>现住址</span><strong>{{ headerFact('current_address', '________________') }}</strong></div>
-          <div class="full-row"><span>户籍所在地</span><strong>{{ headerFact('household_registration', '________________') }}</strong></div>
+        <div class="conversation-scroll">
+          <div v-if="!qaPairs.length && !capture.partialText && !capture.fragments.length" class="conversation-empty">
+            <strong>尚未开始记录问答</strong>
+            <p>使用上方“开始审讯”后，在底部选择“民警问 / 嫌疑人答”录入；语音识别会写入当前光标位置。</p>
+          </div>
+
+          <section v-for="(pair, index) in qaPairs" :key="`${pair.question?.id || 'q'}-${pair.answer?.id || 'a'}-${index}`" class="qa-turn">
+            <div class="turn-index">{{ String(index + 1).padStart(2, '0') }}</div>
+
+            <article v-if="pair.question" class="speech-row officer" :class="{ conflict: pair.question.mark === 'conflict' }">
+              <div class="role-badge">问</div>
+              <div class="speech-content">
+                <div class="speech-meta"><strong>民警</strong><span>Q{{ pair.question.seq || index + 1 }}</span></div>
+                <textarea
+                  v-model="drafts[pair.question.id]"
+                  class="record-editor"
+                  :class="{ locked: documentFrozen, 'recording-target': (recordingTarget || insertionTarget)?.recordId === pair.question.id }"
+                  :data-record-id="pair.question.id"
+                  :disabled="documentFrozen"
+                  :rows="rowsFor(drafts[pair.question.id], 2)"
+                  aria-label="民警问题，可编辑"
+                  @focus="focusRecordEditor(pair.question, $event)"
+                  @click="rememberInsertionTarget(pair.question, $event)"
+                  @keyup="rememberInsertionTarget(pair.question, $event)"
+                  @select="rememberInsertionTarget(pair.question, $event)"
+                  @input="rememberInsertionTarget(pair.question, $event)"
+                  @blur="saveEdit(pair.question)"
+                ></textarea>
+                <div class="record-actions">
+                  <span>点击正文可修订并定位语音写入点</span>
+                  <button :disabled="documentFrozen" @click="toggleConflict(pair.question)">{{ pair.question.mark === 'conflict' ? '取消标记' : '标记矛盾' }}</button>
+                </div>
+              </div>
+            </article>
+
+            <article v-if="pair.answer" class="speech-row suspect" :class="{ conflict: pair.answer.mark === 'conflict' }">
+              <div class="role-badge">答</div>
+              <div class="speech-content">
+                <div class="speech-meta"><strong>{{ summary.suspectName || '被询问人' }}</strong><span>A{{ pair.answer.seq || index + 1 }}</span></div>
+                <textarea
+                  v-model="drafts[pair.answer.id]"
+                  class="record-editor answer-editor"
+                  :class="{ locked: documentFrozen, 'recording-target': (recordingTarget || insertionTarget)?.recordId === pair.answer.id }"
+                  :data-record-id="pair.answer.id"
+                  :disabled="documentFrozen"
+                  :rows="rowsFor(drafts[pair.answer.id], 3)"
+                  aria-label="嫌疑人回答，可编辑"
+                  @focus="focusRecordEditor(pair.answer, $event)"
+                  @click="rememberInsertionTarget(pair.answer, $event)"
+                  @keyup="rememberInsertionTarget(pair.answer, $event)"
+                  @select="rememberInsertionTarget(pair.answer, $event)"
+                  @input="rememberInsertionTarget(pair.answer, $event)"
+                  @blur="saveEdit(pair.answer)"
+                ></textarea>
+                <div class="record-actions">
+                  <span>{{ pair.answer.mark === 'conflict' ? '已标记：存在矛盾' : '正式回答' }}</span>
+                  <button :disabled="documentFrozen" @click="toggleConflict(pair.answer)">{{ pair.answer.mark === 'conflict' ? '取消标记' : '标记矛盾' }}</button>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <section v-if="capture.fragments.length || capture.partialText" class="voice-draft-section">
+            <header><strong>语音转写暂存区</strong><span>未确认内容不会冒充正式笔录</span></header>
+            <div v-for="fragment in capture.fragments" :key="fragment.id" class="voice-draft-row">
+              {{ fragment.editedText || fragment.rawText || '等待识别文本……' }}
+            </div>
+            <div v-if="capture.partialText" class="voice-live-row"><b>实时：</b>{{ capture.partialText }}</div>
+          </section>
         </div>
 
-        <div v-if="!qaPairs.length && !capture.partialText && !capture.fragments.length" class="document-empty">
-          <p>正文尚无正式问答记录。</p>
-          <p>可在页面底部新增“民警问 / 嫌疑人答”，也可以启动录音生成临时转写。</p>
+        <div v-if="localError || aiError || capture.error" class="interrogation-error workbench-error">
+          {{ localError || aiError || capture.error }}
         </div>
 
-        <section v-for="(pair, index) in qaPairs" :key="`${pair.question?.id || 'q'}-${pair.answer?.id || 'a'}-${index}`" class="qa-block">
-          <div class="qa-number">{{ String(index + 1).padStart(2, '0') }}</div>
+        <footer v-if="!documentFrozen" class="interrogation-composer">
+          <button
+            class="record-button"
+            :class="{ active: capture.running }"
+            :disabled="captureBusy || !nativeCaptureAvailable || (!canRecord && !capture.running)"
+            :title="nativeCaptureAvailable ? '开始 / 停止离线录音' : '连续离线录音 Runtime 当前不可用'"
+            @click="toggleCapture"
+          >
+            <span class="record-dot">●</span>
+            {{ capture.running ? `停止 ${elapsed}` : '录音' }}
+          </button>
 
-          <div v-if="pair.question" class="qa-line question-line">
-            <strong class="qa-label">问：</strong>
-            <textarea
-              v-model="drafts[pair.question.id]"
-              class="document-editor"
-              :class="{
-                locked: documentFrozen,
-                'recording-target': (recordingTarget || insertionTarget)?.recordId === pair.question.id,
-              }"
-              :data-record-id="pair.question.id"
-              :disabled="documentFrozen"
-              :rows="rowsFor(drafts[pair.question.id], 2)"
-              aria-label="民警问题，可编辑"
-              @focus="focusRecordEditor(pair.question, $event)"
-              @click="rememberInsertionTarget(pair.question, $event)"
-              @keyup="rememberInsertionTarget(pair.question, $event)"
-              @select="rememberInsertionTarget(pair.question, $event)"
-              @input="rememberInsertionTarget(pair.question, $event)"
-              @blur="saveEdit(pair.question)"
-            ></textarea>
+          <div class="role-switch" aria-label="新增记录角色">
+            <button :class="{ active: entryRole === '民警' }" @click="entryRole = '民警'">民警问</button>
+            <button :class="{ active: entryRole === '嫌疑人' }" @click="entryRole = '嫌疑人'">嫌疑人答</button>
           </div>
 
-          <div v-if="pair.answer" class="qa-line answer-line">
-            <strong class="qa-label">答：</strong>
-            <textarea
-              v-model="drafts[pair.answer.id]"
-              class="document-editor answer-editor"
-              :class="{
-                locked: documentFrozen,
-                'recording-target': (recordingTarget || insertionTarget)?.recordId === pair.answer.id,
-              }"
-              :data-record-id="pair.answer.id"
-              :disabled="documentFrozen"
-              :rows="rowsFor(drafts[pair.answer.id], 3)"
-              aria-label="嫌疑人回答，可编辑"
-              @focus="focusRecordEditor(pair.answer, $event)"
-              @click="rememberInsertionTarget(pair.answer, $event)"
-              @keyup="rememberInsertionTarget(pair.answer, $event)"
-              @select="rememberInsertionTarget(pair.answer, $event)"
-              @input="rememberInsertionTarget(pair.answer, $event)"
-              @blur="saveEdit(pair.answer)"
-            ></textarea>
-          </div>
+          <textarea
+            v-model="text"
+            :disabled="!canRecord || saving"
+            rows="2"
+            :placeholder="entryRole === '民警' ? '输入当前询问问题…' : '输入被询问人回答…'"
+            @keydown.ctrl.enter.prevent="appendRecord"
+          ></textarea>
+          <button class="send-record-button" :disabled="!text.trim() || !canRecord || saving" @click="appendRecord">
+            {{ saving ? '保存中…' : '发送并记录' }}
+          </button>
+        </footer>
+      </main>
+
+      <aside class="operation-panel">
+        <section class="current-question-card">
+          <span>当前问题</span>
+          <strong>{{ currentQuestion }}</strong>
         </section>
 
-        <section v-if="capture.fragments.length || capture.partialText" class="voice-draft-section">
-          <h2>语音转写草稿</h2>
-          <p class="voice-draft-note">以下内容尚未作为正式问答归档，结束审讯前请确认或丢弃。</p>
-          <div v-for="fragment in capture.fragments" :key="fragment.id" class="voice-draft-row">
-            {{ fragment.editedText || fragment.rawText || '等待识别文本……' }}
-          </div>
-          <div v-if="capture.partialText" class="voice-live-row">{{ capture.partialText }}</div>
+        <section class="asr-live-card" :class="{ active: capture.running }">
+          <header><span class="mic-dot">●</span><strong>实时语音识别</strong></header>
+          <p>{{ capture.partialText || (capture.running ? '正在监听，请开始讲话…' : '录音未启动') }}</p>
+          <small>{{ capture.running ? `已录音 ${elapsed}` : nativeCaptureAvailable ? 'ASR / 麦克风 Runtime 已检测' : 'ASR / 麦克风 Runtime 未就绪' }}</small>
         </section>
 
-        <section class="signature-section">
-          <h2>笔录确认与电子签名</h2>
-          <div v-if="!signingState" class="signature-intro">
-            结束审讯后将冻结当前笔录版本并计算 SHA-256，随后开放被询问人和询问人电子签名。
-          </div>
+        <section class="operation-actions">
+          <button :disabled="aiBusy" @click="$emit('generateAi')">{{ aiBusy ? 'AI 梳理中…' : '案件 AI 梳理' }}</button>
+          <button class="freeze-button" :disabled="!!signingBusy || documentFrozen || capture.running" @click="finishAndFreeze">
+            {{ signingBusy === 'freeze' ? '正在冻结…' : session.status === 'COMPLETED' ? '冻结笔录并签名' : '结束并进入签名' }}
+          </button>
+        </section>
+
+        <section class="signing-panel">
+          <header><strong>笔录确认 / 签名</strong><span>{{ documentLocked ? '已锁定' : documentFrozen ? '已冻结' : '未冻结' }}</span></header>
+          <div v-if="!signingState" class="signing-placeholder">结束审讯后冻结当前版本，系统计算 SHA-256，再进行双方手写签名。</div>
           <template v-else>
-            <div class="document-integrity" :class="{ invalid: !signingState.integrityValid }">
-              <div><strong>版本 V{{ signingState.version }}</strong><span>{{ documentLocked ? '已锁定' : '已冻结，待完成签名' }}</span></div>
-              <p>SHA-256：{{ signingState.documentHash }}</p>
-              <small>{{ signingState.integrityValid ? '当前内容与冻结版本一致' : '完整性校验失败：冻结后内容发生变化' }}</small>
+            <div class="integrity-state" :class="{ invalid: !signingState.integrityValid }">
+              <b>V{{ signingState.version }}</b>
+              <span>{{ signingState.integrityValid ? '完整性校验通过' : '完整性校验失败' }}</span>
+              <small>{{ signingState.documentHash }}</small>
             </div>
-
-            <div class="signature-cards">
-              <article class="signature-card">
-                <header><strong>被询问人签名</strong><span>{{ summary.suspectName || '被询问人' }}</span></header>
-                <template v-if="signatureFor('SUSPECT')">
-                  <img :src="signatureFor('SUSPECT')?.imageDataUrl" alt="被询问人电子签名" />
-                  <small>{{ formatSignedAt(signatureFor('SUSPECT')?.signedAt) }}</small>
-                  <small class="hash-small">签名摘要：{{ signatureFor('SUSPECT')?.signatureHash }}</small>
-                </template>
-                <button v-else :disabled="!signingState.integrityValid || !!signingBusy" @click="openSignature('SUSPECT')">手写签名</button>
-              </article>
-
-              <article class="signature-card">
-                <header><strong>询问人签名</strong><span>{{ summary.officerName || '询问人' }}</span></header>
-                <template v-if="signatureFor('OFFICER')">
-                  <img :src="signatureFor('OFFICER')?.imageDataUrl" alt="询问人民警电子签名" />
-                  <small>{{ formatSignedAt(signatureFor('OFFICER')?.signedAt) }}</small>
-                  <small class="hash-small">签名摘要：{{ signatureFor('OFFICER')?.signatureHash }}</small>
-                </template>
-                <button v-else :disabled="!signingState.integrityValid || !!signingBusy" @click="openSignature('OFFICER')">手写签名</button>
-              </article>
-            </div>
-
-            <p v-if="documentLocked" class="locked-notice">双方签名已完成，本版本已锁定。后续不得直接修改已签笔录。</p>
+            <article class="mini-signature">
+              <div><strong>被询问人</strong><span>{{ summary.suspectName || '被询问人' }}</span></div>
+              <img v-if="signatureFor('SUSPECT')" :src="signatureFor('SUSPECT')?.imageDataUrl" alt="被询问人电子签名" />
+              <button v-else :disabled="!signingState.integrityValid || !!signingBusy" @click="openSignature('SUSPECT')">手写签名</button>
+              <small v-if="signatureFor('SUSPECT')">{{ formatSignedAt(signatureFor('SUSPECT')?.signedAt) }}</small>
+            </article>
+            <article class="mini-signature">
+              <div><strong>询问人</strong><span>{{ summary.officerName || '询问人' }}</span></div>
+              <img v-if="signatureFor('OFFICER')" :src="signatureFor('OFFICER')?.imageDataUrl" alt="询问人民警电子签名" />
+              <button v-else :disabled="!signingState.integrityValid || !!signingBusy" @click="openSignature('OFFICER')">手写签名</button>
+              <small v-if="signatureFor('OFFICER')">{{ formatSignedAt(signatureFor('OFFICER')?.signedAt) }}</small>
+            </article>
+            <p v-if="documentLocked" class="locked-notice">双方签名完成，当前版本已锁定。</p>
           </template>
         </section>
-
-        <div class="document-end">—— 本页以下无正文 ——</div>
-      </article>
+      </aside>
     </div>
-
-    <div v-if="localError || aiError || capture.error" class="interrogation-error floating-error">
-      {{ localError || aiError || capture.error }}
-    </div>
-
-    <footer v-if="!documentFrozen" class="interrogation-composer document-composer">
-      <button
-        class="record-button"
-        :class="{ active: capture.running }"
-        :disabled="captureBusy || !nativeCaptureAvailable || (!canRecord && !capture.running)"
-        :title="nativeCaptureAvailable ? '开始 / 停止离线录音' : '连续离线录音 Runtime 当前不可用'"
-        @click="toggleCapture"
-      >
-        <span class="record-dot">●</span>
-        {{ capture.running ? `停止 ${elapsed}` : '录音' }}
-      </button>
-
-      <div class="role-switch" aria-label="新增记录角色">
-        <button :class="{ active: entryRole === '民警' }" @click="entryRole = '民警'">民警问</button>
-        <button :class="{ active: entryRole === '嫌疑人' }" @click="entryRole = '嫌疑人'">嫌疑人答</button>
-      </div>
-
-      <textarea
-        v-model="text"
-        :disabled="!canRecord || saving"
-        rows="1"
-        :placeholder="entryRole === '民警' ? '输入新的询问问题……' : '输入新的被询问人回答……'"
-        @keydown.ctrl.enter.prevent="appendRecord"
-      ></textarea>
-      <button class="primary-action record-save" :disabled="!text.trim() || !canRecord || saving" @click="appendRecord">
-        {{ saving ? '保存中…' : '加入笔录' }}
-      </button>
-    </footer>
 
     <div v-if="signatureRole" class="signature-modal-backdrop" @click.self="closeSignature">
       <section class="signature-modal" role="dialog" aria-modal="true" aria-label="电子签名">
@@ -636,199 +652,127 @@ async function confirmSignature() {
 </template>
 
 <style scoped>
-.document-mode {
+.workbench-mode {
+  --ui-blue: #185d8d;
+  --ui-blue-dark: #103f61;
+  --ui-line: #b8c9d5;
+  --ui-soft: #eef4f7;
+  --ui-text: #20384b;
   position: relative;
-  display: flex;
-  flex-direction: column;
-  background: #eef1f4;
-  border-radius: 0;
-}
-.document-actions {
-  position: absolute;
-  z-index: 8;
-  top: 12px;
-  right: 18px;
-  display: flex;
-  gap: 10px;
-}
-.finish-interrogation-button,
-.ai-generate-button {
-  border-radius: 9px;
-  padding: 9px 14px;
-  font-weight: 700;
-  background: rgba(255,255,255,.94);
-}
-.finish-interrogation-button { border: 1px solid #efb8b2; color: #b42318; }
-.ai-generate-button { border: 1px solid #8eb8e4; color: #1c68b6; }
-.document-scroll {
-  flex: 1 1 auto;
+  min-width: 1320px;
   min-height: 0;
-  overflow: auto;
-  padding: 18px 30px 42px;
-  background: #e8ebee;
-}
-.interrogation-paper {
-  position: relative;
-  box-sizing: border-box;
-  width: min(210mm, 100%);
-  min-height: 297mm;
-  margin: 0 auto;
-  padding: 20mm 21mm 24mm 25mm;
-  background: #fff;
-  box-shadow: 0 8px 28px rgba(26, 39, 51, .14);
-  color: #111;
-  font-family: SimSun, "宋体", "Songti SC", serif;
-  font-size: 12pt;
-  line-height: 1.75;
-}
-.document-round {
-  position: absolute;
-  top: 13mm;
-  right: 21mm;
-  font-size: 11pt;
-  letter-spacing: .35em;
-}
-.demo-watermark {
-  position: absolute;
-  top: 20mm;
-  right: 21mm;
-  color: #9a4b4b;
-  border: 1px solid #d7aaaa;
-  padding: 2px 8px;
-  font: 8.5pt/1.5 SimSun, "宋体", serif;
-  letter-spacing: .06em;
-}
-.interrogation-paper > h1 {
-  margin: 5mm 0 9mm;
-  text-align: center;
-  font-family: SimHei, "黑体", sans-serif;
-  font-size: 22pt;
-  line-height: 1.35;
-  letter-spacing: .24em;
-  font-weight: 700;
-}
-.official-header {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  column-gap: 8mm;
-  margin-bottom: 8mm;
-  font-size: 10.5pt;
-}
-.official-header > div {
-  min-height: 9mm;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 3mm;
-  align-items: end;
-  padding: 1.5mm 0 1mm;
-  border-bottom: 1px solid #555;
-}
-.official-header > .full-row { grid-column: 1 / -1; }
-.official-header span { white-space: nowrap; }
-.official-header strong { min-width: 0; font-weight: 400; word-break: break-all; }
-.document-empty { margin: 20mm 0; text-align: center; color: #777; }
-.document-empty p { margin: 2mm 0; text-indent: 0; }
-.qa-block {
-  position: relative;
-  padding: 3.5mm 0 4.5mm;
-  border-bottom: 1px dotted #c9c9c9;
-}
-.qa-number {
-  position: absolute;
-  left: -12mm;
-  top: 5mm;
-  color: #aaa;
-  font: 9pt/1 "Times New Roman", serif;
-}
-.qa-line {
-  display: grid;
-  grid-template-columns: 2.2em minmax(0, 1fr);
-  align-items: start;
-  gap: .3em;
-  margin: 0 0 2mm;
-}
-.qa-label {
-  padding-top: 2px;
-  font-family: SimHei, "黑体", sans-serif;
-  font-size: 12pt;
-  line-height: 1.75;
-  font-weight: 700;
-}
-.document-editor {
-  width: 100%;
-  box-sizing: border-box;
-  min-height: 2.8em;
-  margin: 0;
-  padding: 0 2px;
-  resize: vertical;
+  height: 100%;
   overflow: hidden;
-  border: 1px solid transparent;
-  border-radius: 2px;
-  outline: none;
-  background: transparent;
-  color: #111;
-  font: 12pt/1.75 SimSun, "宋体", "Songti SC", serif;
+  background: #dce7ee;
+  color: var(--ui-text);
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
 }
-.answer-editor { text-indent: 2em; }
-.document-editor:hover:not(:disabled) { background: #fbfcfd; border-color: #edf0f2; }
-.document-editor:focus { background: #fffef5; border-color: #8fb6d8; box-shadow: 0 0 0 2px rgba(47, 128, 237, .08); }
-.document-editor.locked { resize: none; opacity: 1; -webkit-text-fill-color: #111; }
-.document-editor.recording-target:not(:disabled) { background: #fff9e8; border-color: #d69b2d; box-shadow: 0 0 0 2px rgba(214, 155, 45, .14); }
-.voice-draft-section { margin-top: 10mm; padding-top: 6mm; border-top: 1px solid #aaa; }
-.voice-draft-section h2,
-.signature-section h2 { margin: 0 0 2mm; font: 700 14pt/1.5 SimHei, "黑体", sans-serif; }
-.voice-draft-note { margin: 0 0 4mm; color: #666; font-size: 10.5pt; text-indent: 2em; }
-.voice-draft-row, .voice-live-row { margin: 2mm 0; padding: 3mm 4mm; background: #f6f8fa; border-left: 3px solid #9eb9ce; font-size: 10.5pt; }
-.voice-live-row { border-left-color: #d66; background: #fff8f8; }
-.signature-section { margin-top: 12mm; padding-top: 6mm; border-top: 1px solid #333; }
-.signature-intro { padding: 5mm; border: 1px dashed #aaa; color: #666; text-align: center; font-size: 10.5pt; }
-.document-integrity { margin: 4mm 0; padding: 3mm 4mm; border: 1px solid #b8d8c7; background: #f4fbf7; font-size: 9.5pt; }
-.document-integrity.invalid { border-color: #e3a6a0; background: #fff4f3; }
-.document-integrity > div { display: flex; justify-content: space-between; gap: 10px; }
-.document-integrity p { margin: 2mm 0 1mm; word-break: break-all; font-family: Consolas, monospace; font-size: 8.5pt; }
-.signature-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; margin-top: 5mm; }
-.signature-card { min-height: 42mm; padding: 4mm; border: 1px solid #777; display: flex; flex-direction: column; }
-.signature-card header { display: flex; justify-content: space-between; gap: 8px; font-size: 10.5pt; }
-.signature-card img { width: 100%; height: 23mm; margin: 3mm 0 1mm; object-fit: contain; }
-.signature-card button { margin: auto; padding: 3mm 8mm; border: 1px solid #789ec0; background: #f3f8fd; color: #235e91; }
-.signature-card small { color: #555; font-size: 8.5pt; }
-.hash-small { overflow-wrap: anywhere; font-family: Consolas, monospace; font-size: 7.5pt !important; }
-.locked-notice { margin: 5mm 0 0; text-align: center; font-weight: 700; color: #17613f; }
-.document-end { margin-top: 12mm; text-align: center; color: #777; font-size: 10.5pt; letter-spacing: .08em; }
-.document-composer {
-  flex: 0 0 auto;
-  display: grid;
-  grid-template-columns: auto auto minmax(240px, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  background: #fff;
-  border-top: 1px solid #dce3e8;
-}
-.role-switch { display: inline-flex; border: 1px solid #c8d4dd; border-radius: 8px; overflow: hidden; }
-.role-switch button { border: 0; border-right: 1px solid #c8d4dd; background: #fff; color: #5f7180; padding: 8px 10px; white-space: nowrap; }
-.role-switch button:last-child { border-right: 0; }
-.role-switch button.active { background: #edf5ff; color: #1769c8; font-weight: 700; }
-.document-composer > textarea { width: 100%; box-sizing: border-box; min-height: 40px; max-height: 110px; resize: vertical; border: 1px solid #ccd7df; border-radius: 8px; padding: 9px 11px; font: 14px/1.5 "Microsoft YaHei", sans-serif; }
-.floating-error { position: absolute; z-index: 12; left: 18px; bottom: 86px; max-width: 620px; box-shadow: 0 4px 18px rgba(0,0,0,.08); }
-.signature-modal-backdrop { position: fixed; z-index: 120; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(12, 29, 43, .66); }
-.signature-modal { width: min(920px, 94vw); border-radius: 14px; overflow: hidden; background: #fff; box-shadow: 0 24px 70px rgba(0,0,0,.3); font-family: "Microsoft YaHei", sans-serif; }
-.signature-modal > header { padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #dfe6eb; }
-.signature-modal h2 { margin: 0; color: #213b51; font-size: 20px; }
+.interrogation-grid { height: 100%; min-height: 0; display: grid; grid-template-columns: 258px minmax(720px, 1fr) 320px; gap: 1px; background: #aebfca; }
+.subject-panel, .conversation-panel, .operation-panel { min-height: 0; background: #f7fafc; }
+.subject-panel { overflow: auto; padding: 0 16px 18px; }
+.panel-title { margin: 0 -16px 18px; min-height: 54px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; background: var(--ui-blue-dark); color: #fff; }
+.panel-title span { font-size: 17px; font-weight: 700; }
+.panel-title strong { padding: 5px 8px; border-radius: 3px; background: rgba(255,255,255,.14); font-size: 12px; }
+.subject-photo { width: 108px; height: 132px; margin: 0 auto 12px; display: grid; place-items: center; text-align: center; border: 1px solid #9db1bf; background: #e4ebef; color: #7b8d99; line-height: 1.8; }
+.subject-panel h2 { margin: 0 0 16px; text-align: center; color: #173f5d; font-size: 21px; }
+.subject-panel dl { margin: 0; }
+.subject-panel dl > div { display: grid; grid-template-columns: 66px minmax(0,1fr); gap: 8px; padding: 9px 0; border-bottom: 1px solid #d8e1e7; font-size: 13px; }
+.subject-panel dt { color: #718391; }
+.subject-panel dd { margin: 0; color: #2c4354; font-weight: 600; overflow-wrap: anywhere; }
+.subject-stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 6px; margin-top: 18px; }
+.subject-stats div { padding: 10px 2px; text-align: center; border: 1px solid #c6d4de; background: #fff; }
+.subject-stats strong { display: block; color: var(--ui-blue); font-size: 20px; }
+.subject-stats span { display: block; margin-top: 3px; color: #718493; font-size: 11px; }
+.demo-chip { margin-top: 14px; padding: 7px; text-align: center; border: 1px solid #d4b08a; background: #fff8e9; color: #91602e; font-size: 12px; }
+.conversation-panel { display: grid; grid-template-rows: auto minmax(0,1fr) auto auto; overflow: hidden; background: #edf3f6; }
+.conversation-header { min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0 20px; border-bottom: 1px solid var(--ui-line); background: #fff; }
+.section-kicker { color: #6e8494; font-size: 12px; }
+.conversation-header h1 { margin: 2px 0 0; color: #183f5b; font-size: 21px; }
+.conversation-status { min-width: 92px; min-height: 36px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid #b6c7d3; background: #f5f8fa; font-size: 13px; font-weight: 700; }
+.conversation-status span { width: 8px; height: 8px; border-radius: 50%; background: #8294a0; }
+.conversation-status.running { border-color: #9bc4a9; color: #2e7147; background: #f2fbf5; }
+.conversation-status.running span { background: #3a975d; }
+.conversation-status.paused { border-color: #d9bd88; color: #815c1f; background: #fff9ed; }
+.conversation-status.paused span { background: #d19a31; }
+.conversation-scroll { min-height: 0; overflow: auto; padding: 18px 22px 26px; }
+.conversation-empty { max-width: 560px; margin: 100px auto; padding: 36px; text-align: center; border: 1px dashed #adbfcb; background: rgba(255,255,255,.72); }
+.conversation-empty strong { color: #31546d; font-size: 18px; }
+.conversation-empty p { margin: 10px 0 0; color: #728593; line-height: 1.7; }
+.qa-turn { position: relative; margin-bottom: 18px; padding-left: 34px; }
+.turn-index { position: absolute; left: 0; top: 18px; width: 26px; text-align: center; color: #8799a6; font: 12px/1 Consolas, monospace; }
+.speech-row { display: grid; grid-template-columns: 42px minmax(0,1fr); gap: 11px; margin: 0 0 12px; }
+.role-badge { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; color: #fff; font-weight: 700; font-size: 17px; }
+.speech-row.officer .role-badge { background: #276c9d; }
+.speech-row.suspect .role-badge { background: #4b7d5c; }
+.speech-content { min-width: 0; padding: 11px 13px 8px; border: 1px solid #bacad5; border-left: 4px solid #3779a8; background: #fff; }
+.speech-row.suspect .speech-content { border-left-color: #5a8c69; }
+.speech-row.conflict .speech-content { border-color: #d59c94; border-left-color: #c3483c; background: #fff9f8; }
+.speech-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 5px; }
+.speech-meta strong { color: #284a62; font-size: 13px; }
+.speech-meta span { color: #8798a4; font-size: 11px; }
+.record-editor { width: 100%; box-sizing: border-box; min-height: 48px; padding: 7px 8px; resize: vertical; overflow: hidden; border: 1px solid transparent; outline: none; background: #fbfdfe; color: #1f3444; font: 16px/1.75 "Microsoft YaHei", sans-serif; }
+.record-editor:focus { border-color: #5c96be; background: #fffef2; box-shadow: 0 0 0 2px rgba(48,125,179,.10); }
+.record-editor.recording-target:not(:disabled) { border-color: #d99d2f; background: #fff8e5; }
+.record-editor.locked { resize: none; opacity: 1; -webkit-text-fill-color: #1f3444; }
+.record-actions { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #84949f; font-size: 11px; }
+.record-actions button { min-width: 86px; min-height: 34px; border: 1px solid #c3d0d9; background: #f7fafc; color: #506a7c; font-weight: 700; touch-action: manipulation; }
+.speech-row.conflict .record-actions button { border-color: #d39b94; color: #a83e34; background: #fff; }
+.voice-draft-section { margin: 22px 0 0 34px; padding: 13px; border: 1px solid #c5d2db; background: #f8fbfd; }
+.voice-draft-section header { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.voice-draft-section header span { color: #7b8e9b; font-size: 11px; }
+.voice-draft-row, .voice-live-row { margin-top: 7px; padding: 9px 10px; border-left: 3px solid #8aaac0; background: #fff; font-size: 13px; line-height: 1.6; }
+.voice-live-row { border-left-color: #cf6357; background: #fff8f7; }
+.workbench-error { margin: 0 18px 8px; padding: 10px 12px; border: 1px solid #e0aaa3; background: #fff3f1; color: #962e26; font-size: 13px; }
+.interrogation-composer { display: grid; grid-template-columns: auto auto minmax(280px,1fr) auto; gap: 9px; align-items: center; padding: 11px 14px; border-top: 1px solid #b9c8d3; background: #f9fcfe; }
+.record-button, .role-switch button, .send-record-button, .operation-actions button, .mini-signature button { min-height: 48px; border: 1px solid #aabdc9; background: #fff; color: #31536a; font-weight: 700; touch-action: manipulation; }
+.record-button { min-width: 92px; }
+.record-button.active { border-color: #cb594d; background: #fff2f0; color: #b8372d; }
+.record-dot { color: #cf4c41; }
+.role-switch { display: grid; grid-template-columns: 1fr 1fr; min-width: 178px; }
+.role-switch button { min-width: 88px; border-radius: 0; }
+.role-switch button + button { border-left: 0; }
+.role-switch button.active { background: #225f89; color: #fff; border-color: #225f89; }
+.interrogation-composer textarea { width: 100%; box-sizing: border-box; min-height: 52px; max-height: 112px; resize: vertical; padding: 10px 12px; border: 1px solid #aebfca; background: #fff; color: #20384b; font: 15px/1.55 "Microsoft YaHei", sans-serif; }
+.send-record-button { min-width: 116px; border-color: #1d6597; background: #1d6597; color: #fff; }
+.operation-panel { overflow: auto; padding: 14px; background: #f3f7f9; }
+.current-question-card, .asr-live-card, .operation-actions, .signing-panel { margin-bottom: 12px; border: 1px solid #b8c9d5; background: #fff; }
+.current-question-card { padding: 14px; border-top: 4px solid #2b75a7; }
+.current-question-card > span { display: block; margin-bottom: 8px; color: #668091; font-size: 12px; font-weight: 700; }
+.current-question-card > strong { display: block; color: #213f54; font-size: 15px; line-height: 1.7; }
+.asr-live-card { padding: 13px; }
+.asr-live-card header { display: flex; align-items: center; gap: 7px; color: #31536b; }
+.mic-dot { color: #8798a3; }
+.asr-live-card.active .mic-dot { color: #d44439; }
+.asr-live-card p { min-height: 72px; margin: 10px 0; padding: 9px; border: 1px solid #d7e0e6; background: #f8fafb; color: #354e60; line-height: 1.6; }
+.asr-live-card small { color: #748795; }
+.operation-actions { display: grid; gap: 8px; padding: 12px; }
+.operation-actions button { width: 100%; }
+.operation-actions .freeze-button { border-color: #c16b62; color: #a5372e; }
+.signing-panel { padding: 12px; }
+.signing-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.signing-panel > header strong { color: #284b62; }
+.signing-panel > header span { color: #7a8c98; font-size: 11px; }
+.signing-placeholder { padding: 16px 8px; border: 1px dashed #c0ccd4; color: #748692; font-size: 12px; line-height: 1.7; }
+.integrity-state { margin-bottom: 10px; padding: 9px; border: 1px solid #a9cbb4; background: #f3fbf5; }
+.integrity-state.invalid { border-color: #dfa9a3; background: #fff4f2; }
+.integrity-state b { margin-right: 7px; color: #2f6f47; }
+.integrity-state span { font-size: 12px; }
+.integrity-state small { display: block; margin-top: 6px; overflow-wrap: anywhere; color: #70818d; font: 9px/1.4 Consolas, monospace; }
+.mini-signature { margin-top: 9px; padding: 9px; border: 1px solid #c3d0d8; }
+.mini-signature > div { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 7px; font-size: 12px; }
+.mini-signature img { width: 100%; height: 70px; object-fit: contain; border: 1px solid #e0e6ea; background: #fff; }
+.mini-signature button { width: 100%; }
+.mini-signature small { display: block; margin-top: 5px; color: #7c8d98; font-size: 10px; }
+.locked-notice { margin: 10px 0 0; text-align: center; color: #2f7047; font-size: 12px; font-weight: 700; }
+.signature-modal-backdrop { position: fixed; z-index: 120; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(12, 29, 43, .68); }
+.signature-modal { width: min(920px, calc(100vw - 80px)); border: 1px solid #9eb3c1; background: #fff; box-shadow: 0 24px 70px rgba(0,0,0,.3); font-family: "Microsoft YaHei", sans-serif; }
+.signature-modal > header { padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #d4dfe6; }
+.signature-modal h2 { margin: 0; color: #213f55; font-size: 20px; }
 .signature-modal header p { margin: 5px 0 0; color: #738493; font-size: 12px; }
-.signature-modal header button,
-.signature-modal footer button { border: 1px solid #cbd7e0; border-radius: 8px; background: #fff; padding: 9px 14px; }
-.signature-canvas { display: block; width: calc(100% - 40px); height: 300px; margin: 20px; border: 2px dashed #92a7b6; background: #fff; touch-action: none; cursor: crosshair; }
+.signature-modal header button, .signature-modal footer button { min-width: 96px; min-height: 48px; border: 1px solid #b4c5d0; background: #fff; font-weight: 700; touch-action: manipulation; }
+.signature-canvas { display: block; width: calc(100% - 40px); height: 300px; margin: 20px; border: 2px dashed #879daa; background: #fff; touch-action: none; cursor: crosshair; }
 .signature-modal-note { margin: 0 20px 16px; color: #6c7b86; font-size: 12px; }
-.signature-modal footer { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 20px; border-top: 1px solid #e2e8ed; background: #f8fafb; }
-.signature-modal footer .confirm-signature { border-color: #2f80ed; background: #2f80ed; color: #fff; font-weight: 700; }
-@media (max-width: 900px) {
-  .document-actions { position: static; justify-content: flex-end; padding: 8px 12px; background: #e8ebee; }
-  .document-scroll { padding: 10px; }
-  .interrogation-paper { min-height: 0; padding: 56px 24px 44px; }
-  .official-header, .signature-cards { grid-template-columns: 1fr; }
-  .official-header > .full-row { grid-column: auto; }
-  .document-composer { grid-template-columns: auto 1fr auto; }
-  .role-switch { grid-column: 1 / -1; width: max-content; }
-}
+.signature-modal footer { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 20px; border-top: 1px solid #dbe4ea; background: #f8fafb; }
+.signature-modal footer .confirm-signature { border-color: #1f6597; background: #1f6597; color: #fff; }
+button:disabled { opacity: .46; cursor: not-allowed; }
 </style>
