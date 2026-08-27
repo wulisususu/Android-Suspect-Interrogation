@@ -3,6 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "rk3588-service-bootstrap.yml"
+CONTROL = ROOT / "deploy" / "control.sh"
 
 
 def test_rk3588_service_bootstrap_workflow_installs_deploys_and_verifies_runtime():
@@ -57,12 +58,11 @@ def test_bootstrap_prepares_read_only_funasr_model_and_runtime_layout():
     assert "import funasr, torch" in workflow
 
 
-def test_bootstrap_upserts_funasr_runtime_env_for_existing_installations():
-    workflow = WORKFLOW.read_text(encoding="utf-8")
+def test_install_upserts_funasr_runtime_env_for_existing_installations():
+    control = CONTROL.read_text(encoding="utf-8")
 
-    assert 'SUSPECT_FUNASR_MODEL_ROOT=/opt/suspect-interrogation/models/funasr' in workflow
-    assert 'SUSPECT_FUNASR_PYTHON=/opt/suspect-interrogation/runtime/funasr-env/bin/python' in workflow
-    assert 'SUSPECT_SPEECH_SOCKET=/run/suspect-interrogation/speech.sock' in workflow
-    assert 'grep -q "^${key}=" "$RUNTIME_ENV"' in workflow
-    assert 'sed -i -E "s|^${key}=.*|${key}=${value}|" "$RUNTIME_ENV"' in workflow
-    assert 'printf \'%s=%s\\n\' "$key" "$value"' in workflow
+    assert 'upsert_runtime_env "SUSPECT_FUNASR_MODEL_ROOT" "/opt/suspect-interrogation/models/funasr"' in control
+    assert 'upsert_runtime_env "SUSPECT_FUNASR_PYTHON" "/opt/suspect-interrogation/runtime/funasr-env/bin/python"' in control
+    assert 'upsert_runtime_env "SUSPECT_SPEECH_SOCKET" "/run/suspect-interrogation/speech.sock"' in control
+    assert 'grep -q "^${key}=" "$runtime_env"' in control
+    assert 'sed -i -E "s|^${key}=.*|${key}=${value}|" "$runtime_env"' in control
