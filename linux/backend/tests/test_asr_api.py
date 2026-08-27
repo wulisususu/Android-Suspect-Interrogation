@@ -246,3 +246,23 @@ def test_unknown_speaker_must_be_resolved_before_official_confirmation(tmp_path)
         assert db.get(ASRFragment, fragment_id).state == "PENDING"
         assert db.query(Message).count() == 0
     engine.dispose()
+
+
+def test_confirmation_rolls_back_official_message_if_fragment_link_fails(tmp_path, monkeypatch):
+    app, engine, factory, _ = _app(tmp_path)
+    case_id, _, _, fragment_id, _ = _seed_fragment(factory)
+
+    def fail_link(*_args, **_kwargs):
+        raise RuntimeError("simulated fragment-link failure")
+
+    monkeypatch.setattr(asr_repo, "confirm_fragment", fail_link)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(f"/api/v1/cases/{case_id}/asr/fragments/{fragment_id}/confirm")
+        assert response.status_code == 500
+
+    with factory() as db:
+        fragment = db.get(ASRFragment, fragment_id)
+        assert fragment.state == "PENDING"
+        assert fragment.confirmed_message_id is None
+        assert db.query(Message).count() == 0
+    engine.dispose()
