@@ -3,15 +3,117 @@ from __future__ import annotations
 import multiprocessing as mp
 import threading
 import time
+from pathlib import Path
 from typing import Any, Iterator
 
 from .errors import AIError, BackendUnavailableError, ModelNotInstalledError, ResourceBusyError, WorkerCancelledError, WorkerCrashedError, WorkerTimeoutError
 from .registry import ModelRegistry, ModelSpec
+from .speech.client import SpeechWorkerClient
+from .speech.types import SpeechEvent, SpeechEventType
 from .types import AIStreamChunk, AITextResult, ASRResult, EngineState, OCRResult
 from .worker import worker_main
 
 
 _ERROR_TYPES = {"MODEL_NOT_INSTALLED": ModelNotInstalledError, "BACKEND_UNAVAILABLE": BackendUnavailableError, "WORKER_TIMEOUT": WorkerTimeoutError, "WORKER_CANCELLED": WorkerCancelledError, "WORKER_CRASHED": WorkerCrashedError, "RESOURCE_BUSY": ResourceBusyError}
+
+
+class _InProcessSpeechClient:
+    """Deterministic speech pipeline used only by AI_MODE=mock.
+
+    This deliberately avoids AF_UNIX/systemd so the regular test suite does not
+    depend on the RK3588 speech worker. It mirrors the public SpeechWorkerClient
+    operations used by AISupervisor without pretending to perform biometrics.
+    """
+
+    def __init__(self) -> None:
+        self._sessions: dict[str, dict[str, int]] = {}
+        self._lock = threading.RLock()
+
+    def health(self) -> dict[str, Any]:
+        with self._lock:
+            return {"status": "ok", "sessions": len(self._sessions)}
+
+    def open_session(self, session_id: str, sample_rate: int = 16000) -> dict[str, Any]:
+        session_id = str(session_id).strip()
+        sample_rate = int(sample_rate)
+        if not session_id:
+            raise AIError("session_id is required")
+        if sample_rate <= 0:
+            raise AIError("sample_rate must be positive")
+        with self._lock:
+            self._sessions[session_id] = {"sample_rate": sample_rate, "bytes_received": 0}
+        return {"session_id": session_id, "sample_rate": sample_rate}
+
+    def push_pcm(self, session_id: str, pcm: bytes) -> list[SpeechEvent]:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise AIError("speech session is not open", details={"session_id": session_id})
+            session["bytes_received"] += len(pcm)
+            received = session["bytes_received"]
+        return [
+            SpeechEvent(
+                type=SpeechEventType.VAD_START,
+                session_id=session_id,
+                start_ms=0,
+                model_id="mock-fsmn-vad",
+                details={"mock": True},
+            ),
+            SpeechEvent(
+                type=SpeechEventType.ASR_PARTIAL,
+                session_id=session_id,
+                text=f"mock:{received}",
+                confidence=1.0,
+                model_id="mock-paraformer",
+                details={"mock": True},
+            ),
+        ]
+
+    def finalize_session(self, session_id: str) -> list[SpeechEvent]:
+        with self._lock:
+            if session_id not in self._sessions:
+                raise AIError("speech session is not open", details={"session_id": session_id})
+        return [
+            SpeechEvent(
+                type=SpeechEventType.VAD_END,
+                session_id=session_id,
+                start_ms=0,
+                end_ms=1000,
+                model_id="mock-fsmn-vad",
+                details={"mock": True},
+            ),
+            SpeechEvent(
+                type=SpeechEventType.ASR_FINAL,
+                session_id=session_id,
+                start_ms=0,
+                end_ms=1000,
+                text="mock final",
+                confidence=1.0,
+                model_id="mock-paraformer",
+                details={"mock": True},
+            ),
+            SpeechEvent(
+                type=SpeechEventType.SPEAKER_RESULT,
+                session_id=session_id,
+                start_ms=0,
+                end_ms=1000,
+                embedding=[1.0, 0.0, 0.0],
+                model_id="mock-xvector",
+                details={"mock": True},
+            ),
+        ]
+
+    def close_session(self, session_id: str) -> None:
+        with self._lock:
+            self._sessions.pop(session_id, None)
+
+    def extract_embedding(self, pcm: bytes, sample_rate: int = 16000) -> dict[str, Any]:
+        del pcm
+        return {
+            "embedding": [1.0, 0.0, 0.0],
+            "model_id": "mock-xvector",
+            "sample_rate": int(sample_rate),
+        }
 
 
 class _Worker:
@@ -150,11 +252,27 @@ class _Worker:
 
 
 class AISupervisor:
-    def __init__(self, registry: ModelRegistry, *, mode: str = "mock", request_timeout: float = 30.0, idle_unload_seconds: float = 300.0, memory_budget_mb: int = 6144):
+    def __init__(self, registry: ModelRegistry, *, mode: str = "mock", request_timeout: float = 30.0, idle_unload_seconds: float = 300.0, memory_budget_mb: int = 6144, speech_socket: str | Path = "/run/suspect-interrogation/speech.sock", speaker_accept_threshold: float | None = None, speaker_margin: float | None = None, speech_client: Any | None = None):
         if mode not in {"mock", "real"}: raise ValueError("mode must be mock or real")
         self.registry = registry; self.mode = mode; self.request_timeout = request_timeout; self.idle_unload_seconds = idle_unload_seconds; self.memory_budget_mb = memory_budget_mb
+        self.speaker_accept_threshold = speaker_accept_threshold
+        self.speaker_margin = speaker_margin
         self._resource_lock = threading.RLock()
         self._workers = {kind: _Worker(kind=kind, spec=registry.default_for(kind), registry=registry, mode=mode, timeout=request_timeout) for kind in ("asr", "ocr", "llm") if self._has_kind(kind)}
+        if speech_client is not None:
+            self._speech_client = speech_client
+            self._speech_backend = "injected"
+        elif mode == "mock":
+            self._speech_client = _InProcessSpeechClient()
+            self._speech_backend = "in-process-mock"
+        else:
+            self._speech_client = SpeechWorkerClient(speech_socket, timeout=request_timeout)
+            self._speech_backend = "af-unix"
+        self._speech_sessions: set[str] = set()
+
+    @property
+    def speech_client(self) -> Any:
+        return self._speech_client
 
     def _has_kind(self, kind: str) -> bool:
         try: self.registry.default_for(kind); return True
@@ -182,6 +300,27 @@ class AISupervisor:
         yield from self._prepare("asr").stream("stream_asr", {"audio": audio, "session_id": session_id, "options": options or {}})
     def recognize(self, image: bytes, *, capability: str, session_id: str, options: dict[str, Any] | None = None) -> OCRResult:
         return self._prepare("ocr").request("ocr", {"image": image, "capability": capability, "session_id": session_id, "options": options or {}})
+
+    def open_speech_session(self, session_id: str, *, sample_rate: int = 16000) -> dict[str, Any]:
+        result = self._speech_client.open_session(session_id, sample_rate=sample_rate)
+        self._speech_sessions.add(session_id)
+        return result
+
+    def push_speech_pcm(self, session_id: str, pcm: bytes) -> list[SpeechEvent]:
+        return self._speech_client.push_pcm(session_id, pcm)
+
+    def finalize_speech_session(self, session_id: str) -> list[SpeechEvent]:
+        return self._speech_client.finalize_session(session_id)
+
+    def close_speech_session(self, session_id: str) -> None:
+        try:
+            self._speech_client.close_session(session_id)
+        finally:
+            self._speech_sessions.discard(session_id)
+
+    def extract_speaker_embedding(self, pcm: bytes, *, sample_rate: int = 16000) -> dict[str, Any]:
+        return self._speech_client.extract_embedding(pcm, sample_rate=sample_rate)
+
     def cancel(self, kind: str) -> None: self._workers[kind].cancel()
     def debug_terminate_worker(self, kind: str) -> None: self._workers[kind].debug_terminate()
     def sweep_idle(self) -> list[str]:
@@ -190,12 +329,70 @@ class AISupervisor:
         for kind, worker in self._workers.items():
             if worker.is_alive() and worker.state == EngineState.READY and now - worker.last_used >= self.idle_unload_seconds: worker.stop(); unloaded.append(kind)
         return unloaded
-    def health(self) -> dict[str, Any]: return {"mode": self.mode, "memory_budget_mb": self.memory_budget_mb, "workers": {kind: worker.health() for kind, worker in self._workers.items()}}
+
+    def _speech_health(self) -> dict[str, Any]:
+        try:
+            detail = self._speech_client.health()
+        except AIError as exc:
+            return {
+                "state": "ERROR",
+                "backend": self._speech_backend,
+                "error": {"code": exc.code, "message": str(exc)},
+            }
+        return {
+            "state": "READY",
+            "backend": self._speech_backend,
+            "detail": detail,
+            "open_sessions": len(self._speech_sessions),
+        }
+
+    def health(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "memory_budget_mb": self.memory_budget_mb,
+            "workers": {kind: worker.health() for kind, worker in self._workers.items()},
+            "speech": self._speech_health(),
+        }
+
     def capabilities(self) -> dict[str, Any]:
         by_kind = {}
         for kind, worker in self._workers.items():
             spec = worker.spec; install = self.registry.installation_status(spec.model_id)
             by_kind[kind] = {"model_id": spec.model_id, "backend": spec.backend, "architecture": spec.architecture, "device": spec.device, "context": spec.context, "memory_mb": spec.memory_mb, "capabilities": list(spec.capabilities), "installed": True if self.mode == "mock" else install.installed, "model_files_present": install.installed, "state": worker.health()["state"]}
+
+        speech = self._speech_health()
+        speech_available = speech["state"] == "READY"
+        if "asr" in by_kind:
+            by_kind["asr"] = {
+                **by_kind["asr"],
+                "speech_worker": True,
+                "speech_state": "AVAILABLE" if speech_available else "ERROR",
+            }
+        else:
+            by_kind["asr"] = {
+                "state": "AVAILABLE" if speech_available else "ERROR",
+                "speech_worker": True,
+                "backend": self._speech_backend,
+            }
+        by_kind["vad"] = {
+            "state": "AVAILABLE" if speech_available else "ERROR",
+            "speech_worker": True,
+            "backend": self._speech_backend,
+        }
+        speaker_configured = self.speaker_accept_threshold is not None and self.speaker_margin is not None
+        by_kind["speaker"] = {
+            "state": "AVAILABLE" if speech_available and speaker_configured else "NOT_CONFIGURED" if not speaker_configured else "ERROR",
+            "speech_worker": True,
+            "backend": self._speech_backend,
+            "threshold_configured": self.speaker_accept_threshold is not None,
+            "margin_configured": self.speaker_margin is not None,
+        }
         return by_kind
+
     def shutdown(self) -> None:
+        for session_id in list(self._speech_sessions):
+            try:
+                self.close_speech_session(session_id)
+            except AIError:
+                self._speech_sessions.discard(session_id)
         for worker in self._workers.values(): worker.stop()
