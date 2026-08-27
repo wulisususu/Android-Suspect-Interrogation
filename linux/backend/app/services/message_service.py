@@ -19,7 +19,15 @@ class MessageService:
         case_repo.get(self.db, case_id)
         return [message_dict(row) for row in message_repo.list_for_case(self.db, case_id, limit)]
 
-    def create(self, case_id: str, *, text: str, speaker: str, actor_id: str | None = None) -> dict:
+    def create(
+        self,
+        case_id: str,
+        *,
+        text: str,
+        speaker: str,
+        actor_id: str | None = None,
+        commit: bool = True,
+    ) -> dict:
         case_repo.get(self.db, case_id)
         active = session_repo.active_for_case(self.db, case_id)
         if active is None:
@@ -29,7 +37,8 @@ class MessageService:
         row = message_repo.create(self.db, case_id=case_id, session_id=active.id, speaker=speaker, text=text)
         audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="QA_CREATE", target_type="QA", target_id=row.id,
                        after={"seq": row.seq, "speaker": row.speaker, "text": row.text})
-        self.db.commit()
+        if commit:
+            self.db.commit()
         return message_dict(row)
 
     def revise(self, case_id: str, message_id: str, *, text: str, reason: str = "警官修订", actor_id: str | None = None) -> dict:
