@@ -95,7 +95,7 @@ class VoiceprintService:
             target_type="SUSPECT_VOICEPRINT",
             target_id=row.id,
             detail={
-                "embedding_dim": row.embedding_dim,
+                "dimension": row.embedding_dim,
                 "model_id": row.model_id,
                 "model_version": row.model_version,
                 "usable_duration_ms": row.usable_duration_ms,
