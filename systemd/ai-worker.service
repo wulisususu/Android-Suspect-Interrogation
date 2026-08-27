@@ -12,7 +12,6 @@ EnvironmentFile=/etc/suspect-interrogation/runtime.env
 EnvironmentFile=-/etc/suspect-interrogation/ai-worker.env
 RuntimeDirectory=suspect-interrogation
 RuntimeDirectoryMode=0750
-ExecStartPre=/usr/bin/rm -f /run/suspect-interrogation/speech.sock
 ExecStart=/opt/suspect-interrogation/current/scripts/ai-worker-start.sh
 Restart=on-failure
 RestartSec=5s
