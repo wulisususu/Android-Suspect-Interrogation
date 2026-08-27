@@ -17,13 +17,16 @@ class FakeAutoModel:
     def __init__(self, **kwargs):
         name = Path(kwargs["model"]).name
         self.name = name
+        self.generate_calls: list[dict] = []
+        self.outputs_override: object | None = None
         type(self).calls.append(dict(kwargs))
         failure = type(self).fail_for.get(name)
         if failure is not None:
             raise failure
 
     def generate(self, **kwargs):
-        value = type(self).outputs.get(self.name)
+        self.generate_calls.append(dict(kwargs))
+        value = self.outputs_override if self.outputs_override is not None else type(self).outputs.get(self.name)
         if isinstance(value, Exception):
             raise value
         return value
