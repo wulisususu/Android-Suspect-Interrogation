@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin, utc_now
@@ -174,3 +174,102 @@ class SignatureRecord(Base):
     strokes_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="SAVED", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class SuspectVoiceprint(TimestampMixin, Base):
+    __tablename__ = "suspect_voiceprints"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, unique=True)
+    embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    enrollment_quality: Mapped[str] = mapped_column(String(64), nullable=False)
+    usable_duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class OfficerVoiceprint(TimestampMixin, Base):
+    __tablename__ = "officer_voiceprints"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    officer_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    officer_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    enrollment_quality: Mapped[str] = mapped_column(String(64), nullable=False)
+    usable_duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SessionVoiceAssignment(TimestampMixin, Base):
+    __tablename__ = "session_voice_assignments"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("interrogation_sessions.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    suspect_voiceprint_id: Mapped[str] = mapped_column(
+        ForeignKey("suspect_voiceprints.id", ondelete="RESTRICT"), nullable=False
+    )
+    interrogator_officer_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    interrogator_voiceprint_id: Mapped[str | None] = mapped_column(
+        ForeignKey("officer_voiceprints.id", ondelete="RESTRICT"), nullable=True
+    )
+    recorder_officer_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    recorder_voiceprint_id: Mapped[str | None] = mapped_column(
+        ForeignKey("officer_voiceprints.id", ondelete="RESTRICT"), nullable=True
+    )
+    recognition_mode: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class ASRCaptureSession(Base):
+    __tablename__ = "asr_capture_sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    interrogation_session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("interrogation_sessions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    sample_rate: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class ASRFragment(TimestampMixin, Base):
+    __tablename__ = "asr_fragments"
+    __table_args__ = (UniqueConstraint("capture_session_id", "ordinal", name="uq_asr_fragments_capture_ordinal"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    capture_session_id: Mapped[str] = mapped_column(
+        ForeignKey("asr_capture_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    ended_at_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    edited_text: Mapped[str] = mapped_column(Text, nullable=False)
+    asr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    speaker: Mapped[str] = mapped_column(String(32), nullable=False)
+    speaker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    speaker_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    speaker_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    second_best_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    speaker_threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    speaker_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    speaker_source: Mapped[str] = mapped_column(String(64), nullable=False)
+    voiceprint_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    low_confidence: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    confirmed_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, index=True
+    )
