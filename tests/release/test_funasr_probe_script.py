@@ -1,3 +1,7 @@
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,3 +56,52 @@ def test_rk3588_ai_pytest_is_focused_and_uses_isolated_mutable_paths():
     assert "tests/test_speech_protocol.py" in workflow
     assert "tests/test_supervisor.py" in workflow
     assert "PYTHONPATH=. python3 -m pytest -q" not in workflow
+
+
+def test_probe_preserves_successful_load_evidence_when_optional_inference_fails(tmp_path: Path):
+    model_root = tmp_path / "models"
+    for name in ("paraformer", "fsmn-vad", "xvector"):
+        model_dir = model_root / name
+        model_dir.mkdir(parents=True)
+        (model_dir / "config.yaml").write_text("model: test\n", encoding="utf-8")
+
+    stubs = tmp_path / "stubs"
+    (stubs / "funasr").mkdir(parents=True)
+    (stubs / "funasr" / "__init__.py").write_text(
+        "__version__ = 'test'\n"
+        "class AutoModel:\n"
+        "    def __init__(self, *, model, **kwargs): self.model = model\n"
+        "    def generate(self, *, input):\n"
+        "        if self.model.endswith('xvector'): raise RuntimeError('bad embedding contract')\n"
+        "        return [{}]\n",
+        encoding="utf-8",
+    )
+    (stubs / "torch.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+    speaker_wav = tmp_path / "speaker.wav"
+    speaker_wav.write_bytes(b"RIFF-test")
+    output = tmp_path / "report.json"
+    env = os.environ.copy()
+    env.update(
+        {
+            "GITHUB_WORKSPACE": os.fspath(tmp_path),
+            "MODEL_ROOT": os.fspath(model_root),
+            "PYTHONPATH": os.fspath(stubs),
+        }
+    )
+
+    result = subprocess.run(
+        [sys.executable, os.fspath(SCRIPT), "--output", os.fspath(output), "--speaker-wav", os.fspath(speaker_wav)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    report = json.loads(output.read_text(encoding="utf-8"))
+    xvector = report["models"]["xvector"]
+    assert xvector["load_ok"] is True
+    assert xvector["load_seconds"] >= 0
+    assert xvector["files"][0]["path"] == "config.yaml"
+    assert xvector["inference_ok"] is False
+    assert "bad embedding contract" in xvector["inference_error"]
