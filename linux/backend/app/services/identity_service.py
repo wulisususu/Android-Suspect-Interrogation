@@ -75,10 +75,13 @@ class IdentityService:
     def read(self, case_id: str | None = None, actor_id: str | None = None) -> dict:
         data = self.hardware.read_identity()
         # The intake UI reads the physical card before a case exists. Treat that
-        # as a preview only: do not create an orphan Person. The reviewed fields
-        # are bound to the case through confirm() after the operator submits.
+        # as a preview only: do not create an orphan Person. Return the legacy
+        # preview envelope expected by the existing Vue intake component.
         if case_id is None:
-            return dict(data)
+            preview = dict(data)
+            if not preview.get("sex") and preview.get("gender") is not None:
+                preview["sex"] = preview.get("gender")
+            return {"identity": preview}
         return self._persist(
             case_id=case_id,
             actor_id=actor_id,
