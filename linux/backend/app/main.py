@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.ai.registry import ModelRegistry
 from app.ai.settings import AISettings
+from app.ai.speech.client import SpeechWorkerClient
 from app.ai.supervisor import AISupervisor
 from app.ai_gateway.mock import DeterministicAIGateway
 from app.api.ai_runtime import router as ai_router
@@ -22,10 +23,12 @@ from app.api.identity import router as identity_router
 from app.api.interrogation import router as interrogation_router
 from app.api.responses import envelope
 from app.api.signature import router as signature_router
+from app.api.voiceprints import router as voiceprints_router
 from app.database.session import init_database, make_engine, make_session_factory
 from app.hardware_gateway.linux import LinuxHardwareGateway
 from app.health import router as health_router
 from app.runtime_settings import RuntimeSettings
+from app.services.audio_capture_service import AudioCaptureService
 from app.websocket.manager import ConnectionManager, router as websocket_router
 from hardware.factory import create_device_manager
 
@@ -65,6 +68,7 @@ def create_app(
     runtime_settings: RuntimeSettings | None = None,
 ) -> FastAPI:
     settings = runtime_settings or RuntimeSettings()
+    ai_settings = AISettings.from_env()
     engine = make_engine(_database_url(database_url, settings))
     init_database(engine)
 
@@ -119,6 +123,16 @@ def create_app(
     app.state.session_factory = make_session_factory(engine)
     app.state.hardware_manager = manager
     app.state.hardware_gateway = hardware_gateway
+    # Construction is side-effect free: the AF_UNIX socket is opened only
+    # when an enrollment or speech request is actually made.
+    app.state.speech_client = SpeechWorkerClient(
+        ai_settings.speech_socket,
+        timeout=ai_settings.request_timeout,
+    )
+    # Enrollment capture is available only when this process owns the real
+    # DeviceManager. Tests and alternate hardware gateways may inject a fake.
+    app.state.voiceprint_capture = AudioCaptureService(manager) if manager is not None else None
+    app.state.voiceprint_enrollment_context = {}
     # Compatibility only: formal offline AI execution is owned by AISupervisor.
     app.state.ai_gateway = ai_gateway or DeterministicAIGateway()
     app.state.websocket_manager = websocket_manager
@@ -140,6 +154,7 @@ def create_app(
     app.include_router(signature_router, prefix="/api/v1")
     app.include_router(device_router, prefix="/api/v1")
     app.include_router(ai_router, prefix="/api/v1")
+    app.include_router(voiceprints_router, prefix="/api/v1")
     app.include_router(compat_router)
     app.include_router(websocket_router)
 
