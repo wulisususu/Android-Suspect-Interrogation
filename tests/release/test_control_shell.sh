@@ -29,4 +29,11 @@ SUSPECT_DRY_RUN=1 \
 
 [[ "$(readlink "$TMP_ROOT/current")" == "$TMP_ROOT/releases/new" ]]
 
+# Regression: under `set -u`, install_python_dependencies must not reference
+# the local `release` variable before that assignment has taken effect.
+source "$ROOT_DIR/deploy/lib/release.sh"
+mkdir -p "$TMP_ROOT/release-under-test"
+SUSPECT_SKIP_DEP_INSTALL=1 install_python_dependencies "$TMP_ROOT/release-under-test"
+[[ -x "$TMP_ROOT/release-under-test/.venv/bin/python" ]]
+
 echo "deploy control contract: ok"
