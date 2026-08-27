@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - linux-adaptation
-      - linux-release-hardening
-      - linux-integration-2026-08-26
     paths:
       - '.github/workflows/**'
       - 'linux/**'
@@ -23,7 +21,6 @@ on:
   pull_request:
     branches:
       - linux-adaptation
-      - linux-integration-2026-08-26
     paths:
       - '.github/workflows/**'
       - 'linux/**'
@@ -133,6 +130,67 @@ jobs:
       - name: Vue build
         working-directory: webapp
         run: npm run build
+
+      - name: Browser screenshot QA
+        shell: bash
+        run: |
+          set -euo pipefail
+          VISUAL_ROOT="$RUNNER_TEMP/suspect-visual-qa"
+          mkdir -p "$VISUAL_ROOT/data" "$VISUAL_ROOT/log" artifacts/kiosk-visual-qa
+          export SUSPECT_DATA_DIR="$VISUAL_ROOT/data"
+          export SUSPECT_LOG_DIR="$VISUAL_ROOT/log"
+          export SUSPECT_DB_PATH="$VISUAL_ROOT/interrogation.db"
+          export SUSPECT_MIN_FREE_MB=0
+
+          python -m uvicorn app.main:app --app-dir linux/backend --host 127.0.0.1 --port 8080 >"$VISUAL_ROOT/api.log" 2>&1 &
+          API_PID=$!
+          (cd webapp && npm run dev -- --host 127.0.0.1 --port 5173 >"$VISUAL_ROOT/vite.log" 2>&1) &
+          VITE_PID=$!
+          cleanup() {
+            kill "$VITE_PID" "$API_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/api/v1/health >/dev/null && curl -fsS http://127.0.0.1:5173/ >/dev/null; then
+              break
+            fi
+            sleep 0.5
+          done
+          curl -fsS http://127.0.0.1:8080/api/v1/health >/dev/null
+          curl -fsS http://127.0.0.1:5173/ >/dev/null
+
+          CASE_RESPONSE=$(curl -fsS -X POST http://127.0.0.1:8080/api/v1/cases \
+            -H 'Content-Type: application/json' \
+            -d '{"suspect_name":"张某","officer_name":"李警官"}')
+          CASE_ID=$(printf '%s' "$CASE_RESPONSE" | python -c 'import json,sys; p=json.load(sys.stdin); d=p.get("data",p); print(d["id"])')
+          curl -fsS -X POST "http://127.0.0.1:8080/api/v1/interrogation/${CASE_ID}/start" -H 'Content-Type: application/json' -d '{}' >/dev/null
+          curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/messages" \
+            -H 'Content-Type: application/json' \
+            -d '{"speaker":"民警","text":"请说明你于昨晚二十时至二十一时之间的活动情况。"}' >/dev/null
+          curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/messages" \
+            -H 'Content-Type: application/json' \
+            -d '{"speaker":"嫌疑人","text":"我当时在住处附近，随后去了便利店，具体时间大约是二十时三十分。"}' >/dev/null
+          curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/messages" \
+            -H 'Content-Type: application/json' \
+            -d '{"speaker":"民警","text":"是否有人能够证明你的上述活动？"}' >/dev/null
+          curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/messages" \
+            -H 'Content-Type: application/json' \
+            -d '{"speaker":"嫌疑人","text":"便利店店员应该见过我，店内监控也可以核实。"}' >/dev/null
+
+          KIOSK_URL=http://127.0.0.1:5173 KIOSK_CASE_ID="$CASE_ID" node scripts/ci/capture-kiosk-screenshots.mjs
+          curl -L --fail --retry 3 --connect-timeout 15 \
+            'https://raw.githubusercontent.com/wulisususu/Android-Suspect-Interrogation/main/frontend/assets/public/assets/screen_preview-inquiry.jpg' \
+            -o artifacts/kiosk-visual-qa/original-screen_preview-inquiry.jpg
+
+      - name: Upload kiosk visual QA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiosk-visual-qa-${{ github.sha }}
+          path: artifacts/kiosk-visual-qa/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Release integration and E2E tests
         run: |
