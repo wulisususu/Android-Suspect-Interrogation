@@ -32,6 +32,17 @@ def test_rk3588_ai_runtime_probe_runs_before_merge_on_pull_requests():
     assert "KNOWN_FUNASR_PYTHON=/home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python" in workflow
 
 
+def test_rk3588_probe_inventories_models_and_fails_closed_without_runtime():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert 'find "$MODEL_ROOT" -type f -printf' in workflow
+    assert "known FunASR interpreter diagnostic" in workflow
+    assert "system Python FunASR diagnostic" in workflow
+    missing_runtime = workflow.index("FunASR-capable Python interpreter not found")
+    following = workflow[missing_runtime:missing_runtime + 300]
+    assert "exit 1" in following
+    assert "real-model probe skipped" not in following
+
+
 def test_rk3588_ai_pytest_is_focused_and_uses_isolated_mutable_paths():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert 'AI_TEST_ROOT="$RUNNER_TEMP/suspect-ai-runtime-test"' in workflow
