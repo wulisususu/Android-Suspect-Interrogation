@@ -33,6 +33,7 @@ from app.runtime_settings import RuntimeSettings
 from app.services.asr_capture_service import AsrCaptureService
 from app.services.audio_capture_service import AudioCaptureService
 from app.websocket.manager import ConnectionManager, router as websocket_router
+from app.websocket.voiceprint_enrollment import router as voiceprint_enrollment_websocket_router
 from hardware.factory import create_device_manager
 
 
@@ -193,6 +194,7 @@ def create_app(
     app.include_router(voiceprints_router, prefix="/api/v1")
     app.include_router(compat_router)
     app.include_router(websocket_router)
+    app.include_router(voiceprint_enrollment_websocket_router)
 
     @app.get("/health")
     def legacy_health():
