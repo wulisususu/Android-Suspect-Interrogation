@@ -65,11 +65,20 @@ def test_full_service_workflow_revision_audit_and_documents(tmp_path, enroll_tes
         assert frozen["status"] == "FROZEN"
         assert cases.get(case["id"])["workflowState"] == "FROZEN"
 
-        signed = documents.sign(
-            case["id"], signer_role="suspect", signer_name="测试对象",
-            image_data="data:image/png;base64,TEST", strokes_json="[]", actor_id="officer-1"
+        suspect_signed = documents.sign(
+            case["id"], signer_role="SUSPECT", signer_name="测试对象",
+            image_data="data:image/png;base64,SUSPECT", strokes_json="[]", actor_id="officer-1"
         )
-        assert signed["status"] == "SIGNED"
+        assert suspect_signed["status"] == "FROZEN"
+        assert [item["signerRole"] for item in suspect_signed["signatures"]] == ["SUSPECT"]
+        assert cases.get(case["id"])["workflowState"] == "FROZEN"
+
+        officer_signed = documents.sign(
+            case["id"], signer_role="OFFICER", signer_name="测试警官",
+            image_data="data:image/png;base64,OFFICER", strokes_json="[]", actor_id="officer-1"
+        )
+        assert officer_signed["status"] == "LOCKED"
+        assert [item["signerRole"] for item in officer_signed["signatures"]] == ["SUSPECT", "OFFICER"]
         assert cases.get(case["id"])["workflowState"] == "SIGNED"
 
         report = documents.mark_report_generated(case["id"], actor_id="officer-1")
@@ -81,6 +90,7 @@ def test_full_service_workflow_revision_audit_and_documents(tmp_path, enroll_tes
         assert edit["before"]["text"] == "你叫什么？"
         assert edit["after"]["text"] == "请说明你的姓名。"
         assert any(item["action"] == "QA_MARK" for item in audit)
+        assert len([item for item in audit if item["action"] == "SIGNATURE_SAVE"]) == 2
     finally:
         db.close()
         engine.dispose()
