@@ -292,12 +292,27 @@ jobs:
             sleep $((attempt * 3))
           done
 
-          if [[ "$fetched" -ne 1 ]]; then
-            echo "Git fetch failed after 5 bounded attempts" >&2
-            exit 1
+          if [[ "$fetched" -eq 1 ]]; then
+            git checkout --force --detach "$GITHUB_SHA"
+            test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          else
+            echo "Git fetch failed; falling back to the SHA-pinned source archive" >&2
+            archive="$RUNNER_TEMP/source-${GITHUB_SHA}.tar.gz"
+            expected_root="${GITHUB_REPOSITORY#*/}-${GITHUB_SHA}/"
+            curl -fsSL --retry "${FETCH_ATTEMPTS}" --connect-timeout 15 \
+              --max-time "${FETCH_TIMEOUT_SECONDS}" \
+              "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
+              -o "$archive"
+            archive_root="$(tar -tzf "$archive" | sed -n '1p')"
+            if [[ "$archive_root" != "$expected_root" ]]; then
+              echo "source archive root does not match requested SHA: $archive_root" >&2
+              exit 1
+            fi
+            tar -xzf "$archive" --strip-components=1 -C "$GITHUB_WORKSPACE"
+            test -f .github/workflows/linux-ci.yml
+            test -d linux
+            test -d webapp
           fi
-          git checkout --force --detach "$GITHUB_SHA"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
       - name: Ensure Python runtime dependencies
         shell: bash
