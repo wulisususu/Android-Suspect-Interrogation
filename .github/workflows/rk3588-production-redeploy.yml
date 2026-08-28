@@ -1,0 +1,202 @@
+name: RK3588 Production Redeploy
+
+on:
+  push:
+    branches:
+      - linux-adaptation
+    paths:
+      - '.github/workflows/rk3588-production-redeploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Deliberately shares the bootstrap lock so this fast deploy cancels a stuck
+# bootstrap job instead of racing it on the single RK3588 runner.
+concurrency:
+  group: rk3588-service-bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy current linux-adaptation release
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 30
+    env:
+      SUSPECT_DEPLOY_PORT: '18080'
+      FUNASR_RUNTIME: '/opt/suspect-interrogation/runtime/funasr-env'
+      FUNASR_MODEL_ROOT: '/opt/suspect-interrogation/models/funasr'
+
+    steps:
+      - name: RK3588 production preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner_name=${RUNNER_NAME:-unknown}"
+          echo "runner_arch=${RUNNER_ARCH:-unknown}"
+          hostname
+          uname -a
+          test "$(uname -m)" = aarch64 -o "$(uname -m)" = arm64
+          sudo -n true
+          command -v curl
+          command -v tar
+          command -v python3
+          command -v npm
+          command -v systemctl
+          test -x "$FUNASR_RUNTIME/bin/python"
+          test -d "$FUNASR_MODEL_ROOT/paraformer"
+          test -d "$FUNASR_MODEL_ROOT/fsmn-vad"
+          test -d "$FUNASR_MODEL_ROOT/xvector"
+          echo '--- preserve TCP/8000 ---'
+          sudo -n ss -ltnp 'sport = :8000' || true
+          echo '--- current release before deploy ---'
+          readlink -f /opt/suspect-interrogation/current || true
+
+      - name: Checkout exact SHA via codeload archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          ARCHIVE="$RUNNER_TEMP/production-${GITHUB_SHA}.tar.gz"
+          ROOT="$RUNNER_TEMP/production-${GITHUB_SHA}"
+          rm -rf "$ROOT" "$ARCHIVE"
+          mkdir -p "$ROOT"
+          curl -L --fail --retry 5 --retry-all-errors \
+            --connect-timeout 30 --max-time 300 \
+            "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
+            -o "$ARCHIVE"
+          tar -xzf "$ARCHIVE" -C "$ROOT" --strip-components=1
+          cp -a "$ROOT"/. "$GITHUB_WORKSPACE"/
+          test -f linux/backend/app/main.py
+          test -f webapp/package.json
+          test -f deploy/control.sh
+          test -f systemd/interrogation-api.service
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/deploy-target-sha"
+          echo "deploy_target_sha=$GITHUB_SHA"
+
+      - name: Pre-deploy source sanity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q linux/backend
+          bash -n deploy/control.sh deploy/lib/common.sh deploy/lib/release.sh
+          test -f webapp/src/components/TemplateDrivenInterrogationPage.vue
+          test ! -f webapp/src/components/InterrogationPage.vue
+          grep -q 'TemplateDrivenInterrogationPage' webapp/src/views/InterrogationWorkspace.vue
+          grep -q 'grid-template-columns: minmax(680px, 2.05fr) minmax(360px, .95fr)' webapp/src/components/templateInterrogation.css
+          echo 'two_column_source_contract=ok'
+
+      - name: Install/update production units and configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n bash deploy/control.sh install
+          RUNTIME_ENV=/etc/suspect-interrogation/runtime.env
+          upsert() {
+            local key="$1" value="$2"
+            if sudo -n grep -q "^${key}=" "$RUNTIME_ENV"; then
+              sudo -n sed -i -E "s|^${key}=.*|${key}=${value}|" "$RUNTIME_ENV"
+            else
+              printf '%s=%s\n' "$key" "$value" | sudo -n tee -a "$RUNTIME_ENV" >/dev/null
+            fi
+          }
+          upsert SUSPECT_API_PORT "$SUSPECT_DEPLOY_PORT"
+          upsert AI_MODE real
+          printf '%s\n' \
+            "SUSPECT_KIOSK_READY_URL=http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" \
+            "SUSPECT_KIOSK_URL=http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/" \
+            | sudo -n tee /etc/suspect-interrogation/kiosk.env >/dev/null
+          sudo -n chown root:suspect-interrogation /etc/suspect-interrogation/kiosk.env
+          sudo -n chmod 0640 /etc/suspect-interrogation/kiosk.env
+          sudo -n systemctl daemon-reload
+
+      - name: Build and atomically deploy frontend and backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n env SUSPECT_HEALTH_BASE_URL="http://127.0.0.1:${SUSPECT_DEPLOY_PORT}" \
+            bash deploy/control.sh deploy "$GITHUB_WORKSPACE"
+          sudo -n systemctl enable --now ai-worker.service
+
+      - name: Verify deployed backend frontend and AI runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 90); do
+            if systemctl is-active --quiet interrogation-api.service && \
+               systemctl is-active --quiet ai-worker.service && \
+               [[ -S /run/suspect-interrogation/speech.sock ]] && \
+               curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" >/tmp/suspect-ready.json; then
+              break
+            fi
+            sleep 1
+          done
+          systemctl is-active --quiet interrogation-api.service
+          systemctl is-active --quiet ai-worker.service
+          test -S /run/suspect-interrogation/speech.sock
+          curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/live" >/dev/null
+          curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" | tee /tmp/suspect-ready.json
+          curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/" | tee /tmp/suspect-index.html >/dev/null
+          grep -q '<div id="app"></div>' /tmp/suspect-index.html
+          test -f /opt/suspect-interrogation/current/webapp/dist/index.html
+          grep -Rqs '正式笔录' /opt/suspect-interrogation/current/webapp/dist/assets
+          grep -Rqs '实时对话' /opt/suspect-interrogation/current/webapp/dist/assets
+
+          PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \
+            "$FUNASR_RUNTIME/bin/python" - <<'PY'
+          from app.ai.speech.client import SpeechWorkerClient
+          health = SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=30).health()
+          models = health.get('models') or {}
+          assert models.get('asr') is True, health
+          assert models.get('vad') is True, health
+          assert models.get('speaker') is True, health
+          print('speech_worker_health=ok', health)
+          PY
+
+          echo "current_release=$(readlink -f /opt/suspect-interrogation/current)"
+          echo "deployed_source_sha=$(cat "$RUNNER_TEMP/deploy-target-sha")"
+          echo "backend_service=active port=${SUSPECT_DEPLOY_PORT}"
+          echo "frontend_bundle=two-column"
+          echo '--- TCP/18080 ---'
+          sudo -n ss -ltnp "sport = :${SUSPECT_DEPLOY_PORT}" || true
+          echo '--- TCP/8000 preserved ---'
+          sudo -n ss -ltnp 'sport = :8000' || true
+
+      - name: Restart and verify kiosk when graphical session is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemctl is-enabled --quiet kiosk.service
+          browser=''
+          for candidate in chromium-browser chromium google-chrome; do
+            if command -v "$candidate" >/dev/null 2>&1; then
+              browser="$candidate"
+              break
+            fi
+          done
+          if [[ -n "$browser" && -S /tmp/.X11-unix/X0 ]]; then
+            sudo -n systemctl restart kiosk.service
+            sleep 3
+            systemctl is-active --quiet kiosk.service
+            echo 'kiosk_service=active'
+          else
+            echo 'kiosk_service=enabled_no_graphical_session'
+          fi
+
+      - name: Deployment diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          echo '--- current release ---'
+          readlink -f /opt/suspect-interrogation/current || true
+          echo '--- services ---'
+          sudo -n systemctl --no-pager --full status interrogation-api.service ai-worker.service kiosk.service || true
+          echo '--- ports ---'
+          sudo -n ss -ltnp 'sport = :18080' || true
+          sudo -n ss -ltnp 'sport = :8000' || true
+          echo '--- API journal ---'
+          sudo -n journalctl -u interrogation-api.service -n 60 --no-pager || true
+          echo '--- AI journal ---'
+          sudo -n journalctl -u ai-worker.service -n 80 --no-pager || true
