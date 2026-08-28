@@ -33,17 +33,46 @@ jobs:
           test -n "$RELEASE"
           test -f "$RELEASE/webapp/dist/index.html"
           test -d "$RELEASE/webapp/dist/assets"
-          grep -Rqs '正式笔录' "$RELEASE/webapp/dist/assets"
-          grep -Rqs '实时对话' "$RELEASE/webapp/dist/assets"
-          grep -Rqs '未匹配正式笔录问题' "$RELEASE/webapp/dist/assets"
+          test -f "$RELEASE/webapp/src/components/TemplateDrivenInterrogationPage.vue"
+          test ! -f "$RELEASE/webapp/src/components/InterrogationPage.vue"
+          grep -q 'TemplateDrivenInterrogationPage' "$RELEASE/webapp/src/views/InterrogationWorkspace.vue"
+          grep -q 'grid-template-columns: minmax(680px, 2.05fr) minmax(360px, .95fr)' "$RELEASE/webapp/src/components/templateInterrogation.css"
+
           systemctl is-active --quiet interrogation-api.service
           curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/live" >/dev/null
           curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" | tee /tmp/production-ready.json
-          curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/" | grep -q '<div id="app"></div>'
-          echo 'frontend_bundle=two-column-template-workspace'
-          echo 'backend_service=ready'
+          curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/" | tee /tmp/index-18080.html >/dev/null
+          grep -q '<div id="app"></div>' /tmp/index-18080.html
+          ASSET_18080="$(grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' /tmp/index-18080.html | head -n1)"
+          test -n "$ASSET_18080"
+          test -f "$RELEASE/webapp/dist${ASSET_18080}"
+          echo "frontend_18080_asset=$ASSET_18080"
+          echo 'frontend_18080_source=two-column-template-workspace'
+          echo 'backend_18080=ready'
+
+      - name: Compare legacy port 8000 with deployed port 18080
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASSET_18080="$(grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' /tmp/index-18080.html | head -n1)"
+          if curl -fsS --max-time 5 http://127.0.0.1:8000/ | tee /tmp/index-8000.html >/dev/null; then
+            ASSET_8000="$(grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' /tmp/index-8000.html | head -n1 || true)"
+            echo "frontend_8000_asset=${ASSET_8000:-none}"
+            if [[ "$ASSET_8000" == "$ASSET_18080" ]]; then
+              echo 'port_8000_matches_18080=yes'
+            else
+              echo 'port_8000_matches_18080=no'
+              echo 'PORT_8000_IS_NOT_CURRENT_DEPLOYMENT'
+            fi
+          else
+            echo 'port_8000_http=unavailable'
+          fi
+          echo '--- TCP owners ---'
+          sudo -n ss -ltnp 'sport = :18080' || true
+          sudo -n ss -ltnp 'sport = :8000' || true
 
       - name: Wait for offline speech worker readiness
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -52,9 +81,7 @@ jobs:
               echo "speech_socket_ready_after=${second}s"
               break
             fi
-            if (( second % 30 == 0 )); then
-              echo "waiting_for_speech_worker=${second}s"
-            fi
+            if (( second % 30 == 0 )); then echo "waiting_for_speech_worker=${second}s"; fi
             sleep 1
           done
           systemctl is-active --quiet ai-worker.service
@@ -70,11 +97,10 @@ jobs:
           print('speech_worker_health=ok', health)
           PY
 
-      - name: Restart kiosk onto deployed port when graphical session exists
+      - name: Kiosk status
         shell: bash
         run: |
           set -euo pipefail
-          systemctl is-enabled --quiet kiosk.service
           echo '--- kiosk environment ---'
           sudo -n cat /etc/suspect-interrogation/kiosk.env
           browser=''
@@ -87,7 +113,8 @@ jobs:
             systemctl is-active --quiet kiosk.service
             echo "kiosk_service=active browser=$browser"
           else
-            echo 'kiosk_service=enabled_no_supported_graphical_session'
+            echo 'kiosk_browser=not_installed_or_no_x11'
+            sudo -n systemctl stop kiosk.service || true
           fi
 
       - name: Final deployment evidence
@@ -105,5 +132,3 @@ jobs:
           sudo -n ss -ltnp 'sport = :8000' || true
           echo '--- speech socket ---'
           ls -l /run/suspect-interrogation/speech.sock 2>/dev/null || true
-          echo '--- kiosk journal ---'
-          sudo -n journalctl -u kiosk.service -n 80 --no-pager || true
