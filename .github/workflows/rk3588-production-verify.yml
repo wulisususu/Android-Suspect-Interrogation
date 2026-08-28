@@ -1,0 +1,109 @@
+name: RK3588 Production Verify
+
+on:
+  push:
+    branches:
+      - linux-adaptation
+    paths:
+      - '.github/workflows/rk3588-production-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rk3588-production-verify
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify installed frontend backend and AI
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 10
+    env:
+      SUSPECT_DEPLOY_PORT: '18080'
+      FUNASR_RUNTIME: '/opt/suspect-interrogation/runtime/funasr-env'
+    steps:
+      - name: Verify installed two-column frontend and backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE="$(readlink -f /opt/suspect-interrogation/current)"
+          echo "current_release=$RELEASE"
+          test -n "$RELEASE"
+          test -f "$RELEASE/webapp/dist/index.html"
+          test -d "$RELEASE/webapp/dist/assets"
+          grep -Rqs '正式笔录' "$RELEASE/webapp/dist/assets"
+          grep -Rqs '实时对话' "$RELEASE/webapp/dist/assets"
+          grep -Rqs '未匹配正式笔录问题' "$RELEASE/webapp/dist/assets"
+          systemctl is-active --quiet interrogation-api.service
+          curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/live" >/dev/null
+          curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" | tee /tmp/production-ready.json
+          curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/" | grep -q '<div id="app"></div>'
+          echo 'frontend_bundle=two-column-template-workspace'
+          echo 'backend_service=ready'
+
+      - name: Wait for offline speech worker readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          for second in $(seq 1 300); do
+            if systemctl is-active --quiet ai-worker.service && [[ -S /run/suspect-interrogation/speech.sock ]]; then
+              echo "speech_socket_ready_after=${second}s"
+              break
+            fi
+            if (( second % 30 == 0 )); then
+              echo "waiting_for_speech_worker=${second}s"
+            fi
+            sleep 1
+          done
+          systemctl is-active --quiet ai-worker.service
+          test -S /run/suspect-interrogation/speech.sock
+          PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \
+            "$FUNASR_RUNTIME/bin/python" - <<'PY'
+          from app.ai.speech.client import SpeechWorkerClient
+          health = SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=60).health()
+          models = health.get('models') or {}
+          assert models.get('asr') is True, health
+          assert models.get('vad') is True, health
+          assert models.get('speaker') is True, health
+          print('speech_worker_health=ok', health)
+          PY
+
+      - name: Restart kiosk onto deployed port when graphical session exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemctl is-enabled --quiet kiosk.service
+          echo '--- kiosk environment ---'
+          sudo -n cat /etc/suspect-interrogation/kiosk.env
+          browser=''
+          for candidate in chromium-browser chromium google-chrome; do
+            if command -v "$candidate" >/dev/null 2>&1; then browser="$candidate"; break; fi
+          done
+          if [[ -n "$browser" && -S /tmp/.X11-unix/X0 ]]; then
+            sudo -n systemctl restart kiosk.service
+            sleep 5
+            systemctl is-active --quiet kiosk.service
+            echo "kiosk_service=active browser=$browser"
+          else
+            echo 'kiosk_service=enabled_no_supported_graphical_session'
+          fi
+
+      - name: Final deployment evidence
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          echo "current_release=$(readlink -f /opt/suspect-interrogation/current)"
+          echo '--- services ---'
+          systemctl is-active interrogation-api.service || true
+          systemctl is-active ai-worker.service || true
+          systemctl is-active kiosk.service || true
+          echo '--- ports ---'
+          sudo -n ss -ltnp 'sport = :18080' || true
+          sudo -n ss -ltnp 'sport = :8000' || true
+          echo '--- speech socket ---'
+          ls -l /run/suspect-interrogation/speech.sock 2>/dev/null || true
+          echo '--- kiosk journal ---'
+          sudo -n journalctl -u kiosk.service -n 80 --no-pager || true
