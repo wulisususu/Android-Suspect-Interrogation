@@ -13,6 +13,7 @@ from .runtime_settings import RuntimeSettings
 
 
 router = APIRouter(prefix="/health", tags=["health"])
+capabilities_router = APIRouter(prefix="/api/v1", tags=["runtime"])
 
 
 def _result(state: str, *, required: bool, detail: str, **extra: Any) -> dict[str, Any]:
@@ -185,6 +186,69 @@ def readiness_snapshot(request: Request | None = None) -> dict[str, Any]:
         "status": "ready" if required_ok else "degraded",
         "checks": checks,
         "capabilities": capabilities,
+    }
+
+
+def _runtime_capability_state(raw: object) -> str:
+    value = str(raw or "").upper()
+    if value in {"READY", "AVAILABLE", "CONNECTED", "OK", "IDLE"}:
+        return "AVAILABLE"
+    if value in {"NOT_INSTALLED", "MISSING", "MODEL_NOT_INSTALLED"}:
+        return "MODEL_NOT_INSTALLED"
+    if value in {"ERROR", "LOW_SPACE"}:
+        return "ERROR"
+    if value == "BUSY":
+        return "BUSY"
+    return "NOT_CONFIGURED"
+
+
+def _runtime_capability(capability_state: str, reason: str, **metadata: Any) -> dict[str, Any]:
+    return {"state": capability_state, "reason": reason, "metadata": metadata}
+
+
+@capabilities_router.get("/capabilities")
+def runtime_capabilities(request: Request) -> dict[str, Any]:
+    """Expose the canonical UI capability contract from the production health state."""
+    snapshot = readiness_snapshot(request)
+    health = snapshot["capabilities"]
+    calibration = health["voiceprintCalibration"]
+    asr = health["asr"]
+    asr_state = _runtime_capability_state(asr["state"])
+    microphone = health["audioCapture"]
+    microphone_state = _runtime_capability_state(microphone["state"])
+    recording_state = asr_state if asr_state != "AVAILABLE" else (
+        "AVAILABLE" if calibration["state"] == "READY" else "NOT_CONFIGURED"
+    )
+    recording_reason = (
+        "offline ASR and calibrated speaker verification are ready"
+        if recording_state == "AVAILABLE"
+        else (str(calibration["detail"]) if asr_state == "AVAILABLE" else str(asr["detail"]))
+    )
+    supervisor = getattr(request.app.state, "ai_supervisor", None)
+    try:
+        ai = dict(supervisor.capabilities() if supervisor is not None else {})
+    except Exception:
+        ai = {}
+
+    def model(name: str) -> dict[str, Any]:
+        detail = dict(ai.get(name) or {})
+        installed = detail.get("installed")
+        raw_state = detail.get("state")
+        state = "MODEL_NOT_INSTALLED" if installed is False else _runtime_capability_state(raw_state)
+        return _runtime_capability(state, str(detail.get("detail") or f"{name} runtime capability"), **detail)
+
+    unavailable = lambda reason: _runtime_capability("NOT_CONFIGURED", reason)
+    return {
+        "identity": unavailable("identity reader is not configured"),
+        "camera": unavailable("camera is not configured"),
+        "microphone": _runtime_capability(microphone_state, str(microphone["detail"]), **microphone),
+        "fingerprint": unavailable("fingerprint device is not configured"),
+        "signature": unavailable("signature device is not configured"),
+        "recording": _runtime_capability(recording_state, recording_reason, asr=asr, calibration=calibration),
+        "asr": _runtime_capability(asr_state, str(asr["detail"]), **asr),
+        "ocr": model("ocr"),
+        "llm": model("llm"),
+        "report": _runtime_capability(_runtime_capability_state(snapshot["checks"]["database"]["state"]), str(snapshot["checks"]["database"]["detail"])),
     }
 
 

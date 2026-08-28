@@ -46,3 +46,15 @@ def test_voiceprint_calibration_health_is_fail_closed_until_both_values_exist(mo
     monkeypatch.setenv("SUSPECT_SPEAKER_MARGIN", "0.08")
     calibrated = client.get("/health/ready").json()["capabilities"]["voiceprintCalibration"]
     assert calibrated["state"] == "READY"
+
+
+def test_runtime_capabilities_endpoint_exposes_frontend_contract():
+    response = client.get("/api/v1/capabilities")
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload) == {
+        "identity", "camera", "microphone", "fingerprint", "signature",
+        "recording", "asr", "ocr", "llm", "report",
+    }
+    assert payload["microphone"]["state"] in {"AVAILABLE", "NOT_CONFIGURED", "ERROR"}
+    assert payload["asr"]["state"] in {"AVAILABLE", "NOT_CONFIGURED", "ERROR", "MODEL_NOT_INSTALLED"}

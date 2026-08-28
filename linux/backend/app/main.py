@@ -27,7 +27,7 @@ from app.api.signature import router as signature_router
 from app.api.voiceprints import router as voiceprints_router
 from app.database.session import init_database, make_engine, make_session_factory
 from app.hardware_gateway.linux import LinuxHardwareGateway
-from app.health import router as health_router
+from app.health import capabilities_router, router as health_router
 from app.runtime_settings import RuntimeSettings
 from app.services.asr_capture_service import AsrCaptureService
 from app.services.audio_capture_service import AudioCaptureService
@@ -178,6 +178,7 @@ def create_app(
         )
 
     app.include_router(health_router)
+    app.include_router(capabilities_router)
     app.include_router(cases_router, prefix="/api/v1")
     app.include_router(identity_router, prefix="/api/v1")
     app.include_router(interrogation_router, prefix="/api/v1")
