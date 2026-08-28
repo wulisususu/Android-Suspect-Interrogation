@@ -1,0 +1,190 @@
+name: RK3588 Live Audio Request
+
+on:
+  push:
+    branches:
+      - linux-adaptation
+    paths:
+      - '.github/live-audio-request.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rk3588-live-audio-request
+  cancel-in-progress: false
+
+jobs:
+  live-audio-request:
+    name: RK3588 branch-scoped live audio request
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: ${{ github.workspace }}/linux/backend
+
+    steps:
+      - name: Runner identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner=${RUNNER_NAME:-unknown} arch=$(uname -m) sha=${GITHUB_SHA}"
+          test "$(uname -m)" = "aarch64"
+          python3 --version
+          command -v curl >/dev/null
+          command -v tar >/dev/null
+
+      - name: Fetch exact branch revision by SHA-pinned archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+
+          archive="$RUNNER_TEMP/live-source-${GITHUB_SHA}.tar.gz"
+          expected_root="${GITHUB_REPOSITORY#*/}-${GITHUB_SHA}/"
+          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 15 --max-time 180 \
+            "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
+            -o "$archive"
+          archive_root="$(tar -tzf "$archive" | sed -n '1p')"
+          if [[ "$archive_root" != "$expected_root" ]]; then
+            echo "source archive root does not match requested SHA: $archive_root" >&2
+            exit 1
+          fi
+          tar -xzf "$archive" --strip-components=1 -C "$GITHUB_WORKSPACE"
+          test -f .github/live-audio-request.json
+          test -f scripts/ci/rk3588-live-audio-acceptance.py
+
+      - name: Validate allowlisted request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          payload = json.loads(Path('.github/live-audio-request.json').read_text(encoding='utf-8'))
+          required = {'enabled', 'requestId', 'captureSeconds', 'alsaDevice', 'requireAsrText'}
+          if set(payload) != required:
+              raise SystemExit(f'request keys must be exactly {sorted(required)}')
+
+          enabled = payload['enabled']
+          request_id = payload['requestId']
+          capture_seconds = payload['captureSeconds']
+          alsa_device = payload['alsaDevice']
+          require_asr_text = payload['requireAsrText']
+
+          if not isinstance(enabled, bool):
+              raise SystemExit('enabled must be boolean')
+          if not isinstance(request_id, str) or re.fullmatch(r'[A-Za-z0-9._-]{1,64}', request_id) is None:
+              raise SystemExit('requestId contains unsupported characters')
+          if isinstance(capture_seconds, bool) or not isinstance(capture_seconds, (int, float)):
+              raise SystemExit('captureSeconds must be numeric')
+          if not 5 <= float(capture_seconds) <= 30:
+              raise SystemExit('captureSeconds must be between 5 and 30')
+          if not isinstance(alsa_device, str) or re.fullmatch(r'[A-Za-z0-9_.:,/-]{1,80}', alsa_device) is None:
+              raise SystemExit('alsaDevice contains unsupported characters')
+          if not isinstance(require_asr_text, bool):
+              raise SystemExit('requireAsrText must be boolean')
+
+          output_path = Path(os.environ['GITHUB_OUTPUT'])
+          with output_path.open('a', encoding='utf-8') as handle:
+              handle.write(f"enabled={'true' if enabled else 'false'}\n")
+              handle.write(f"request_id={request_id}\n")
+              handle.write(f"capture_seconds={float(capture_seconds):g}\n")
+              handle.write(f"alsa_device={alsa_device}\n")
+              handle.write(f"require_asr_text={'true' if require_asr_text else 'false'}\n")
+          PY
+
+      - name: Disabled request is a no-op
+        if: steps.request.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "live audio request is disabled; no microphone access performed"
+
+      - name: Verify real-device prerequisites
+        if: steps.request.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v arecord >/dev/null
+          arecord -L | sed -n '1,80p'
+
+          FUNASR_PYTHON=/opt/suspect-interrogation/runtime/funasr-env/bin/python
+          test -x "$FUNASR_PYTHON"
+          if [[ -d /opt/suspect-interrogation/models/funasr ]]; then
+            FUNASR_MODEL_ROOT=/opt/suspect-interrogation/models/funasr
+          elif [[ -d /home/youyeetoo/funasr-models ]]; then
+            FUNASR_MODEL_ROOT=/home/youyeetoo/funasr-models
+          else
+            echo "preinstalled FunASR model root not found" >&2
+            exit 1
+          fi
+          echo "FUNASR_PYTHON=$FUNASR_PYTHON" >> "$GITHUB_ENV"
+          echo "SUSPECT_FUNASR_MODEL_ROOT=$FUNASR_MODEL_ROOT" >> "$GITHUB_ENV"
+          "$FUNASR_PYTHON" -m py_compile scripts/ci/rk3588-live-audio-acceptance.py
+
+      - name: Execute allowlisted live microphone acceptance
+        if: steps.request.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOCKET=/run/suspect-interrogation/speech.sock
+          WORKER_PID=""
+          TEMP_SOCKET="$RUNNER_TEMP/rk3588-request-live-audio.sock"
+
+          cleanup() {
+            if [[ -n "$WORKER_PID" ]]; then
+              kill "$WORKER_PID" 2>/dev/null || true
+              wait "$WORKER_PID" 2>/dev/null || true
+            fi
+            rm -f "$TEMP_SOCKET"
+          }
+          trap cleanup EXIT
+
+          if [[ ! -S "$SOCKET" ]]; then
+            SOCKET="$TEMP_SOCKET"
+            rm -f "$SOCKET"
+            export SUSPECT_SPEECH_SOCKET="$SOCKET"
+            export SUSPECT_FUNASR_MODEL_ROOT
+            "$FUNASR_PYTHON" -m speech_worker.main >"$RUNNER_TEMP/rk3588-request-speech-worker.log" 2>&1 &
+            WORKER_PID=$!
+            for _ in $(seq 1 120); do
+              [[ -S "$SOCKET" ]] && break
+              if ! kill -0 "$WORKER_PID" 2>/dev/null; then
+                cat "$RUNNER_TEMP/rk3588-request-speech-worker.log" >&2 || true
+                exit 1
+              fi
+              sleep 0.5
+            done
+            if [[ ! -S "$SOCKET" ]]; then
+              cat "$RUNNER_TEMP/rk3588-request-speech-worker.log" >&2 || true
+              echo "speech worker socket did not become ready" >&2
+              exit 1
+            fi
+          fi
+
+          echo "requestId=${{ steps.request.outputs.request_id }}"
+          echo "Live microphone acceptance begins after the countdown."
+          for n in 10 9 8 7 6 5 4 3 2 1; do
+            echo "Speak a clear Mandarin sentence in $n..."
+            sleep 1
+          done
+          echo "START SPEAKING NOW"
+
+          EXTRA_ARGS=()
+          if [[ "${{ steps.request.outputs.require_asr_text }}" == "true" ]]; then
+            EXTRA_ARGS+=(--require-asr-text)
+          fi
+
+          "$FUNASR_PYTHON" scripts/ci/rk3588-live-audio-acceptance.py \
+            --socket "$SOCKET" \
+            --device "${{ steps.request.outputs.alsa_device }}" \
+            --capture-seconds "${{ steps.request.outputs.capture_seconds }}" \
+            "${EXTRA_ARGS[@]}"
+
+          echo "Live request completed without persisting or uploading microphone content."
