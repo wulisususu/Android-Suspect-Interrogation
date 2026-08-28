@@ -1,11 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import {
+  voiceprintEnrollmentProgress,
   temporarySpeakerPresentation,
   voiceprintModeLabel,
   voiceprintStartGuard,
 } from './VoiceprintPreparationPanel.vue'
 
 describe('VoiceprintPreparationPanel helpers', () => {
+  it('uses actual board capture duration for the enrollment progress bar', () => {
+    expect(voiceprintEnrollmentProgress({ capturedDurationMs: 12500, targetDurationMs: 30000 })).toEqual({
+      percent: 42,
+      capturedSeconds: 12,
+      targetSeconds: 30,
+      complete: false,
+    })
+    expect(voiceprintEnrollmentProgress({ capturedDurationMs: 30000, targetDurationMs: 30000 })).toEqual({
+      percent: 100,
+      capturedSeconds: 30,
+      targetSeconds: 30,
+      complete: true,
+    })
+  })
+
   it('blocks formal interrogation until the suspect voiceprint is ready', () => {
     expect(voiceprintStartGuard({
       suspectReady: false,

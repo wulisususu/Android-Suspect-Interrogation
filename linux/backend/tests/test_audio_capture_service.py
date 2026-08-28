@@ -89,6 +89,21 @@ def test_capture_stops_automatically_at_max_pcm_bytes():
     assert manager.stopped == 1
 
 
+def test_capture_status_reports_real_collection_progress():
+    one_second = b"\x01\x00" * 16000
+    manager = FakeAudioManager(frames=[one_second])
+    service = AudioCaptureService(manager, sample_rate=16000, max_seconds=2)
+    service.start("suspect", "CASE-1")
+
+    wait_until(lambda: manager.reads >= 1)
+    status = service.status()
+
+    assert status["capturedDurationMs"] == 1000
+    assert status["targetDurationMs"] == 2000
+    assert status["complete"] is False
+    service.stop("suspect", "CASE-1")
+
+
 def test_capture_read_failure_still_releases_recorder_and_surfaces_typed_error():
     manager = FakeAudioManager(read_error=RuntimeError("device read failed"))
     service = AudioCaptureService(manager, sample_rate=16000, max_seconds=30)

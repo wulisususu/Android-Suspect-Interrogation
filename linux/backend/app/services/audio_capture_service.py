@@ -153,5 +153,7 @@ class AudioCaptureService:
             "sampleRate": self.sample_rate,
             "capturedBytes": len(capture.buffer),
             "maxBytes": capture.max_bytes,
+            "capturedDurationMs": len(capture.buffer) * 1000 // (self.sample_rate * 2),
+            "targetDurationMs": self.max_seconds * 1000,
             "complete": capture.done_event.is_set(),
         }

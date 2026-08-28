@@ -79,6 +79,11 @@ def readiness(case_id: str, request: Request, db: Session = Depends(get_db)):
     return envelope(_service(request, db).readiness(case_id))
 
 
+@router.get("/voiceprints/enrollment/status")
+def enrollment_status(request: Request):
+    return envelope(_capture_service(request).status())
+
+
 @router.post("/cases/{case_id}/voiceprints/suspect/enrollment/start")
 def start_suspect_enrollment(
     case_id: str,

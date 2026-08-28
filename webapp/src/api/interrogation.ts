@@ -32,6 +32,7 @@ import type {
   TemporaryAsrSpeaker,
   TimelineEvent,
   TranscriptMessage,
+  VoiceprintCaptureStatus,
   VoiceprintEnrollmentResult,
   VoiceprintReadiness,
   VoiceRecognitionMode,
@@ -109,6 +110,18 @@ function normalizeVoiceprintReadiness(value: unknown): VoiceprintReadiness {
     recognitionMode: mode,
     canStart: Boolean(raw.canStart),
     ...(raw.simulated === undefined ? {} : { simulated: Boolean(raw.simulated) }),
+  }
+}
+
+function normalizeVoiceprintCaptureStatus(value: unknown): VoiceprintCaptureStatus {
+  const raw = asRecord(value)
+  return {
+    active: Boolean(raw.active),
+    kind: raw.kind == null ? null : String(raw.kind),
+    subjectId: raw.subjectId == null ? null : String(raw.subjectId),
+    capturedDurationMs: Number(raw.capturedDurationMs ?? 0),
+    targetDurationMs: Number(raw.targetDurationMs ?? 30000),
+    complete: Boolean(raw.complete),
   }
 }
 
@@ -288,6 +301,7 @@ export function startAsr(): Promise<AsrRuntimeStatus> { return runtime().invoke<
 export function stopAsr(): Promise<AsrRuntimeStatus> { return runtime().invoke<AsrRuntimeStatus>('asr.stop', {}, { timeoutMs: 30_000 }) }
 
 export async function fetchVoiceprintReadiness(caseId: string): Promise<VoiceprintReadiness> { return normalizeVoiceprintReadiness(await runtime().invoke<unknown>('voiceprint.readiness', { caseId })) }
+export async function fetchVoiceprintEnrollmentStatus(): Promise<VoiceprintCaptureStatus> { return normalizeVoiceprintCaptureStatus(await runtime().invoke<unknown>('voiceprint.enrollment.status', {})) }
 export function startSuspectVoiceprintEnrollment(caseId: string, actorId?: string): Promise<VoiceprintEnrollmentResult> { return runtime().invoke<VoiceprintEnrollmentResult>('voiceprint.suspect.enrollment.start', { caseId, actorId }) }
 export function stopSuspectVoiceprintEnrollment(caseId: string, actorId?: string): Promise<VoiceprintEnrollmentResult> { return runtime().invoke<VoiceprintEnrollmentResult>('voiceprint.suspect.enrollment.stop', { caseId, actorId }, { timeoutMs: 120_000 }) }
 export async function fetchOfficerVoiceprints(activeOnly = true): Promise<OfficerVoiceprint[]> {

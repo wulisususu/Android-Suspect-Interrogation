@@ -266,8 +266,20 @@ export interface VoiceprintEnrollmentState {
   subjectId?: string | null
   officerName?: string | null
   usableDurationMs?: number | null
+  capturedDurationMs?: number | null
+  targetDurationMs?: number | null
+  captureComplete?: boolean
   message?: string | null
   simulated?: boolean
+}
+
+export interface VoiceprintCaptureStatus {
+  active: boolean
+  kind?: string | null
+  subjectId?: string | null
+  capturedDurationMs: number
+  targetDurationMs: number
+  complete: boolean
 }
 
 export interface VoiceprintEnrollmentResult {

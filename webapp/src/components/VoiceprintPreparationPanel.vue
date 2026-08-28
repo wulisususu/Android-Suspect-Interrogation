@@ -1,6 +1,17 @@
 <script lang="ts">
 import type { TemporaryAsrSpeaker, VoiceprintReadiness as VoiceprintReadinessModel, VoiceRecognitionMode } from '../types/interrogation'
 
+export function voiceprintEnrollmentProgress(value: { capturedDurationMs?: number | null, targetDurationMs?: number | null }) {
+  const targetDurationMs = Math.max(1, Number(value.targetDurationMs ?? 30000))
+  const capturedDurationMs = Math.max(0, Math.min(Number(value.capturedDurationMs ?? 0), targetDurationMs))
+  return {
+    percent: Math.round(capturedDurationMs / targetDurationMs * 100),
+    capturedSeconds: Math.floor(capturedDurationMs / 1000),
+    targetSeconds: Math.floor(targetDurationMs / 1000),
+    complete: capturedDurationMs >= targetDurationMs,
+  }
+}
+
 export function voiceprintStartGuard(readiness: VoiceprintReadinessModel) {
   if (!readiness.suspectReady || !readiness.canStart) {
     return {
@@ -77,6 +88,7 @@ const suspectRecording = computed(() => enrollmentRecording.value && props.enrol
 const officerRecording = computed(() => enrollmentRecording.value && props.enrollmentState.kind === 'OFFICER')
 const selectedOfficerName = computed(() => props.officers.find((item) => item.officerId === props.enrollmentState.subjectId)?.officerName || props.enrollmentState.officerName || '')
 const usableSeconds = computed(() => Math.floor((props.enrollmentState.usableDurationMs || 0) / 1000))
+const enrollmentProgress = computed(() => voiceprintEnrollmentProgress(props.enrollmentState))
 const sessionActive = computed(() => ['RUNNING', 'PAUSED'].includes(props.sessionStatus))
 
 watch(
@@ -215,7 +227,20 @@ function beginOfficerEnrollment() {
     <div v-if="enrollmentState.phase !== 'IDLE'" class="voiceprint-enrollment-progress" :class="enrollmentState.phase.toLowerCase()">
       <strong v-if="enrollmentState.kind === 'SUSPECT'">嫌疑人声纹</strong>
       <strong v-else>民警声纹 · {{ selectedOfficerName || enrollmentState.subjectId }}</strong>
-      <span v-if="enrollmentState.phase === 'RECORDING'">正在录制，建议持续讲话 20–30 秒</span>
+      <template v-if="enrollmentState.phase === 'RECORDING'">
+        <span>板端麦克风采集中；进度满格后自动提交注册</span>
+        <div
+          class="voiceprint-capture-meter"
+          role="progressbar"
+          :aria-valuemin="0"
+          :aria-valuemax="enrollmentProgress.targetSeconds"
+          :aria-valuenow="enrollmentProgress.capturedSeconds"
+          :aria-label="`声纹录制 ${enrollmentProgress.capturedSeconds} / ${enrollmentProgress.targetSeconds} 秒`"
+        >
+          <i :style="{ width: `${enrollmentProgress.percent}%` }"></i>
+        </div>
+        <small>已采集 {{ enrollmentProgress.capturedSeconds }} / {{ enrollmentProgress.targetSeconds }} 秒</small>
+      </template>
       <span v-else-if="enrollmentState.phase === 'PROCESSING'">正在进行 VAD 质检与 XVector 声纹聚合…</span>
       <span v-else>{{ enrollmentState.message }}</span>
       <small v-if="usableSeconds">有效语音 {{ usableSeconds }} 秒</small>
@@ -390,6 +415,19 @@ input:disabled {
   border-color: transparent;
   background: transparent;
   color: #a23830;
+}
+.voiceprint-capture-meter {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #d7e3ec;
+}
+.voiceprint-capture-meter > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #2476c9;
+  transition: width .25s ease;
 }
 .voiceprint-enrollment-progress {
   display: flex;

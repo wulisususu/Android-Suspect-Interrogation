@@ -117,6 +117,20 @@ def enroll_suspect(client: TestClient, case_id: str, *, actor_id: str = "op"):
     return enrolled
 
 
+def test_enrollment_status_exposes_active_capture_for_progress_ui(tmp_path):
+    app = app_with_voiceprint_fakes(tmp_path)
+    with TestClient(app) as client:
+        case_id = create_identity_ready_case(client)
+        payload(client.post(
+            f"/api/v1/cases/{case_id}/voiceprints/suspect/enrollment/start",
+            json={"actor_id": "op"},
+        ))
+
+        status = payload(client.get("/api/v1/voiceprints/enrollment/status"))
+
+    assert status == {"active": True, "kind": "suspect", "subjectId": case_id}
+
+
 def enroll_officer(client: TestClient, officer_id: str, officer_name: str, *, actor_id: str = "admin"):
     started = payload(client.post(
         f"/api/v1/officer-voiceprints/{officer_id}/enrollment/start",

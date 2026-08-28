@@ -123,6 +123,7 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
     case 'asr.fragment.applyToRecord': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/fragments/apply`, data: payload }
     case 'asr.fragment.discard': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/fragments/${fragmentId}/discard`, data: {} }
     case 'voiceprint.readiness': return { method: 'GET', url: `/api/v1/cases/${caseId}/voiceprints/readiness` }
+    case 'voiceprint.enrollment.status': return { method: 'GET', url: '/api/v1/voiceprints/enrollment/status' }
     case 'voiceprint.suspect.enrollment.start': return {
       method: 'POST',
       url: `/api/v1/cases/${caseId}/voiceprints/suspect/enrollment/start`,

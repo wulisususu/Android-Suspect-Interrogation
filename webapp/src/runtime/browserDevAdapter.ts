@@ -26,6 +26,8 @@ function voiceprintMock<T>(operation: string, payload: Record<string, unknown>):
         canStart: false,
         simulated,
       } as T
+    case 'voiceprint.enrollment.status':
+      return { active: false, capturedDurationMs: 0, targetDurationMs: 30000, complete: false, simulated } as T
     case 'voiceprint.suspect.enrollment.start':
       return { state: 'RECORDING', caseId: String(payload.caseId ?? ''), ready: false, simulated } as T
     case 'voiceprint.suspect.enrollment.stop':

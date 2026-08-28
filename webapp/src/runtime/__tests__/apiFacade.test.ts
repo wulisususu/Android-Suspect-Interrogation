@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   fetchOfficerVoiceprints,
+  fetchVoiceprintEnrollmentStatus,
   fetchVoiceprintReadiness,
   generateCaseAiAnalysis,
   generateLlm,
@@ -67,6 +68,7 @@ describe('application API runtime delegation', () => {
     resetRuntimeAdapterForTests(adapter)
 
     await fetchVoiceprintReadiness('case-1')
+    await fetchVoiceprintEnrollmentStatus()
     await startSuspectVoiceprintEnrollment('case-1', 'actor-1')
     await stopSuspectVoiceprintEnrollment('case-1', 'actor-1')
     await fetchOfficerVoiceprints(false)
@@ -77,6 +79,7 @@ describe('application API runtime delegation', () => {
 
     expect(calls).toEqual([
       { operation: 'voiceprint.readiness', payload: { caseId: 'case-1' } },
+      { operation: 'voiceprint.enrollment.status', payload: {} },
       { operation: 'voiceprint.suspect.enrollment.start', payload: { caseId: 'case-1', actorId: 'actor-1' } },
       { operation: 'voiceprint.suspect.enrollment.stop', payload: { caseId: 'case-1', actorId: 'actor-1' } },
       { operation: 'officerVoiceprint.list', payload: { activeOnly: false } },

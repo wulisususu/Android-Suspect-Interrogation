@@ -18,6 +18,7 @@ import {
   fetchRuntimeCapabilities,
   fetchSessionState,
   fetchTimeline,
+  fetchVoiceprintEnrollmentStatus,
   fetchVoiceprintReadiness,
   finishSession as finishSessionApi,
   generateCaseAiAnalysis,
@@ -172,6 +173,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   let caseGeneration = 0
   let feedbackTimer: ReturnType<typeof setTimeout> | undefined
   let captureTimer: ReturnType<typeof setInterval> | undefined
+  let voiceprintProgressTimer: ReturnType<typeof setInterval> | undefined
   let sessionConnection: RuntimeSessionConnection | undefined
   let inquiryController: AbortController | undefined
 
@@ -204,6 +206,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   function resetCaseContext(nextCaseId = '') {
     caseGeneration += 1
+    stopVoiceprintProgressPolling()
     inquiryController?.abort()
     inquiryController = undefined
     disposeCaptureEvents()
@@ -501,6 +504,44 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     officerVoiceprints.value = officers
   }
 
+  function stopVoiceprintProgressPolling() {
+    if (voiceprintProgressTimer) clearInterval(voiceprintProgressTimer)
+    voiceprintProgressTimer = undefined
+  }
+
+  async function refreshVoiceprintCaptureProgress(scope: CaseScope) {
+    if (!isCurrentScope(scope) || voiceprintEnrollmentState.value.phase !== 'RECORDING') return
+    try {
+      const status = await fetchVoiceprintEnrollmentStatus()
+      if (!isCurrentScope(scope) || voiceprintEnrollmentState.value.phase !== 'RECORDING') return
+      if (!status.active || status.subjectId !== voiceprintEnrollmentState.value.subjectId) return
+      voiceprintEnrollmentState.value = {
+        ...voiceprintEnrollmentState.value,
+        capturedDurationMs: status.capturedDurationMs,
+        targetDurationMs: status.targetDurationMs,
+        captureComplete: status.complete,
+      }
+      if (!status.complete) return
+      stopVoiceprintProgressPolling()
+      if (voiceprintEnrollmentState.value.kind === 'SUSPECT') {
+        await stopSuspectVoiceprintEnrollment()
+      } else if (voiceprintEnrollmentState.value.kind === 'OFFICER' && voiceprintEnrollmentState.value.subjectId) {
+        await stopOfficerVoiceprintEnrollment(voiceprintEnrollmentState.value.subjectId)
+      }
+    } catch (err) {
+      if (!isCurrentScope(scope)) return
+      stopVoiceprintProgressPolling()
+      voiceprintEnrollmentState.value = { ...voiceprintEnrollmentState.value, phase: 'ERROR', message: backendErrorMessage(err) }
+      feedbackIfCurrent(scope, backendErrorMessage(err), true)
+    }
+  }
+
+  function startVoiceprintProgressPolling(scope: CaseScope) {
+    stopVoiceprintProgressPolling()
+    void refreshVoiceprintCaptureProgress(scope)
+    voiceprintProgressTimer = setInterval(() => { void refreshVoiceprintCaptureProgress(scope) }, 500)
+  }
+
   function selectInterrogatorOfficer(officerId: string | null) {
     selectedInterrogatorOfficerId.value = officerId || null
   }
@@ -522,6 +563,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
         phase: 'RECORDING',
         simulated: Boolean(result.simulated),
       }
+      startVoiceprintProgressPolling(scope)
     } catch (err) {
       if (isCurrentScope(scope)) voiceprintEnrollmentState.value = { phase: 'ERROR', kind: 'SUSPECT', subjectId: scope.caseId, message: backendErrorMessage(err) }
       feedbackIfCurrent(scope, backendErrorMessage(err), true)
@@ -532,6 +574,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   async function stopSuspectVoiceprintEnrollment(actorId?: string) {
     if (voiceprintBusy.value) return
+    stopVoiceprintProgressPolling()
     const scope = currentScope()
     voiceprintBusy.value = true
     voiceprintEnrollmentState.value = { ...voiceprintEnrollmentState.value, phase: 'PROCESSING' }
@@ -566,6 +609,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       const result = await startOfficerVoiceprintEnrollmentApi(officerId, officerName, actorId)
       if (!isCurrentScope(scope)) return
       voiceprintEnrollmentState.value = { ...voiceprintEnrollmentState.value, phase: 'RECORDING', simulated: Boolean(result.simulated) }
+      startVoiceprintProgressPolling(scope)
     } catch (err) {
       if (isCurrentScope(scope)) voiceprintEnrollmentState.value = { phase: 'ERROR', kind: 'OFFICER', subjectId: officerId, officerName, message: backendErrorMessage(err) }
       feedbackIfCurrent(scope, backendErrorMessage(err), true)
@@ -576,6 +620,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   async function stopOfficerVoiceprintEnrollment(officerId: string, actorId?: string) {
     if (voiceprintBusy.value) return
+    stopVoiceprintProgressPolling()
     const scope = currentScope()
     voiceprintBusy.value = true
     voiceprintEnrollmentState.value = { ...voiceprintEnrollmentState.value, phase: 'PROCESSING' }
