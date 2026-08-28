@@ -35,6 +35,13 @@ describe('template-driven interrogation C-page contract', () => {
     expect(preparationSource).toContain('加入本案问题')
   })
 
+  it('wires preparation voice dictation to a real runtime instead of a disabled placeholder', () => {
+    expect(pageSource).not.toContain(':voice-available="false"')
+    expect(pageSource).toContain(':voice-draft="questionDictationDraft"')
+    expect(pageSource).toContain('@voice-start="emit(\'questionDictationStart\')"')
+    expect(pageSource).toContain('@voice-stop="emit(\'questionDictationStop\')"')
+  })
+
   it('retires the legacy monolithic interrogation C-page', () => {
     expect(Object.keys(componentModules)).not.toContain('./InterrogationPage.vue')
   })
