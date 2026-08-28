@@ -1,24 +1,51 @@
+#!/usr/bin/env node
+import { execFileSync, spawn } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { spawn } from 'node:child_process'
+import process from 'node:process'
 
 const baseUrl = process.env.KIOSK_URL || 'http://127.0.0.1:5173'
 const caseId = process.env.KIOSK_CASE_ID || ''
 const outputDir = process.env.KIOSK_SCREENSHOT_DIR || 'artifacts/kiosk-visual-qa'
-const debugPort = Number(process.env.KIOSK_CHROME_DEBUG_PORT || 9222)
+const debugPort = Number(process.env.CHROME_DEBUG_PORT || 9222)
 
-if (!caseId) throw new Error('KIOSK_CASE_ID is required')
+if (!caseId) {
+  console.error('KIOSK_CASE_ID is required')
+  process.exit(2)
+}
+
+function which(command) {
+  try {
+    return execFileSync('which', [command], { encoding: 'utf8' }).trim()
+  } catch {
+    return ''
+  }
+}
+
+function resolveChrome() {
+  const explicit = process.env.CHROME_BIN
+  if (explicit) return explicit
+  for (const candidate of ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']) {
+    const resolved = which(candidate)
+    if (resolved) return resolved
+  }
+  throw new Error('Chrome/Chromium was not found on the hosted runner')
+}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-function resolveChrome() {
-  const candidates = [
-    process.env.CHROME_BIN,
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-  ].filter(Boolean)
-  return candidates[0]
+async function waitFor(fn, description, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastError
+  while (Date.now() < deadline) {
+    try {
+      const value = await fn()
+      if (value) return value
+    } catch (error) {
+      lastError = error
+    }
+    await sleep(250)
+  }
+  throw new Error(`Timed out waiting for ${description}${lastError ? `: ${lastError.message}` : ''}`)
 }
 
 class CdpClient {
@@ -31,22 +58,32 @@ class CdpClient {
 
   async connect() {
     this.socket = new WebSocket(this.url)
-    this.socket.addEventListener('message', (event) => {
-      const payload = JSON.parse(String(event.data))
-      if (!payload.id) return
-      const item = this.pending.get(payload.id)
-      if (!item) return
-      this.pending.delete(payload.id)
-      if (payload.error) item.reject(new Error(payload.error.message || JSON.stringify(payload.error)))
-      else item.resolve(payload.result)
-    })
     await new Promise((resolve, reject) => {
-      this.socket.addEventListener('open', resolve, { once: true })
-      this.socket.addEventListener('error', reject, { once: true })
+      const timer = setTimeout(() => reject(new Error('CDP websocket connection timed out')), 10_000)
+      this.socket.addEventListener('open', () => {
+        clearTimeout(timer)
+        resolve()
+      }, { once: true })
+      this.socket.addEventListener('error', (event) => {
+        clearTimeout(timer)
+        reject(new Error(`CDP websocket error: ${event.message || 'unknown error'}`))
+      }, { once: true })
+      this.socket.addEventListener('message', (event) => {
+        const message = JSON.parse(String(event.data))
+        if (!message.id) return
+        const pending = this.pending.get(message.id)
+        if (!pending) return
+        this.pending.delete(message.id)
+        if (message.error) pending.reject(new Error(message.error.message || 'CDP command failed'))
+        else pending.resolve(message.result || {})
+      })
     })
   }
 
   send(method, params = {}) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('CDP websocket is not open'))
+    }
     const id = this.nextId++
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject })
@@ -55,56 +92,47 @@ class CdpClient {
   }
 
   close() {
-    try { this.socket?.close() } catch {}
+    this.socket?.close()
   }
-}
-
-async function waitFor(fn, description, timeoutMs = 30_000, intervalMs = 200) {
-  const deadline = Date.now() + timeoutMs
-  let lastError
-  while (Date.now() < deadline) {
-    try {
-      const result = await fn()
-      if (result) return result
-    } catch (error) {
-      lastError = error
-    }
-    await sleep(intervalMs)
-  }
-  throw new Error(`Timed out waiting for ${description}${lastError ? `: ${lastError.message}` : ''}`)
 }
 
 async function evaluate(client, expression) {
   const result = await client.send('Runtime.evaluate', {
     expression,
-    awaitPromise: true,
     returnByValue: true,
+    awaitPromise: true,
   })
-  if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || 'Runtime.evaluate failed')
+  if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || 'Browser evaluation failed')
   return result.result?.value
 }
 
 async function waitForSelector(client, selector, timeoutMs = 30_000) {
-  return waitFor(async () => evaluate(client, `Boolean(document.querySelector(${JSON.stringify(selector)}))`), selector, timeoutMs)
-}
-
-async function navigate(client, url, readySelector) {
-  await client.send('Page.navigate', { url })
-  await waitFor(async () => {
-    const state = await evaluate(client, 'document.readyState')
-    return state === 'complete' || state === 'interactive'
-  }, `document ready for ${url}`)
-  await waitForSelector(client, readySelector)
+  return waitFor(
+    async () => evaluate(client, `Boolean(document.querySelector(${JSON.stringify(selector)}))`),
+    selector,
+    timeoutMs,
+  )
 }
 
 async function clickButtonContaining(client, text) {
   const expression = `(() => {
-    const target = [...document.querySelectorAll('button')].find((button) => (button.textContent || '').includes(${JSON.stringify(text)}));
+    const target = Array.from(document.querySelectorAll('button')).find((button) => (button.textContent || '').includes(${JSON.stringify(text)}));
     if (!target) return false;
     target.click();
     return true;
   })()`
-  await waitFor(async () => evaluate(client, expression), `button containing ${text}`)
+  const clicked = await waitFor(() => evaluate(client, expression), `button containing ${text}`)
+  if (!clicked) throw new Error(`Could not click button containing ${text}`)
+}
+
+async function navigate(client, url, selector) {
+  await client.send('Page.navigate', { url })
+  await waitFor(
+    async () => (await evaluate(client, 'document.readyState')) === 'complete',
+    `page load ${url}`,
+  )
+  await waitForSelector(client, selector)
+  await sleep(700)
 }
 
 async function setViewport(client, width, height) {
@@ -113,7 +141,10 @@ async function setViewport(client, width, height) {
     height,
     deviceScaleFactor: 1,
     mobile: false,
+    screenWidth: width,
+    screenHeight: height,
   })
+  await sleep(250)
 }
 
 async function screenshot(client, name, width, height) {
