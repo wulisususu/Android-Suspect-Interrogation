@@ -73,3 +73,22 @@ def test_non_question_never_attempts_template_match():
 
     assert result.status is QuestionMatchStatus.NOT_QUESTION
     assert result.matched_question_ids == ()
+
+
+def test_invalid_regex_does_not_break_other_candidates():
+    questions = [
+        QuestionCandidate(id="bad", text="bad", patterns=(r"(",)),
+        QuestionCandidate(id="good", text="何时到现场", patterns=(r"什么时候.*现场",)),
+    ]
+
+    result = match_question("你什么时候到现场的？", questions)
+
+    assert result.status is QuestionMatchStatus.MATCHED
+    assert result.matched_question_ids == ("good",)
+
+
+def test_plain_statement_with_question_word_inside_is_not_promoted_by_suffix_only():
+    assert is_question_utterance("我不知道什么时候到的。") is False
+    assert is_question_utterance("我不清楚是谁一起去的。") is False
+    assert is_question_utterance("我记不清几点到现场。") is False
+    assert is_question_utterance("我没注意他为什么离开。") is False
