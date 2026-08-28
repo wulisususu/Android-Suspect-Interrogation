@@ -1,0 +1,132 @@
+name: RK3588 Voiceprint Diagnostics
+
+on:
+  push:
+    branches:
+      - linux-adaptation
+    paths:
+      - '.github/workflows/rk3588-voiceprint-diagnostics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rk3588-voiceprint-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    name: Diagnose voiceprint capture and VAD
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 8
+    steps:
+      - name: Runtime and audio health
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '--- current release ---'
+          readlink -f /opt/suspect-interrogation/current
+          echo '--- relevant runtime config ---'
+          sudo -n grep -E '^(ALSA_DEVICE|SUSPECT_API_PORT|SUSPECT_SPEECH_SOCKET|SUSPECT_FUNASR_MODEL_ROOT|AI_MODE)=' /etc/suspect-interrogation/runtime.env || true
+          echo '--- API hardware health ---'
+          curl -fsS http://127.0.0.1:18080/health | python3 -m json.tool || true
+          echo '--- enrollment status ---'
+          curl -fsS http://127.0.0.1:18080/api/v1/voiceprints/enrollment/status | python3 -m json.tool || true
+          echo '--- ALSA devices ---'
+          arecord -l || true
+          echo '--- ALSA logical names ---'
+          arecord -L | head -n 120 || true
+          echo '--- mixer capture controls card 1 ---'
+          amixer -c 1 scontents 2>/dev/null | grep -Ei -A8 -B2 'Capture|Mic|ALC' | head -n 220 || true
+
+      - name: Verify negotiated capture format without retaining audio
+        shell: bash
+        run: |
+          set -euo pipefail
+          ALSA_DEVICE="$(sudo -n awk -F= '$1=="ALSA_DEVICE" {print $2}' /etc/suspect-interrogation/runtime.env | tail -n1)"
+          ALSA_DEVICE="${ALSA_DEVICE:-default}"
+          echo "alsa_device=${ALSA_DEVICE}"
+          TMP_RAW="$RUNNER_TEMP/voiceprint-format-probe.raw"
+          rm -f "$TMP_RAW"
+          set +e
+          timeout 2s arecord -D "$ALSA_DEVICE" -f S16_LE -r 16000 -c 1 -t raw --dump-hw-params "$TMP_RAW" 2>&1 | tee "$RUNNER_TEMP/arecord-hw-params.txt"
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "arecord_probe_rc=$rc"
+          if [[ -f "$TMP_RAW" ]]; then
+            bytes="$(stat -c %s "$TMP_RAW")"
+            echo "probe_bytes=$bytes"
+            python3 - "$TMP_RAW" <<'PY'
+          import math, struct, sys
+          p=sys.argv[1]
+          raw=open(p,'rb').read()
+          n=len(raw)//2
+          vals=struct.unpack('<%dh'%n, raw[:n*2]) if n else ()
+          if vals:
+              rms=math.sqrt(sum(v*v for v in vals)/len(vals))
+              peak=max(abs(v) for v in vals)
+              print(f'probe_pcm_ms={len(raw)*1000//32000}')
+              print(f'probe_rms={rms:.2f}')
+              print(f'probe_peak={peak}')
+          else:
+              print('probe_pcm_ms=0')
+          PY
+            rm -f "$TMP_RAW"
+          fi
+
+      - name: Check speech worker and VAD time units on bundled non-user sample
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOCKET=/run/suspect-interrogation/speech.sock
+          PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
+          RELEASE="$(readlink -f /opt/suspect-interrogation/current)"
+          MODEL_ROOT=/opt/suspect-interrogation/models/funasr
+          echo "speech_service=$(systemctl is-active ai-worker.service || true)"
+          if [[ ! -S "$SOCKET" ]]; then
+            echo 'speech_socket=missing'
+            exit 0
+          fi
+          echo 'speech_socket=present'
+          PYTHONPATH="$RELEASE/linux/backend" "$PY" - <<'PY'
+          import json, wave
+          from app.ai.speech.client import SpeechWorkerClient
+          client=SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=60)
+          print('worker_health='+json.dumps(client.health(), ensure_ascii=False, sort_keys=True))
+          wav='/opt/suspect-interrogation/models/funasr/paraformer/example/asr_example.wav'
+          with wave.open(wav,'rb') as w:
+              print(f'sample_rate={w.getframerate()} channels={w.getnchannels()} width={w.getsampwidth()} frames={w.getnframes()}')
+              pcm=w.readframes(w.getnframes())
+              duration_ms=w.getnframes()*1000//w.getframerate()
+          segs=client.speech_segments(pcm, sample_rate=16000)
+          usable=sum(max(0,e-s) for s,e in segs)
+          print(f'known_sample_pcm_ms={duration_ms}')
+          print('known_sample_vad_segments='+json.dumps(segs, ensure_ascii=False))
+          print(f'known_sample_usable_ms={usable}')
+          if segs:
+              print(f'known_sample_max_end_ms={max(e for _,e in segs)}')
+          PY
+
+      - name: Recent enrollment request evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '--- recent API voiceprint requests/errors ---'
+          sudo -n journalctl -u interrogation-api.service --since '2 hours ago' --no-pager \
+            | grep -E 'voiceprints|VOICEPRINT|AUDIO_CAPTURE|speech worker|POST /api/v1/cases/.*/voiceprints' \
+            | tail -n 160 || true
+          echo '--- recent AI worker tail ---'
+          sudo -n journalctl -u ai-worker.service --since '2 hours ago' --no-pager | tail -n 120 || true
+
+      - name: Final safe summary
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          echo '--- service states ---'
+          systemctl is-active interrogation-api.service || true
+          systemctl is-active ai-worker.service || true
+          echo '--- ports ---'
+          sudo -n ss -ltnp 'sport = :18080' || true
+          echo 'VOICEPRINT_DIAGNOSTICS_COMPLETE'
