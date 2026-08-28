@@ -35,6 +35,13 @@ _OPERATIONAL_UTTERANCES = (
     re.compile(r"^(嗯|好|好的|行|知道了|明白了|继续)[。！!]*$"),
 )
 
+_DECLARATIVE_PREFIXES = (
+    "我不知道",
+    "我不清楚",
+    "我记不清",
+    "我没注意",
+)
+
 _QUESTION_CUES = (
     "吗", "么", "呢", "谁", "什么", "何时", "什么时候", "几点", "哪", "哪里", "哪儿",
     "为何", "为什么", "怎么", "怎样", "如何", "是否", "是不是", "有没有", "能否", "可否",
@@ -54,6 +61,8 @@ def is_question_utterance(text: str) -> bool:
     if not normalized:
         return False
     if any(pattern.fullmatch(normalized) for pattern in _OPERATIONAL_UTTERANCES):
+        return False
+    if any(normalized.startswith(prefix) and not normalized.endswith("?") for prefix in _DECLARATIVE_PREFIXES):
         return False
     if "?" in normalized:
         return True
