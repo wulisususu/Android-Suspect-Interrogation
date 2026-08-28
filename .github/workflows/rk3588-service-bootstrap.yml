@@ -1,4 +1,5 @@
 # Production bootstrap is intentionally explicit; workflow-file changes or manual dispatch trigger it.
+# deployment-trigger: 2026-08-28T18:52+08:00
 name: RK3588 Service Bootstrap
 
 on:
