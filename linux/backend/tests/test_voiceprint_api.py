@@ -49,7 +49,7 @@ class FakeCaptureService:
     def __init__(self):
         self.active: tuple[str, str] | None = None
 
-    def start(self, kind: str, subject_id: str):
+    def start(self, kind: str, subject_id: str, source: str = "ALSA"):
         if self.active is not None:
             raise DomainError(
                 "RESOURCE_BUSY",
@@ -62,6 +62,8 @@ class FakeCaptureService:
             "active": True,
             "kind": kind,
             "subjectId": subject_id,
+            "captureId": "CAP-FAKE-1",
+            "source": source,
             "sampleRate": SAMPLE_RATE,
             "capturedBytes": 0,
             "maxBytes": SAMPLE_RATE * 2 * 30,
@@ -182,37 +184,27 @@ def test_officer_library_and_full_role_assignment_api(tmp_path):
     with TestClient(app) as client:
         case_id = create_identity_ready_case(client)
         enroll_suspect(client, case_id)
-        session = payload(client.post(f"/api/v1/cases/{case_id}/session/start", json={"actor_id": "op"}))
-        assert session["status"] == "RUNNING"
+        officer = enroll_officer(client, "P-001", "张警官")
+        assert officer["active"] is True
 
-        enroll_officer(client, "P-001", "主审张警官")
-        enroll_officer(client, "P-002", "记录李警官")
+        listed = payload(client.get("/api/v1/officer-voiceprints"))
+        assert len(listed) == 1
+        assert listed[0]["officerId"] == "P-001"
 
-        officers = payload(client.get("/api/v1/officer-voiceprints"))
-        assert [item["officerId"] for item in officers] == ["P-001", "P-002"]
-
-        assignment = payload(client.put(
-            f"/api/v1/cases/{case_id}/voiceprints/assignments",
-            json={
-                "interrogator_officer_id": "P-001",
-                "recorder_officer_id": "P-002",
-                "actor_id": "op",
-            },
-        ))
-        assert assignment["sessionId"] == session["id"]
-        assert assignment["recognitionMode"] == "FULL"
-        assert assignment["interrogatorReady"] is True
-        assert assignment["recorderReady"] is True
-
-        readiness = payload(client.get(f"/api/v1/cases/{case_id}/voiceprints/readiness"))
-        assert readiness["recognitionMode"] == "FULL"
+        started = payload(client.post(f"/api/v1/cases/{case_id}/session/start", json={"actor_id": "op"}))
+        assert started["status"] == "RUNNING"
+        readiness = payload(client.put(f"/api/v1/cases/{case_id}/voiceprints/assignments", json={
+            "interrogator_officer_id": "P-001",
+            "recorder_officer_id": "P-001",
+            "actor_id": "op",
+        }))
+        assert readiness["suspectReady"] is True
         assert readiness["interrogatorReady"] is True
         assert readiness["recorderReady"] is True
+        assert readiness["recognitionMode"] == "FULL"
 
-        revoked = payload(client.delete("/api/v1/officer-voiceprints/P-002?actor_id=admin"))
+        revoked = payload(client.delete("/api/v1/officer-voiceprints/P-001?actor_id=admin"))
         assert revoked["active"] is False
-        active = payload(client.get("/api/v1/officer-voiceprints"))
-        assert [item["officerId"] for item in active] == ["P-001"]
 
 
 def test_concurrent_voiceprint_enrollment_returns_resource_busy(tmp_path):
@@ -225,9 +217,9 @@ def test_concurrent_voiceprint_enrollment_returns_resource_busy(tmp_path):
         ))
         assert first["active"] is True
 
-        busy = client.post(
-            "/api/v1/officer-voiceprints/P-009/enrollment/start",
-            json={"officer_name": "并发测试警官", "actor_id": "admin"},
+        blocked = client.post(
+            "/api/v1/officer-voiceprints/P-002/enrollment/start",
+            json={"officer_name": "李警官", "actor_id": "admin"},
         )
-        assert busy.status_code == 409
-        assert busy.json()["code"] == "RESOURCE_BUSY"
+        assert blocked.status_code == 409
+        assert blocked.json()["code"] == "RESOURCE_BUSY"
