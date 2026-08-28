@@ -151,11 +151,21 @@ def create_app(
     app.state.hardware_manager = manager
     app.state.hardware_gateway = hardware_gateway
     app.state.asr_capture_service = None
-    app.state.speech_client = SpeechWorkerClient(
+    speech_client = SpeechWorkerClient(
         ai_settings.speech_socket,
         timeout=ai_settings.request_timeout,
     )
-    app.state.voiceprint_capture = AudioCaptureService(manager) if manager is not None else None
+    app.state.speech_client = speech_client
+    app.state.voiceprint_capture = (
+        AudioCaptureService(
+            manager,
+            speech_client=speech_client,
+            max_seconds=300,
+            required_usable_speech_ms=20000,
+        )
+        if manager is not None
+        else None
+    )
     app.state.voiceprint_enrollment_context = {}
     app.state.ai_gateway = ai_gateway or DeterministicAIGateway()
     app.state.websocket_manager = websocket_manager

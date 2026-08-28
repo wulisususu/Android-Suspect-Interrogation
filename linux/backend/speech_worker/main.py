@@ -16,6 +16,7 @@ from app.ai.errors import AIError, ResourceBusyError, WorkerCrashedError
 from app.ai.speech.protocol import ProtocolError, recv_frame, send_frame
 from .funasr_runtime import DEFAULT_MODEL_ROOT, FunASRSpeechRuntime
 from .session import SpeechSession
+from .vad_progress import VadProgressSession
 
 
 DEFAULT_SOCKET_PATH = Path("/run/suspect-interrogation/speech.sock")
@@ -23,7 +24,7 @@ DEFAULT_SOCKET_PATH = Path("/run/suspect-interrogation/speech.sock")
 
 @dataclass
 class _SessionEntry:
-    session: SpeechSession
+    session: Any
     lock: threading.RLock
 
 
@@ -35,6 +36,7 @@ class SpeechWorkerServer:
         self._owned_socket: tuple[int, int] | None = None
         self._stop = threading.Event()
         self._sessions: dict[str, _SessionEntry] = {}
+        self._vad_sessions: dict[str, _SessionEntry] = {}
         self._sessions_lock = threading.RLock()
         self._runtime_lock = threading.RLock()
         self._client_threads: set[threading.Thread] = set()
@@ -75,11 +77,7 @@ class SpeechWorkerServer:
                     if self._stop.is_set():
                         break
                     raise
-                thread = threading.Thread(
-                    target=self._handle_client_thread,
-                    args=(conn,),
-                    daemon=True,
-                )
+                thread = threading.Thread(target=self._handle_client_thread, args=(conn,), daemon=True)
                 with self._client_threads_lock:
                     self._client_threads.add(thread)
                 thread.start()
@@ -94,6 +92,7 @@ class SpeechWorkerServer:
         self._join_client_threads()
         with self._sessions_lock:
             self._sessions.clear()
+            self._vad_sessions.clear()
         self._cleanup_socket_path()
 
     def _prepare_socket_path(self) -> None:
@@ -102,29 +101,18 @@ class SpeechWorkerServer:
         except FileNotFoundError:
             return
         if not stat.S_ISSOCK(info.st_mode):
-            raise ResourceBusyError(
-                "speech worker path exists and is not a Unix socket",
-                details={"socket": str(self.socket_path)},
-            )
-
+            raise ResourceBusyError("speech worker path exists and is not a Unix socket", details={"socket": str(self.socket_path)})
         probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         probe.settimeout(0.2)
         try:
             probe.connect(os.fspath(self.socket_path))
         except OSError as exc:
             if exc.errno not in {errno.ECONNREFUSED, errno.ENOENT}:
-                raise ResourceBusyError(
-                    "cannot prove existing speech worker socket is stale",
-                    details={"socket": str(self.socket_path), "errno": exc.errno},
-                ) from exc
+                raise ResourceBusyError("cannot prove existing speech worker socket is stale", details={"socket": str(self.socket_path), "errno": exc.errno}) from exc
         else:
-            raise ResourceBusyError(
-                "an active speech worker is already listening on the Unix socket",
-                details={"socket": str(self.socket_path)},
-            )
+            raise ResourceBusyError("an active speech worker is already listening on the Unix socket", details={"socket": str(self.socket_path)})
         finally:
             probe.close()
-
         self.socket_path.unlink(missing_ok=True)
 
     def _handle_client_thread(self, conn: socket.socket) -> None:
@@ -144,31 +132,13 @@ class SpeechWorkerServer:
             result = self._dispatch(request)
             response = {"request_id": request_id, "ok": True, "result": result}
         except AIError as exc:
-            response = {
-                "request_id": request_id,
-                "ok": False,
-                "error": {
-                    "code": exc.code,
-                    "message": exc.message,
-                    "details": dict(exc.details),
-                },
-            }
+            response = {"request_id": request_id, "ok": False, "error": {"code": exc.code, "message": exc.message, "details": dict(exc.details)}}
         except ProtocolError as exc:
             response = self._error_response(request_id, "WORKER_CRASHED", str(exc), {})
         except (KeyError, TypeError, ValueError, binascii.Error) as exc:
-            response = self._error_response(
-                request_id,
-                "AI_ERROR",
-                str(exc),
-                {"error_type": type(exc).__name__},
-            )
+            response = self._error_response(request_id, "AI_ERROR", str(exc), {"error_type": type(exc).__name__})
         except Exception as exc:
-            response = self._error_response(
-                request_id,
-                "WORKER_CRASHED",
-                "speech worker request failed unexpectedly",
-                {"error_type": type(exc).__name__},
-            )
+            response = self._error_response(request_id, "WORKER_CRASHED", "speech worker request failed unexpectedly", {"error_type": type(exc).__name__})
         try:
             send_frame(conn, response)
         except OSError:
@@ -181,6 +151,7 @@ class SpeechWorkerServer:
                 health = dict(self.runtime.health())
             with self._sessions_lock:
                 health["sessions"] = len(self._sessions)
+                health["vad_progress_sessions"] = len(self._vad_sessions)
             return health
 
         if op == "open_session":
@@ -188,22 +159,15 @@ class SpeechWorkerServer:
             sample_rate = int(request.get("sample_rate") or 16000)
             with self._sessions_lock:
                 if session_id in self._sessions:
-                    raise ResourceBusyError(
-                        "speech session is already open",
-                        details={"session_id": session_id},
-                    )
-                self._sessions[session_id] = _SessionEntry(
-                    session=SpeechSession(session_id, sample_rate, self.runtime),
-                    lock=threading.RLock(),
-                )
+                    raise ResourceBusyError("speech session is already open", details={"session_id": session_id})
+                self._sessions[session_id] = _SessionEntry(SpeechSession(session_id, sample_rate, self.runtime), threading.RLock())
             return {"session_id": session_id, "sample_rate": sample_rate}
 
         if op == "push_pcm":
             session_id = self._required_session_id(request)
-            pcm = self._decode_pcm(request)
             entry = self._session_entry(session_id)
             with entry.lock, self._runtime_lock:
-                events = entry.session.push_pcm(pcm)
+                events = entry.session.push_pcm(self._decode_pcm(request))
             return {"events": [event.to_dict() for event in events]}
 
         if op == "finalize_session":
@@ -214,14 +178,33 @@ class SpeechWorkerServer:
             return {"events": [event.to_dict() for event in events]}
 
         if op == "close_session":
+            self._pop_session(self._sessions, self._required_session_id(request), "speech")
+            return {}
+
+        if op == "open_vad_session":
             session_id = self._required_session_id(request)
+            sample_rate = int(request.get("sample_rate") or 16000)
             with self._sessions_lock:
-                entry = self._sessions.pop(session_id, None)
-            if entry is None:
-                raise AIError(
-                    "speech session is not open",
-                    details={"session_id": session_id},
-                )
+                if session_id in self._vad_sessions:
+                    raise ResourceBusyError("VAD progress session is already open", details={"session_id": session_id})
+                session = VadProgressSession(session_id, sample_rate, self.runtime)
+                self._vad_sessions[session_id] = _SessionEntry(session, threading.RLock())
+            return session._snapshot()
+
+        if op == "push_vad_pcm":
+            session_id = self._required_session_id(request)
+            entry = self._vad_session_entry(session_id)
+            with entry.lock, self._runtime_lock:
+                return entry.session.push_pcm(self._decode_pcm(request))
+
+        if op == "finalize_vad_session":
+            session_id = self._required_session_id(request)
+            entry = self._vad_session_entry(session_id)
+            with entry.lock, self._runtime_lock:
+                return entry.session.finalize()
+
+        if op == "close_vad_session":
+            self._pop_session(self._vad_sessions, self._required_session_id(request), "VAD progress")
             return {}
 
         if op == "speech_segments":
@@ -237,23 +220,11 @@ class SpeechWorkerServer:
             with self._runtime_lock:
                 return self.runtime.speaker_embedding(pcm, sample_rate)
 
-        raise AIError(
-            f"unknown speech operation: {op}",
-            details={"op": op},
-        )
+        raise AIError(f"unknown speech operation: {op}", details={"op": op})
 
     @staticmethod
-    def _error_response(
-        request_id: str,
-        code: str,
-        message: str,
-        details: dict[str, Any],
-    ) -> dict[str, Any]:
-        return {
-            "request_id": request_id,
-            "ok": False,
-            "error": {"code": code, "message": message, "details": details},
-        }
+    def _error_response(request_id: str, code: str, message: str, details: dict[str, Any]) -> dict[str, Any]:
+        return {"request_id": request_id, "ok": False, "error": {"code": code, "message": message, "details": details}}
 
     @staticmethod
     def _required_session_id(request: dict[str, Any]) -> str:
@@ -276,10 +247,21 @@ class SpeechWorkerServer:
         with self._sessions_lock:
             entry = self._sessions.get(session_id)
         if entry is None:
-            raise AIError(
-                "speech session is not open",
-                details={"session_id": session_id},
-            )
+            raise AIError("speech session is not open", details={"session_id": session_id})
+        return entry
+
+    def _vad_session_entry(self, session_id: str) -> _SessionEntry:
+        with self._sessions_lock:
+            entry = self._vad_sessions.get(session_id)
+        if entry is None:
+            raise AIError("VAD progress session is not open", details={"session_id": session_id})
+        return entry
+
+    def _pop_session(self, collection: dict[str, _SessionEntry], session_id: str, label: str) -> _SessionEntry:
+        with self._sessions_lock:
+            entry = collection.pop(session_id, None)
+        if entry is None:
+            raise AIError(f"{label} session is not open", details={"session_id": session_id})
         return entry
 
     def _close_listener(self) -> None:
@@ -296,9 +278,8 @@ class SpeechWorkerServer:
         with self._client_threads_lock:
             threads = list(self._client_threads)
         for thread in threads:
-            if thread is current:
-                continue
-            thread.join(timeout=1.0)
+            if thread is not current:
+                thread.join(timeout=1.0)
 
     def _cleanup_socket_path(self) -> None:
         owned = self._owned_socket

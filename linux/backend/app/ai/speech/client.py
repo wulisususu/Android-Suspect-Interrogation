@@ -64,6 +64,26 @@ class SpeechWorkerClient:
     def close_session(self, session_id: str) -> None:
         self._request("close_session", session_id=session_id)
 
+    def open_vad_session(self, session_id: str, sample_rate: int = 16000) -> dict[str, Any]:
+        return self._require_dict(
+            self._request("open_vad_session", session_id=session_id, sample_rate=int(sample_rate))
+        )
+
+    def push_vad_pcm(self, session_id: str, pcm: bytes) -> dict[str, Any]:
+        return self._require_dict(
+            self._request(
+                "push_vad_pcm",
+                session_id=session_id,
+                pcm_b64=base64.b64encode(pcm).decode("ascii"),
+            )
+        )
+
+    def finalize_vad_session(self, session_id: str) -> dict[str, Any]:
+        return self._require_dict(self._request("finalize_vad_session", session_id=session_id))
+
+    def close_vad_session(self, session_id: str) -> None:
+        self._request("close_vad_session", session_id=session_id)
+
     def speech_segments(self, pcm: bytes, sample_rate: int = 16000) -> list[list[int]]:
         result = self._require_dict(
             self._request(
