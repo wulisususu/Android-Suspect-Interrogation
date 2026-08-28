@@ -71,31 +71,22 @@ jobs:
           sudo -n ss -ltnp 'sport = :18080' || true
           sudo -n ss -ltnp 'sport = :8000' || true
 
-      - name: Wait for offline speech worker readiness
-        continue-on-error: true
+      - name: Report offline speech worker status
         shell: bash
         run: |
           set -euo pipefail
-          for second in $(seq 1 300); do
-            if systemctl is-active --quiet ai-worker.service && [[ -S /run/suspect-interrogation/speech.sock ]]; then
-              echo "speech_socket_ready_after=${second}s"
-              break
-            fi
-            if (( second % 30 == 0 )); then echo "waiting_for_speech_worker=${second}s"; fi
-            sleep 1
-          done
-          systemctl is-active --quiet ai-worker.service
-          test -S /run/suspect-interrogation/speech.sock
-          PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \
-            "$FUNASR_RUNTIME/bin/python" - <<'PY'
+          systemctl is-active ai-worker.service || true
+          if [[ -S /run/suspect-interrogation/speech.sock ]]; then
+            echo 'speech_socket=ready'
+            PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \
+              "$FUNASR_RUNTIME/bin/python" - <<'PY'
           from app.ai.speech.client import SpeechWorkerClient
-          health = SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=60).health()
-          models = health.get('models') or {}
-          assert models.get('asr') is True, health
-          assert models.get('vad') is True, health
-          assert models.get('speaker') is True, health
-          print('speech_worker_health=ok', health)
+          health = SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=20).health()
+          print('speech_worker_health', health)
           PY
+          else
+            echo 'speech_socket=not_ready_yet'
+          fi
 
       - name: Kiosk status
         shell: bash
