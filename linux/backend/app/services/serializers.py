@@ -1,14 +1,22 @@
 import json
 
 from app.database.models import (
-    AuditLog, Case, DocumentSnapshot, Fact, InterrogationSession, Message,
-    MessageRevision, Person, SignatureRecord, TimelineEvent,
+    AuditLog, Case, CaseQuestion, DocumentSnapshot, Fact, InterrogationSession, Message,
+    MessageRevision, Person, QuestionRound, SignatureRecord, StandardQuestion, TimelineEvent,
 )
 from app.domain.enums import WorkflowState
 
 
 def _iso(value):
     return value.isoformat() if value else None
+
+
+def _json_list(value: str) -> list[str]:
+    try:
+        loaded = json.loads(value or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(item) for item in loaded] if isinstance(loaded, list) else []
 
 
 def legacy_case_state(workflow_state: str) -> str:
@@ -100,3 +108,53 @@ def signature_dict(row: SignatureRecord) -> dict:
     return {"id": row.id, "caseId": row.case_id, "sessionId": row.session_id, "snapshotId": row.snapshot_id,
             "signerRole": row.signer_role, "signerName": row.signer_name, "status": row.status,
             "createdAt": _iso(row.created_at)}
+
+
+def standard_question_dict(row: StandardQuestion) -> dict:
+    return {
+        "id": row.id,
+        "text": row.text,
+        "category": row.category,
+        "regexPatterns": _json_list(row.regex_patterns_json),
+        "aliases": _json_list(row.aliases_json),
+        "sortOrder": row.sort_order,
+        "active": bool(row.active),
+        "createdAt": _iso(row.created_at),
+        "updatedAt": _iso(row.updated_at),
+    }
+
+
+def question_round_dict(row: QuestionRound) -> dict:
+    return {
+        "id": row.id,
+        "caseId": row.case_id,
+        "sessionId": row.session_id,
+        "caseQuestionId": row.case_question_id,
+        "roundNo": row.round_no,
+        "actualQuestionText": row.actual_question_text,
+        "officerFragmentId": row.officer_fragment_id,
+        "answerText": row.answer_text,
+        "answerFragmentIds": _json_list(row.answer_fragment_ids_json),
+        "status": row.status,
+        "startedAt": _iso(row.started_at),
+        "endedAt": _iso(row.ended_at),
+        "createdAt": _iso(row.created_at),
+        "updatedAt": _iso(row.updated_at),
+    }
+
+
+def case_question_dict(row: CaseQuestion, *, rounds: list[QuestionRound] | None = None) -> dict:
+    return {
+        "id": row.id,
+        "caseId": row.case_id,
+        "source": row.source,
+        "standardQuestionId": row.standard_question_id,
+        "text": row.text,
+        "regexPatterns": _json_list(row.regex_patterns_json),
+        "aliases": _json_list(row.aliases_json),
+        "sortOrder": row.sort_order,
+        "active": bool(row.active),
+        "rounds": [question_round_dict(item) for item in (rounds or [])],
+        "createdAt": _iso(row.created_at),
+        "updatedAt": _iso(row.updated_at),
+    }
