@@ -156,6 +156,8 @@ def _speech_capability(
 
     state = str(capability.pop("state", "UNAVAILABLE"))
     detail = str(capability.pop("detail", f"{name} capability reported by AI supervisor"))
+    if capability.get("speech_worker") and capability.get("speech_state") == "AVAILABLE":
+        state = "AVAILABLE"
     return _result(state, required=False, detail=detail, **capability)
 
 

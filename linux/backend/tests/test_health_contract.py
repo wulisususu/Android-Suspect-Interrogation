@@ -58,3 +58,22 @@ def test_runtime_capabilities_endpoint_exposes_frontend_contract():
     }
     assert payload["microphone"]["state"] in {"AVAILABLE", "NOT_CONFIGURED", "ERROR"}
     assert payload["asr"]["state"] in {"AVAILABLE", "NOT_CONFIGURED", "ERROR", "MODEL_NOT_INSTALLED"}
+
+
+def test_speech_capability_prefers_ready_worker_over_stopped_registry_worker():
+    from app.health import _speech_capability
+
+    class Supervisor:
+        def capabilities(self):
+            return {
+                "asr": {
+                    "state": "STOPPED",
+                    "detail": "registry worker is idle",
+                    "speech_worker": True,
+                    "speech_state": "AVAILABLE",
+                }
+            }
+
+    result = _speech_capability("asr", supervisor=Supervisor(), calibration={"state": "NOT_CONFIGURED"})
+    assert result["state"] == "AVAILABLE"
+    assert result["speech_state"] == "AVAILABLE"
