@@ -31,6 +31,15 @@ upsert_runtime_env() {
   fi
 }
 
+configure_rk3588_audio() {
+  command -v amixer >/dev/null 2>&1 || return 0
+  amixer -c 1 sget "ALC Capture Function" >/dev/null 2>&1 || return 0
+  amixer -c 1 sset "ALC Capture Function" Stereo >/dev/null
+  amixer -c 1 sset "ALC Capture Max PGA" 7 >/dev/null
+  amixer -c 1 sset "ALC Capture Min PGA" 0 >/dev/null
+  command -v alsactl >/dev/null 2>&1 && alsactl store 1 || true
+}
+
 install_runtime() {
   require_root
   if [[ "$SUSPECT_DRY_RUN" != "1" ]]; then
@@ -58,6 +67,8 @@ install_runtime() {
     upsert_runtime_env "SUSPECT_XVECTOR_LEGACY_PYTHON" "/opt/suspect-interrogation/runtime/xvector-legacy-env/bin/python"
     upsert_runtime_env "SUSPECT_SPEECH_SOCKET" "/run/suspect-interrogation/speech.sock"
     upsert_runtime_env "AI_MODE" "real"
+    upsert_runtime_env "ALSA_DEVICE" "plughw:1,0"
+    configure_rk3588_audio
     chown root:"$SUSPECT_SERVICE_GROUP" "$SUSPECT_ETC_DIR/runtime.env"
     chmod 0640 "$SUSPECT_ETC_DIR/runtime.env"
     install -m 0644 "$REPO_ROOT/systemd/interrogation-api.service" "$SUSPECT_SYSTEMD_DIR/interrogation-api.service"
