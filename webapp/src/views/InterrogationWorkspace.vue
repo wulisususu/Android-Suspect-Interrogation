@@ -4,16 +4,24 @@ import AiSettingsPanel from '../components/AiSettingsPanel.vue'
 import CaseOverviewPage from '../components/CaseOverviewPage.vue'
 import CaseProfilePage from '../components/CaseProfilePage.vue'
 import DeviceStatusBar from '../components/DeviceStatusBar.vue'
-import InterrogationPage from '../components/InterrogationPage.vue'
 import SessionControls from '../components/SessionControls.vue'
+import TemplateDrivenInterrogationPage from '../components/TemplateDrivenInterrogationPage.vue'
 import VoiceprintPreparationPanel, { voiceprintStartGuard } from '../components/VoiceprintPreparationPanel.vue'
 import { useInterrogationStore } from '../stores/interrogation'
+import { useTemplateInterrogationStore } from '../stores/templateInterrogation'
+import type {
+  CaseQuestionCreateInput,
+  CaseQuestionUpdateInput,
+  PendingResolution,
+  RoundReassociateInput,
+} from '../types/templateInterrogation'
 
 type WorkspacePage = 'profile' | 'overview' | 'interrogation'
 
 const props = defineProps<{ caseId: string }>()
 defineEmits<{ back: [] }>()
 const store = useInterrogationStore()
+const templateStore = useTemplateInterrogationStore()
 const activePage = ref<WorkspacePage>('profile')
 const voiceprintGuard = computed(() => voiceprintStartGuard(store.voiceprintReadiness))
 
@@ -22,17 +30,31 @@ watch(
   async (nextCaseId) => {
     activePage.value = 'profile'
     store.resetCaseContext(nextCaseId)
+    templateStore.reset(nextCaseId)
     await store.initialize()
+    if (store.caseId !== nextCaseId) return
+    try {
+      await templateStore.initialize(nextCaseId)
+    } catch {
+      store.feedback(templateStore.error || '模板笔录工作台加载失败', true)
+    }
   },
   { immediate: true },
 )
 
 onUnmounted(() => {
   if (store.caseId === props.caseId) store.resetCaseContext()
+  if (templateStore.caseId === props.caseId) templateStore.reset()
 })
 
 async function refreshCaseWorkspace() {
   await store.initialize()
+  if (!store.caseId) return
+  try {
+    await templateStore.initialize(store.caseId)
+  } catch {
+    store.feedback(templateStore.error || '模板笔录工作台刷新失败', true)
+  }
 }
 
 function openInterrogation() {
@@ -44,8 +66,48 @@ function openInterrogation() {
 async function generateCaseOverview() {
   await store.generateCaseAnalysis()
   if (store.caseAiError) return
-  await store.initialize()
+  await refreshCaseWorkspace()
   activePage.value = 'overview'
+}
+
+async function runTemplateAction(action: () => Promise<unknown>) {
+  try {
+    await action()
+  } catch {
+    store.feedback(templateStore.error || '模板笔录操作失败', true)
+  }
+}
+
+function loadQuestionLibrary(category?: string) {
+  return runTemplateAction(() => templateStore.loadQuestionLibrary(category))
+}
+
+function createFormalQuestion(input: CaseQuestionCreateInput) {
+  return runTemplateAction(() => templateStore.createCaseQuestion(input))
+}
+
+function updateFormalQuestion(questionId: string, input: CaseQuestionUpdateInput) {
+  return runTemplateAction(() => templateStore.updateCaseQuestion(questionId, input))
+}
+
+function reorderFormalQuestions(questionIds: string[]) {
+  return runTemplateAction(() => templateStore.reorderCaseQuestions(questionIds))
+}
+
+function resolvePendingQuestion(pendingId: string, resolution: PendingResolution) {
+  return runTemplateAction(() => templateStore.resolvePendingQuestion(pendingId, resolution))
+}
+
+function reassociateFormalRound(roundId: string, input: RoundReassociateInput) {
+  return runTemplateAction(() => templateStore.reassociateRound(roundId, input))
+}
+
+function updateFormalAnswer(roundId: string, answerText: string) {
+  return runTemplateAction(() => templateStore.updateRoundAnswer(roundId, answerText))
+}
+
+function saveFormalQuestionToLibrary(questionId: string) {
+  return runTemplateAction(() => templateStore.saveQuestionToLibrary(questionId))
 }
 </script>
 
@@ -139,24 +201,35 @@ async function generateCaseOverview() {
             @finish="store.finishSession"
             @next-stage="store.nextStage"
           />
-          <InterrogationPage
+
+          <TemplateDrivenInterrogationPage
             :case-id="store.caseId"
             :summary="store.caseSummary"
-            :facts="store.facts"
             :session="store.session"
-            :messages="store.transcript"
             :capture="store.capture"
             :can-record="store.canRecord"
             :native-capture-available="store.nativeCaptureAvailable"
             :capture-busy="store.captureBusy"
             :capture-elapsed-ms="store.captureElapsedMs"
-            :capture-insertion-receipt="store.captureInsertionReceipt"
             :ai-busy="store.caseAiBusy"
             :ai-error="store.caseAiError"
+            :workspace="templateStore.workspace"
+            :dialogue-history="templateStore.dialogueHistory"
+            :question-library="templateStore.questionLibrary"
+            :template-busy="templateStore.loading || templateStore.mutating"
+            :template-error="templateStore.error"
             @saved="refreshCaseWorkspace"
             @capture-start="store.startCapture"
             @capture-stop="store.stopCapture($event)"
             @generate-ai="generateCaseOverview"
+            @load-library="loadQuestionLibrary"
+            @create-question="createFormalQuestion"
+            @update-question="updateFormalQuestion"
+            @reorder-questions="reorderFormalQuestions"
+            @resolve-pending="resolvePendingQuestion"
+            @reassociate-round="reassociateFormalRound"
+            @update-answer="updateFormalAnswer"
+            @save-library="saveFormalQuestionToLibrary"
           />
         </div>
       </section>
