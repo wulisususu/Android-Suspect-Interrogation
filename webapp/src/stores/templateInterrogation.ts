@@ -94,6 +94,22 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     dialogueHistory.value = [...dialogueHistory.value, fragment].sort(dialogueOrder)
   }
 
+  function scheduleWorkspaceRefresh(scope = currentScope(), delayMs = 90) {
+    if (!isCurrentScope(scope)) return
+    clearScheduledRefresh()
+    workspaceRefreshTimer = setTimeout(() => {
+      workspaceRefreshTimer = undefined
+      if (!isCurrentScope(scope)) return
+      void refreshWorkspace(scope).catch(() => undefined)
+    }, delayMs)
+  }
+
+  function handleAsrFragment(fragment: TemporaryAsrFragment, scope = currentScope()) {
+    if (!isCurrentScope(scope) || fragment.caseId !== scope.caseId) return
+    upsertDialogue(fragment, scope)
+    scheduleWorkspaceRefresh(scope)
+  }
+
   function attachCaptureBridge(scope: StoreScope) {
     captureBridgeStop?.()
     const interrogation = useInterrogationStore()
@@ -101,7 +117,7 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
       () => interrogation.capture.fragments,
       (fragments) => {
         if (!isCurrentScope(scope)) return
-        for (const fragment of fragments) upsertDialogue(fragment, scope)
+        for (const fragment of fragments) handleAsrFragment(fragment, scope)
       },
       { deep: true, immediate: true },
     )
@@ -153,29 +169,13 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     }
   }
 
-  function scheduleWorkspaceRefresh(delayMs = 90) {
-    clearScheduledRefresh()
-    const scope = currentScope()
-    workspaceRefreshTimer = setTimeout(() => {
-      workspaceRefreshTimer = undefined
-      if (!isCurrentScope(scope)) return
-      void refreshWorkspace(scope).catch(() => undefined)
-    }, delayMs)
-  }
-
-  function handleAsrFragment(fragment: TemporaryAsrFragment) {
-    const scope = currentScope()
-    upsertDialogue(fragment, scope)
-    scheduleWorkspaceRefresh()
-  }
-
-  async function runMutation(action: () => Promise<unknown>) {
+  async function runMutation(action: (scope: StoreScope) => Promise<unknown>) {
     if (mutating.value) return
     const scope = currentScope()
     mutating.value = true
     error.value = ''
     try {
-      await action()
+      await action(scope)
       if (!isCurrentScope(scope)) return
       await loadTemplateWorkspace(scope)
     } catch (err) {
@@ -187,37 +187,37 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
   }
 
   async function createCaseQuestion(input: CaseQuestionCreateInput) {
-    await runMutation(() => createCaseQuestionApi(caseId.value, input))
+    await runMutation((scope) => createCaseQuestionApi(scope.caseId, input))
   }
 
   async function updateCaseQuestion(questionId: string, input: CaseQuestionUpdateInput) {
-    await runMutation(() => updateCaseQuestionApi(caseId.value, questionId, input))
+    await runMutation((scope) => updateCaseQuestionApi(scope.caseId, questionId, input))
   }
 
   async function reorderCaseQuestions(questionIds: string[]) {
-    await runMutation(() => reorderCaseQuestionsApi(caseId.value, questionIds))
+    await runMutation((scope) => reorderCaseQuestionsApi(scope.caseId, questionIds))
   }
 
   async function resolvePendingQuestion(pendingId: string, resolution: PendingResolution) {
-    await runMutation(async () => {
+    await runMutation(async (scope) => {
       if (resolution.action === 'ADD') {
-        await addPendingQuestion(caseId.value, pendingId, resolution.afterQuestionId)
+        await addPendingQuestion(scope.caseId, pendingId, resolution.afterQuestionId)
         return
       }
       if (resolution.action === 'LINK') {
-        await linkPendingQuestion(caseId.value, pendingId, resolution.caseQuestionId, resolution.roundMode)
+        await linkPendingQuestion(scope.caseId, pendingId, resolution.caseQuestionId, resolution.roundMode)
         return
       }
-      await ignorePendingQuestion(caseId.value, pendingId)
+      await ignorePendingQuestion(scope.caseId, pendingId)
     })
   }
 
   async function reassociateRound(roundId: string, input: RoundReassociateInput) {
-    await runMutation(() => reassociateRoundApi(caseId.value, roundId, input))
+    await runMutation((scope) => reassociateRoundApi(scope.caseId, roundId, input))
   }
 
   async function updateRoundAnswer(roundId: string, answerText: string) {
-    await runMutation(() => updateRoundAnswerApi(caseId.value, roundId, answerText))
+    await runMutation((scope) => updateRoundAnswerApi(scope.caseId, roundId, answerText))
   }
 
   async function loadQuestionLibrary(category?: string) {
@@ -232,10 +232,10 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
   }
 
   async function saveQuestionToLibrary(questionId: string, category = '通用') {
-    await runMutation(async () => {
-      await saveQuestionToLibraryApi(caseId.value, questionId, category)
+    await runMutation(async (scope) => {
+      await saveQuestionToLibraryApi(scope.caseId, questionId, category)
       const rows = await fetchQuestionLibrary()
-      if (caseId.value) questionLibrary.value = rows
+      if (isCurrentScope(scope)) questionLibrary.value = rows
     })
   }
 
