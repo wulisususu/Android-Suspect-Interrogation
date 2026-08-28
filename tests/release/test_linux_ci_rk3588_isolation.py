@@ -20,3 +20,20 @@ def test_rk3588_checkout_falls_back_to_sha_pinned_source_archive():
     assert "codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" in workflow
     assert "--strip-components=1" in workflow
     assert "source archive root does not match requested SHA" in workflow
+
+
+def test_kiosk_visual_qa_requires_populated_template_and_raw_asr_fixture():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    screenshot_script = (
+        ROOT / "scripts" / "ci" / "capture-kiosk-screenshots.mjs"
+    ).read_text(encoding="utf-8")
+
+    expected_text = (
+        "你什么时候到现场？",
+        "晚上八点左右。",
+        "你把钥匙放到哪里去了？",
+        "我放在门口鞋柜里了。",
+    )
+    for value in expected_text:
+        assert value in workflow
+        assert value in screenshot_script

@@ -8,6 +8,16 @@ const caseId = process.env.KIOSK_CASE_ID || ''
 const outputDir = process.env.KIOSK_SCREENSHOT_DIR || 'artifacts/kiosk-visual-qa'
 const debugPort = Number(process.env.CHROME_DEBUG_PORT || 9222)
 
+const visualFixture = {
+  formalQuestion: '你什么时候到现场？',
+  formalAnswer: '晚上八点左右。',
+  rawOfficerMatched: '你什么时候到现场的？',
+  rawOfficerUnmatched: '你把钥匙放到哪里去了？',
+  rawSuspectMatched: '晚上八点左右。',
+  rawSuspectUnmatched: '我放在门口鞋柜里了。',
+  pendingTitle: '未匹配正式笔录问题',
+}
+
 if (!caseId) {
   console.error('KIOSK_CASE_ID is required')
   process.exit(2)
@@ -207,13 +217,29 @@ try {
   await waitForSelector(client, '.formal-template-panel')
   await waitForSelector(client, '.live-dialogue-panel')
   await sleep(700)
+  const fixturePresent = await waitFor(() => evaluate(client, `(() => {
+    const fixture = ${JSON.stringify(visualFixture)}
+    const questionVisible = Array.from(document.querySelectorAll('.formal-question-editor textarea'))
+      .some((item) => item.value.includes(fixture.formalQuestion))
+    const answerVisible = Array.from(document.querySelectorAll('.formal-answer-editor textarea'))
+      .some((item) => item.value.includes(fixture.formalAnswer))
+    const rawText = Array.from(document.querySelectorAll('.dialogue-bubble'))
+      .map((item) => item.textContent || '').join('\\n')
+    const rawVisible = [
+      fixture.rawOfficerMatched,
+      fixture.rawOfficerUnmatched,
+      fixture.rawSuspectMatched,
+      fixture.rawSuspectUnmatched,
+    ].every((text) => rawText.includes(text))
+    const pendingCard = Array.from(document.querySelectorAll('.pending-resolution-card'))
+      .some((item) => (item.textContent || '').includes(fixture.pendingTitle)
+        && (item.textContent || '').includes('加入本案笔录')
+        && (item.textContent || '').includes('忽略'))
+    return questionVisible && answerVisible && rawVisible && pendingCard
+  })()`), 'populated formal template, raw ASR dialogue, and unmatched-question action card')
+  if (!fixturePresent) throw new Error('Kiosk visual QA fixture is incomplete')
   await screenshot(client, 'interrogation', 1920, 1080)
   await screenshot(client, 'interrogation', 1920, 900)
-
-  const bodyText = await evaluate(client, 'document.body.innerText')
-  if (!String(bodyText).includes('正式笔录') || !String(bodyText).includes('实时语音对话')) {
-    throw new Error('Template interrogation two-column smoke assertion failed')
-  }
 } finally {
   client?.close()
   browser.kill('SIGTERM')

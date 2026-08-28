@@ -195,20 +195,62 @@ jobs:
           engine.dispose()
           PY
 
-          curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/session/start" \
-            -H 'Content-Type: application/json' -d '{}' >/dev/null
-          curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/messages" \
+          curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/questions" \
             -H 'Content-Type: application/json' \
-            -d '{"speaker":"民警","text":"请说明你于昨晚二十时至二十一时之间的活动情况。"}' >/dev/null
-          curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/messages" \
-            -H 'Content-Type: application/json' \
-            -d '{"speaker":"嫌疑人","text":"我当时在住处附近，随后去了便利店，具体时间大约是二十时三十分。"}' >/dev/null
-          curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/messages" \
-            -H 'Content-Type: application/json' \
-            -d '{"speaker":"民警","text":"是否有人能够证明你的上述活动？"}' >/dev/null
-          curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/messages" \
-            -H 'Content-Type: application/json' \
-            -d '{"speaker":"嫌疑人","text":"便利店店员应该见过我，店内监控也可以核实。"}' >/dev/null
+            -d '{"text":"你什么时候到现场？","source":"CASE","regexPatterns":["什么时候.*现场"]}' >/dev/null
+          SESSION_RESPONSE=$(curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/session/start" \
+            -H 'Content-Type: application/json' -d '{}')
+          SESSION_ID=$(printf '%s' "$SESSION_RESPONSE" | python -c 'import json,sys; p=json.load(sys.stdin); d=p.get("data",p); print(d["id"])')
+
+          FRAGMENT_IDS=$(CASE_ID="$CASE_ID" SESSION_ID="$SESSION_ID" python - <<'PY'
+          import os
+
+          from app.database.session import make_engine, make_session_factory
+          from app.repositories import asr_fragments as asr_repo
+
+          engine = make_engine(f"sqlite:///{os.environ['SUSPECT_DB_PATH']}")
+          session_factory = make_session_factory(engine)
+          with session_factory() as db:
+              capture = asr_repo.create_capture_session(
+                  db,
+                  case_id=os.environ["CASE_ID"],
+                  interrogation_session_id=os.environ["SESSION_ID"],
+                  sample_rate=16_000,
+              )
+              db.commit()
+              fragment_ids = []
+              for ordinal, speaker, text in (
+                  (1, "INTERROGATOR", "你什么时候到现场的？"),
+                  (2, "SUSPECT", "晚上八点左右。"),
+                  (3, "INTERROGATOR", "你把钥匙放到哪里去了？"),
+                  (4, "SUSPECT", "我放在门口鞋柜里了。"),
+              ):
+                  fragment = asr_repo.create_fragment(
+                      db,
+                      capture_session_id=capture.id,
+                      case_id=os.environ["CASE_ID"],
+                      ordinal=ordinal,
+                      started_at_ms=ordinal * 1_000,
+                      ended_at_ms=ordinal * 1_000 + 600,
+                      raw_text=text,
+                      speaker=speaker,
+                      speaker_source="MANUAL",
+                      voiceprint_verified=True,
+                      low_confidence=False,
+                      model_id="visual-qa-asr",
+                      model_version="ci-fixture",
+                  )
+                  db.flush()
+                  fragment_ids.append(fragment.id)
+              db.commit()
+          engine.dispose()
+          print(" ".join(fragment_ids))
+          PY
+          )
+          for FRAGMENT_ID in $FRAGMENT_IDS; do
+            curl -fsS -X POST "http://127.0.0.1:8080/api/v1/cases/${CASE_ID}/speech-fragments/${FRAGMENT_ID}/process" \
+              -H 'Content-Type: application/json' -d '{}' >/dev/null
+          done
 
           KIOSK_URL=http://127.0.0.1:5173 KIOSK_CASE_ID="$CASE_ID" node scripts/ci/capture-kiosk-screenshots.mjs
           curl -L --fail --retry 3 --connect-timeout 15 \
