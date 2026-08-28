@@ -5,6 +5,8 @@ import formalSource from './FormalTemplatePanel.vue?raw'
 import dialogueSource from './LiveDialoguePanel.vue?raw'
 import preparationSource from './QuestionPreparationPanel.vue?raw'
 
+const componentModules = import.meta.glob('./*.vue')
+
 describe('template-driven interrogation C-page contract', () => {
   it('renders the formal transcript and live dialogue as explicit sibling panels', () => {
     expect(pageSource).toContain('template-interrogation-grid')
@@ -31,5 +33,9 @@ describe('template-driven interrogation C-page contract', () => {
     expect(preparationSource).toContain('手动输入')
     expect(preparationSource).toContain('语音输入')
     expect(preparationSource).toContain('加入本案问题')
+  })
+
+  it('retires the legacy monolithic interrogation C-page', () => {
+    expect(Object.keys(componentModules)).not.toContain('./InterrogationPage.vue')
   })
 })
