@@ -3,9 +3,11 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.orm import Session
 
-from app.database.models import Case
+from app.database.models import Case, PendingQuestion
 from app.database.session import init_database, make_engine
 from app.domain.errors import DomainError
+from app.repositories.question_rounds import active_pending, active_round
+from app.services.serializers import pending_question_dict
 from app.services.template_workspace_service import TemplateWorkspaceService
 
 
@@ -101,3 +103,30 @@ def test_update_can_replace_regex_patterns_without_losing_aliases(db, case):
 
     assert updated["regexPatterns"] == [r"几点.*现场", r"何时.*现场"]
     assert updated["aliases"] == ["你何时到现场？"]
+
+
+def test_transition_repository_queries_default_to_none(db, case):
+    assert active_round(db, case.id, "SESSION-MISSING") is None
+    assert active_pending(db, case.id, "SESSION-MISSING") is None
+
+
+def test_pending_serializer_exposes_buffer_fields_without_business_marks():
+    row = PendingQuestion(
+        id="P-1",
+        case_id="CASE-1",
+        session_id="S-1",
+        officer_fragment_id="F-1",
+        question_text="你为什么又回去了？",
+        match_status="UNMATCHED",
+        candidate_question_ids_json="[]",
+        buffered_answer_text="因为我去拿东西。",
+        buffered_fragment_ids_json='["F-2"]',
+        status="PENDING",
+    )
+
+    data = pending_question_dict(row)
+
+    assert data["questionText"] == "你为什么又回去了？"
+    assert data["bufferedAnswerText"] == "因为我去拿东西。"
+    assert data["bufferedFragmentIds"] == ["F-2"]
+    assert "mark" not in data
