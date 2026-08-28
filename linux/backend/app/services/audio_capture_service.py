@@ -54,14 +54,11 @@ class AudioCaptureService:
             raise DomainError("CAPTURE_SUBJECT_REQUIRED", "录音对象不能为空", 400)
 
         with self._lock:
-            if self._capture is not None:
-                active = self._capture
-                raise DomainError(
-                    "RESOURCE_BUSY",
-                    "已有声纹录音正在进行",
-                    409,
-                    data={"kind": active.kind, "subjectId": active.subject_id},
-                )
+            active = self._capture
+        if active is not None:
+            self.stop(active.kind, active.subject_id)
+
+        with self._lock:
             capture = _Capture(kind=kind, subject_id=subject_id, max_bytes=self.max_bytes)
             try:
                 self.device_manager.start_record()

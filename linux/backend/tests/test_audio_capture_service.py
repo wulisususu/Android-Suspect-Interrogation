@@ -1,6 +1,5 @@
 import threading
 import time
-
 import pytest
 
 from app.domain.errors import DomainError
@@ -64,17 +63,18 @@ def test_capture_start_stop_collects_pcm_and_releases_recorder():
     assert service.status()["active"] is False
 
 
-def test_concurrent_capture_is_rejected_with_resource_busy():
+def test_new_capture_replaces_and_releases_a_stale_capture():
     manager = FakeAudioManager(frames=[])
     service = AudioCaptureService(manager, sample_rate=16000, max_seconds=30)
     service.start("suspect", "CASE-1")
-    try:
-        with pytest.raises(DomainError) as exc_info:
-            service.start("officer", "P-001")
-        assert exc_info.value.code == "RESOURCE_BUSY"
-        assert exc_info.value.status_code == 409
-    finally:
-        service.stop("suspect", "CASE-1")
+
+    replacement = service.start("officer", "P-001")
+
+    assert replacement["kind"] == "officer"
+    assert replacement["subjectId"] == "P-001"
+    assert manager.started == 2
+    assert manager.stopped == 1
+    service.stop("officer", "P-001")
 
 
 def test_capture_stops_automatically_at_max_pcm_bytes():
