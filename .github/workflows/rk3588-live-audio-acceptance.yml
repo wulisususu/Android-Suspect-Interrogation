@@ -1,0 +1,128 @@
+name: RK3588 Live Audio Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      capture_seconds:
+        description: Seconds to capture from the real microphone after the countdown
+        required: true
+        default: "12"
+        type: string
+      alsa_device:
+        description: ALSA capture device passed to arecord
+        required: true
+        default: "default"
+        type: string
+      require_asr_text:
+        description: Fail unless the live FunASR stream produces non-empty final text
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rk3588-live-audio-acceptance
+  cancel-in-progress: false
+
+jobs:
+  live-audio-acceptance:
+    name: RK3588 real microphone + FunASR acceptance
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: ${{ github.workspace }}/linux/backend
+
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          clean: true
+
+      - name: Verify real-device prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner=$(hostname) arch=$(uname -m) sha=$(git rev-parse HEAD)"
+          test "$(uname -m)" = "aarch64"
+          command -v arecord >/dev/null
+          arecord -L | sed -n '1,80p'
+
+          FUNASR_PYTHON=/opt/suspect-interrogation/runtime/funasr-env/bin/python
+          test -x "$FUNASR_PYTHON"
+
+          if [[ -d /opt/suspect-interrogation/models/funasr ]]; then
+            FUNASR_MODEL_ROOT=/opt/suspect-interrogation/models/funasr
+          elif [[ -d /home/youyeetoo/funasr-models ]]; then
+            FUNASR_MODEL_ROOT=/home/youyeetoo/funasr-models
+          else
+            echo "preinstalled FunASR model root not found" >&2
+            exit 1
+          fi
+
+          echo "FUNASR_PYTHON=$FUNASR_PYTHON" >> "$GITHUB_ENV"
+          echo "SUSPECT_FUNASR_MODEL_ROOT=$FUNASR_MODEL_ROOT" >> "$GITHUB_ENV"
+          "$FUNASR_PYTHON" -m py_compile scripts/ci/rk3588-live-audio-acceptance.py
+
+      - name: Live microphone and offline FunASR proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOCKET=/run/suspect-interrogation/speech.sock
+          WORKER_PID=""
+          TEMP_SOCKET="$RUNNER_TEMP/rk3588-live-audio.sock"
+
+          cleanup() {
+            if [[ -n "$WORKER_PID" ]]; then
+              kill "$WORKER_PID" 2>/dev/null || true
+              wait "$WORKER_PID" 2>/dev/null || true
+            fi
+            rm -f "$TEMP_SOCKET"
+          }
+          trap cleanup EXIT
+
+          if [[ ! -S "$SOCKET" ]]; then
+            SOCKET="$TEMP_SOCKET"
+            rm -f "$SOCKET"
+            export SUSPECT_SPEECH_SOCKET="$SOCKET"
+            export SUSPECT_FUNASR_MODEL_ROOT
+            "$FUNASR_PYTHON" -m speech_worker.main >"$RUNNER_TEMP/rk3588-live-speech-worker.log" 2>&1 &
+            WORKER_PID=$!
+            for _ in $(seq 1 120); do
+              [[ -S "$SOCKET" ]] && break
+              if ! kill -0 "$WORKER_PID" 2>/dev/null; then
+                cat "$RUNNER_TEMP/rk3588-live-speech-worker.log" >&2 || true
+                exit 1
+              fi
+              sleep 0.5
+            done
+            if [[ ! -S "$SOCKET" ]]; then
+              cat "$RUNNER_TEMP/rk3588-live-speech-worker.log" >&2 || true
+              echo "speech worker socket did not become ready" >&2
+              exit 1
+            fi
+          fi
+
+          echo "Real microphone acceptance will begin shortly."
+          for n in 5 4 3 2 1; do
+            echo "Speak a clear Mandarin sentence in $n..."
+            sleep 1
+          done
+          echo "START SPEAKING NOW"
+
+          EXTRA_ARGS=()
+          if [[ "${{ inputs.require_asr_text }}" == "true" ]]; then
+            EXTRA_ARGS+=(--require-asr-text)
+          fi
+
+          "$FUNASR_PYTHON" scripts/ci/rk3588-live-audio-acceptance.py \
+            --socket "$SOCKET" \
+            --device "${{ inputs.alsa_device }}" \
+            --capture-seconds "${{ inputs.capture_seconds }}" \
+            "${EXTRA_ARGS[@]}"
+
+          echo "Live acceptance completed. No raw audio was persisted or uploaded."
