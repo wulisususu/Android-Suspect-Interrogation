@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import struct
 import threading
@@ -21,9 +22,11 @@ from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
 from app.repositories import sessions as session_repo
 from app.repositories import voiceprints as voiceprint_repo
+from app.services.interrogation_projection_service import InterrogationProjectionService
 from app.services.speaker_policy import SpeakerRole, decide_speaker
 
 
+logger = logging.getLogger(__name__)
 PublishEvent = Callable[[str, str, dict[str, Any]], None]
 _FLOAT32_BYTES = 4
 
@@ -193,8 +196,6 @@ class AsrCaptureService:
             try:
                 self.stop(case_id)
             except Exception:
-                # Process shutdown must continue; the capture loop itself already
-                # performs best-effort worker/ALSA/DB cleanup in its finally block.
                 pass
 
     def _capture_loop(self, runtime: _CaptureRuntime) -> None:
@@ -314,10 +315,17 @@ class AsrCaptureService:
                 asr_event=asr_event,
             )
             db.commit()
+            fragment_id = fragment.id
             payload = self._fragment_payload(fragment)
 
         runtime.ordinal += 1
         self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)
+        try:
+            with self.session_factory() as projection_db:
+                InterrogationProjectionService(projection_db).process_fragment(runtime.case_id, fragment_id)
+                projection_db.commit()
+        except Exception:
+            logger.exception("formal interrogation projection failed for fragment %s", fragment_id)
 
     @staticmethod
     def _audit_speaker_decision(
