@@ -71,6 +71,7 @@ class InterrogationProjectionService:
         if not is_question_utterance(text):
             return self._record_processed(fragment.id, case_id, "RAW_ONLY", None)
 
+        rounds_repo.defer_active_pending(self.db, case_id, session_id)
         rounds_repo.close_active(self.db, case_id, session_id)
         candidates = self._question_candidates(case_id)
         matched = match_question(text, candidates)
