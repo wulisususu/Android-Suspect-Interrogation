@@ -206,15 +206,17 @@ class BrowserVoiceprintCaptureImpl implements BrowserVoiceprintCapture {
 
   async stop(): Promise<void> {
     if (this.stopped) return
-    this.stopped = true
     this.pause()
+    this.stopped = true
     for (const track of this.stream.getTracks()) {
       track.onended = null
       track.stop()
     }
     const socket = this.socket
     this.socket = null
-    if (socket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(socket.readyState)) socket.close(1000, 'voiceprint capture complete')
+    if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) {
+      socket.close(1000, 'voiceprint capture complete')
+    }
     const context = this.context
     this.context = null
     this.source = null
