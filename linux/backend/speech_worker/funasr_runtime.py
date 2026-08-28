@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import base64
+import json
 import math
+import os
 import struct
+import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,59 +20,37 @@ ModelFactory = Callable[..., Any]
 LegacySpeakerFactory = Callable[[Path], Any]
 
 
-class _ModelScopeLegacyXVectorAdapter:
-    """Compatibility adapter for the 2023 ModelScope XVector checkpoint.
-
-    The local ``sv.pth``/``sv.yaml`` model predates FunASR 1.x ``AutoModel``.
-    Its original supported inference surface is ModelScope's
-    ``Tasks.speaker_verification`` pipeline. Keep this adapter local-only and
-    expose the same ``generate`` contract used by the rest of the worker.
-    """
+class _LegacyXVectorSubprocessAdapter:
+    """Run the incompatible XVector checkpoint in its own legacy Python."""
 
     def __init__(self, model_path: Path) -> None:
-        try:
-            from modelscope.pipelines import pipeline
-            from modelscope.utils.constant import Tasks
-        except Exception as exc:
-            raise BackendUnavailableError(
-                "ModelScope legacy speaker runtime is unavailable",
-                details={"model": "xvector", "error_type": type(exc).__name__},
-            ) from exc
-        try:
-            self._pipeline = pipeline(
-                task=Tasks.speaker_verification,
-                model=str(model_path),
-                device="cpu",
-            )
-        except Exception as exc:
-            raise BackendUnavailableError(
-                "failed to load local ModelScope legacy xvector model",
-                details={"model": "xvector", "error_type": type(exc).__name__},
-            ) from exc
+        python = os.environ.get("SUSPECT_XVECTOR_LEGACY_PYTHON", "")
+        if not python or not Path(python).is_file():
+            raise BackendUnavailableError("legacy XVector Python is unavailable", details={"model": "xvector"})
+        self.python = python
+        self.model_path = model_path
+        self.script = Path(__file__).with_name("xvector_legacy.py")
+        self._run({"op": "health"})
 
     def generate(self, **kwargs: Any) -> list[dict[str, Any]]:
         pcm = kwargs.get("input")
         sample_rate = int(kwargs.get("fs", 16000))
-        if sample_rate != 16000:
-            raise ValueError("legacy xvector requires 16 kHz PCM")
-        if not isinstance(pcm, (bytes, bytearray, memoryview)):
-            raise TypeError("legacy xvector input must be PCM bytes")
-        raw = bytes(pcm)
-        if not raw or len(raw) % 2:
-            raise ValueError("legacy xvector requires complete PCM16 samples")
-        try:
-            import numpy as np
-
-            waveform = np.frombuffer(raw, dtype="<i2").copy()
-            result = self._pipeline(audio_in=waveform)
-        except Exception as exc:
-            raise BackendUnavailableError(
-                "ModelScope legacy xvector inference failed",
-                details={"model": "xvector", "error_type": type(exc).__name__},
-            ) from exc
-        if not isinstance(result, dict):
-            raise WorkerCrashedError("ModelScope legacy xvector result must be an object")
+        if sample_rate != 16000 or not isinstance(pcm, (bytes, bytearray, memoryview)):
+            raise ValueError("legacy xvector requires 16 kHz PCM bytes")
+        result = self._run({"op": "embedding", "pcm_b64": base64.b64encode(bytes(pcm)).decode("ascii")})
         return [result]
+
+    def _run(self, request: dict[str, Any]) -> dict[str, Any]:
+        try:
+            completed = subprocess.run([self.python, str(self.script), "--model-root", str(self.model_path)], input=json.dumps(request), text=True, capture_output=True, timeout=90, check=False)
+            if completed.returncode != 0:
+                raise RuntimeError(completed.stderr.strip() or completed.stdout.strip())
+            result = json.loads(completed.stdout)
+            if not isinstance(result, dict):
+                raise RuntimeError("legacy XVector response must be an object")
+            return result
+        except Exception as exc:
+            raise BackendUnavailableError("legacy XVector subprocess failed", details={"model": "xvector", "error_type": type(exc).__name__}) from exc
 
 
 class FunASRSpeechRuntime:
@@ -158,7 +140,7 @@ class FunASRSpeechRuntime:
         try:
             legacy_factory = self._legacy_speaker_factory or self._load_legacy_speaker
             self.speaker_model = legacy_factory(speaker_path)
-            self.speaker_backend = "modelscope-legacy-xvector"
+            self.speaker_backend = "legacy-subprocess-xvector"
         except Exception as exc:
             self.speaker_model = None
             self.speaker_backend = None
@@ -184,7 +166,7 @@ class FunASRSpeechRuntime:
                 "legacy xvector checkpoint files are missing",
                 details={"model": "xvector"},
             )
-        return _ModelScopeLegacyXVectorAdapter(model_path)
+        return _LegacyXVectorSubprocessAdapter(model_path)
 
     def health(self) -> dict[str, Any]:
         if self.loaded:

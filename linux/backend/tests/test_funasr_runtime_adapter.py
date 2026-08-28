@@ -143,7 +143,7 @@ def test_legacy_xvector_falls_back_without_downgrading_asr_vad_runtime(tmp_path:
     assert runtime.health()["status"] == "ready"
     assert runtime.health()["models"] == {"asr": True, "vad": True, "speaker": True}
     assert calls == [root / "xvector"]
-    assert runtime.speaker_backend == "modelscope-legacy-xvector"
+    assert runtime.speaker_backend == "legacy-subprocess-xvector"
     assert runtime.speaker_embedding(b"\x00\x00" * 1600, 16000)["embedding"] == pytest.approx([0.6, 0.8])
     assert legacy.generate_calls[-1]["fs"] == 16000
 
