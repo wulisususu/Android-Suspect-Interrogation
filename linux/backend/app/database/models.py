@@ -273,3 +273,87 @@ class ASRFragment(TimestampMixin, Base):
     confirmed_message_id: Mapped[str | None] = mapped_column(
         ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, index=True
     )
+
+
+class StandardQuestion(TimestampMixin, Base):
+    __tablename__ = "standard_questions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(64), default="通用", nullable=False, index=True)
+    regex_patterns_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    aliases_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class CaseQuestion(TimestampMixin, Base):
+    __tablename__ = "case_questions"
+    __table_args__ = (UniqueConstraint("case_id", "sort_order", name="uq_case_questions_sort"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    standard_question_id: Mapped[str | None] = mapped_column(
+        ForeignKey("standard_questions.id", ondelete="SET NULL"), nullable=True
+    )
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    regex_patterns_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    aliases_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class QuestionRound(TimestampMixin, Base):
+    __tablename__ = "question_rounds"
+    __table_args__ = (UniqueConstraint("case_question_id", "round_no", name="uq_question_round_no"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("interrogation_sessions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    case_question_id: Mapped[str] = mapped_column(
+        ForeignKey("case_questions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    round_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    actual_question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    officer_fragment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("asr_fragments.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
+    answer_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    answer_fragment_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PendingQuestion(TimestampMixin, Base):
+    __tablename__ = "pending_questions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("interrogation_sessions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    officer_fragment_id: Mapped[str] = mapped_column(
+        ForeignKey("asr_fragments.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    match_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    candidate_question_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    buffered_answer_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    buffered_fragment_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", nullable=False, index=True)
+
+
+class ProcessedSpeechFragment(Base):
+    __tablename__ = "processed_speech_fragments"
+
+    fragment_id: Mapped[str] = mapped_column(
+        ForeignKey("asr_fragments.id", ondelete="CASCADE"), primary_key=True
+    )
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)

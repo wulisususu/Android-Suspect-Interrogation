@@ -12,7 +12,10 @@ CORE_TABLES = {
 VOICEPRINT_TABLES = {
     "suspect_voiceprints", "officer_voiceprints", "session_voice_assignments", "asr_capture_sessions", "asr_fragments",
 }
-REQUIRED_TABLES = CORE_TABLES | VOICEPRINT_TABLES
+TEMPLATE_TABLES = {
+    "standard_questions", "case_questions", "question_rounds", "pending_questions", "processed_speech_fragments",
+}
+REQUIRED_TABLES = CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES
 
 
 def _run_alembic(tmp_path, target: str):
@@ -38,6 +41,22 @@ def test_alembic_revision_0001_remains_core_only(tmp_path):
         tables = set(inspect(engine).get_table_names())
         assert CORE_TABLES <= tables
         assert VOICEPRINT_TABLES.isdisjoint(tables)
+        assert TEMPLATE_TABLES.isdisjoint(tables)
+    finally:
+        engine.dispose()
+
+
+def test_alembic_revision_0002_remains_voiceprint_only(tmp_path):
+    db_file, _env, result = _run_alembic(tmp_path, "0002_voiceprint_speech_pipeline")
+    assert result.returncode == 0, result.stdout + result.stderr
+    engine = create_engine(f"sqlite:///{db_file}")
+    try:
+        tables = set(inspect(engine).get_table_names())
+        assert CORE_TABLES | VOICEPRINT_TABLES <= tables
+        assert TEMPLATE_TABLES.isdisjoint(tables)
+        with engine.connect() as connection:
+            revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        assert revision == "0002_voiceprint_speech_pipeline"
     finally:
         engine.dispose()
 
@@ -50,7 +69,7 @@ def test_alembic_upgrade_head_builds_required_schema(tmp_path):
         assert REQUIRED_TABLES <= set(inspect(engine).get_table_names())
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert revision == "0002_voiceprint_speech_pipeline"
+        assert revision == "0003_template_interrogation_workspace"
     finally:
         engine.dispose()
 
@@ -72,5 +91,6 @@ def test_voiceprint_migration_downgrades_to_core_schema(tmp_path):
         tables = set(inspect(engine).get_table_names())
         assert CORE_TABLES <= tables
         assert VOICEPRINT_TABLES.isdisjoint(tables)
+        assert TEMPLATE_TABLES.isdisjoint(tables)
     finally:
         engine.dispose()
