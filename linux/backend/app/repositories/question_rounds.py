@@ -110,6 +110,19 @@ def active_pending(db: Session, case_id: str, session_id: str) -> PendingQuestio
     return db.scalar(stmt)
 
 
+def defer_active_pending(db: Session, case_id: str, session_id: str) -> list[PendingQuestion]:
+    stmt = select(PendingQuestion).where(
+        PendingQuestion.case_id == case_id,
+        PendingQuestion.session_id == session_id,
+        PendingQuestion.status == "PENDING",
+    ).with_for_update()
+    rows = list(db.scalars(stmt))
+    for row in rows:
+        row.status = "DEFERRED"
+    db.flush()
+    return rows
+
+
 def close_active(db: Session, case_id: str, session_id: str) -> list[QuestionRound]:
     stmt = select(QuestionRound).where(
         QuestionRound.case_id == case_id,
