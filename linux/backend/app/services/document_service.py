@@ -92,6 +92,7 @@ class DocumentService:
             )
 
         return {
+            "id": snapshot.id,
             "caseId": case_id,
             "version": snapshot.version,
             "documentId": snapshot.id,
