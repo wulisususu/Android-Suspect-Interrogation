@@ -13,6 +13,18 @@ import type {
   TemplateWorkspace,
 } from '../types/templateInterrogation'
 
+export interface QuestionDictationStatus {
+  caseId: string
+  active: boolean
+  mode: 'QUESTION_PREP'
+  captureSessionId: null
+  interrogationSessionId: null
+  status: 'IDLE' | 'CAPTURING' | 'STOPPED'
+  sampleRate: number
+  text: string
+  lastError: string | null
+}
+
 function unwrap<T>(response: AxiosResponse<BackendEnvelope<T>>): T {
   const body = response.data
   if (!body.ok) throw new Error(body.message || body.code || '模板笔录接口调用失败')
@@ -27,6 +39,18 @@ export async function fetchQuestionLibrary(category?: string): Promise<StandardQ
   return unwrap(await http.get<BackendEnvelope<StandardQuestion[]>>('/api/v1/question-library', {
     params: category ? { category } : undefined,
   }))
+}
+
+export async function startQuestionPreparationDictation(caseId: string): Promise<QuestionDictationStatus> {
+  return unwrap(await http.post<BackendEnvelope<QuestionDictationStatus>>(
+    `/api/v1/cases/${encodeURIComponent(caseId)}/asr/question-preparation/start`,
+  ))
+}
+
+export async function stopQuestionPreparationDictation(caseId: string): Promise<QuestionDictationStatus> {
+  return unwrap(await http.post<BackendEnvelope<QuestionDictationStatus>>(
+    `/api/v1/cases/${encodeURIComponent(caseId)}/asr/question-preparation/stop`,
+  ))
 }
 
 export async function createCaseQuestion(caseId: string, input: CaseQuestionCreateInput): Promise<FormalQuestion> {

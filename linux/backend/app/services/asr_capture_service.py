@@ -6,6 +6,7 @@ import struct
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
@@ -43,13 +44,25 @@ class _CaptureRuntime:
     seen_utterances: set[tuple[int, int]] = field(default_factory=set)
 
 
-class AsrCaptureService:
-    """Own one continuous ALSA -> speech-worker capture pipeline.
+@dataclass
+class _PreparationRuntime:
+    case_id: str
+    speech_session_id: str
+    stop_event: threading.Event = field(default_factory=threading.Event)
+    thread: threading.Thread | None = None
+    text_parts: list[str] = field(default_factory=list)
+    seen_utterances: set[tuple[int, int]] = field(default_factory=set)
+    last_error: str | None = None
 
-    SQLAlchemy sessions are opened inside the calling/background thread that
-    uses them; no Session object crosses thread boundaries. Raw PCM is never
-    persisted here and speaker embeddings are used only transiently for cosine
-    comparison against already-enrolled references.
+
+class AsrCaptureService:
+    """Own the single ALSA -> speech-worker audio path.
+
+    Formal interrogation capture persists speaker-attributed ASR fragments and
+    drives the template projection. Question-preparation dictation deliberately
+    reuses the same offline speech runtime and microphone but remains memory-only:
+    it has no interrogation session, requires no voiceprint, emits no dialogue
+    events, and writes no ASR capture/fragment rows.
     """
 
     def __init__(
@@ -74,6 +87,8 @@ class AsrCaptureService:
         self._lock = threading.RLock()
         self._active: dict[str, _CaptureRuntime] = {}
         self._last_error: dict[str, str | None] = {}
+        self._preparation: dict[str, _PreparationRuntime] = {}
+        self._preparation_results: dict[str, dict[str, Any]] = {}
 
     def start(self, case_id: str) -> dict[str, Any]:
         case_id = str(case_id).strip()
@@ -85,6 +100,8 @@ class AsrCaptureService:
             existing = self._active.get(case_id)
             if existing is not None and existing.thread is not None and existing.thread.is_alive():
                 raise DomainError("ASR_CAPTURE_ALREADY_ACTIVE", "该案件正在进行语音采集", 409)
+            if self._any_preparation_active_locked():
+                raise DomainError("ASR_AUDIO_RESOURCE_BUSY", "准备阶段语音输入正在占用麦克风", 409)
 
         with self.session_factory() as db:
             case_repo.get(db, case_id)
@@ -189,12 +206,84 @@ class AsrCaptureService:
                 "lastError": last_error,
             }
 
+    def start_preparation(self, case_id: str) -> dict[str, Any]:
+        case_id = str(case_id).strip()
+        if not case_id:
+            raise DomainError("CASE_ID_REQUIRED", "案件编号不能为空", 400)
+
+        with self.session_factory() as db:
+            case_repo.get(db, case_id)
+
+        with self._lock:
+            if self._any_capture_active_locked():
+                raise DomainError("ASR_AUDIO_RESOURCE_BUSY", "正式审讯录音正在占用麦克风", 409)
+            if self._any_preparation_active_locked():
+                raise DomainError("ASR_PREPARATION_ALREADY_ACTIVE", "已有准备阶段语音输入正在进行", 409)
+
+        runtime = _PreparationRuntime(
+            case_id=case_id,
+            speech_session_id=f"question-prep-{case_id}-{uuid4().hex}",
+        )
+        speech_open = False
+        audio_started = False
+        try:
+            self.ai_supervisor.open_speech_session(runtime.speech_session_id, sample_rate=self.sample_rate)
+            speech_open = True
+            self.device_manager.start_record()
+            audio_started = True
+        except Exception:
+            if audio_started:
+                self._safe_stop_audio()
+            if speech_open:
+                self._safe_finalize_close(runtime.speech_session_id)
+            raise
+
+        thread = threading.Thread(
+            target=self._preparation_loop,
+            args=(runtime,),
+            daemon=True,
+            name=f"question-prep-{case_id[:12]}",
+        )
+        runtime.thread = thread
+        with self._lock:
+            self._preparation[case_id] = runtime
+            self._preparation_results.pop(case_id, None)
+        thread.start()
+        return self._preparation_status(runtime, active=True)
+
+    def stop_preparation(self, case_id: str) -> dict[str, Any]:
+        case_id = str(case_id).strip()
+        with self._lock:
+            runtime = self._preparation.get(case_id)
+            prior_result = self._preparation_results.get(case_id)
+        if runtime is None:
+            if prior_result is not None:
+                return dict(prior_result)
+            return self._empty_preparation_status(case_id)
+
+        runtime.stop_event.set()
+        thread = runtime.thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(1.0, self.read_timeout * 5.0))
+            if thread.is_alive():
+                raise DomainError("ASR_PREPARATION_STOP_TIMEOUT", "准备阶段语音输入未能及时停止", 504)
+
+        with self._lock:
+            result = self._preparation_results.get(case_id)
+        return dict(result) if result is not None else self._preparation_status(runtime, active=False)
+
     def shutdown(self) -> None:
         with self._lock:
             case_ids = list(self._active)
+            preparation_case_ids = list(self._preparation)
         for case_id in case_ids:
             try:
                 self.stop(case_id)
+            except Exception:
+                pass
+        for case_id in preparation_case_ids:
+            try:
+                self.stop_preparation(case_id)
             except Exception:
                 pass
 
@@ -236,6 +325,62 @@ class AsrCaptureService:
                 if self._active.get(runtime.case_id) is runtime:
                     self._active.pop(runtime.case_id, None)
                 self._last_error[runtime.case_id] = None if failure is None else str(failure)
+
+    def _preparation_loop(self, runtime: _PreparationRuntime) -> None:
+        failure: Exception | None = None
+        try:
+            while not runtime.stop_event.is_set():
+                pcm = self.device_manager.read_audio_frames(timeout=self.read_timeout)
+                if not pcm:
+                    continue
+                events = self.ai_supervisor.push_speech_pcm(runtime.speech_session_id, bytes(pcm))
+                self._consume_preparation_events(runtime, events)
+        except Exception as exc:
+            failure = exc
+        finally:
+            try:
+                final_events = self.ai_supervisor.finalize_speech_session(runtime.speech_session_id)
+                self._consume_preparation_events(runtime, final_events)
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+            try:
+                self.ai_supervisor.close_speech_session(runtime.speech_session_id)
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+            try:
+                self.device_manager.stop_record()
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+
+            runtime.last_error = None if failure is None else str(failure)
+            result = self._preparation_status(runtime, active=False)
+            with self._lock:
+                if self._preparation.get(runtime.case_id) is runtime:
+                    self._preparation.pop(runtime.case_id, None)
+                self._preparation_results[runtime.case_id] = result
+
+    def _consume_preparation_events(
+        self,
+        runtime: _PreparationRuntime,
+        events: list[SpeechEvent] | None,
+    ) -> None:
+        if not events:
+            return
+        for event in events:
+            if event.type is not SpeechEventType.ASR_FINAL:
+                continue
+            text = str(event.text or "").strip()
+            if not text:
+                continue
+            if event.start_ms is not None and event.end_ms is not None:
+                key = (int(event.start_ms), int(event.end_ms))
+                if key in runtime.seen_utterances:
+                    continue
+                runtime.seen_utterances.add(key)
+            runtime.text_parts.append(text)
 
     def _consume_events(self, runtime: _CaptureRuntime, events: list[SpeechEvent] | None) -> None:
         if not events:
@@ -479,6 +624,18 @@ class AsrCaptureService:
         except Exception:
             pass
 
+    def _any_capture_active_locked(self) -> bool:
+        return any(
+            runtime.thread is not None and runtime.thread.is_alive()
+            for runtime in self._active.values()
+        )
+
+    def _any_preparation_active_locked(self) -> bool:
+        return any(
+            runtime.thread is not None and runtime.thread.is_alive()
+            for runtime in self._preparation.values()
+        )
+
     @staticmethod
     def _decode_embedding(blob: bytes, dimension: int) -> list[float] | None:
         try:
@@ -567,4 +724,30 @@ class AsrCaptureService:
             "status": "CAPTURING" if active else "STOPPED",
             "sampleRate": self.sample_rate,
             "lastError": last_error,
+        }
+
+    def _preparation_status(self, runtime: _PreparationRuntime, *, active: bool) -> dict[str, Any]:
+        return {
+            "caseId": runtime.case_id,
+            "active": active,
+            "mode": "QUESTION_PREP",
+            "captureSessionId": None,
+            "interrogationSessionId": None,
+            "status": "CAPTURING" if active else "STOPPED",
+            "sampleRate": self.sample_rate,
+            "text": "".join(runtime.text_parts),
+            "lastError": runtime.last_error,
+        }
+
+    def _empty_preparation_status(self, case_id: str) -> dict[str, Any]:
+        return {
+            "caseId": case_id,
+            "active": False,
+            "mode": "QUESTION_PREP",
+            "captureSessionId": None,
+            "interrogationSessionId": None,
+            "status": "IDLE",
+            "sampleRate": self.sample_rate,
+            "text": "",
+            "lastError": None,
         }

@@ -41,12 +41,19 @@ const props = defineProps<{
   questionLibrary: StandardQuestion[]
   templateBusy: boolean
   templateError: string
+  questionDictationAvailable: boolean
+  questionDictationActive: boolean
+  questionDictationBusy: boolean
+  questionDictationDraft: string
+  questionDictationError: string
 }>()
 
 const emit = defineEmits<{
   saved: []
   captureStart: []
   captureStop: [target?: AsrInsertionTarget]
+  questionDictationStart: []
+  questionDictationStop: []
   generateAi: []
   loadLibrary: [category?: string]
   createQuestion: [input: CaseQuestionCreateInput]
@@ -255,10 +262,14 @@ async function confirmSignature() {
           v-if="session.status === 'READY'"
           :library="questionLibrary"
           :busy="templateBusy"
-          :voice-available="false"
-          :voice-busy="false"
+          :voice-available="questionDictationAvailable"
+          :voice-busy="questionDictationActive || questionDictationBusy"
+          :voice-draft="questionDictationDraft"
+          :voice-error="questionDictationError"
           @load-library="emit('loadLibrary', $event)"
           @add-question="emit('createQuestion', $event)"
+          @voice-start="emit('questionDictationStart')"
+          @voice-stop="emit('questionDictationStop')"
         />
 
         <FormalTemplatePanel

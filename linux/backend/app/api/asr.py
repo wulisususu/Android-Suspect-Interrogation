@@ -168,6 +168,19 @@ def capture_stop(case_id: str, request: Request):
     return _capture_service(request).stop(case_id)
 
 
+@router.post("/cases/{case_id}/asr/question-preparation/start")
+def question_preparation_start(case_id: str, request: Request):
+    status = _asr_status(request)
+    if status["state"] != "AVAILABLE":
+        raise DomainError("ASR_NOT_READY", "离线语音运行时尚未就绪", 503, status)
+    return _capture_service(request).start_preparation(case_id)
+
+
+@router.post("/cases/{case_id}/asr/question-preparation/stop")
+def question_preparation_stop(case_id: str, request: Request):
+    return _capture_service(request).stop_preparation(case_id)
+
+
 @router.get("/cases/{case_id}/asr/fragments")
 def list_fragments(
     case_id: str,
