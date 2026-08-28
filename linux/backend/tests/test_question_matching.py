@@ -54,7 +54,7 @@ def test_compound_police_utterance_is_kept_as_one_source_event():
         QuestionCandidate(
             id="Q12",
             text="你为什么返回现场？",
-            patterns=(r"为什么.*(返回|回).*现场",),
+            patterns=(r"(返回|回).*现场.*为什么.*(返回|回|去)",),
         )
     ]
     utterance = "你第二次什么时候回现场的，当时为什么又回去？"
