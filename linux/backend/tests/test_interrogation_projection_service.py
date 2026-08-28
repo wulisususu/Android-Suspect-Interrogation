@@ -319,3 +319,33 @@ def test_reassociate_round_moves_whole_round_without_editing_raw_fragments(db, p
     assert moved["answerText"] == "我回去拿东西。"
     assert (officer.raw_text, officer.edited_text, officer.speaker) == before_officer
     assert (suspect.raw_text, suspect.edited_text, suspect.speaker) == before_suspect
+
+
+def test_new_police_question_supersedes_unresolved_pending_answer_context(db, projection_context):
+    case, session, fragment = projection_context
+    matched_question = add_question(db, case.id, "你叫什么名字？", r"叫什么名字")
+    service = InterrogationProjectionService(db)
+
+    first_officer = fragment("INTERROGATOR", "你为什么又回去了？")
+    first_result = service.process_fragment(case.id, first_officer.id)
+    db.commit()
+    old_pending = rounds_repo.active_pending(db, case.id, session.id)
+    assert first_result["status"] == "UNMATCHED"
+    assert old_pending is not None
+
+    second_officer = fragment("INTERROGATOR", "你叫什么名字？")
+    second_result = service.process_fragment(case.id, second_officer.id)
+    db.commit()
+    assert second_result["status"] == "MATCHED"
+
+    suspect = fragment("SUSPECT", "我叫张三。")
+    service.process_fragment(case.id, suspect.id)
+    db.commit()
+    db.refresh(old_pending)
+    active = rounds_repo.active_round(db, case.id, session.id)
+
+    assert old_pending.status == "DEFERRED"
+    assert old_pending.buffered_answer_text == ""
+    assert active is not None
+    assert active.case_question_id == matched_question["id"]
+    assert active.answer_text == "我叫张三。"
