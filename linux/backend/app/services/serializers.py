@@ -2,7 +2,7 @@ import json
 
 from app.database.models import (
     AuditLog, Case, CaseQuestion, DocumentSnapshot, Fact, InterrogationSession, Message,
-    MessageRevision, Person, QuestionRound, SignatureRecord, StandardQuestion, TimelineEvent,
+    MessageRevision, PendingQuestion, Person, QuestionRound, SignatureRecord, StandardQuestion, TimelineEvent,
 )
 from app.domain.enums import WorkflowState
 
@@ -138,6 +138,23 @@ def question_round_dict(row: QuestionRound) -> dict:
         "status": row.status,
         "startedAt": _iso(row.started_at),
         "endedAt": _iso(row.ended_at),
+        "createdAt": _iso(row.created_at),
+        "updatedAt": _iso(row.updated_at),
+    }
+
+
+def pending_question_dict(row: PendingQuestion) -> dict:
+    return {
+        "id": row.id,
+        "caseId": row.case_id,
+        "sessionId": row.session_id,
+        "officerFragmentId": row.officer_fragment_id,
+        "questionText": row.question_text,
+        "matchStatus": row.match_status,
+        "candidateQuestionIds": _json_list(row.candidate_question_ids_json),
+        "bufferedAnswerText": row.buffered_answer_text,
+        "bufferedFragmentIds": _json_list(row.buffered_fragment_ids_json),
+        "status": row.status,
         "createdAt": _iso(row.created_at),
         "updatedAt": _iso(row.updated_at),
     }
