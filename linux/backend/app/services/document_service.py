@@ -127,6 +127,8 @@ class DocumentService:
             entries.append(
                 {
                     "roundId": round_row.id,
+                    "questionId": round_row.case_question_id,
+                    "questionText": question.text,
                     "caseQuestionId": round_row.case_question_id,
                     "roundNo": round_row.round_no,
                     "formalQuestionText": question.text,
