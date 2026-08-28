@@ -7,6 +7,7 @@ Wants=network.target
 Type=simple
 User=suspect-interrogation
 Group=suspect-interrogation
+SupplementaryGroups=audio
 WorkingDirectory=/opt/suspect-interrogation/current/linux/backend
 EnvironmentFile=/etc/suspect-interrogation/runtime.env
 EnvironmentFile=-/etc/suspect-interrogation/ai-worker.env

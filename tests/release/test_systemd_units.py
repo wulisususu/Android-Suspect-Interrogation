@@ -12,6 +12,7 @@ def test_api_unit_runs_non_root_and_is_hardened():
     unit = _read("interrogation-api.service")
     assert "User=suspect-interrogation" in unit
     assert "Group=suspect-interrogation" in unit
+    assert "SupplementaryGroups=audio" in unit
     assert "WorkingDirectory=/opt/suspect-interrogation/current/linux/backend" in unit
     assert "EnvironmentFile=/etc/suspect-interrogation/runtime.env" in unit
     assert "EnvironmentFile=-/etc/suspect-interrogation/ai-worker.env" in unit
