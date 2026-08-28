@@ -88,10 +88,11 @@ class AudioCaptureService:
                 self._close_vad_session(vad_session_id)
                 raise DomainError("AUDIO_CAPTURE_FAILED", f"无法启动录音设备：{exc}", 500) from exc
             self._capture = capture
+            initial_status = self._status_for(capture)
             thread = threading.Thread(target=self._collect, args=(capture,), daemon=True, name=f"voiceprint-capture-{kind}")
             capture.thread = thread
             thread.start()
-            return self._status_for(capture)
+            return initial_status
 
     def stop(self, kind: str, subject_id: str) -> bytes:
         kind = str(kind).strip()
@@ -230,9 +231,6 @@ class AudioCaptureService:
             "subjectId": capture.subject_id,
             "sampleRate": self.sample_rate,
             "capturedBytes": len(capture.buffer),
-            # Compatibility: existing clients use capturedDurationMs as the
-            # progress numerator. In streaming mode that progress is effective
-            # speech; the real wall-clock PCM duration remains explicit below.
             "capturedDurationMs": progress_ms,
             "recordedDurationMs": recorded_ms,
             "maxBytes": capture.max_bytes,

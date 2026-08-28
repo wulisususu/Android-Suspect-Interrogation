@@ -165,7 +165,7 @@ def test_voiceprint_capture_auto_stops_when_streaming_vad_reaches_twenty_seconds
     assert status["complete"] is True
     assert status["completeReason"] == "USABLE_SPEECH_TARGET"
     assert status["usableSpeechMs"] >= 20000
-    assert status["capturedDurationMs"] < 300000
+    assert status["recordedDurationMs"] < 300000
 
     pcm = service.stop("suspect", "CASE-1")
     assert pcm
@@ -189,7 +189,7 @@ def test_slow_speaker_is_not_stopped_at_thirty_seconds_when_effective_speech_is_
     wait_until(lambda: manager.reads >= 31)
 
     status = service.status()
-    assert status["capturedDurationMs"] >= 30000
+    assert status["recordedDurationMs"] >= 30000
     assert status["usableSpeechMs"] < 20000
     assert status["complete"] is False
     assert manager.stopped == 0
