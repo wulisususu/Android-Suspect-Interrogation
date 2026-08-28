@@ -117,7 +117,8 @@ class InterrogationProjectionService:
         return self._record_processed(fragment.id, case_id, "PENDING", pending.id)
 
     def add_pending_as_question(self, pending_id: str, *, after_question_id: str | None = None) -> dict:
-        pending = self._pending_for_action(pending_id)
+        pending = self._pending_for_action(pending_id, allow_deferred=True)
+        is_deferred = pending.status == "DEFERRED"
         after_id = after_question_id or self._last_formal_question_id(pending.case_id, pending.session_id)
         created = TemplateWorkspaceService(self.db).add_case_question(
             pending.case_id,
@@ -134,6 +135,7 @@ class InterrogationProjectionService:
             officer_fragment_id=pending.officer_fragment_id,
             answer_text=pending.buffered_answer_text,
             answer_fragment_ids=_json_list(pending.buffered_fragment_ids_json),
+            status="CLOSED" if is_deferred else "ACTIVE",
         )
         pending.status = "ADDED"
         self.db.flush()
@@ -218,11 +220,13 @@ class InterrogationProjectionService:
             self.db.flush()
         return question_round_dict(round_row)
 
-    def _pending_for_action(self, pending_id: str):
+    def _pending_for_action(self, pending_id: str, *, allow_deferred: bool = False):
         pending = rounds_repo.get_pending(self.db, pending_id)
-        if pending.status != "PENDING":
-            raise DomainError("PENDING_QUESTION_RESOLVED", "该待处理问题已经处理", 409)
-        return pending
+        if pending.status == "PENDING":
+            return pending
+        if allow_deferred and pending.status == "DEFERRED":
+            return pending
+        raise DomainError("PENDING_QUESTION_RESOLVED", "该待处理问题已经处理", 409)
 
     def _last_formal_question_id(self, case_id: str, session_id: str | None) -> str | None:
         rows = rounds_repo.list_for_case(self.db, case_id)
