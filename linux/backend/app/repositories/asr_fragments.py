@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.database.models import ASRCaptureSession, ASRFragment, Message
+from app.database.models import ASRCaptureSession, ASRFragment, Message, ProcessedSpeechFragment
 from app.domain.errors import DomainError
 
 
@@ -33,10 +33,15 @@ def create_capture_session(
     return item
 
 
-def finish_capture_session(db: Session, *, capture_session_id: str) -> ASRCaptureSession:
+def get_capture_session(db: Session, capture_session_id: str) -> ASRCaptureSession:
     item = db.get(ASRCaptureSession, capture_session_id)
     if item is None:
         raise DomainError("ASR_CAPTURE_NOT_FOUND", "ASR 采集会话不存在", 404)
+    return item
+
+
+def finish_capture_session(db: Session, *, capture_session_id: str) -> ASRCaptureSession:
+    item = get_capture_session(db, capture_session_id)
     item.status = "STOPPED"
     item.ended_at = datetime.now(timezone.utc)
     db.flush()
@@ -57,6 +62,29 @@ def list_fragments(db: Session, *, capture_session_id: str) -> list[ASRFragment]
         .order_by(ASRFragment.ordinal.asc())
     )
     return list(db.scalars(stmt))
+
+
+def get_processed(db: Session, fragment_id: str) -> ProcessedSpeechFragment | None:
+    return db.get(ProcessedSpeechFragment, fragment_id)
+
+
+def mark_processed(
+    db: Session,
+    *,
+    fragment_id: str,
+    case_id: str,
+    action: str,
+    target_id: str | None = None,
+) -> ProcessedSpeechFragment:
+    item = ProcessedSpeechFragment(
+        fragment_id=fragment_id,
+        case_id=case_id,
+        action=action,
+        target_id=target_id,
+    )
+    db.add(item)
+    db.flush()
+    return item
 
 
 def create_fragment(
