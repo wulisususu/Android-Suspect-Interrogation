@@ -183,7 +183,7 @@ class InterrogationProjectionService:
         return question_round_dict(round_row)
 
     def ignore_pending(self, pending_id: str) -> dict:
-        pending = self._pending_for_action(pending_id)
+        pending = self._pending_for_action(pending_id, allow_deferred=True)
         pending.status = "IGNORED"
         self.db.flush()
         return pending_question_dict(pending)
