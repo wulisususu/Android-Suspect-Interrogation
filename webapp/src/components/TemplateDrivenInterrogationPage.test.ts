@@ -1,0 +1,35 @@
+import { describe, expect, it } from 'vitest'
+
+import pageSource from './TemplateDrivenInterrogationPage.vue?raw'
+import formalSource from './FormalTemplatePanel.vue?raw'
+import dialogueSource from './LiveDialoguePanel.vue?raw'
+import preparationSource from './QuestionPreparationPanel.vue?raw'
+
+describe('template-driven interrogation C-page contract', () => {
+  it('renders the formal transcript and live dialogue as explicit sibling panels', () => {
+    expect(pageSource).toContain('template-interrogation-grid')
+    expect(pageSource).toContain('FormalTemplatePanel')
+    expect(pageSource).toContain('LiveDialoguePanel')
+  })
+
+  it('keeps legacy conflict and low-confidence business marks out of the new formal page', () => {
+    expect(formalSource).not.toContain('矛盾标记')
+    expect(formalSource).not.toContain('标记矛盾')
+    expect(formalSource).not.toContain('低置信度')
+  })
+
+  it('keeps raw dialogue actions separate from the formal transcript', () => {
+    expect(dialogueSource).toContain('加入本案笔录')
+    expect(dialogueSource).toContain('忽略')
+    expect(dialogueSource).toContain('追加到原回答')
+    expect(dialogueSource).toContain('新增一轮问答')
+    expect(dialogueSource).toContain('↓ 最新消息')
+  })
+
+  it('provides pre-interrogation library, manual and voice-assisted preparation', () => {
+    expect(preparationSource).toContain('问题库')
+    expect(preparationSource).toContain('手动输入')
+    expect(preparationSource).toContain('语音输入')
+    expect(preparationSource).toContain('加入本案问题')
+  })
+})
