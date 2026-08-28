@@ -69,10 +69,36 @@ def test_canonical_api_full_case_flow(tmp_path, enroll_test_suspect_voiceprint):
         assert payload(client.post(f"/api/v1/cases/{case_id}/session/stage", json={"stage": "STATEMENT"}))["stage"] == "STATEMENT"
         assert payload(client.post(f"/api/v1/cases/{case_id}/session/finish", json={}))["state"] == "SUMMARY"
 
+        assert client.get(f"/api/v1/cases/{case_id}/document").status_code == 200
+        assert payload(client.get(f"/api/v1/cases/{case_id}/document")) is None
+
         frozen = payload(client.post(f"/api/v1/cases/{case_id}/document/freeze", json={"actor_id": "op-1"}))
         assert frozen["status"] == "FROZEN"
-        signed = payload(client.post(f"/api/v1/cases/{case_id}/signatures", json={"signer_role": "suspect", "signer_name": "测试对象", "image_data": "data:image/png;base64,AAA", "strokes_json": "[]", "actor_id": "op-1"}))
-        assert signed["status"] == "SIGNED"
+        assert frozen["integrityValid"] is True
+        assert frozen["signatures"] == []
+        assert frozen["documentHash"]
+        assert payload(client.get(f"/api/v1/cases/{case_id}/document"))["documentId"] == frozen["documentId"]
+
+        suspect_signed = payload(client.post(f"/api/v1/cases/{case_id}/document/sign", json={
+            "signerRole": "SUSPECT",
+            "signerName": "测试对象",
+            "imageDataUrl": "data:image/png;base64,AAA",
+            "strokesJson": "[]",
+            "actorId": "op-1",
+        }))
+        assert suspect_signed["status"] == "FROZEN"
+        assert [item["signerRole"] for item in suspect_signed["signatures"]] == ["SUSPECT"]
+
+        officer_signed = payload(client.post(f"/api/v1/cases/{case_id}/document/sign", json={
+            "signerRole": "OFFICER",
+            "signerName": "测试警官",
+            "imageDataUrl": "data:image/png;base64,BBB",
+            "strokesJson": "[]",
+            "actorId": "op-1",
+        }))
+        assert officer_signed["status"] == "LOCKED"
+        assert [item["signerRole"] for item in officer_signed["signatures"]] == ["SUSPECT", "OFFICER"]
+
         report = payload(client.post(f"/api/v1/cases/{case_id}/report/generated", json={"actor_id": "op-1"}))
         assert report["reportStatus"] == "GENERATED"
         assert report["workflowState"] == "REPORT_GENERATED"
