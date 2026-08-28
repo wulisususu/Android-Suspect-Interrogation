@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
@@ -16,12 +16,24 @@ from app.services.voiceprint_service import VoiceprintService
 router = APIRouter(tags=["voiceprints"])
 
 
+VoiceprintAudioSource = Literal["ALSA", "BROWSER"]
+
+
 class ActorBody(BaseModel):
     actor_id: str | None = None
 
 
+class EnrollmentStartBody(ActorBody):
+    source: VoiceprintAudioSource = "ALSA"
+
+
+class EnrollmentCancelBody(BaseModel):
+    capture_id: str = Field(min_length=1, max_length=128)
+
+
 class OfficerEnrollmentStartBody(ActorBody):
     officer_name: str = Field(min_length=1, max_length=128)
+    source: VoiceprintAudioSource = "ALSA"
 
 
 class VoiceRoleAssignmentBody(ActorBody):
@@ -84,17 +96,33 @@ def enrollment_status(request: Request):
     return envelope(_capture_service(request).status())
 
 
+@router.post("/voiceprints/enrollment/cancel")
+def cancel_enrollment(request: Request, body: EnrollmentCancelBody):
+    context = dict(_context(request))
+    if context.get("capture_id") != body.capture_id:
+        raise DomainError("CAPTURE_ID_MISMATCH", "声纹录音会话已失效，请重新开始", 409)
+    result = _capture_service(request).cancel(body.capture_id)
+    _context(request).clear()
+    return envelope(result, "声纹录音已取消")
+
+
 @router.post("/cases/{case_id}/voiceprints/suspect/enrollment/start")
 def start_suspect_enrollment(
     case_id: str,
     request: Request,
-    body: ActorBody | None = None,
+    body: EnrollmentStartBody | None = None,
     db: Session = Depends(get_db),
 ):
-    # Validate the case before occupying the process-global recorder.
     _service(request, db).readiness(case_id)
-    result = _capture_service(request).start("suspect", case_id)
-    _set_context(request, kind="suspect", subject_id=case_id)
+    source = body.source if body else "ALSA"
+    result = _capture_service(request).start("suspect", case_id, source=source)
+    _set_context(
+        request,
+        kind="suspect",
+        subject_id=case_id,
+        capture_id=result.get("captureId"),
+        source=result.get("source") or source,
+    )
     return envelope(result, "嫌疑人声纹录音已开始")
 
 
@@ -137,15 +165,15 @@ def start_officer_enrollment(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    # Build the service here so a missing speech runtime is reported before
-    # occupying the shared recorder.
     _service(request, db)
-    result = _capture_service(request).start("officer", officer_id)
+    result = _capture_service(request).start("officer", officer_id, source=body.source)
     _set_context(
         request,
         kind="officer",
         subject_id=officer_id,
         officer_name=body.officer_name.strip(),
+        capture_id=result.get("captureId"),
+        source=result.get("source") or body.source,
     )
     return envelope(result, "民警声纹录音已开始")
 
