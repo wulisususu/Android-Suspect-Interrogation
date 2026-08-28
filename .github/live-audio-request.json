@@ -1,7 +1,1 @@
-{
-  "enabled": false,
-  "requestId": "idle",
-  "captureSeconds": 12,
-  "alsaDevice": "default",
-  "requireAsrText": true
-}
+{"enabled":false,"requestId":"idle","captureSeconds":12,"alsaDevice":"default","requireAsrText":true}
