@@ -59,8 +59,7 @@ jobs:
             echo "probe_bytes=$bytes"
             python3 - "$TMP_RAW" <<'PY'
           import math, struct, sys
-          p=sys.argv[1]
-          raw=open(p,'rb').read()
+          raw=open(sys.argv[1],'rb').read()
           n=len(raw)//2
           vals=struct.unpack('<%dh'%n, raw[:n*2]) if n else ()
           if vals:
@@ -68,21 +67,66 @@ jobs:
               peak=max(abs(v) for v in vals)
               print(f'probe_pcm_ms={len(raw)*1000//32000}')
               print(f'probe_rms={rms:.2f}')
+              print(f'probe_rms_dbfs={20*math.log10(max(rms,1e-9)/32768):.2f}')
               print(f'probe_peak={peak}')
+              print(f'probe_peak_dbfs={20*math.log10(max(peak,1e-9)/32768):.2f}')
           else:
               print('probe_pcm_ms=0')
           PY
             rm -f "$TMP_RAW"
           fi
 
-      - name: Check speech worker and VAD time units on bundled non-user sample
+      - name: Inspect AI worker lifecycle and socket ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '--- ai-worker status ---'
+          sudo -n systemctl --no-pager --full status ai-worker.service || true
+          pid="$(systemctl show -p MainPID --value ai-worker.service || true)"
+          echo "ai_worker_pid=${pid:-none}"
+          if [[ -n "$pid" && "$pid" != 0 && -d "/proc/$pid" ]]; then
+            ps -o pid,ppid,stat,etime,%cpu,%mem,rss,wchan:32,cmd -p "$pid" || true
+            echo '--- worker children ---'
+            ps --ppid "$pid" -o pid,ppid,stat,etime,%cpu,%mem,rss,wchan:32,cmd || true
+            echo '--- worker fds ---'
+            sudo -n ls -l "/proc/$pid/fd" 2>/dev/null | tail -n 80 || true
+          fi
+          echo '--- unix sockets ---'
+          sudo -n ss -xlpn | grep -E 'suspect-interrogation|speech.sock' || true
+          ls -la /run/suspect-interrogation || true
+
+      - name: Direct FSMN-VAD sanity on bundled non-user sample
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
+          MODEL=/opt/suspect-interrogation/models/funasr/fsmn-vad
+          WAV=/opt/suspect-interrogation/models/funasr/paraformer/example/asr_example.wav
+          timeout 120s "$PY" - "$MODEL" "$WAV" <<'PY'
+          import json, sys, wave
+          from funasr import AutoModel
+          model_path, wav_path = sys.argv[1:]
+          with wave.open(wav_path,'rb') as w:
+              sr=w.getframerate(); channels=w.getnchannels(); width=w.getsampwidth(); frames=w.getnframes(); pcm=w.readframes(frames)
+          print(f'direct_sample_pcm_ms={frames*1000//sr} sr={sr} channels={channels} width={width}')
+          model=AutoModel(model=model_path, device='cpu', disable_update=True, disable_pbar=True)
+          result=model.generate(input=pcm, fs=sr)
+          print('direct_vad_raw='+json.dumps(result, ensure_ascii=False, default=str))
+          record=result[0] if isinstance(result,list) and result else result
+          segs=(record or {}).get('value') or []
+          usable=sum(max(0,int(e)-int(s)) for s,e in segs)
+          print('direct_vad_segments='+json.dumps(segs, ensure_ascii=False))
+          print(f'direct_vad_usable_ms={usable}')
+          print(f'direct_vad_max_end_ms={max((int(e) for _,e in segs), default=0)}')
+          PY
+
+      - name: Check speech worker protocol when socket exists
         shell: bash
         run: |
           set -euo pipefail
           SOCKET=/run/suspect-interrogation/speech.sock
           PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
           RELEASE="$(readlink -f /opt/suspect-interrogation/current)"
-          MODEL_ROOT=/opt/suspect-interrogation/models/funasr
           echo "speech_service=$(systemctl is-active ai-worker.service || true)"
           if [[ ! -S "$SOCKET" ]]; then
             echo 'speech_socket=missing'
@@ -90,22 +134,10 @@ jobs:
           fi
           echo 'speech_socket=present'
           PYTHONPATH="$RELEASE/linux/backend" "$PY" - <<'PY'
-          import json, wave
+          import json
           from app.ai.speech.client import SpeechWorkerClient
-          client=SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=60)
+          client=SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=30)
           print('worker_health='+json.dumps(client.health(), ensure_ascii=False, sort_keys=True))
-          wav='/opt/suspect-interrogation/models/funasr/paraformer/example/asr_example.wav'
-          with wave.open(wav,'rb') as w:
-              print(f'sample_rate={w.getframerate()} channels={w.getnchannels()} width={w.getsampwidth()} frames={w.getnframes()}')
-              pcm=w.readframes(w.getnframes())
-              duration_ms=w.getnframes()*1000//w.getframerate()
-          segs=client.speech_segments(pcm, sample_rate=16000)
-          usable=sum(max(0,e-s) for s,e in segs)
-          print(f'known_sample_pcm_ms={duration_ms}')
-          print('known_sample_vad_segments='+json.dumps(segs, ensure_ascii=False))
-          print(f'known_sample_usable_ms={usable}')
-          if segs:
-              print(f'known_sample_max_end_ms={max(e for _,e in segs)}')
           PY
 
       - name: Recent enrollment request evidence
@@ -115,9 +147,9 @@ jobs:
           echo '--- recent API voiceprint requests/errors ---'
           sudo -n journalctl -u interrogation-api.service --since '2 hours ago' --no-pager \
             | grep -E 'voiceprints|VOICEPRINT|AUDIO_CAPTURE|speech worker|POST /api/v1/cases/.*/voiceprints' \
-            | tail -n 160 || true
-          echo '--- recent AI worker tail ---'
-          sudo -n journalctl -u ai-worker.service --since '2 hours ago' --no-pager | tail -n 120 || true
+            | tail -n 180 || true
+          echo '--- recent AI worker journal ---'
+          sudo -n journalctl -u ai-worker.service --since '2 hours ago' --no-pager | tail -n 220 || true
 
       - name: Final safe summary
         if: always()
