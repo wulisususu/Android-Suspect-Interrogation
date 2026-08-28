@@ -211,8 +211,9 @@ class InterrogationProjectionService:
             raise DomainError("REASSOCIATE_TARGET_REQUIRED", "必须选择目标问题或创建新问题", 400)
 
         if destination_id != round_row.case_question_id:
+            destination_round_no = rounds_repo.next_round_no(self.db, destination_id)
             round_row.case_question_id = destination_id
-            round_row.round_no = rounds_repo.next_round_no(self.db, destination_id)
+            round_row.round_no = destination_round_no
             self.db.flush()
         return question_round_dict(round_row)
 
