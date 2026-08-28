@@ -115,6 +115,23 @@ def test_template_snapshot_expands_rounds_in_real_time_order(tmp_path, enroll_te
             companion_round.id,
             second_arrival.id,
         ]
+        assert [item["questionId"] for item in entries] == [
+            arrival.id,
+            companion.id,
+            arrival.id,
+        ]
+        assert [item["questionText"] for item in entries] == [
+            "你何时到达案发现场？",
+            "当时和谁一起去的？",
+            "你何时到达案发现场？",
+        ]
+        # Keep the UI-era names as compatibility aliases while export consumers
+        # migrate to the canonical questionId/questionText contract.
+        assert [item["caseQuestionId"] for item in entries] == [
+            arrival.id,
+            companion.id,
+            arrival.id,
+        ]
         assert [item["formalQuestionText"] for item in entries] == [
             "你何时到达案发现场？",
             "当时和谁一起去的？",
@@ -124,7 +141,57 @@ def test_template_snapshot_expands_rounds_in_real_time_order(tmp_path, enroll_te
         assert entries[0]["answerText"] == "下午三点左右。"
         assert entries[2]["actualQuestionText"] == "你第二次又什么时候回到现场？"
         assert entries[2]["answerText"] == "晚上九点左右。"
+        assert [item["startedAt"] for item in entries] == sorted(item["startedAt"] for item in entries)
         assert "messages" not in transcript
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_detached_round_is_excluded_from_formal_snapshot(tmp_path, enroll_test_suspect_voiceprint):
+    engine, db = make_db(tmp_path)
+    try:
+        case, session = start_ready_session(db, enroll_test_suspect_voiceprint)
+        question = question_repo.create_case(
+            db,
+            case_id=case["id"],
+            source="CASE",
+            text="你当时在哪里？",
+            standard_question_id=None,
+            regex_patterns_json="[]",
+            aliases_json="[]",
+        )
+        kept = round_repo.create_round(
+            db,
+            case_id=case["id"],
+            session_id=session["id"],
+            case_question_id=question.id,
+            actual_question_text="案发时你在哪里？",
+            officer_fragment_id=None,
+            answer_text="我在住处。",
+            answer_fragment_ids=[],
+            status="CLOSED",
+        )
+        detached = round_repo.create_round(
+            db,
+            case_id=case["id"],
+            session_id=session["id"],
+            case_question_id=question.id,
+            actual_question_text="这轮已经重新关联，不应导出。",
+            officer_fragment_id=None,
+            answer_text="不应出现在正式笔录。",
+            answer_fragment_ids=[],
+            status="DETACHED",
+        )
+        db.commit()
+
+        SessionService(db).finish(case["id"], actor_id="officer-1")
+        DocumentService(db).freeze(case["id"], actor_id="officer-1")
+        entries = snapshot_payload(db, case["id"])["transcript"]["entries"]
+
+        assert [item["roundId"] for item in entries] == [kept.id]
+        assert detached.id not in {item["roundId"] for item in entries}
+        assert all(item["actualQuestionText"] != detached.actual_question_text for item in entries)
     finally:
         db.close()
         engine.dispose()
