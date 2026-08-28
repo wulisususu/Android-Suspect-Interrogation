@@ -10,8 +10,18 @@ from app.repositories import cases as case_repo
 from app.repositories import documents as document_repo
 from app.repositories import facts as fact_repo
 from app.repositories import messages as message_repo
+from app.repositories import question_rounds as round_repo
 from app.repositories import sessions as session_repo
-from app.services.serializers import case_dict, fact_dict, message_dict, signature_dict, snapshot_dict
+from app.repositories import template_questions as question_repo
+from app.services.serializers import (
+    case_dict,
+    case_question_dict,
+    fact_dict,
+    message_dict,
+    question_round_dict,
+    signature_dict,
+    snapshot_dict,
+)
 from app.workflow.state import StateMachine
 
 
@@ -29,6 +39,52 @@ class DocumentService:
             "signatures": [signature_dict(row) for row in signatures],
         }
 
+    def _transcript(self, case_id: str) -> dict:
+        case_questions = question_repo.list_case(self.db, case_id)
+        if not case_questions:
+            return {
+                "source": "LEGACY_MESSAGES",
+                "messages": [message_dict(row) for row in message_repo.list_for_case(self.db, case_id)],
+            }
+
+        rounds = round_repo.list_for_case(self.db, case_id)
+        questions_by_id = {row.id: row for row in case_questions}
+        rounds_by_question: dict[str, list] = {row.id: [] for row in case_questions}
+        for round_row in rounds:
+            if round_row.case_question_id in rounds_by_question:
+                rounds_by_question[round_row.case_question_id].append(round_row)
+
+        entries = []
+        for round_row in rounds:
+            question = questions_by_id.get(round_row.case_question_id)
+            if question is None:
+                continue
+            serialized = question_round_dict(round_row)
+            entries.append(
+                {
+                    "roundId": round_row.id,
+                    "caseQuestionId": round_row.case_question_id,
+                    "roundNo": round_row.round_no,
+                    "formalQuestionText": question.text,
+                    "actualQuestionText": round_row.actual_question_text,
+                    "answerText": round_row.answer_text,
+                    "officerFragmentId": round_row.officer_fragment_id,
+                    "answerFragmentIds": serialized["answerFragmentIds"],
+                    "status": round_row.status,
+                    "startedAt": serialized["startedAt"],
+                    "endedAt": serialized["endedAt"],
+                }
+            )
+
+        return {
+            "source": "TEMPLATE_ROUNDS",
+            "questions": [
+                case_question_dict(row, rounds=rounds_by_question[row.id])
+                for row in case_questions
+            ],
+            "entries": entries,
+        }
+
     def freeze(self, case_id: str, actor_id: str | None = None) -> dict:
         case = case_repo.get(self.db, case_id)
         if WorkflowState(case.workflow_state) != WorkflowState.SUMMARY:
@@ -36,7 +92,7 @@ class DocumentService:
         latest_session = session_repo.latest_for_case(self.db, case_id)
         payload = {
             "case": case_dict(case),
-            "messages": [message_dict(row) for row in message_repo.list_for_case(self.db, case_id)],
+            "transcript": self._transcript(case_id),
             "facts": [fact_dict(row) for row in fact_repo.list_for_case(self.db, case_id)],
         }
         content = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
