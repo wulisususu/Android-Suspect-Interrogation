@@ -17,6 +17,7 @@ def test_probe_exists_and_is_offline_and_non_destructive():
     assert "fsmn-vad" in text
     assert "xvector" in text
     assert "AutoModel" in text
+    assert "_ModelScopeLegacyXVectorAdapter" not in text
     assert "unlink(" not in text
     assert "rmtree(" not in text
 

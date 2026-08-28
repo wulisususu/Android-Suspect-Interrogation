@@ -2,9 +2,8 @@
 """Read-only RK3588 probe for local FunASR models.
 
 The probe never downloads or mutates model assets. Paraformer/FSMN-VAD use
-FunASR AutoModel. The installed 2023 XVector checkpoint is also allowed to use
-its original local ModelScope speaker-verification pipeline when current
-AutoModel cannot register that legacy architecture.
+FunASR AutoModel. Legacy XVector is intentionally exercised by the isolated
+speech-worker smoke, not by a ModelScope pipeline in this probe.
 """
 
 from __future__ import annotations
@@ -28,7 +27,6 @@ if str(BACKEND_ROOT) not in sys.path:
 from funasr import AutoModel
 import funasr
 import torch
-from speech_worker.funasr_runtime import _ModelScopeLegacyXVectorAdapter
 
 MODEL_ROOT = Path(os.environ.get("MODEL_ROOT", "/home/youyeetoo/funasr-models")).resolve()
 MODEL_DIRS = {
@@ -126,19 +124,13 @@ def _shape(value: Any) -> list[int] | None:
 
 def _load_model(name: str, path: Path) -> tuple[Any, float, str]:
     started = time.perf_counter()
-    try:
-        model = AutoModel(
-            model=str(path),
-            device="cpu",
-            disable_update=True,
-            disable_pbar=True,
-        )
-        return model, time.perf_counter() - started, "funasr-automodel"
-    except Exception:
-        if name != "xvector" or not (path / "sv.pth").is_file() or not (path / "sv.yaml").is_file():
-            raise
-    model = _ModelScopeLegacyXVectorAdapter(path)
-    return model, time.perf_counter() - started, "modelscope-legacy-xvector"
+    model = AutoModel(
+        model=str(path),
+        device="cpu",
+        disable_update=True,
+        disable_pbar=True,
+    )
+    return model, time.perf_counter() - started, "funasr-automodel"
 
 
 def _pcm16_from_wav(path: Path) -> bytes:
@@ -161,10 +153,7 @@ def _probe_model(name: str, path: Path, speech_wav: Path | None, speaker_wav: Pa
 
     try:
         if name == "xvector" and speaker_wav is not None:
-            if backend == "modelscope-legacy-xvector":
-                result = model.generate(input=_pcm16_from_wav(speaker_wav), fs=16000, embedding=True)
-            else:
-                result = model.generate(input=str(speaker_wav), embedding=True)
+            result = model.generate(input=str(speaker_wav), embedding=True)
             first = _first_record(result)
             report["inference"] = {
                 "keys": _result_keys(result),
