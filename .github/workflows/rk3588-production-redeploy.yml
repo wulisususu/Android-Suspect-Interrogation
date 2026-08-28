@@ -11,8 +11,6 @@ on:
 permissions:
   contents: read
 
-# Deliberately shares the bootstrap lock so this fast deploy cancels a stuck
-# bootstrap job instead of racing it on the single RK3588 runner.
 concurrency:
   group: rk3588-service-bootstrap-${{ github.ref }}
   cancel-in-progress: true
@@ -83,9 +81,13 @@ jobs:
           bash -n deploy/control.sh deploy/lib/common.sh deploy/lib/release.sh
           test -f webapp/src/components/TemplateDrivenInterrogationPage.vue
           test ! -f webapp/src/components/InterrogationPage.vue
+          test -f linux/backend/speech_worker/vad_progress.py
           grep -q 'TemplateDrivenInterrogationPage' webapp/src/views/InterrogationWorkspace.vue
           grep -q 'grid-template-columns: minmax(680px, 2.05fr) minmax(360px, .95fr)' webapp/src/components/templateInterrogation.css
-          echo 'two_column_source_contract=ok'
+          grep -q 'required_usable_speech_ms=20000' linux/backend/app/main.py
+          grep -q 'open_vad_session' linux/backend/app/ai/speech/client.py
+          grep -q '有效语音达到 20 秒后会自动停止并注册' webapp/src/components/VoiceprintPreparationPanel.vue
+          echo 'voiceprint_effective_speech_source_contract=ok'
 
       - name: Install/update production units and configuration
         shell: bash
@@ -117,16 +119,17 @@ jobs:
           set -euo pipefail
           sudo -n env SUSPECT_HEALTH_BASE_URL="http://127.0.0.1:${SUSPECT_DEPLOY_PORT}" \
             bash deploy/control.sh deploy "$GITHUB_WORKSPACE"
-          sudo -n systemctl enable --now ai-worker.service
+          sudo -n systemctl enable ai-worker.service
+          sudo -n systemctl restart ai-worker.service
 
       - name: Verify deployed backend frontend and AI runtime
         shell: bash
         run: |
           set -euo pipefail
-          for _ in $(seq 1 90); do
+          for _ in $(seq 1 240); do
             if systemctl is-active --quiet interrogation-api.service && \
                systemctl is-active --quiet ai-worker.service && \
-               [[ -S /run/suspect-interrogation/speech.sock ]] && \
+               sudo -n test -S /run/suspect-interrogation/speech.sock && \
                curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" >/tmp/suspect-ready.json; then
               break
             fi
@@ -134,7 +137,7 @@ jobs:
           done
           systemctl is-active --quiet interrogation-api.service
           systemctl is-active --quiet ai-worker.service
-          test -S /run/suspect-interrogation/speech.sock
+          sudo -n test -S /run/suspect-interrogation/speech.sock
           curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/live" >/dev/null
           curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" | tee /tmp/suspect-ready.json
           curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/" | tee /tmp/suspect-index.html >/dev/null
@@ -142,22 +145,50 @@ jobs:
           test -f /opt/suspect-interrogation/current/webapp/dist/index.html
           grep -Rqs '正式笔录' /opt/suspect-interrogation/current/webapp/dist/assets
           grep -Rqs '实时对话' /opt/suspect-interrogation/current/webapp/dist/assets
+          grep -Rqs '有效语音达到 20 秒后会自动停止并注册' /opt/suspect-interrogation/current/webapp/dist/assets
 
-          PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \
+          sudo -n -u suspect-interrogation env \
+            PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \
             "$FUNASR_RUNTIME/bin/python" - <<'PY'
+          import wave
           from app.ai.speech.client import SpeechWorkerClient
-          health = SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=30).health()
+
+          client = SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=60)
+          health = client.health()
           models = health.get('models') or {}
           assert models.get('asr') is True, health
           assert models.get('vad') is True, health
           assert models.get('speaker') is True, health
           print('speech_worker_health=ok', health)
+
+          wav_path = '/opt/suspect-interrogation/models/funasr/paraformer/example/asr_example.wav'
+          with wave.open(wav_path, 'rb') as wav:
+              assert wav.getframerate() == 16000
+              assert wav.getnchannels() == 1
+              assert wav.getsampwidth() == 2
+              pcm = wav.readframes(wav.getnframes())
+
+          session_id = 'deploy-vad-progress-smoke'
+          client.open_vad_session(session_id, 16000)
+          last = None
+          try:
+              chunk_bytes = 16000 * 2 // 5
+              for offset in range(0, len(pcm), chunk_bytes):
+                  last = client.push_vad_pcm(session_id, pcm[offset:offset + chunk_bytes])
+              final = client.finalize_vad_session(session_id)
+          finally:
+              client.close_vad_session(session_id)
+          usable = int(final.get('usableDurationMs') or 0)
+          assert usable >= 3000, (last, final)
+          print('vad_progress_protocol=ok usable_ms=', usable)
           PY
 
+          grep -q 'required_usable_speech_ms=20000' /opt/suspect-interrogation/current/linux/backend/app/main.py
+          grep -q 'USABLE_SPEECH_TARGET' /opt/suspect-interrogation/current/linux/backend/app/services/audio_capture_service.py
           echo "current_release=$(readlink -f /opt/suspect-interrogation/current)"
           echo "deployed_source_sha=$(cat "$RUNNER_TEMP/deploy-target-sha")"
           echo "backend_service=active port=${SUSPECT_DEPLOY_PORT}"
-          echo "frontend_bundle=two-column"
+          echo "voiceprint_effective_speech_enrollment=ready"
           echo '--- TCP/18080 ---'
           sudo -n ss -ltnp "sport = :${SUSPECT_DEPLOY_PORT}" || true
           echo '--- TCP/8000 preserved ---'
@@ -193,10 +224,11 @@ jobs:
           readlink -f /opt/suspect-interrogation/current || true
           echo '--- services ---'
           sudo -n systemctl --no-pager --full status interrogation-api.service ai-worker.service kiosk.service || true
-          echo '--- ports ---'
+          echo '--- sockets and ports ---'
+          sudo -n ss -xlpn | grep speech.sock || true
           sudo -n ss -ltnp 'sport = :18080' || true
           sudo -n ss -ltnp 'sport = :8000' || true
           echo '--- API journal ---'
-          sudo -n journalctl -u interrogation-api.service -n 60 --no-pager || true
+          sudo -n journalctl -u interrogation-api.service -n 80 --no-pager || true
           echo '--- AI journal ---'
-          sudo -n journalctl -u ai-worker.service -n 80 --no-pager || true
+          sudo -n journalctl -u ai-worker.service -n 120 --no-pager || true
