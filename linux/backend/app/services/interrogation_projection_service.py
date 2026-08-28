@@ -142,12 +142,13 @@ class InterrogationProjectionService:
         return question_round_dict(round_row)
 
     def link_pending(self, pending_id: str, case_question_id: str, *, round_mode: str) -> dict:
-        pending = self._pending_for_action(pending_id)
+        pending = self._pending_for_action(pending_id, allow_deferred=True)
+        is_deferred = pending.status == "DEFERRED"
         mode = str(round_mode or "").upper()
         if mode not in _ALLOWED_ROUND_MODES:
             raise DomainError("INVALID_ROUND_MODE", "轮次处理方式无效", 400)
         question_repo.get_case(self.db, pending.case_id, case_question_id)
-        if pending.session_id:
+        if pending.session_id and not is_deferred:
             rounds_repo.close_active(self.db, pending.case_id, pending.session_id)
 
         if mode == "APPEND_EXISTING":
@@ -160,9 +161,10 @@ class InterrogationProjectionService:
                 pending.buffered_answer_text,
                 _json_list(pending.buffered_fragment_ids_json),
             )
-            round_row.status = "ACTIVE"
-            round_row.ended_at = None
-            self.db.flush()
+            if not is_deferred:
+                round_row.status = "ACTIVE"
+                round_row.ended_at = None
+                self.db.flush()
         else:
             round_row = rounds_repo.create_round(
                 self.db,
@@ -173,6 +175,7 @@ class InterrogationProjectionService:
                 officer_fragment_id=pending.officer_fragment_id,
                 answer_text=pending.buffered_answer_text,
                 answer_fragment_ids=_json_list(pending.buffered_fragment_ids_json),
+                status="CLOSED" if is_deferred else "ACTIVE",
             )
 
         pending.status = "LINKED"
