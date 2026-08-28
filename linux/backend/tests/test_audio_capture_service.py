@@ -36,6 +36,32 @@ class FakeAudioManager:
         self.stopped += 1
 
 
+class FakeVadProgressClient:
+    def __init__(self, usable_progress_ms: list[int]):
+        self.usable_progress_ms = list(usable_progress_ms)
+        self.opened: list[tuple[str, int]] = []
+        self.closed: list[str] = []
+        self.pushes = 0
+
+    def open_vad_session(self, session_id: str, sample_rate: int = 16000):
+        self.opened.append((session_id, sample_rate))
+        return {"sessionId": session_id, "usableDurationMs": 0, "segments": []}
+
+    def push_vad_pcm(self, session_id: str, pcm: bytes):
+        assert session_id
+        assert pcm
+        value = self.usable_progress_ms[min(self.pushes, len(self.usable_progress_ms) - 1)]
+        self.pushes += 1
+        return {"sessionId": session_id, "usableDurationMs": value, "segments": []}
+
+    def finalize_vad_session(self, session_id: str):
+        value = self.usable_progress_ms[min(max(self.pushes - 1, 0), len(self.usable_progress_ms) - 1)]
+        return {"sessionId": session_id, "usableDurationMs": value, "segments": [[0, value]]}
+
+    def close_vad_session(self, session_id: str):
+        self.closed.append(session_id)
+
+
 def wait_until(predicate, timeout=1.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -115,3 +141,57 @@ def test_capture_read_failure_still_releases_recorder_and_surfaces_typed_error()
     assert exc_info.value.code == "AUDIO_CAPTURE_FAILED"
     assert manager.stopped == 1
     assert service.status()["active"] is False
+
+
+def test_voiceprint_capture_auto_stops_when_streaming_vad_reaches_twenty_seconds():
+    one_second = b"\x01\x00" * 16000
+    manager = FakeAudioManager(frames=[one_second] * 40)
+    speech = FakeVadProgressClient([5000, 10000, 15000, 19900, 20000, 25000])
+    service = AudioCaptureService(
+        manager,
+        speech_client=speech,
+        sample_rate=16000,
+        max_seconds=300,
+        required_usable_speech_ms=20000,
+    )
+
+    started = service.start("suspect", "CASE-1")
+    assert started["requiredUsableSpeechMs"] == 20000
+    assert started["usableSpeechMs"] == 0
+
+    wait_until(lambda: manager.stopped == 1)
+    status = service.status()
+
+    assert status["complete"] is True
+    assert status["completeReason"] == "USABLE_SPEECH_TARGET"
+    assert status["usableSpeechMs"] >= 20000
+    assert status["capturedDurationMs"] < 300000
+
+    pcm = service.stop("suspect", "CASE-1")
+    assert pcm
+    assert speech.opened
+    assert speech.closed
+
+
+def test_slow_speaker_is_not_stopped_at_thirty_seconds_when_effective_speech_is_below_target():
+    one_second = b"\x01\x00" * 16000
+    manager = FakeAudioManager(frames=[one_second] * 35)
+    speech = FakeVadProgressClient([1000] * 100)
+    service = AudioCaptureService(
+        manager,
+        speech_client=speech,
+        sample_rate=16000,
+        max_seconds=300,
+        required_usable_speech_ms=20000,
+    )
+
+    service.start("suspect", "CASE-1")
+    wait_until(lambda: manager.reads >= 31)
+
+    status = service.status()
+    assert status["capturedDurationMs"] >= 30000
+    assert status["usableSpeechMs"] < 20000
+    assert status["complete"] is False
+    assert manager.stopped == 0
+
+    service.stop("suspect", "CASE-1")

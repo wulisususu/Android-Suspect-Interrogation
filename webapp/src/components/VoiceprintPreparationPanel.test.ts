@@ -7,17 +7,27 @@ import {
 } from './VoiceprintPreparationPanel.vue'
 
 describe('VoiceprintPreparationPanel helpers', () => {
-  it('uses actual board capture duration for the enrollment progress bar', () => {
-    expect(voiceprintEnrollmentProgress({ capturedDurationMs: 12500, targetDurationMs: 30000 })).toEqual({
-      percent: 42,
-      capturedSeconds: 12,
-      targetSeconds: 30,
+  it('uses effective speech rather than total recording time for enrollment progress', () => {
+    expect(voiceprintEnrollmentProgress({
+      capturedDurationMs: 30000,
+      usableSpeechMs: 12500,
+      requiredUsableSpeechMs: 20000,
+    })).toEqual({
+      percent: 63,
+      usableSeconds: 12,
+      targetSeconds: 20,
+      recordedSeconds: 30,
       complete: false,
     })
-    expect(voiceprintEnrollmentProgress({ capturedDurationMs: 30000, targetDurationMs: 30000 })).toEqual({
+    expect(voiceprintEnrollmentProgress({
+      capturedDurationMs: 47000,
+      usableSpeechMs: 20000,
+      requiredUsableSpeechMs: 20000,
+    })).toEqual({
       percent: 100,
-      capturedSeconds: 30,
-      targetSeconds: 30,
+      usableSeconds: 20,
+      targetSeconds: 20,
+      recordedSeconds: 47,
       complete: true,
     })
   })
