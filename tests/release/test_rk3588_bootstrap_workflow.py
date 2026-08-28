@@ -73,5 +73,6 @@ def test_install_upserts_funasr_runtime_env_for_existing_installations():
     assert 'upsert_runtime_env "SUSPECT_FUNASR_MODEL_ROOT" "/opt/suspect-interrogation/models/funasr"' in control
     assert 'upsert_runtime_env "SUSPECT_FUNASR_PYTHON" "/opt/suspect-interrogation/runtime/funasr-env/bin/python"' in control
     assert 'upsert_runtime_env "SUSPECT_SPEECH_SOCKET" "/run/suspect-interrogation/speech.sock"' in control
+    assert 'upsert_runtime_env "AI_MODE" "real"' in control
     assert 'grep -q "^${key}=" "$runtime_env"' in control
     assert 'sed -i -E "s|^${key}=.*|${key}=${value}|" "$runtime_env"' in control

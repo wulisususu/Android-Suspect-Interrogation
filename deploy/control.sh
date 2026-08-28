@@ -57,6 +57,7 @@ install_runtime() {
     upsert_runtime_env "SUSPECT_FUNASR_PYTHON" "/opt/suspect-interrogation/runtime/funasr-env/bin/python"
     upsert_runtime_env "SUSPECT_XVECTOR_LEGACY_PYTHON" "/opt/suspect-interrogation/runtime/xvector-legacy-env/bin/python"
     upsert_runtime_env "SUSPECT_SPEECH_SOCKET" "/run/suspect-interrogation/speech.sock"
+    upsert_runtime_env "AI_MODE" "real"
     chown root:"$SUSPECT_SERVICE_GROUP" "$SUSPECT_ETC_DIR/runtime.env"
     chmod 0640 "$SUSPECT_ETC_DIR/runtime.env"
     install -m 0644 "$REPO_ROOT/systemd/interrogation-api.service" "$SUSPECT_SYSTEMD_DIR/interrogation-api.service"
