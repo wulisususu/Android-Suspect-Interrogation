@@ -30,7 +30,7 @@ RestrictSUIDSGID=true
 CapabilityBoundingSet=
 AmbientCapabilities=
 ReadWritePaths=/run/suspect-interrogation /var/lib/suspect-interrogation /var/log/suspect-interrogation
-ReadOnlyPaths=/opt/suspect-interrogation/models/funasr /opt/suspect-interrogation/runtime/funasr-env
+ReadOnlyPaths=/opt/suspect-interrogation/models/funasr /opt/suspect-interrogation/runtime/funasr-env /opt/suspect-interrogation/runtime/xvector-legacy-env
 
 [Install]
 WantedBy=multi-user.target

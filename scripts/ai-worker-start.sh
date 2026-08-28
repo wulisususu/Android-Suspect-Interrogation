@@ -11,10 +11,16 @@ require_env() {
 
 require_env SUSPECT_FUNASR_PYTHON
 require_env SUSPECT_FUNASR_MODEL_ROOT
+require_env SUSPECT_XVECTOR_LEGACY_PYTHON
 require_env SUSPECT_SPEECH_SOCKET
 
 if [[ ! -x "$SUSPECT_FUNASR_PYTHON" ]]; then
   echo "SUSPECT_FUNASR_PYTHON is not executable: $SUSPECT_FUNASR_PYTHON" >&2
+  exit 78
+fi
+
+if [[ ! -x "$SUSPECT_XVECTOR_LEGACY_PYTHON" ]]; then
+  echo "SUSPECT_XVECTOR_LEGACY_PYTHON is not executable: $SUSPECT_XVECTOR_LEGACY_PYTHON" >&2
   exit 78
 fi
 

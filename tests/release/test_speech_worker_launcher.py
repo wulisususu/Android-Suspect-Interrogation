@@ -32,6 +32,7 @@ def _base_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     env.update(
         {
             "SUSPECT_FUNASR_PYTHON": os.fspath(fake_python),
+            "SUSPECT_XVECTOR_LEGACY_PYTHON": os.fspath(fake_python),
             "SUSPECT_FUNASR_MODEL_ROOT": os.fspath(model_root),
             "SUSPECT_SPEECH_SOCKET": os.fspath(socket_path),
             "CAPTURE_FILE": os.fspath(capture),
@@ -66,6 +67,7 @@ def test_launcher_fails_closed_when_required_runtime_inputs_are_missing(tmp_path
     for missing in (
         "SUSPECT_FUNASR_PYTHON",
         "SUSPECT_FUNASR_MODEL_ROOT",
+        "SUSPECT_XVECTOR_LEGACY_PYTHON",
         "SUSPECT_SPEECH_SOCKET",
     ):
         candidate = dict(env)
