@@ -11,6 +11,7 @@ from app.database.session import init_database, make_engine, make_session_factor
 from app.repositories import cases as case_repo
 from app.repositories import sessions as session_repo
 from app.repositories import voiceprints as voiceprint_repo
+from app.services import asr_capture_service as capture_module
 from app.services.asr_capture_service import AsrCaptureService
 
 
@@ -275,4 +276,44 @@ def test_capture_refuses_to_start_without_calibrated_speaker_policy(tmp_path: Pa
         raise AssertionError("capture start must fail closed when speaker calibration is missing")
 
     assert device.started == 0
+    engine.dispose()
+
+
+def test_projection_failure_keeps_raw_fragment_and_capture_loop_healthy(tmp_path: Path, monkeypatch):
+    engine, factory, case_id, _ = _seed_database(tmp_path)
+    device = FakeDeviceManager([b"\x01\x00" * 1600, b"\x02\x00" * 1600])
+    speech = FakeSpeechSupervisor()
+    events = EventCollector()
+
+    class ExplodingProjection:
+        calls = 0
+
+        def __init__(self, _db):
+            pass
+
+        def process_fragment(self, _case_id: str, _fragment_id: str):
+            type(self).calls += 1
+            raise RuntimeError("simulated formal projection failure")
+
+    monkeypatch.setattr(capture_module, "InterrogationProjectionService", ExplodingProjection, raising=False)
+    service = AsrCaptureService(
+        session_factory=factory,
+        device_manager=device,
+        ai_supervisor=speech,
+        publish_event=events,
+        sample_rate=16_000,
+        read_timeout=0.01,
+    )
+
+    service.start(case_id)
+    _wait_until(lambda: len(speech.pushed) == 2)
+    _wait_until(lambda: bool(events.events))
+    stopped = service.stop(case_id)
+
+    assert ExplodingProjection.calls == 1
+    assert stopped["lastError"] is None
+    with factory() as db:
+        assert db.query(ASRFragment).count() == 1
+        fragment = db.query(ASRFragment).one()
+        assert fragment.raw_text == "我是嫌疑人"
     engine.dispose()
