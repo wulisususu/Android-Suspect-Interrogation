@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -25,6 +26,17 @@ from app.services.serializers import (
 from app.workflow.state import StateMachine
 
 
+_REQUIRED_SIGNER_ROLES = {"SUSPECT", "OFFICER"}
+
+
+def _epoch_ms(value: datetime | None) -> int:
+    if value is None:
+        return 0
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return int(value.timestamp() * 1000)
+
+
 class DocumentService:
     def __init__(self, db: Session):
         self.db = db
@@ -37,6 +49,57 @@ class DocumentService:
             "caseId": case_id, "workflowState": case.workflow_state, "documentStatus": case.document_status,
             "reportStatus": case.report_status, "snapshot": snapshot_dict(snapshot) if snapshot else None,
             "signatures": [signature_dict(row) for row in signatures],
+        }
+
+    def signing_state(self, case_id: str) -> dict | None:
+        case_repo.get(self.db, case_id)
+        snapshot = document_repo.latest_snapshot(self.db, case_id)
+        if snapshot is None:
+            return None
+
+        signatures = [
+            row for row in document_repo.list_signatures(self.db, case_id)
+            if row.snapshot_id == snapshot.id
+        ]
+        roles = {str(row.signer_role or "").strip().upper() for row in signatures}
+        integrity_hash = hashlib.sha256(snapshot.content_json.encode("utf-8")).hexdigest()
+
+        signature_states = []
+        for row in signatures:
+            signer_role = str(row.signer_role or "").strip().upper()
+            signature_payload = json.dumps(
+                {
+                    "snapshotId": snapshot.id,
+                    "signerRole": signer_role,
+                    "signerName": row.signer_name,
+                    "imageData": row.image_data,
+                    "strokesJson": row.strokes_json or "[]",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            signature_states.append(
+                {
+                    "signerRole": signer_role,
+                    "signerName": row.signer_name,
+                    "signedAt": _epoch_ms(row.created_at),
+                    "signatureHash": hashlib.sha256(signature_payload.encode("utf-8")).hexdigest(),
+                    "imageDataUrl": row.image_data,
+                    "strokesJson": row.strokes_json or "[]",
+                    "deviceId": "LINUX_LOCAL",
+                }
+            )
+
+        return {
+            "caseId": case_id,
+            "version": snapshot.version,
+            "documentId": snapshot.id,
+            "documentHash": snapshot.content_hash,
+            "status": "LOCKED" if _REQUIRED_SIGNER_ROLES.issubset(roles) else "FROZEN",
+            "createdAt": _epoch_ms(snapshot.created_at),
+            "integrityValid": integrity_hash == snapshot.content_hash,
+            "signatures": signature_states,
         }
 
     def _transcript(self, case_id: str) -> dict:
@@ -97,35 +160,98 @@ class DocumentService:
         }
         content = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        snapshot = document_repo.create_snapshot(self.db, case_id=case_id, session_id=latest_session.id if latest_session else None,
-                                                 content_json=content, content_hash=digest)
+        snapshot = document_repo.create_snapshot(
+            self.db,
+            case_id=case_id,
+            session_id=latest_session.id if latest_session else None,
+            content_json=content,
+            content_hash=digest,
+        )
         case.workflow_state = StateMachine.transition(WorkflowState.SUMMARY, WorkflowState.FROZEN).value
         case.document_status = "FROZEN"
-        audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="DOCUMENT_FREEZE", target_type="DOCUMENT", target_id=snapshot.id,
-                       after={"version": snapshot.version, "content_hash": snapshot.content_hash})
+        audit_repo.add(
+            self.db,
+            case_id=case_id,
+            actor_id=actor_id,
+            action="DOCUMENT_FREEZE",
+            target_type="DOCUMENT",
+            target_id=snapshot.id,
+            after={"version": snapshot.version, "content_hash": snapshot.content_hash},
+        )
         self.db.commit()
-        return snapshot_dict(snapshot)
+        state = self.signing_state(case_id)
+        assert state is not None
+        return state
 
-    def sign(self, case_id: str, *, signer_role: str, signer_name: str, image_data: str, strokes_json: str = "[]", actor_id: str | None = None) -> dict:
+    def sign(
+        self,
+        case_id: str,
+        *,
+        signer_role: str,
+        signer_name: str,
+        image_data: str,
+        strokes_json: str = "[]",
+        actor_id: str | None = None,
+    ) -> dict:
         case = case_repo.get(self.db, case_id)
-        if WorkflowState(case.workflow_state) != WorkflowState.FROZEN:
+        workflow_state = WorkflowState(case.workflow_state)
+        if workflow_state not in {WorkflowState.FROZEN, WorkflowState.SIGNED}:
             raise DomainError("SIGNATURE_NOT_ALLOWED", "笔录冻结后才能签名", 409)
+
+        role = str(signer_role or "").strip().upper()
+        if role not in _REQUIRED_SIGNER_ROLES:
+            raise DomainError("INVALID_SIGNER_ROLE", "签名角色仅支持被讯问人或民警", 400)
+        name = str(signer_name or "").strip()
+        if not name:
+            raise DomainError("SIGNER_NAME_REQUIRED", "签名人姓名不能为空", 400)
+
         snapshot = document_repo.latest_snapshot(self.db, case_id)
         if snapshot is None:
             raise DomainError("DOCUMENT_NOT_FROZEN", "未找到冻结笔录快照", 409)
+
+        snapshot_signatures = [
+            row for row in document_repo.list_signatures(self.db, case_id)
+            if row.snapshot_id == snapshot.id
+        ]
+        if any(str(row.signer_role or "").strip().upper() == role for row in snapshot_signatures):
+            raise DomainError("SIGNATURE_ROLE_ALREADY_SIGNED", "该签名角色已完成签名", 409)
+
         session = session_repo.latest_for_case(self.db, case_id)
         signature = document_repo.create_signature(
-            self.db, case_id=case_id, session_id=session.id if session else None, snapshot_id=snapshot.id,
-            signer_role=signer_role, signer_name=signer_name, image_data=image_data, strokes_json=strokes_json,
+            self.db,
+            case_id=case_id,
+            session_id=session.id if session else None,
+            snapshot_id=snapshot.id,
+            signer_role=role,
+            signer_name=name,
+            image_data=image_data,
+            strokes_json=strokes_json,
         )
-        case.workflow_state = StateMachine.transition(WorkflowState.FROZEN, WorkflowState.SIGNED).value
-        case.document_status = "SIGNED"
-        audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="SIGNATURE_SAVE", target_type="SIGNATURE", target_id=signature.id,
-                       after={"signer_role": signer_role, "signer_name": signer_name, "snapshot_id": snapshot.id})
+
+        signed_roles = {
+            str(row.signer_role or "").strip().upper()
+            for row in snapshot_signatures
+        } | {role}
+        if _REQUIRED_SIGNER_ROLES.issubset(signed_roles):
+            if workflow_state == WorkflowState.FROZEN:
+                case.workflow_state = StateMachine.transition(WorkflowState.FROZEN, WorkflowState.SIGNED).value
+            case.document_status = "SIGNED"
+        else:
+            case.document_status = "FROZEN"
+
+        audit_repo.add(
+            self.db,
+            case_id=case_id,
+            actor_id=actor_id,
+            action="SIGNATURE_SAVE",
+            target_type="SIGNATURE",
+            target_id=signature.id,
+            after={"signer_role": role, "signer_name": name, "snapshot_id": snapshot.id},
+        )
         self.db.commit()
-        data = signature_dict(signature)
-        data["status"] = "SIGNED"
-        return data
+        state = self.signing_state(case_id)
+        assert state is not None
+        return state
 
     def list_signatures(self, case_id: str) -> list[dict]:
         case_repo.get(self.db, case_id)
@@ -137,7 +263,14 @@ class DocumentService:
             raise DomainError("REPORT_NOT_ALLOWED", "完成签名后才能生成报告", 409)
         case.workflow_state = StateMachine.transition(WorkflowState.SIGNED, WorkflowState.REPORT_GENERATED).value
         case.report_status = "GENERATED"
-        audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="REPORT_GENERATED", target_type="CASE", target_id=case_id,
-                       after={"reportStatus": "GENERATED"})
+        audit_repo.add(
+            self.db,
+            case_id=case_id,
+            actor_id=actor_id,
+            action="REPORT_GENERATED",
+            target_type="CASE",
+            target_id=case_id,
+            after={"reportStatus": "GENERATED"},
+        )
         self.db.commit()
         return self.status(case_id)

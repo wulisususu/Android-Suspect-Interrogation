@@ -96,6 +96,14 @@ class SignatureRequest(ActorRequest):
     strokes_json: str = "[]"
 
 
+class DocumentSignRequest(FlexibleModel):
+    signer_role: Literal["SUSPECT", "OFFICER"] = Field(alias="signerRole")
+    signer_name: str = Field(min_length=1, alias="signerName")
+    image_data: str = Field(min_length=1, alias="imageDataUrl")
+    strokes_json: str = Field(default="[]", alias="strokesJson")
+    actor_id: str | None = Field(default=None, alias="actorId")
+
+
 class LegacySignatureRequest(FlexibleModel):
     session_id: str | None = None
     data: str
