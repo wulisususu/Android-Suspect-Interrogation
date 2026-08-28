@@ -24,6 +24,7 @@ from app.api.identity import router as identity_router
 from app.api.interrogation import router as interrogation_router
 from app.api.responses import envelope
 from app.api.signature import router as signature_router
+from app.api.template_workspace import router as template_workspace_router
 from app.api.voiceprints import router as voiceprints_router
 from app.database.session import init_database, make_engine, make_session_factory
 from app.hardware_gateway.linux import LinuxHardwareGateway
@@ -55,9 +56,6 @@ def _build_supervisor() -> AISupervisor:
 def _database_url(database_url: str | None, settings: RuntimeSettings) -> str | None:
     if database_url is not None:
         return database_url
-    # Production systemd always sets SUSPECT_DB_PATH. Development/tests retain
-    # the repository-local SQLite default unless they explicitly opt into the
-    # production path.
     if "SUSPECT_DB_PATH" in os.environ:
         settings.db_path.parent.mkdir(parents=True, exist_ok=True)
         return f"sqlite:///{settings.db_path}"
@@ -153,17 +151,12 @@ def create_app(
     app.state.hardware_manager = manager
     app.state.hardware_gateway = hardware_gateway
     app.state.asr_capture_service = None
-    # Construction is side-effect free: the AF_UNIX socket is opened only
-    # when an enrollment or speech request is actually made.
     app.state.speech_client = SpeechWorkerClient(
         ai_settings.speech_socket,
         timeout=ai_settings.request_timeout,
     )
-    # Enrollment capture is available only when this process owns the real
-    # DeviceManager. Tests and alternate hardware gateways may inject a fake.
     app.state.voiceprint_capture = AudioCaptureService(manager) if manager is not None else None
     app.state.voiceprint_enrollment_context = {}
-    # Compatibility only: formal offline AI execution is owned by AISupervisor.
     app.state.ai_gateway = ai_gateway or DeterministicAIGateway()
     app.state.websocket_manager = websocket_manager
 
@@ -182,6 +175,7 @@ def create_app(
     app.include_router(cases_router, prefix="/api/v1")
     app.include_router(identity_router, prefix="/api/v1")
     app.include_router(interrogation_router, prefix="/api/v1")
+    app.include_router(template_workspace_router, prefix="/api/v1")
     app.include_router(signature_router, prefix="/api/v1")
     app.include_router(device_router, prefix="/api/v1")
     app.include_router(ai_router, prefix="/api/v1")
@@ -195,9 +189,6 @@ def create_app(
         hardware = app.state.hardware_gateway.status()
         return envelope({"status": "ok", "platform": "linux", "hardware": hardware})
 
-    # REST/WebSocket/health routes are registered first. In production the Vue
-    # bundle is mounted last as the kiosk fallback; Vite remains responsible in
-    # development when dist does not exist.
     web_dist = Path(settings.web_dist_dir)
     if web_dist.is_dir():
         app.mount("/", StaticFiles(directory=web_dist, html=True), name="webapp")

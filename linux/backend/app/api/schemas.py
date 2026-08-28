@@ -1,8 +1,10 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class FlexibleModel(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
 class CaseCreateRequest(FlexibleModel):
@@ -108,3 +110,42 @@ class LegacyWorkMessageRequest(FlexibleModel):
     profile: LegacyWorkMessageProfile | None = None
     text: str | None = None
     from_: str | None = Field(default=None, alias="from")
+
+
+class CaseQuestionCreateRequest(FlexibleModel):
+    text: str
+    source: Literal["STANDARD", "CASE", "LIVE"] = "CASE"
+    standard_question_id: str | None = Field(default=None, alias="standardQuestionId")
+    regex_patterns: list[str] = Field(default_factory=list, alias="regexPatterns")
+    after_question_id: str | None = Field(default=None, alias="afterQuestionId")
+
+
+class CaseQuestionUpdateRequest(FlexibleModel):
+    text: str | None = None
+    regex_patterns: list[str] | None = Field(default=None, alias="regexPatterns")
+
+
+class QuestionReorderRequest(FlexibleModel):
+    question_ids: list[str] = Field(alias="questionIds")
+
+
+class PendingAddRequest(FlexibleModel):
+    after_question_id: str | None = Field(default=None, alias="afterQuestionId")
+
+
+class PendingLinkRequest(FlexibleModel):
+    case_question_id: str = Field(alias="caseQuestionId")
+    round_mode: Literal["APPEND_EXISTING", "NEW_ROUND"] = Field(alias="roundMode")
+
+
+class RoundReassociateRequest(FlexibleModel):
+    case_question_id: str | None = Field(default=None, alias="caseQuestionId")
+    new_question_text: str | None = Field(default=None, alias="newQuestionText")
+
+
+class RoundUpdateRequest(FlexibleModel):
+    answer_text: str = Field(alias="answerText")
+
+
+class SaveQuestionToLibraryRequest(FlexibleModel):
+    category: str = "通用"

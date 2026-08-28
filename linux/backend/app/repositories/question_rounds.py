@@ -38,6 +38,18 @@ def list_for_case(db: Session, case_id: str) -> list[QuestionRound]:
     return list(db.scalars(stmt))
 
 
+def list_pending_for_case(db: Session, case_id: str) -> list[PendingQuestion]:
+    stmt = (
+        select(PendingQuestion)
+        .where(
+            PendingQuestion.case_id == case_id,
+            PendingQuestion.status.in_(["PENDING", "DEFERRED"]),
+        )
+        .order_by(PendingQuestion.created_at.asc())
+    )
+    return list(db.scalars(stmt))
+
+
 def list_for_question(db: Session, case_id: str, case_question_id: str) -> list[QuestionRound]:
     stmt = (
         select(QuestionRound)

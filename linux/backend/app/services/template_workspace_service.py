@@ -8,7 +8,12 @@ from app.domain.errors import DomainError
 from app.repositories import cases as case_repo
 from app.repositories import question_rounds as round_repo
 from app.repositories import template_questions as question_repo
-from app.services.serializers import case_question_dict, standard_question_dict
+from app.services.serializers import (
+    case_question_dict,
+    pending_question_dict,
+    question_round_dict,
+    standard_question_dict,
+)
 
 
 _ALLOWED_SOURCES = {"STANDARD", "CASE", "LIVE"}
@@ -44,14 +49,20 @@ class TemplateWorkspaceService:
 
     def workspace(self, case_id: str) -> dict:
         case_repo.get(self.db, case_id)
+        rounds = round_repo.list_for_case(self.db, case_id)
         rounds_by_question: dict[str, list] = {}
-        for row in round_repo.list_for_case(self.db, case_id):
+        for row in rounds:
             rounds_by_question.setdefault(row.case_question_id, []).append(row)
         return {
             "caseId": case_id,
             "questions": [
                 case_question_dict(row, rounds=rounds_by_question.get(row.id, []))
                 for row in question_repo.list_case(self.db, case_id)
+            ],
+            "rounds": [question_round_dict(row) for row in rounds],
+            "pendingQuestions": [
+                pending_question_dict(row)
+                for row in round_repo.list_pending_for_case(self.db, case_id)
             ],
         }
 
@@ -144,8 +155,6 @@ class TemplateWorkspaceService:
         return standard_question_dict(standard)
 
     def _apply_order(self, rows: list) -> None:
-        # Phase one moves every row outside the positive production range so
-        # SQLite never sees a transient (case_id, sort_order) collision.
         for index, row in enumerate(rows, start=1):
             row.sort_order = -(index * 10)
         self.db.flush()

@@ -41,19 +41,15 @@ class InterrogationProjectionService:
         fragment = asr_repo.get_fragment(self.db, fragment_id)
         if fragment.case_id != case_id:
             raise DomainError("ASR_FRAGMENT_NOT_FOUND", "ASR 临时片段不存在", 404)
-
         processed = asr_repo.get_processed(self.db, fragment_id)
         if processed is not None:
             return self._processed_result(processed)
-
         capture = asr_repo.get_capture_session(self.db, fragment.capture_session_id)
         session_id = capture.interrogation_session_id
         text = str(fragment.edited_text or fragment.raw_text or "").strip()
         speaker = str(fragment.speaker or "UNKNOWN")
-
         if not session_id or not text:
             return self._record_processed(fragment.id, case_id, "RAW_ONLY", None)
-
         if speaker == "SUSPECT":
             pending = rounds_repo.active_pending(self.db, case_id, session_id)
             if pending is not None:
@@ -64,18 +60,14 @@ class InterrogationProjectionService:
                 rounds_repo.append_round_answer(self.db, active, text, [fragment.id])
                 return self._record_processed(fragment.id, case_id, "ROUND_APPEND", active.id)
             return self._record_processed(fragment.id, case_id, "RAW_ONLY", None)
-
         if speaker not in _OFFICER_SPEAKERS:
             return self._record_processed(fragment.id, case_id, "RAW_ONLY", None)
-
         if not is_question_utterance(text):
             return self._record_processed(fragment.id, case_id, "RAW_ONLY", None)
 
         rounds_repo.defer_active_pending(self.db, case_id, session_id)
         rounds_repo.close_active(self.db, case_id, session_id)
-        candidates = self._question_candidates(case_id)
-        matched = match_question(text, candidates)
-
+        matched = match_question(text, self._question_candidates(case_id))
         if matched.status is QuestionMatchStatus.MATCHED:
             question_id = matched.matched_question_ids[0]
             prior = rounds_repo.list_for_question(self.db, case_id, question_id)
@@ -90,7 +82,6 @@ class InterrogationProjectionService:
                     candidate_question_ids=[question_id],
                 )
                 return self._record_processed(fragment.id, case_id, "PENDING", pending.id)
-
             round_row = rounds_repo.create_round(
                 self.db,
                 case_id=case_id,
@@ -107,11 +98,7 @@ class InterrogationProjectionService:
             session_id=session_id,
             officer_fragment_id=fragment.id,
             question_text=text,
-            match_status=(
-                "AMBIGUOUS"
-                if matched.status is QuestionMatchStatus.AMBIGUOUS
-                else "UNMATCHED"
-            ),
+            match_status="AMBIGUOUS" if matched.status is QuestionMatchStatus.AMBIGUOUS else "UNMATCHED",
             candidate_question_ids=list(matched.matched_question_ids),
         )
         return self._record_processed(fragment.id, case_id, "PENDING", pending.id)
@@ -150,7 +137,6 @@ class InterrogationProjectionService:
         question_repo.get_case(self.db, pending.case_id, case_question_id)
         if pending.session_id and not is_deferred:
             rounds_repo.close_active(self.db, pending.case_id, pending.session_id)
-
         if mode == "APPEND_EXISTING":
             round_row = rounds_repo.latest_for_question(self.db, pending.case_id, case_question_id)
             if round_row is None:
@@ -177,7 +163,6 @@ class InterrogationProjectionService:
                 answer_fragment_ids=_json_list(pending.buffered_fragment_ids_json),
                 status="CLOSED" if is_deferred else "ACTIVE",
             )
-
         pending.status = "LINKED"
         self.db.flush()
         return question_round_dict(round_row)
@@ -187,6 +172,12 @@ class InterrogationProjectionService:
         pending.status = "IGNORED"
         self.db.flush()
         return pending_question_dict(pending)
+
+    def update_round_answer(self, round_id: str, *, answer_text: str) -> dict:
+        round_row = rounds_repo.get_round(self.db, round_id)
+        round_row.answer_text = str(answer_text or "").strip()
+        self.db.flush()
+        return question_round_dict(round_row)
 
     def reassociate_round(
         self,
@@ -201,7 +192,6 @@ class InterrogationProjectionService:
             round_row.ended_at = datetime.now(timezone.utc)
             self.db.flush()
             return question_round_dict(round_row)
-
         if new_question_text is not None and str(new_question_text).strip():
             created = TemplateWorkspaceService(self.db).add_case_question(
                 round_row.case_id,
@@ -215,7 +205,6 @@ class InterrogationProjectionService:
             destination_id = case_question_id
         else:
             raise DomainError("REASSOCIATE_TARGET_REQUIRED", "必须选择目标问题或创建新问题", 400)
-
         if destination_id != round_row.case_question_id:
             destination_round_no = rounds_repo.next_round_no(self.db, destination_id)
             round_row.case_question_id = destination_id
