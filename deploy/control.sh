@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/release.sh"
+source "$SCRIPT_DIR/lib/tls.sh"
 
 usage() {
   cat <<'EOF'
@@ -48,20 +49,33 @@ install_runtime() {
   fi
   ensure_dir "$SUSPECT_OPT_DIR" 0755
   ensure_dir "$SUSPECT_RELEASES_DIR" 0755
-  # Stable AI assets live outside versioned release directories. The RK3588
-  # bootstrap owns the read-only FunASR bind mount and one-time runtime copy.
   ensure_dir "$SUSPECT_OPT_DIR/models" 0755
   ensure_dir "$SUSPECT_OPT_DIR/runtime" 0755
   ensure_dir "$SUSPECT_ETC_DIR" 0750
   ensure_dir "$SUSPECT_DATA_DIR" 0750
   ensure_dir "$SUSPECT_BACKUP_DIR" 0750
   ensure_dir "$SUSPECT_LOG_DIR" 0750
+
   if [[ "$SUSPECT_DRY_RUN" != "1" ]]; then
     chown -R "$SUSPECT_SERVICE_USER:$SUSPECT_SERVICE_GROUP" "$SUSPECT_DATA_DIR" "$SUSPECT_LOG_DIR"
     chown root:"$SUSPECT_SERVICE_GROUP" "$SUSPECT_ETC_DIR"
     if [[ ! -f "$SUSPECT_ETC_DIR/runtime.env" ]]; then
       install -o root -g "$SUSPECT_SERVICE_GROUP" -m 0640 "$SCRIPT_DIR/suspect-interrogation.env.example" "$SUSPECT_ETC_DIR/runtime.env"
     fi
+  fi
+
+  ensure_tls_material
+  install_tls_trust
+
+  if [[ "$SUSPECT_DRY_RUN" != "1" ]]; then
+    upsert_runtime_env "SUSPECT_API_HOST" "0.0.0.0"
+    upsert_runtime_env "SUSPECT_API_PORT" "${SUSPECT_API_PORT:-${SUSPECT_DEPLOY_PORT:-18080}}"
+    upsert_runtime_env "SUSPECT_TLS_ENABLED" "true"
+    upsert_runtime_env "SUSPECT_TLS_DIR" "$SUSPECT_TLS_DIR"
+    upsert_runtime_env "SUSPECT_TLS_LAN_IP" "$SUSPECT_TLS_LAN_IP"
+    upsert_runtime_env "SUSPECT_TLS_CA_FILE" "$SUSPECT_TLS_CA_FILE"
+    upsert_runtime_env "SUSPECT_TLS_CERT_FILE" "$SUSPECT_TLS_CERT_FILE"
+    upsert_runtime_env "SUSPECT_TLS_KEY_FILE" "$SUSPECT_TLS_KEY_FILE"
     upsert_runtime_env "SUSPECT_FUNASR_MODEL_ROOT" "/opt/suspect-interrogation/models/funasr"
     upsert_runtime_env "SUSPECT_FUNASR_PYTHON" "/opt/suspect-interrogation/runtime/funasr-env/bin/python"
     upsert_runtime_env "SUSPECT_XVECTOR_LEGACY_PYTHON" "/opt/suspect-interrogation/runtime/xvector-legacy-env/bin/python"
@@ -81,10 +95,10 @@ install_runtime() {
 }
 
 health_check() {
-  local base="${SUSPECT_HEALTH_BASE_URL:-http://127.0.0.1:8000}"
-  curl --fail --silent --show-error --max-time 3 "$base/health/live" >/dev/null
+  local base="${SUSPECT_HEALTH_BASE_URL:-https://127.0.0.1:${SUSPECT_API_PORT:-18080}}"
+  curl_tls --max-time 3 "$base/health/live" >/dev/null
   local ready
-  ready="$(curl --fail --silent --show-error --max-time 3 "$base/health/ready")"
+  ready="$(curl_tls --max-time 3 "$base/health/ready")"
   grep -Eq '"status"[[:space:]]*:[[:space:]]*"ready"' <<<"$ready"
   printf '%s\n' "$ready"
 }
