@@ -1,85 +1,131 @@
-# 局域网 Windows 浏览器麦克风测试
+# 局域网浏览器麦克风与 HTTPS
 
 ## 目标
 
-开发阶段：Windows 浏览器麦克风 -> 16 kHz PCM16 -> 局域网 WebSocket -> Linux FastAPI -> 离线 FunASR。
+Windows 浏览器麦克风 -> 16 kHz PCM16 -> 局域网 WSS -> Linux FastAPI -> 离线 FunASR。
 
-生产阶段：Linux 一体机 ALSA 麦克风 -> FastAPI -> 离线 FunASR。
+Linux 一体机本机浏览器 -> ALSA 麦克风 -> FastAPI -> 离线 FunASR。
 
-这两条链路共用同一套审讯、声纹、ASR、说话人识别和笔录业务逻辑。**局域网浏览器测试不需要 FRP、公网 IP、公网域名或公网 HTTPS。**
+两条链路共用同一套审讯、声纹、ASR、说话人识别和笔录业务逻辑。音源由客户端上下文和请求级音源路由自动选择，不再依赖一个进程级 `SUSPECT_AUDIO_INPUT_MODE`。
 
-## 1. Linux 测试端
+## 1. 生产 LAN 地址
 
-在测试机 `/etc/suspect-interrogation/runtime.env` 中显式启用浏览器音源，并让 API 监听局域网接口：
+RK3588 API 监听：
 
-```bash
-SUSPECT_AUDIO_INPUT_MODE=BROWSER
-SUSPECT_API_HOST=0.0.0.0
+```text
+0.0.0.0:18080
 ```
 
-保留原有 `SUSPECT_API_PORT`。修改后：
+局域网 Windows/其他电脑访问：
 
-```bash
-sudo systemctl restart interrogation-api
-sudo systemctl status interrogation-api --no-pager
+```text
+https://192.168.0.9:18080
 ```
 
-建议用主机防火墙只允许当前测试 LAN 网段访问 API 端口，不要做公网端口映射。
+RK3588 本机 Kiosk 访问：
 
-## 2. Windows 浏览器
+```text
+https://127.0.0.1:18080
+```
 
-Chromium 浏览器通常不会把 `http://192.168.x.x` 视为可调用麦克风的安全上下文。开发阶段不要为此建立公网 HTTPS；使用仓库提供的专用测试启动脚本：
+TCP/8000 属于既有 FunASR 服务，不参与本项目 HTTPS 切换。
+
+## 2. 第一次在 Windows 信任局域网 CA
+
+以**管理员身份**打开 PowerShell，在项目目录执行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\windows\launch-lan-browser-mic.ps1 `
-  -Origin http://192.168.1.50:18080
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\install-lan-ca.ps1 `
+  -Origin https://192.168.0.9:18080
 ```
 
-把地址替换成 Linux 测试机真实局域网地址和端口。脚本只接受 localhost、RFC1918 私网 IP、`.local` 或 `.lan` 地址，并使用独立浏览器 profile；它不会自动同意麦克风权限。浏览器打开后仍需人工点击“允许麦克风”。
+脚本的第一步会使用一次 `curl.exe -k` 下载**公开 CA 证书**。这是唯一的临时跳过校验操作。随后脚本会：
 
-脚本自动增加 `?audioInput=browser`，前端因此固定使用 Windows 浏览器麦克风；权限失败会直接报错，不会偷偷回退到 RK3588/Linux 麦克风。
+1. 显示 CA SHA-256 指纹；
+2. 将 CA 导入 Windows `LocalMachine\Root`；
+3. 确认 CA 已进入受信任根；
+4. 不使用 `-k` 再访问 `/health/live`，确认正常 TLS 校验成功。
 
-## 3. 数据路径
+CA 私钥和服务器私钥只保存在 RK3588 `/etc/suspect-interrogation/tls/`，不会下载到 Windows，也不会提交 GitHub。
+
+## 3. 正常浏览器使用
+
+完成 CA 导入后，关闭之前使用特殊命令行参数启动的浏览器窗口，直接使用普通 Edge/Chrome 打开：
+
+```text
+https://192.168.0.9:18080
+```
+
+不再需要：
+
+```text
+--unsafely-treat-insecure-origin-as-secure
+```
+
+也不需要手工添加 `?audioInput=browser`。远程 Windows/macOS/Linux 浏览器自动选择 `BROWSER`；RK3588 本机 loopback Kiosk 自动选择 `ALSA`。URL 中显式 `audioInput` 参数仍保留为诊断/人工覆盖能力。
+
+浏览器第一次调用麦克风时仍需要用户点击“允许”。
+
+## 4. 音频数据路径
 
 ```text
 Windows microphone
   -> Web Audio API
   -> resample 16 kHz mono PCM16
-  -> ws://<linux-lan-ip>:<port>/ws/asr/...
+  -> wss://192.168.0.9:18080/ws/asr/...
   -> BrowserAudioInput (memory only)
-  -> AsrCaptureService
+  -> source-aware ASR coordinator
   -> local speech worker
   -> FSMN-VAD / Paraformer / XVector
   -> ASR fragment / speaker attribution
 ```
 
-浏览器 PCM 输入缓冲只存在内存中，不由 `BrowserAudioInput` 落盘。
+声纹录入同样使用：
 
-## 4. 恢复生产一体机模式
-
-正式部署到 Linux 一体机时：
-
-```bash
-SUSPECT_AUDIO_INPUT_MODE=ALSA
+```text
+wss://192.168.0.9:18080/ws/voiceprints/enrollment/...
 ```
 
-前端不再带 `?audioInput=browser`，并保持：
+浏览器 PCM 缓冲只存在内存中，不由 `BrowserAudioInput` 落盘。
 
-```env
-VITE_AUDIO_INPUT_MODE=ALSA
+## 5. TLS 证书生命周期
+
+服务器维护项目私有 LAN CA：
+
+```text
+/etc/suspect-interrogation/tls/ca.crt
+/etc/suspect-interrogation/tls/ca.key
+/etc/suspect-interrogation/tls/server.crt
+/etc/suspect-interrogation/tls/server.key
 ```
 
-生产默认值本身就是 `ALSA`，因此即使忘记配置，也不会主动请求浏览器麦克风。
+CA 默认有效 365 天；服务器证书默认有效 90 天，并在剩余 30 天以内自动续签。普通续签复用同一 CA，因此 Windows 不需要重新导入根证书。
 
-## 5. 验收
+服务器证书 SAN 包含：
 
-测试模式必须满足：
+```text
+IP:192.168.0.9
+IP:127.0.0.1
+DNS:localhost
+```
 
-1. Windows 浏览器出现麦克风权限请求；
-2. Linux 本机没有调用 ALSA 录音设备作为正式 ASR 输入；
-3. `/ws/asr/...` 只在局域网地址建立；
-4. Paraformer 能产生 ASR final；
-5. 关闭浏览器权限或拒绝权限时前端明确失败，不回退 Linux 麦克风；
-6. 无 FRP / 公网域名 / 公网 HTTPS 依赖。
+如果未来主动更换 CA，Windows 客户端才需要重新安装新的 CA。
 
-生产模式则继续使用现有 RK3588 real microphone acceptance 工作流验证 ALSA + FunASR。
+## 6. 验收
+
+Windows 浏览器链路必须满足：
+
+1. `https://192.168.0.9:18080` 无证书错误；
+2. `window.isSecureContext === true`；
+3. 浏览器能够正常请求麦克风权限；
+4. 正式审讯和问题准备使用 `wss://` 音频通道；
+5. 嫌疑人/民警声纹录入使用 `wss://`；
+6. 远程浏览器失败时不偷偷回退到 RK3588 ALSA；
+7. Paraformer 能产生 ASR final；
+8. TCP/8000 原 FunASR 服务保持不变。
+
+RK3588 本机模式继续使用 ALSA + FunASR，并通过同一 `https://127.0.0.1:18080` Kiosk 入口运行。
+
+## 7. 旧 HTTP 调试方式
+
+仓库中的 `scripts/windows/launch-lan-browser-mic.ps1` 只保留为旧环境诊断工具。生产/日常 LAN 使用以受信任的 HTTPS 方案为准，不应继续依赖 Chromium 的 unsafe-origin 参数。
