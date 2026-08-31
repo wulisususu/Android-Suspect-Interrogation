@@ -82,7 +82,7 @@ jobs:
           test -f webapp/src/components/TemplateDrivenInterrogationPage.vue
           test -f webapp/src/components/OfficerVoiceprintLibrary.vue
           test -f webapp/src/components/SpeakerCalibrationCenter.vue
-          test -f webapp/src/components/LiveDialogueEvidence.vue
+          test -f webapp/src/components/LiveDialoguePanel.vue
           test -f webapp/src/views/SystemSettingsView.vue
           test ! -f webapp/src/components/InterrogationPage.vue
           test -f linux/backend/speech_worker/vad_progress.py
@@ -90,6 +90,7 @@ jobs:
           grep -q '民警声纹库' webapp/src/App.vue
           grep -q 'OfficerVoiceprintLibrary' webapp/src/views/SystemSettingsView.vue
           grep -q 'SpeakerCalibrationCenter' webapp/src/views/SystemSettingsView.vue
+          grep -q '独立证据已入库' webapp/src/components/LiveDialoguePanel.vue
           grep -q 'apply_database_migrations' deploy/control.sh
           grep -q 'apply_database_migrations' deploy/lib/release.sh
           grep -q 'TemplateDrivenInterrogationPage' webapp/src/views/InterrogationWorkspace.vue
