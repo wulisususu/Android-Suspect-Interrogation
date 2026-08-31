@@ -47,6 +47,31 @@ def _run_alembic(tmp_path, target: str):
     return db_file, env, result
 
 
+def test_alembic_honors_runtime_suspect_db_path(tmp_path):
+    db_file = tmp_path / "production-runtime.db"
+    env = os.environ.copy()
+    env.pop("DATABASE_URL", None)
+    env.pop("DB_PATH", None)
+    env["SUSPECT_DB_PATH"] = str(db_file)
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert db_file.is_file()
+    engine = create_engine(f"sqlite:///{db_file}")
+    try:
+        with engine.connect() as connection:
+            revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        assert revision == "0006_asr_recognition_evidence"
+    finally:
+        engine.dispose()
+
+
 def test_alembic_revision_0001_remains_core_only(tmp_path):
     db_file, _env, result = _run_alembic(tmp_path, "0001_linux_core_schema")
     assert result.returncode == 0, result.stdout + result.stderr
