@@ -10,7 +10,7 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def run_tls_helper(tmp_path: Path, lan_ip: str) -> tuple[str, str]:
+def tls_env(tmp_path: Path, lan_ip: str) -> dict[str, str]:
     env = os.environ.copy()
     env.update({
         "SUSPECT_ETC_DIR": str(tmp_path / "etc"),
@@ -19,6 +19,11 @@ def run_tls_helper(tmp_path: Path, lan_ip: str) -> tuple[str, str]:
         "SUSPECT_SERVICE_GROUP": env.get("USER", "root"),
         "SUSPECT_DRY_RUN": "1",
     })
+    return env
+
+
+def run_tls_helper(tmp_path: Path, lan_ip: str) -> tuple[str, str]:
+    env = tls_env(tmp_path, lan_ip)
     command = f'''
 set -euo pipefail
 source "{ROOT}/deploy/lib/common.sh"
@@ -55,6 +60,30 @@ def test_tls_helper_reuses_ca_and_renews_leaf_when_lan_ip_changes(tmp_path: Path
     assert "IP Address:127.0.0.1" in second_san
     assert "DNS:localhost" in second_san
     assert "IP Address:192.168.0.9" not in second_san
+
+
+def test_tls_helper_refuses_to_silently_replace_an_existing_broken_ca(tmp_path: Path):
+    run_tls_helper(tmp_path, "192.168.0.9")
+    ca_path = tmp_path / "etc" / "tls" / "ca.crt"
+    ca_path.write_text("BROKEN EXISTING CA\n", encoding="utf-8")
+
+    command = f'''
+set -euo pipefail
+source "{ROOT}/deploy/lib/common.sh"
+source "{ROOT}/deploy/lib/tls.sh"
+ensure_tls_material
+'''
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        env=tls_env(tmp_path, "192.168.0.9"),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert ca_path.read_text(encoding="utf-8") == "BROKEN EXISTING CA\n"
+    assert "manual CA rotation" in completed.stderr
 
 
 def test_systemd_uvicorn_uses_configured_tls_certificate_and_key():
