@@ -27,6 +27,8 @@ def test_alembic_head_contains_device_calibration_history_and_sample_fingerprint
         tables = set(inspector.get_table_names())
         assert "speaker_device_calibrations" in tables
         assert "session_speaker_calibration_snapshots" in tables
+        assert "asr_recognition_evidence" in tables
+        assert "asr_recognition_revisions" in tables
 
         calibration_columns = {item["name"] for item in inspector.get_columns("speaker_device_calibrations")}
         assert {
@@ -39,6 +41,6 @@ def test_alembic_head_contains_device_calibration_history_and_sample_fingerprint
 
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert revision == "0005_speaker_device_calibration"
+        assert revision == "0006_asr_recognition_evidence"
     finally:
         engine.dispose()
