@@ -1,5 +1,6 @@
 export type AudioInputMode = 'ALSA' | 'BROWSER'
 export type ClientPlatform = 'WINDOWS' | 'LINUX' | 'MACOS' | 'ANDROID' | 'IOS' | 'UNKNOWN'
+export type AudioInputDetectionSource = 'URL_OVERRIDE' | 'HTTP_REQUEST_HEADERS' | 'BROWSER_FALLBACK' | 'BUILD_FALLBACK'
 
 export interface AudioInputDetectionContext {
   query?: string
@@ -8,6 +9,22 @@ export interface AudioInputDetectionContext {
   hostname?: string | null
   envMode?: string | null
 }
+
+export interface ServerClientContext {
+  clientPlatform?: string
+  clientAddress?: string
+  localClient?: boolean
+  accessTopology?: string
+  recommendedAudioInputMode?: string
+  platformSource?: string
+}
+
+type FetchResponse = {
+  ok: boolean
+  json: () => Promise<unknown>
+}
+
+type FetchLike = (input: string, init?: RequestInit) => Promise<FetchResponse>
 
 function normalizeAudioInputMode(value: unknown): AudioInputMode | null {
   const normalized = String(value ?? '').trim().toUpperCase()
@@ -42,16 +59,9 @@ function isLocalHostname(hostname: unknown): boolean {
 }
 
 /**
- * Resolve the microphone owner for this browser session.
- *
- * Priority:
- * 1. Explicit ?audioInput=alsa|browser override.
- * 2. Browser platform + access topology.
- *    - Windows/macOS/mobile clients use their browser microphone.
- *    - Linux local kiosk (localhost/loopback) uses board ALSA.
- *    - A remote Linux browser also uses its browser microphone.
- * 3. Build-time VITE_AUDIO_INPUT_MODE for non-browser/unknown contexts.
- * 4. Production-safe ALSA fallback when no browser context exists.
+ * Synchronous fallback used before the authoritative server context is loaded.
+ * URL override remains highest priority. Remote browsers own their microphone;
+ * only a loopback Linux kiosk uses the RK3588 ALSA input.
  */
 export function resolveAudioInputMode(context: AudioInputDetectionContext): AudioInputMode {
   const explicit = queryAudioInputMode(String(context.query ?? ''))
@@ -80,17 +90,77 @@ function browserUserAgent(): string {
   return typeof navigator === 'undefined' ? '' : String(navigator.userAgent || '')
 }
 
-export const detectedClientPlatform: ClientPlatform = detectClientPlatform(
+function browserQuery(): string {
+  return typeof window === 'undefined' ? '' : window.location.search
+}
+
+function browserHostname(): string {
+  return typeof window === 'undefined' ? '' : window.location.hostname
+}
+
+const initialExplicitMode = queryAudioInputMode(browserQuery())
+
+export let detectedClientPlatform: ClientPlatform = detectClientPlatform(
   browserPlatform(),
   browserUserAgent(),
 )
 
-export const audioInputMode: AudioInputMode = resolveAudioInputMode({
-  query: typeof window === 'undefined' ? '' : window.location.search,
-  hostname: typeof window === 'undefined' ? '' : window.location.hostname,
+export let audioInputMode: AudioInputMode = resolveAudioInputMode({
+  query: browserQuery(),
+  hostname: browserHostname(),
   platform: browserPlatform(),
   userAgent: browserUserAgent(),
   envMode: import.meta.env.VITE_AUDIO_INPUT_MODE,
 })
 
-export const browserAudioTestMode = audioInputMode === 'BROWSER'
+export let audioInputDetectionSource: AudioInputDetectionSource = initialExplicitMode
+  ? 'URL_OVERRIDE'
+  : (browserHostname() ? 'BROWSER_FALLBACK' : 'BUILD_FALLBACK')
+
+export let browserAudioTestMode = audioInputMode === 'BROWSER'
+export let serverClientAddress = ''
+export let serverAccessTopology = ''
+export let serverPlatformSource = ''
+
+/**
+ * Ask the Linux backend what it actually saw on the HTTP connection. This is
+ * authoritative for normal browser sessions because it combines request
+ * headers (Sec-CH-UA-Platform/User-Agent) with request.client.host.
+ */
+export async function initializeAudioInputMode(fetcher?: FetchLike): Promise<AudioInputMode> {
+  const explicit = queryAudioInputMode(browserQuery())
+  if (explicit) {
+    audioInputMode = explicit
+    audioInputDetectionSource = 'URL_OVERRIDE'
+    browserAudioTestMode = audioInputMode === 'BROWSER'
+    return audioInputMode
+  }
+
+  if (typeof window === 'undefined') return audioInputMode
+
+  const request = fetcher ?? (fetch as unknown as FetchLike)
+  try {
+    const response = await request('/api/v1/client-context', {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    })
+    if (!response.ok) return audioInputMode
+    const body = await response.json() as { data?: ServerClientContext } & ServerClientContext
+    const context = (body.data ?? body) as ServerClientContext
+    const recommended = normalizeAudioInputMode(context.recommendedAudioInputMode)
+    if (!recommended) return audioInputMode
+
+    audioInputMode = recommended
+    detectedClientPlatform = detectClientPlatform(context.clientPlatform, '')
+    serverClientAddress = String(context.clientAddress ?? '')
+    serverAccessTopology = String(context.accessTopology ?? '')
+    serverPlatformSource = String(context.platformSource ?? '')
+    audioInputDetectionSource = 'HTTP_REQUEST_HEADERS'
+    browserAudioTestMode = audioInputMode === 'BROWSER'
+  } catch {
+    // Keep the synchronous browser fallback. Audio must never silently switch
+    // to another physical microphone merely because this diagnostic call fails.
+  }
+  return audioInputMode
+}
