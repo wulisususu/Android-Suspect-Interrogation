@@ -225,6 +225,49 @@ def test_capture_pushes_each_pcm_chunk_once_persists_verified_fragment_and_broad
     engine.dispose()
 
 
+def test_capture_without_margin_runs_suspect_only_and_preserves_uncalibrated_margin(tmp_path: Path):
+    engine, factory, case_id, session_id = _seed_database(tmp_path)
+    chunks = [b"\x01\x00" * 1600, b"\x02\x00" * 1600]
+    device = FakeDeviceManager(chunks)
+    speech = FakeSpeechSupervisor()
+    speech.speaker_margin = None
+    speech.speaker_threshold_source = "MODEL_BASELINE"
+    events = EventCollector()
+    service = AsrCaptureService(
+        session_factory=factory,
+        device_manager=device,
+        ai_supervisor=speech,
+        publish_event=events,
+        sample_rate=16_000,
+        read_timeout=0.01,
+    )
+
+    started = service.start(case_id)
+    assert started["active"] is True
+    assert started["thresholdSource"] == "MODEL_BASELINE"
+    assert started["speakerMarginConfigured"] is False
+
+    _wait_until(lambda: len(speech.pushed) == 2)
+    _wait_until(lambda: bool(events.events))
+    service.stop(case_id)
+
+    with factory() as db:
+        fragment = db.query(ASRFragment).one()
+        assert fragment.speaker == "SUSPECT"
+        assert fragment.voiceprint_verified is True
+        assert fragment.speaker_threshold == 0.70
+        assert fragment.speaker_margin is None
+
+    assert len(events.events) == 1
+    event_session, event_name, payload = events.events[0]
+    assert event_session == session_id
+    assert event_name == "ASR_FRAGMENT"
+    assert payload["speaker"] == "SUSPECT"
+    assert payload["speakerMargin"] is None
+    assert payload["thresholdSource"] == "MODEL_BASELINE"
+    engine.dispose()
+
+
 def test_capture_failure_still_finalizes_worker_stops_alsa_and_marks_db_stopped(tmp_path: Path):
     engine, factory, case_id, _ = _seed_database(tmp_path)
     device = FakeDeviceManager([b"\x01\x00" * 1600])
