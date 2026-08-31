@@ -1,0 +1,102 @@
+name: RK3588 Network Surface Diagnostics
+
+on:
+  push:
+    branches:
+      - linux-adaptation
+    paths:
+      - '.github/workflows/rk3588-network-diagnostics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rk3588-network-diagnostics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    name: Sanitized network and TLS diagnostics
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 10
+    steps:
+      - name: Listener summary without private addresses
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n true
+          for port in 80 443 8000 18080; do
+            line="$(sudo -n ss -H -ltnp 2>/dev/null | awk -v p=":${port}" '$4 ~ p"$" {print; exit}')"
+            if [[ -z "$line" ]]; then
+              echo "port_${port}=free"
+              continue
+            fi
+            local_addr="$(awk '{print $4}' <<<"$line")"
+            owner="$(sed -n 's/.*users:(("\([^"]*\)".*/\1/p' <<<"$line")"
+            [[ -n "$owner" ]] || owner=unknown
+            case "$local_addr" in
+              127.0.0.1:*|'[::1]':*) scope=loopback ;;
+              0.0.0.0:*|'[::]':*) scope=all_interfaces ;;
+              *) scope=specific_interface ;;
+            esac
+            echo "port_${port}=listening scope=${scope} process=${owner}"
+          done
+
+      - name: Reverse proxy and tunnel software presence
+        shell: bash
+        run: |
+          set -euo pipefail
+          for binary in caddy nginx cloudflared frpc frps; do
+            if command -v "$binary" >/dev/null 2>&1; then
+              echo "binary_${binary}=present"
+            else
+              echo "binary_${binary}=absent"
+            fi
+          done
+          units="$(systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}' | grep -Ei '^(caddy|nginx|cloudflared|frpc|frps|frp)[^/]*\.service$' || true)"
+          if [[ -z "$units" ]]; then
+            echo 'matching_proxy_tunnel_units=none'
+          else
+            while IFS= read -r unit; do
+              [[ -n "$unit" ]] || continue
+              state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+              echo "service=${unit} state=${state}"
+            done <<<"$units"
+          fi
+
+      - name: Known configuration locations without contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in \
+            /etc/caddy/Caddyfile \
+            /etc/nginx/nginx.conf \
+            /etc/frp/frpc.toml \
+            /etc/frp/frpc.ini \
+            /etc/cloudflared/config.yml \
+            /etc/cloudflared/config.yaml; do
+            if sudo -n test -e "$path"; then
+              echo "config_present=${path}"
+            fi
+          done
+
+      - name: Local service and TLS probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if curl -fsS --max-time 3 http://127.0.0.1:18080/health/live >/dev/null; then
+            echo 'backend_18080=healthy'
+          else
+            echo 'backend_18080=unreachable'
+          fi
+          if timeout 4 openssl s_client -connect 127.0.0.1:443 -servername localhost </dev/null >/dev/null 2>&1; then
+            echo 'local_tls_443=available'
+          else
+            echo 'local_tls_443=unavailable'
+          fi
+          if curl -fsS --max-time 3 http://127.0.0.1:80/ >/dev/null 2>&1; then
+            echo 'local_http_80=available'
+          else
+            echo 'local_http_80=unavailable'
+          fi
