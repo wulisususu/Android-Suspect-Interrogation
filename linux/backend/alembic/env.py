@@ -17,7 +17,9 @@ if config.config_file_name is not None:
 
 url = os.getenv("DATABASE_URL")
 if not url:
-    db_path = os.getenv("DB_PATH")
+    # Production RuntimeSettings uses the SUSPECT_ prefix. Keep DB_PATH as a
+    # legacy/test alias, but make the production variable authoritative.
+    db_path = os.getenv("SUSPECT_DB_PATH") or os.getenv("DB_PATH")
     if db_path:
         url = f"sqlite:///{os.path.abspath(db_path)}"
 if url:
