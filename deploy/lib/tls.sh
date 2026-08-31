@@ -23,6 +23,10 @@ _tls_ca_valid() {
   openssl x509 -in "$SUSPECT_TLS_CA_FILE" -noout >/dev/null 2>&1 || return 1
   openssl pkey -in "$SUSPECT_TLS_CA_KEY_FILE" -noout >/dev/null 2>&1 || return 1
   openssl x509 -checkend 86400 -noout -in "$SUSPECT_TLS_CA_FILE" >/dev/null 2>&1 || return 1
+  local cert_pub key_pub
+  cert_pub="$(openssl x509 -in "$SUSPECT_TLS_CA_FILE" -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform pem 2>/dev/null)" || return 1
+  key_pub="$(openssl pkey -in "$SUSPECT_TLS_CA_KEY_FILE" -pubout -outform pem 2>/dev/null)" || return 1
+  [[ "$cert_pub" == "$key_pub" ]]
 }
 
 _tls_leaf_valid() {
@@ -34,9 +38,9 @@ _tls_leaf_valid() {
   openssl verify -CAfile "$SUSPECT_TLS_CA_FILE" "$SUSPECT_TLS_CERT_FILE" >/dev/null 2>&1 || return 1
   local sans
   sans="$(openssl x509 -in "$SUSPECT_TLS_CERT_FILE" -noout -ext subjectAltName 2>/dev/null || true)"
-  grep -Fq "IP Address:${SUSPECT_TLS_LAN_IP}" <<<"$sans" || return 1
-  grep -Fq "IP Address:127.0.0.1" <<<"$sans" || return 1
-  grep -Fq "DNS:localhost" <<<"$sans" || return 1
+  grep -Eq "(^|[ ,])IP Address:${SUSPECT_TLS_LAN_IP}([, ]|$)" <<<"$sans" || return 1
+  grep -Eq '(^|[ ,])IP Address:127\.0\.0\.1([, ]|$)' <<<"$sans" || return 1
+  grep -Eq '(^|[ ,])DNS:localhost([, ]|$)' <<<"$sans" || return 1
 }
 
 _tls_generate_ca() {
@@ -55,7 +59,6 @@ _tls_generate_leaf() {
   local csr config
   csr="$(mktemp "${SUSPECT_TLS_DIR}/server.XXXXXX.csr")"
   config="$(mktemp "${SUSPECT_TLS_DIR}/server.XXXXXX.cnf")"
-  trap 'rm -f "$csr" "$config"' RETURN
   cat >"$config" <<EOF
 [req]
 prompt = no
@@ -82,11 +85,14 @@ DNS.1 = localhost
 EOF
   umask 077
   openssl genrsa -out "$SUSPECT_TLS_KEY_FILE" 3072 >/dev/null 2>&1
-  openssl req -new -sha256 \
+  if ! openssl req -new -sha256 \
     -key "$SUSPECT_TLS_KEY_FILE" \
     -config "$config" \
-    -out "$csr"
-  openssl x509 -req -sha256 \
+    -out "$csr"; then
+    rm -f "$csr" "$config"
+    return 1
+  fi
+  if ! openssl x509 -req -sha256 \
     -in "$csr" \
     -CA "$SUSPECT_TLS_CA_FILE" \
     -CAkey "$SUSPECT_TLS_CA_KEY_FILE" \
@@ -94,9 +100,11 @@ EOF
     -days "$SUSPECT_TLS_CERT_DAYS" \
     -extfile "$config" \
     -extensions v3_server \
-    -out "$SUSPECT_TLS_CERT_FILE" >/dev/null 2>&1
+    -out "$SUSPECT_TLS_CERT_FILE" >/dev/null 2>&1; then
+    rm -f "$csr" "$config" "$SUSPECT_TLS_KEY_FILE"
+    return 1
+  fi
   rm -f "${SUSPECT_TLS_CA_FILE%.crt}.srl" "$csr" "$config"
-  trap - RETURN
 }
 
 ensure_tls_material() {
@@ -104,9 +112,15 @@ ensure_tls_material() {
   mkdir -p "$SUSPECT_TLS_DIR"
   chmod 0750 "$SUSPECT_TLS_DIR" 2>/dev/null || true
 
-  if ! _tls_ca_valid; then
-    rm -f "$SUSPECT_TLS_CA_FILE" "$SUSPECT_TLS_CA_KEY_FILE" "$SUSPECT_TLS_CERT_FILE" "$SUSPECT_TLS_KEY_FILE"
+  local ca_crt_exists=0 ca_key_exists=0
+  [[ -e "$SUSPECT_TLS_CA_FILE" ]] && ca_crt_exists=1
+  [[ -e "$SUSPECT_TLS_CA_KEY_FILE" ]] && ca_key_exists=1
+
+  if [[ "$ca_crt_exists" -eq 0 && "$ca_key_exists" -eq 0 ]]; then
     _tls_generate_ca
+  elif [[ "$ca_crt_exists" -ne "$ca_key_exists" ]] || ! _tls_ca_valid; then
+    printf 'existing LAN CA is missing, invalid, mismatched, or expiring; manual CA rotation is required\n' >&2
+    return 1
   fi
 
   if ! _tls_leaf_valid; then
