@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { backendErrorMessage } from '../api/interrogation'
+import { backendErrorMessage, updateAsrFragment } from '../api/interrogation'
 import {
   startQuestionPreparationDictation,
   stopQuestionPreparationDictation,
@@ -16,6 +16,7 @@ import VoiceprintPreparationPanel, { voiceprintStartGuard } from '../components/
 import { useAutoVoiceprintEnrollment } from '../composables/useAutoVoiceprintEnrollment'
 import { useInterrogationStore } from '../stores/interrogation'
 import { useTemplateInterrogationStore } from '../stores/templateInterrogation'
+import type { TemporaryAsrSpeaker } from '../types/interrogation'
 import type {
   CaseQuestionCreateInput,
   CaseQuestionUpdateInput,
@@ -69,9 +70,7 @@ watch(
 
 onUnmounted(() => {
   void autoVoiceprint.dispose()
-  if (questionDictationActive.value && store.caseId) {
-    void stopQuestionPreparationDictation(store.caseId).catch(() => undefined)
-  }
+  if (questionDictationActive.value && store.caseId) void stopQuestionPreparationDictation(store.caseId).catch(() => undefined)
   if (store.caseId === props.caseId) store.resetCaseContext()
   if (templateStore.caseId === props.caseId) templateStore.reset()
 })
@@ -140,43 +139,48 @@ async function generateCaseOverview() {
 }
 
 async function runTemplateAction(action: () => Promise<unknown>) {
-  try {
-    await action()
-  } catch {
-    store.feedback(templateStore.error || '模板笔录操作失败', true)
+  try { await action() }
+  catch { store.feedback(templateStore.error || '模板笔录操作失败', true) }
+}
+
+function loadQuestionLibrary(category?: string) { return runTemplateAction(() => templateStore.loadQuestionLibrary(category)) }
+function createFormalQuestion(input: CaseQuestionCreateInput) { return runTemplateAction(() => templateStore.createCaseQuestion(input)) }
+function updateFormalQuestion(questionId: string, input: CaseQuestionUpdateInput) { return runTemplateAction(() => templateStore.updateCaseQuestion(questionId, input)) }
+function reorderFormalQuestions(questionIds: string[]) { return runTemplateAction(() => templateStore.reorderCaseQuestions(questionIds)) }
+function resolvePendingQuestion(pendingId: string, resolution: PendingResolution) { return runTemplateAction(() => templateStore.resolvePendingQuestion(pendingId, resolution)) }
+function reassociateFormalRound(roundId: string, input: RoundReassociateInput) { return runTemplateAction(() => templateStore.reassociateRound(roundId, input)) }
+function updateFormalAnswer(roundId: string, answerText: string) { return runTemplateAction(() => templateStore.updateRoundAnswer(roundId, answerText)) }
+function saveFormalQuestionToLibrary(questionId: string) { return runTemplateAction(() => templateStore.saveQuestionToLibrary(questionId)) }
+
+async function correctRecognitionFragment(fragmentId: string, speaker: TemporaryAsrSpeaker, reason: string) {
+  const caseId = store.caseId
+  if (!caseId) return
+  const fragment = templateStore.dialogueHistory.find((item) => item.id === fragmentId)
+  if (!fragment) {
+    store.feedback('未找到需要修正的识别片段，请刷新后重试。', true)
+    return
   }
-}
-
-function loadQuestionLibrary(category?: string) {
-  return runTemplateAction(() => templateStore.loadQuestionLibrary(category))
-}
-
-function createFormalQuestion(input: CaseQuestionCreateInput) {
-  return runTemplateAction(() => templateStore.createCaseQuestion(input))
-}
-
-function updateFormalQuestion(questionId: string, input: CaseQuestionUpdateInput) {
-  return runTemplateAction(() => templateStore.updateCaseQuestion(questionId, input))
-}
-
-function reorderFormalQuestions(questionIds: string[]) {
-  return runTemplateAction(() => templateStore.reorderCaseQuestions(questionIds))
-}
-
-function resolvePendingQuestion(pendingId: string, resolution: PendingResolution) {
-  return runTemplateAction(() => templateStore.resolvePendingQuestion(pendingId, resolution))
-}
-
-function reassociateFormalRound(roundId: string, input: RoundReassociateInput) {
-  return runTemplateAction(() => templateStore.reassociateRound(roundId, input))
-}
-
-function updateFormalAnswer(roundId: string, answerText: string) {
-  return runTemplateAction(() => templateStore.updateRoundAnswer(roundId, answerText))
-}
-
-function saveFormalQuestionToLibrary(questionId: string) {
-  return runTemplateAction(() => templateStore.saveQuestionToLibrary(questionId))
+  const cleanReason = reason.trim()
+  if (!cleanReason) {
+    store.feedback('人工修正必须填写原因。', true)
+    return
+  }
+  try {
+    await updateAsrFragment(
+      caseId,
+      fragmentId,
+      fragment.editedText || fragment.rawText,
+      speaker,
+      store.caseSummary.officerName || '当前警官',
+      cleanReason,
+    )
+    if (store.caseId !== caseId) return
+    await templateStore.initialize(caseId)
+    store.feedback('人工修正已保存；原始 AI 识别证据仍独立保留。')
+  } catch (err) {
+    if (store.caseId !== caseId) return
+    store.feedback(backendErrorMessage(err), true)
+  }
 }
 </script>
 
@@ -222,30 +226,14 @@ function saveFormalQuestionToLibrary(questionId: string) {
         <div v-else-if="store.actionMessage" class="workspace-toast success">{{ store.actionMessage }}</div>
       </div>
 
-      <section
-        class="workspace-page-body"
-        :class="{ 'interrogation-workspace-body': activePage === 'interrogation' }"
-      >
-        <CaseProfilePage
-          v-if="activePage === 'profile'"
-          :summary="store.caseSummary"
-          :facts="store.facts"
-          @saved="refreshCaseWorkspace"
-        />
+      <section class="workspace-page-body" :class="{ 'interrogation-workspace-body': activePage === 'interrogation' }">
+        <CaseProfilePage v-if="activePage === 'profile'" :summary="store.caseSummary" :facts="store.facts" @saved="refreshCaseWorkspace" />
 
-        <CaseOverviewPage
-          v-else-if="activePage === 'overview'"
-          :timeline="store.timeline"
-          :facts="store.facts"
-        />
+        <CaseOverviewPage v-else-if="activePage === 'overview'" :timeline="store.timeline" :facts="store.facts" />
 
         <div v-else class="interrogation-workspace-stack">
           <div v-if="store.session.status === 'READY'" class="voiceprint-prep-stack">
-            <VoiceprintAudioSourceBanner
-              :source="autoVoiceprint.source"
-              :reason="autoVoiceprint.reason"
-              :secure-context="autoVoiceprint.secureContext"
-            />
+            <VoiceprintAudioSourceBanner :source="autoVoiceprint.source" :reason="autoVoiceprint.reason" :secure-context="autoVoiceprint.secureContext" />
             <VoiceprintPreparationPanel
               :suspect-name="store.caseSummary.suspectName"
               :readiness="store.voiceprintReadiness"
@@ -309,6 +297,7 @@ function saveFormalQuestionToLibrary(questionId: string) {
             @reassociate-round="reassociateFormalRound"
             @update-answer="updateFormalAnswer"
             @save-library="saveFormalQuestionToLibrary"
+            @correct-fragment="correctRecognitionFragment"
           />
         </div>
       </section>
@@ -317,24 +306,16 @@ function saveFormalQuestionToLibrary(questionId: string) {
 </template>
 
 <style scoped>
-.interrogation-workspace-body {
-  padding: 0;
-  overflow: hidden;
-}
+.interrogation-workspace-body { padding: 0; overflow: hidden; }
 .interrogation-workspace-stack {
   min-height: 0;
   height: 100%;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
 }
-.voiceprint-prep-stack {
-  max-height: 44vh;
-  overflow: auto;
-}
+.voiceprint-prep-stack { max-height: 44vh; overflow: auto; }
 .interrogation-workspace-stack > :deep(.session-controls):first-child,
-.interrogation-workspace-stack > .voiceprint-prep-stack + :deep(.session-controls) {
-  min-height: 68px;
-}
+.interrogation-workspace-stack > .voiceprint-prep-stack + :deep(.session-controls) { min-height: 68px; }
 .interrogation-workspace-stack :deep(.session-controls) {
   display: flex;
   align-items: center;
@@ -351,16 +332,8 @@ function saveFormalQuestionToLibrary(questionId: string) {
   color: #43586c;
   font-size: 14px;
 }
-.interrogation-workspace-stack :deep(.session-start-guard) {
-  flex-basis: 100%;
-  color: #ad3c32;
-  font-weight: 700;
-}
-.interrogation-workspace-stack :deep(.session-buttons) {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
+.interrogation-workspace-stack :deep(.session-start-guard) { flex-basis: 100%; color: #ad3c32; font-weight: 700; }
+.interrogation-workspace-stack :deep(.session-buttons) { display: flex; gap: 10px; align-items: center; }
 .interrogation-workspace-stack :deep(.session-buttons button) {
   min-width: 112px;
   min-height: 48px;
@@ -372,16 +345,7 @@ function saveFormalQuestionToLibrary(questionId: string) {
   font-size: 15px;
   touch-action: manipulation;
 }
-.interrogation-workspace-stack :deep(.session-buttons .session-primary) {
-  border-color: #2476c9;
-  background: #2476c9;
-  color: #fff;
-}
-.interrogation-workspace-stack :deep(.session-buttons .danger-button) {
-  border-color: #d95045;
-  color: #b02d24;
-}
-.interrogation-workspace-stack :deep(.session-buttons button:disabled) {
-  opacity: .45;
-}
+.interrogation-workspace-stack :deep(.session-buttons .session-primary) { border-color: #2476c9; background: #2476c9; color: #fff; }
+.interrogation-workspace-stack :deep(.session-buttons .danger-button) { border-color: #d95045; color: #b02d24; }
+.interrogation-workspace-stack :deep(.session-buttons button:disabled) { opacity: .45; }
 </style>
