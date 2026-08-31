@@ -111,6 +111,9 @@ ensure_tls_material() {
   _tls_require_openssl
   mkdir -p "$SUSPECT_TLS_DIR"
   chmod 0750 "$SUSPECT_TLS_DIR" 2>/dev/null || true
+  if [[ "${SUSPECT_DRY_RUN:-0}" != "1" ]]; then
+    chown root:"${SUSPECT_SERVICE_GROUP:-suspect-interrogation}" "$SUSPECT_TLS_DIR"
+  fi
 
   local ca_crt_exists=0 ca_key_exists=0
   [[ -e "$SUSPECT_TLS_CA_FILE" ]] && ca_crt_exists=1

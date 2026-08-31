@@ -145,3 +145,8 @@ def test_windows_bootstrap_limits_insecure_tls_to_ca_download_then_verifies_stri
     assert "root" in lowered
     assert "/health/live" in lowered
     assert lowered.count(" -k ") == 1 or lowered.count(" --insecure ") == 1
+
+
+def test_tls_directory_is_accessible_to_the_service_group_for_private_key_loading():
+    tls = read("deploy/lib/tls.sh")
+    assert 'chown root:"${SUSPECT_SERVICE_GROUP:-suspect-interrogation}" "$SUSPECT_TLS_DIR"' in tls
