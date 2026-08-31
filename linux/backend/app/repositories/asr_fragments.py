@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -156,6 +157,14 @@ def create_fragment(
         speaker_model_fingerprint = snapshot.speaker_model_fingerprint
     if microphone_fingerprint is None and snapshot is not None:
         microphone_fingerprint = snapshot.microphone_fingerprint
+
+    # The production FunASR XVector runtime uses the same version setting. The
+    # explicit arguments remain available so tests and future speaker backends
+    # can provide exact event metadata without relying on the environment.
+    if speaker_model_id is None:
+        speaker_model_id = "xvector"
+    if speaker_model_version is None:
+        speaker_model_version = os.environ.get("SUSPECT_XVECTOR_MODEL_VERSION", "local")
 
     audit_repo.add(
         db,
