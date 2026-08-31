@@ -140,3 +140,40 @@ def test_manual_correction_keeps_original_ai_audit_and_adds_human_revision(tmp_p
         assert after["speaker_source"] == "MANUAL"
         assert manual.actor_id == "officer-001"
     engine.dispose()
+
+
+def test_text_only_correction_preserves_original_speaker_evidence(tmp_path):
+    engine, factory, case_id, fragment_id = _seed(tmp_path)
+    with factory() as db:
+        payload = update_fragment_api(
+            case_id,
+            fragment_id,
+            FragmentUpdateRequest(
+                edited_text="只修订文字",
+                speaker="SUSPECT",
+                actor_id="officer-002",
+            ),
+            db,
+        )
+        assert payload["editedText"] == "只修订文字"
+        assert payload["speaker"] == "SUSPECT"
+        assert payload["speakerId"] == "suspect-vp-1"
+        assert payload["speakerName"] == "张某"
+        assert payload["speakerSource"] == "X_VECTOR"
+        assert payload["voiceprintVerified"] is True
+        assert payload["lowConfidence"] is False
+
+    with factory() as db:
+        manual = (
+            db.query(AuditLog)
+            .filter(AuditLog.target_id == fragment_id, AuditLog.action == "ASR_FRAGMENT_UPDATE")
+            .one()
+        )
+        before = json.loads(manual.before_json)
+        after = json.loads(manual.after_json)
+        detail = json.loads(manual.detail_json)
+        assert before["speaker_source"] == "X_VECTOR"
+        assert after["speaker_source"] == "X_VECTOR"
+        assert detail["speaker_changed"] is False
+        assert manual.actor_id == "officer-002"
+    engine.dispose()
