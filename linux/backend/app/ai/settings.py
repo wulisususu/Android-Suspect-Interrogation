@@ -16,7 +16,8 @@ class AISettings:
     idle_unload_seconds: float
     memory_budget_mb: int
     speech_socket: Path
-    speaker_accept_threshold: float | None
+    speaker_accept_threshold: float
+    speaker_threshold_source: str
     speaker_margin: float | None
     asr_backend: str | None
     ocr_backend: str | None
@@ -39,7 +40,8 @@ class AISettings:
             speech_socket=Path(
                 os.getenv("SUSPECT_SPEECH_SOCKET", "/run/suspect-interrogation/speech.sock")
             ).expanduser(),
-            speaker_accept_threshold=calibration.accept_threshold,
+            speaker_accept_threshold=calibration.effective_threshold,
+            speaker_threshold_source=calibration.threshold_source,
             speaker_margin=calibration.margin,
             asr_backend=os.getenv("ASR_BACKEND"),
             ocr_backend=os.getenv("OCR_BACKEND"),
