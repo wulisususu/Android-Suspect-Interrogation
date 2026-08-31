@@ -1,0 +1,103 @@
+name: RK3588 FRP TLS Capability
+
+on:
+  push:
+    branches: [linux-adaptation]
+    paths:
+      - '.github/workflows/rk3588-frp-tls-capability.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Sanitized FRP TLS capability
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 10
+    steps:
+      - name: Classify endpoint without printing it
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n true
+          exec_line="$(systemctl show frpc.service --property=ExecStart --value 2>/dev/null || true)"
+          config="$(grep -oE '/[^ ;{}]+\.(toml|ini)' <<<"$exec_line" | head -n 1 || true)"
+          if [[ -z "$config" || ! -f "$config" ]]; then
+            for root in /etc /opt /usr/local/etc /home; do
+              [[ -d "$root" ]] || continue
+              config="$(sudo -n find "$root" -maxdepth 5 -type f \( -name 'frpc.toml' -o -name 'frpc.ini' \) -print -quit 2>/dev/null || true)"
+              [[ -n "$config" ]] && break
+            done
+          fi
+          [[ -n "$config" && -f "$config" ]] || { echo 'frpc_config_found=false'; exit 1; }
+          sudo -n python3 - "$config" <<'PY'
+          import configparser
+          import ipaddress
+          import pathlib
+          import re
+          import socket
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          server = ''
+          remote_port = 0
+          if path.suffix.lower() == '.toml':
+              text = path.read_text(encoding='utf-8', errors='replace')
+              m = re.search(r'^\s*serverAddr\s*=\s*["\']([^"\']+)["\']', text, flags=re.MULTILINE)
+              server = m.group(1).strip() if m else ''
+              blocks = re.split(r'^\s*\[\[proxies\]\]\s*$', text, flags=re.MULTILINE)[1:]
+              for block in blocks:
+                  lp = re.search(r'^\s*localPort\s*=\s*(\d+)', block, flags=re.MULTILINE)
+                  rp = re.search(r'^\s*remotePort\s*=\s*(\d+)', block, flags=re.MULTILINE)
+                  typ = re.search(r'^\s*type\s*=\s*["\']([^"\']+)["\']', block, flags=re.MULTILINE)
+                  if lp and int(lp.group(1)) == 18080 and typ and typ.group(1).lower() == 'tcp':
+                      remote_port = int(rp.group(1)) if rp else 0
+                      break
+          else:
+              parser = configparser.ConfigParser(interpolation=None)
+              parser.read(path, encoding='utf-8')
+              server = parser.get('common', 'server_addr', fallback='').strip()
+              for section in parser.sections():
+                  if section.lower() == 'common':
+                      continue
+                  if parser.get(section, 'type', fallback='').lower() != 'tcp':
+                      continue
+                  try:
+                      lp = parser.getint(section, 'local_port', fallback=0)
+                  except ValueError:
+                      lp = 0
+                  if lp == 18080:
+                      try:
+                          remote_port = parser.getint(section, 'remote_port', fallback=0)
+                      except ValueError:
+                          remote_port = 0
+                      break
+
+          if not server:
+              print('frpc_server_addr_found=false')
+              raise SystemExit(1)
+          try:
+              ipaddress.ip_address(server)
+              kind = 'ip'
+          except ValueError:
+              kind = 'domain'
+          print('frpc_server_addr_found=true')
+          print(f'frpc_server_addr_kind={kind}')
+          print(f'frpc_current_remote_port_is_443={str(remote_port == 443).lower()}')
+          print(f'frpc_current_remote_port_is_80={str(remote_port == 80).lower()}')
+          print(f'frpc_current_remote_port_found={str(remote_port > 0).lower()}')
+          try:
+              socket.getaddrinfo(server, 443, type=socket.SOCK_STREAM)
+              print('frpc_server_dns_or_ip_resolves=true')
+          except OSError:
+              print('frpc_server_dns_or_ip_resolves=false')
+          for port in (80, 443):
+              try:
+                  sock = socket.create_connection((server, port), timeout=2.0)
+                  sock.close()
+                  state = 'reachable'
+              except OSError:
+                  state = 'not_reachable'
+              print(f'frpc_server_port_{port}={state}')
+          PY
