@@ -63,6 +63,13 @@ def _service_and_runtime(tmp_path: Path):
             interrogation_session_id=session.id,
             capture_session_id=capture.id,
             speech_session_id=capture.id,
+            speaker_threshold=0.70,
+            speaker_margin=0.10,
+            threshold_source="DEVICE_CALIBRATED",
+            calibration_id=None,
+            calibration_status="NOT_CALIBRATED",
+            speaker_model_fingerprint=None,
+            microphone_fingerprint=None,
         )
 
     service = AsrCaptureService(
