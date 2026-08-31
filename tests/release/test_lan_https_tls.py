@@ -1,3 +1,5 @@
+import os
+import subprocess
 from pathlib import Path
 
 
@@ -8,9 +10,51 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
+def run_tls_helper(tmp_path: Path, lan_ip: str) -> tuple[str, str]:
+    env = os.environ.copy()
+    env.update({
+        "SUSPECT_ETC_DIR": str(tmp_path / "etc"),
+        "SUSPECT_TLS_DIR": str(tmp_path / "etc" / "tls"),
+        "SUSPECT_TLS_LAN_IP": lan_ip,
+        "SUSPECT_SERVICE_GROUP": env.get("USER", "root"),
+        "SUSPECT_DRY_RUN": "1",
+    })
+    command = f'''
+set -euo pipefail
+source "{ROOT}/deploy/lib/common.sh"
+source "{ROOT}/deploy/lib/tls.sh"
+ensure_tls_material
+openssl x509 -in "$SUSPECT_TLS_CA_FILE" -noout -fingerprint -sha256
+openssl x509 -in "$SUSPECT_TLS_CERT_FILE" -noout -ext subjectAltName
+'''
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    lines = completed.stdout.strip().splitlines()
+    return lines[0], "\n".join(lines[1:])
+
+
 def test_tls_helper_and_windows_bootstrap_exist():
     assert (ROOT / "deploy/lib/tls.sh").is_file()
     assert (ROOT / "scripts/windows/install-lan-ca.ps1").is_file()
+
+
+def test_tls_helper_reuses_ca_and_renews_leaf_when_lan_ip_changes(tmp_path: Path):
+    first_ca, first_san = run_tls_helper(tmp_path, "192.168.0.9")
+    second_ca, second_san = run_tls_helper(tmp_path, "192.168.0.99")
+
+    assert first_ca == second_ca
+    assert "IP Address:192.168.0.9" in first_san
+    assert "IP Address:127.0.0.1" in first_san
+    assert "DNS:localhost" in first_san
+    assert "IP Address:192.168.0.99" in second_san
+    assert "IP Address:127.0.0.1" in second_san
+    assert "DNS:localhost" in second_san
+    assert "IP Address:192.168.0.9" not in second_san
 
 
 def test_systemd_uvicorn_uses_configured_tls_certificate_and_key():
@@ -43,9 +87,10 @@ def test_ca_download_endpoint_is_registered_without_private_key_endpoint():
     assert (ROOT / "linux/backend/app/api/tls.py").is_file()
     main = read("linux/backend/app/main.py")
     assert "tls_router" in main
-    assert "/api/v1/tls/ca.crt" in read("linux/backend/app/api/tls.py")
-    assert "ca.key" not in read("linux/backend/app/api/tls.py")
-    assert "server.key" not in read("linux/backend/app/api/tls.py")
+    route = read("linux/backend/app/api/tls.py")
+    assert "/api/v1/tls/ca.crt" in route
+    assert "ca.key" not in route
+    assert "server.key" not in route
 
 
 def test_kiosk_defaults_to_https_without_disabling_certificate_verification():
