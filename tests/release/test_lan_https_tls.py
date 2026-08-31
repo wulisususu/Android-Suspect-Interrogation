@@ -144,6 +144,7 @@ def test_windows_bootstrap_limits_insecure_tls_to_ca_download_then_verifies_stri
     assert "-addstore" in lowered
     assert "root" in lowered
     assert "/health/live" in lowered
+    assert "--ssl-no-revoke" in lowered
     assert lowered.count(" -k ") == 1 or lowered.count(" --insecure ") == 1
 
 
