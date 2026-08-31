@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.ai.errors import BackendUnavailableError, ModelNotInstalledError, WorkerCrashedError
+from app.ai.speech.fingerprint import fingerprint_model_directory
 
 
 DEFAULT_MODEL_ROOT = Path("/opt/suspect-interrogation/models/funasr")
@@ -54,18 +55,7 @@ class _LegacyXVectorSubprocessAdapter:
 
 
 class FunASRSpeechRuntime:
-    """Own local FunASR ASR/VAD plus optional speaker verification.
-
-    Paraformer and FSMN-VAD are required for the speech pipeline. XVector is
-    deliberately isolated: a missing or broken speaker model degrades speaker
-    attribution but must not discard otherwise valid ASR/VAD output.
-
-    The installed 2023 XVector checkpoint is a legacy ModelScope speaker model.
-    Production first tries FunASR ``AutoModel`` for forward compatibility and,
-    only when that fails, falls back to the model's original local ModelScope
-    speaker-verification pipeline. No model downloads are requested by either
-    path because the model argument is always the installed local directory.
-    """
+    """Own local FunASR ASR/VAD plus optional speaker verification."""
 
     def __init__(
         self,
@@ -81,6 +71,9 @@ class FunASRSpeechRuntime:
         self.vad_model: Any | None = None
         self.speaker_model: Any | None = None
         self.speaker_backend: str | None = None
+        self.speaker_model_id = "xvector"
+        self.speaker_model_version = os.environ.get("SUSPECT_XVECTOR_MODEL_VERSION", "local")
+        self.speaker_model_fingerprint: str | None = None
         self.model_errors: dict[str, dict[str, str]] = {}
 
     @property
@@ -128,6 +121,15 @@ class FunASRSpeechRuntime:
                 "error_type": "MissingModelDirectory",
             }
             return
+
+        try:
+            self.speaker_model_fingerprint = fingerprint_model_directory(speaker_path)
+        except Exception as exc:
+            self.model_errors["xvector_fingerprint"] = {
+                "code": "FINGERPRINT_FAILED",
+                "error_type": type(exc).__name__,
+            }
+            self.speaker_model_fingerprint = None
 
         primary_error: Exception | None = None
         try:
@@ -184,6 +186,9 @@ class FunASRSpeechRuntime:
                 "speaker": self.speaker_model is not None,
             },
             "speaker_backend": self.speaker_backend,
+            "speaker_model_id": self.speaker_model_id,
+            "speaker_model_version": self.speaker_model_version,
+            "speaker_model_fingerprint": self.speaker_model_fingerprint,
             "errors": dict(self.model_errors),
         }
 
@@ -254,7 +259,12 @@ class FunASRSpeechRuntime:
                 details={"model": "xvector"},
             )
         normalized = [_float32(value / norm) for value in vector]
-        return {"embedding": normalized, "model_id": "xvector"}
+        return {
+            "embedding": normalized,
+            "model_id": self.speaker_model_id,
+            "model_version": self.speaker_model_version,
+            "model_fingerprint": self.speaker_model_fingerprint,
+        }
 
     @staticmethod
     def _load_vendor_factory() -> ModelFactory:
@@ -308,6 +318,7 @@ class FunASRSpeechRuntime:
         self.vad_model = None
         self.speaker_model = None
         self.speaker_backend = None
+        self.speaker_model_fingerprint = None
 
 
 def _first_record(result: Any) -> dict[str, Any]:
