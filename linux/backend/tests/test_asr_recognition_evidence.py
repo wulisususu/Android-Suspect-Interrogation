@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
-
 from app.api.asr import FragmentUpdateRequest, update_fragment as update_fragment_api
-from app.database.models import AuditLog
+from app.database.models import ASRRecognitionEvidence, ASRRecognitionRevision, AuditLog
 from app.database.session import init_database, make_engine, make_session_factory
 from app.repositories import asr_fragments as asr_repo
 from app.repositories import cases as case_repo
@@ -67,40 +65,31 @@ def _seed(tmp_path):
         return engine, factory, case.id, fragment.id
 
 
-def test_every_fragment_records_immutable_ai_recognition_evidence(tmp_path):
+def test_every_fragment_records_independent_immutable_ai_evidence(tmp_path):
     engine, factory, _, fragment_id = _seed(tmp_path)
     with factory() as db:
-        audit = (
-            db.query(AuditLog)
-            .filter(AuditLog.target_id == fragment_id, AuditLog.action == "ASR_SPEAKER_DECISION")
-            .one()
-        )
-        after = json.loads(audit.after_json)
-        detail = json.loads(audit.detail_json)
-
-        assert after == {
-            "low_confidence": False,
-            "speaker": "SUSPECT",
-            "speaker_id": "suspect-vp-1",
-            "speaker_name": "张某",
-            "speaker_source": "X_VECTOR",
-            "voiceprint_verified": True,
-        }
-        assert detail["score"] == 0.91
-        assert detail["second_best_score"] == 0.61
-        assert detail["threshold"] == 0.78
-        assert detail["margin"] == 0.06
-        assert detail["threshold_source"] == "DEVICE_CALIBRATED"
-        assert detail["asr_model_id"] == "paraformer"
-        assert detail["asr_model_version"] == "asr-v3"
-        assert detail["speaker_model_id"] == "xvector"
-        assert detail["speaker_model_version"] == "sv-v2"
-        assert detail["speaker_model_fingerprint"] == "a" * 64
-        assert detail["microphone_fingerprint"] == "b" * 64
+        evidence = db.query(ASRRecognitionEvidence).filter_by(fragment_id=fragment_id).one()
+        assert evidence.ai_speaker == "SUSPECT"
+        assert evidence.speaker_id == "suspect-vp-1"
+        assert evidence.speaker_name == "张某"
+        assert evidence.speaker_source == "X_VECTOR"
+        assert evidence.score == 0.91
+        assert evidence.second_best_score == 0.61
+        assert evidence.threshold == 0.78
+        assert evidence.margin == 0.06
+        assert evidence.threshold_source == "DEVICE_CALIBRATED"
+        assert evidence.asr_model_id == "paraformer"
+        assert evidence.asr_model_version == "asr-v3"
+        assert evidence.speaker_model_id == "xvector"
+        assert evidence.speaker_model_version == "sv-v2"
+        assert evidence.speaker_model_fingerprint == "a" * 64
+        assert evidence.microphone_fingerprint == "b" * 64
+        assert evidence.voiceprint_verified is True
+        assert evidence.low_confidence is False
     engine.dispose()
 
 
-def test_manual_correction_keeps_original_ai_audit_and_adds_human_revision(tmp_path):
+def test_manual_correction_keeps_ai_evidence_and_appends_revision(tmp_path):
     engine, factory, case_id, fragment_id = _seed(tmp_path)
     with factory() as db:
         payload = update_fragment_api(
@@ -110,6 +99,7 @@ def test_manual_correction_keeps_original_ai_audit_and_adds_human_revision(tmp_p
                 edited_text="人工修订文本",
                 speaker="INTERROGATOR",
                 actor_id="officer-001",
+                reason="现场人工确认说话人为主审民警",
             ),
             db,
         )
@@ -117,32 +107,29 @@ def test_manual_correction_keeps_original_ai_audit_and_adds_human_revision(tmp_p
         assert payload["editedText"] == "人工修订文本"
         assert payload["speaker"] == "INTERROGATOR"
         assert payload["speakerSource"] == "MANUAL"
+        assert payload["recognitionEvidence"]["aiSpeaker"] == "SUSPECT"
+        assert payload["recognitionEvidence"]["score"] == 0.91
+        assert len(payload["recognitionRevisions"]) == 1
+        assert payload["recognitionRevisions"][0]["afterSpeaker"] == "INTERROGATOR"
+        assert payload["recognitionRevisions"][0]["actorId"] == "officer-001"
+        assert payload["recognitionRevisions"][0]["reason"] == "现场人工确认说话人为主审民警"
 
     with factory() as db:
-        audits = list(
-            db.query(AuditLog)
-            .filter(AuditLog.target_id == fragment_id)
-            .order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
-        )
-        actions = [row.action for row in audits]
-        assert "ASR_SPEAKER_DECISION" in actions
-        assert "ASR_FRAGMENT_UPDATE" in actions
-
-        ai = next(row for row in audits if row.action == "ASR_SPEAKER_DECISION")
-        manual = next(row for row in audits if row.action == "ASR_FRAGMENT_UPDATE")
-        assert json.loads(ai.after_json)["speaker"] == "SUSPECT"
-
-        before = json.loads(manual.before_json)
-        after = json.loads(manual.after_json)
-        assert before["speaker"] == "SUSPECT"
-        assert before["speaker_source"] == "X_VECTOR"
-        assert after["speaker"] == "INTERROGATOR"
-        assert after["speaker_source"] == "MANUAL"
-        assert manual.actor_id == "officer-001"
+        evidence = db.query(ASRRecognitionEvidence).filter_by(fragment_id=fragment_id).one()
+        revision = db.query(ASRRecognitionRevision).filter_by(fragment_id=fragment_id).one()
+        assert evidence.ai_speaker == "SUSPECT"
+        assert evidence.score == 0.91
+        assert revision.before_speaker == "SUSPECT"
+        assert revision.after_speaker == "INTERROGATOR"
+        assert revision.before_text == "原始识别文本"
+        assert revision.after_text == "人工修订文本"
+        assert revision.actor_id == "officer-001"
+        assert revision.reason == "现场人工确认说话人为主审民警"
+        assert db.query(AuditLog).filter_by(target_id=fragment_id, action="ASR_FRAGMENT_UPDATE").count() == 1
     engine.dispose()
 
 
-def test_text_only_correction_preserves_original_speaker_evidence(tmp_path):
+def test_text_only_correction_preserves_speaker_and_still_appends_revision(tmp_path):
     engine, factory, case_id, fragment_id = _seed(tmp_path)
     with factory() as db:
         payload = update_fragment_api(
@@ -152,28 +139,21 @@ def test_text_only_correction_preserves_original_speaker_evidence(tmp_path):
                 edited_text="只修订文字",
                 speaker="SUSPECT",
                 actor_id="officer-002",
+                reason="修正同音字",
             ),
             db,
         )
-        assert payload["editedText"] == "只修订文字"
         assert payload["speaker"] == "SUSPECT"
         assert payload["speakerId"] == "suspect-vp-1"
-        assert payload["speakerName"] == "张某"
         assert payload["speakerSource"] == "X_VECTOR"
-        assert payload["voiceprintVerified"] is True
-        assert payload["lowConfidence"] is False
+        assert payload["recognitionEvidence"]["aiSpeaker"] == "SUSPECT"
+        assert payload["recognitionRevisions"][0]["afterText"] == "只修订文字"
 
     with factory() as db:
-        manual = (
-            db.query(AuditLog)
-            .filter(AuditLog.target_id == fragment_id, AuditLog.action == "ASR_FRAGMENT_UPDATE")
-            .one()
-        )
-        before = json.loads(manual.before_json)
-        after = json.loads(manual.after_json)
-        detail = json.loads(manual.detail_json)
-        assert before["speaker_source"] == "X_VECTOR"
-        assert after["speaker_source"] == "X_VECTOR"
-        assert detail["speaker_changed"] is False
-        assert manual.actor_id == "officer-002"
+        revision = db.query(ASRRecognitionRevision).filter_by(fragment_id=fragment_id).one()
+        assert revision.before_speaker == "SUSPECT"
+        assert revision.after_speaker == "SUSPECT"
+        assert revision.before_text == "原始识别文本"
+        assert revision.after_text == "只修订文字"
+        assert revision.reason == "修正同音字"
     engine.dispose()
