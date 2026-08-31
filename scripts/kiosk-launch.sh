@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-READY_URL="${SUSPECT_KIOSK_READY_URL:-http://127.0.0.1:8000/health/ready}"
-APP_URL="${SUSPECT_KIOSK_URL:-http://127.0.0.1:8000/}"
+READY_URL="${SUSPECT_KIOSK_READY_URL:-https://127.0.0.1:18080/health/ready}"
+APP_URL="${SUSPECT_KIOSK_URL:-https://127.0.0.1:18080/}"
 ATTEMPTS="${SUSPECT_KIOSK_READY_ATTEMPTS:-30}"
 SLEEP_SECONDS="${SUSPECT_KIOSK_READY_SLEEP_SECONDS:-2}"
 MAINTENANCE_URL="${SUSPECT_KIOSK_MAINTENANCE_URL:-file:///opt/suspect-interrogation/current/deploy/maintenance.html}"
