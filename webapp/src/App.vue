@@ -8,12 +8,16 @@ const caseId = ref(new URLSearchParams(location.search).get('caseId') || '')
 
 function openCase(id: string) {
   caseId.value = id
-  history.replaceState(null, '', `?caseId=${encodeURIComponent(id)}`)
+  const next = new URL(location.href)
+  next.searchParams.set('caseId', id)
+  history.replaceState(null, '', next)
 }
 
 function backToList() {
   caseId.value = ''
-  history.replaceState(null, '', location.pathname)
+  const next = new URL(location.href)
+  next.searchParams.delete('caseId')
+  history.replaceState(null, '', next)
 }
 </script>
 
