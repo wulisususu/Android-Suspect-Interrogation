@@ -39,6 +39,27 @@ build_webapp() {
   )
 }
 
+apply_database_migrations() {
+  local release="$1"
+  local backend="$release/linux/backend"
+  local python="$release/.venv/bin/python"
+  local runtime_env="${SUSPECT_RUNTIME_ENV_FILE:-${SUSPECT_ETC_DIR:-/etc/suspect-interrogation}/runtime.env}"
+
+  [[ -x "$python" ]] || { printf 'release python missing: %s\n' "$python" >&2; return 1; }
+  [[ -f "$backend/alembic.ini" ]] || { printf 'alembic config missing: %s\n' "$backend/alembic.ini" >&2; return 1; }
+  [[ -f "$runtime_env" ]] || { printf 'runtime env missing: %s\n' "$runtime_env" >&2; return 1; }
+
+  (
+    set -a
+    # shellcheck disable=SC1090
+    source "$runtime_env"
+    set +a
+    export PYTHONPATH="$backend"
+    cd "$backend"
+    "$python" -m alembic -c "$backend/alembic.ini" upgrade head
+  )
+}
+
 prune_releases() {
   local keep="${SUSPECT_RELEASE_RETENTION:-3}"
   mapfile -t releases < <(find "$SUSPECT_RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -nr | cut -d' ' -f2-)
