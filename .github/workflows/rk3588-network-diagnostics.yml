@@ -65,6 +65,82 @@ jobs:
             done <<<"$units"
           fi
 
+      - name: Classify FRP mapping without exposing endpoint or credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v frpc >/dev/null 2>&1; then
+            echo 'frpc_config_found=false'
+            exit 0
+          fi
+          echo "frpc_version=$(frpc --version 2>/dev/null | head -n 1 | tr -cd '[:alnum:]._-')"
+          exec_line="$(systemctl show frpc.service --property=ExecStart --value 2>/dev/null || true)"
+          config="$(grep -oE '/[^ ;{}]+\.(toml|ini)' <<<"$exec_line" | head -n 1 || true)"
+          if [[ -z "$config" || ! -f "$config" ]]; then
+            for root in /etc /opt /usr/local/etc /home; do
+              [[ -d "$root" ]] || continue
+              config="$(sudo -n find "$root" -maxdepth 5 -type f \( -name 'frpc.toml' -o -name 'frpc.ini' \) -print -quit 2>/dev/null || true)"
+              [[ -n "$config" ]] && break
+            done
+          fi
+          if [[ -z "$config" || ! -f "$config" ]]; then
+            echo 'frpc_config_found=false'
+            exit 0
+          fi
+          echo 'frpc_config_found=true'
+          sudo -n python3 - "$config" <<'PY'
+          import configparser
+          import pathlib
+          import sys
+          import tomllib
+
+          path = pathlib.Path(sys.argv[1])
+          mappings = []
+          if path.suffix.lower() == '.toml':
+              with path.open('rb') as fh:
+                  data = tomllib.load(fh)
+              proxies = data.get('proxies') or []
+              for item in proxies:
+                  try:
+                      local_port = int(item.get('localPort') or 0)
+                  except (TypeError, ValueError):
+                      local_port = 0
+                  mappings.append({
+                      'type': str(item.get('type') or '').lower(),
+                      'local_port': local_port,
+                      'remote_port': item.get('remotePort') is not None,
+                      'custom_domain': bool(item.get('customDomains')),
+                      'subdomain': bool(item.get('subdomain')),
+                  })
+          else:
+              parser = configparser.ConfigParser(interpolation=None)
+              parser.read(path, encoding='utf-8')
+              for section in parser.sections():
+                  if section.lower() == 'common':
+                      continue
+                  values = parser[section]
+                  try:
+                      local_port = int(values.get('local_port', '0'))
+                  except ValueError:
+                      local_port = 0
+                  mappings.append({
+                      'type': values.get('type', '').lower(),
+                      'local_port': local_port,
+                      'remote_port': bool(values.get('remote_port')),
+                      'custom_domain': bool(values.get('custom_domains')),
+                      'subdomain': bool(values.get('subdomain')),
+                  })
+
+          relevant = [item for item in mappings if item['local_port'] == 18080]
+          print(f'frpc_proxy_count={len(mappings)}')
+          print(f'frpc_maps_18080={str(bool(relevant)).lower()}')
+          print('frpc_18080_types=' + (','.join(sorted({item['type'] or 'unknown' for item in relevant})) or 'none'))
+          print(f'frpc_18080_has_remote_port={str(any(item["remote_port"] for item in relevant)).lower()}')
+          print(f'frpc_18080_has_vhost_name={str(any(item["custom_domain"] or item["subdomain"] for item in relevant)).lower()}')
+          print(f'frpc_any_http_vhost={str(any(item["type"] == "http" and (item["custom_domain"] or item["subdomain"]) for item in mappings)).lower()}')
+          print(f'frpc_any_https_vhost={str(any(item["type"] == "https" and (item["custom_domain"] or item["subdomain"]) for item in mappings)).lower()}')
+          PY
+
       - name: Known configuration locations without contents
         shell: bash
         run: |
@@ -77,7 +153,7 @@ jobs:
             /etc/cloudflared/config.yml \
             /etc/cloudflared/config.yaml; do
             if sudo -n test -e "$path"; then
-              echo "config_present=${path}"
+              echo "known_config_present=true kind=$(basename "$path")"
             fi
           done
 
