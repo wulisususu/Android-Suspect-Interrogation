@@ -91,26 +91,28 @@ jobs:
           sudo -n python3 - "$config" <<'PY'
           import configparser
           import pathlib
+          import re
           import sys
-          import tomllib
 
           path = pathlib.Path(sys.argv[1])
           mappings = []
           if path.suffix.lower() == '.toml':
-              with path.open('rb') as fh:
-                  data = tomllib.load(fh)
-              proxies = data.get('proxies') or []
-              for item in proxies:
-                  try:
-                      local_port = int(item.get('localPort') or 0)
-                  except (TypeError, ValueError):
-                      local_port = 0
+              text = path.read_text(encoding='utf-8', errors='replace')
+              blocks = re.split(r'^\s*\[\[proxies\]\]\s*$', text, flags=re.MULTILINE)[1:]
+              for block in blocks:
+                  def scalar(name):
+                      match = re.search(r'^\s*' + re.escape(name) + r'\s*=\s*([^#\r\n]+)', block, flags=re.MULTILINE)
+                      return match.group(1).strip() if match else ''
+                  type_value = scalar('type').strip('"\'').lower()
+                  local_raw = scalar('localPort')
+                  local_match = re.search(r'\d+', local_raw)
+                  local_port = int(local_match.group(0)) if local_match else 0
                   mappings.append({
-                      'type': str(item.get('type') or '').lower(),
+                      'type': type_value,
                       'local_port': local_port,
-                      'remote_port': item.get('remotePort') is not None,
-                      'custom_domain': bool(item.get('customDomains')),
-                      'subdomain': bool(item.get('subdomain')),
+                      'remote_port': bool(scalar('remotePort')),
+                      'custom_domain': bool(scalar('customDomains')),
+                      'subdomain': bool(scalar('subdomain')),
                   })
           else:
               parser = configparser.ConfigParser(interpolation=None)
