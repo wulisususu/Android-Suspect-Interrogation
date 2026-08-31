@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 _ACCEPT_THRESHOLD_ENV = "SUSPECT_SPEAKER_ACCEPT_THRESHOLD"
 _MARGIN_ENV = "SUSPECT_SPEAKER_MARGIN"
+_BASELINE_THRESHOLD_ENV = "SUSPECT_SPEAKER_BASELINE_THRESHOLD"
+MODEL_BASELINE_THRESHOLD = 0.70
 
 
 def _optional_unit_float(name: str) -> float | None:
@@ -26,16 +28,32 @@ def _optional_unit_float(name: str) -> float | None:
 class SpeakerCalibration:
     accept_threshold: float | None
     margin: float | None
+    baseline_threshold: float = MODEL_BASELINE_THRESHOLD
 
     @classmethod
     def from_env(cls) -> "SpeakerCalibration":
+        baseline = _optional_unit_float(_BASELINE_THRESHOLD_ENV)
         return cls(
             accept_threshold=_optional_unit_float(_ACCEPT_THRESHOLD_ENV),
             margin=_optional_unit_float(_MARGIN_ENV),
+            baseline_threshold=MODEL_BASELINE_THRESHOLD if baseline is None else baseline,
         )
 
     @property
+    def effective_threshold(self) -> float:
+        return self.accept_threshold if self.accept_threshold is not None else self.baseline_threshold
+
+    @property
+    def threshold_source(self) -> str:
+        return "DEVICE_CALIBRATED" if self.accept_threshold is not None else "MODEL_BASELINE"
+
+    @property
+    def device_calibrated(self) -> bool:
+        return self.accept_threshold is not None
+
+    @property
     def configured(self) -> bool:
+        # Backward-compatible meaning: both device-specific multi-speaker values exist.
         return self.accept_threshold is not None and self.margin is not None
 
     @property
@@ -47,4 +65,7 @@ class SpeakerCalibration:
             "state": self.state,
             "threshold_configured": self.accept_threshold is not None,
             "margin_configured": self.margin is not None,
+            "effective_threshold": self.effective_threshold,
+            "thresholdSource": self.threshold_source,
+            "device_calibrated": self.device_calibrated,
         }
