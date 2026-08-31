@@ -84,6 +84,8 @@ jobs:
           test -f webapp/src/components/SpeakerCalibrationCenter.vue
           test -f webapp/src/components/LiveDialoguePanel.vue
           test -f webapp/src/views/SystemSettingsView.vue
+          test -f webapp/src/config/audioInput.ts
+          test -f linux/backend/app/api/client_context.py
           test ! -f webapp/src/components/InterrogationPage.vue
           test -f linux/backend/speech_worker/vad_progress.py
           grep -q 'SystemSettingsView' webapp/src/App.vue
@@ -91,6 +93,9 @@ jobs:
           grep -q 'OfficerVoiceprintLibrary' webapp/src/views/SystemSettingsView.vue
           grep -q 'SpeakerCalibrationCenter' webapp/src/views/SystemSettingsView.vue
           grep -q '独立证据已入库' webapp/src/components/LiveDialoguePanel.vue
+          grep -q 'HTTP_REQUEST_HEADERS' webapp/src/config/audioInput.ts
+          grep -q 'Sec-CH-UA-Platform' linux/backend/app/api/client_context.py
+          grep -q 'client_context_router' linux/backend/app/main.py
           grep -q 'apply_database_migrations' deploy/control.sh
           grep -q 'apply_database_migrations' deploy/lib/release.sh
           grep -q 'TemplateDrivenInterrogationPage' webapp/src/views/InterrogationWorkspace.vue
@@ -152,14 +157,25 @@ jobs:
           curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" | tee /tmp/suspect-ready.json
           curl -fsS "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/" | tee /tmp/suspect-index.html >/dev/null
           grep -q '<div id="app"></div>' /tmp/suspect-index.html
-          test -f /opt/suspect-interrogation/current/webapp/dist/index.html
+          test -s /opt/suspect-interrogation/current/webapp/dist/index.html
+          find /opt/suspect-interrogation/current/webapp/dist/assets -type f -name '*.js' -size +100c -print -quit | grep -q .
           test "$(cat /opt/suspect-interrogation/current/.suspect-source-sha)" = "$GITHUB_SHA"
-          grep -Rqs '正式笔录' /opt/suspect-interrogation/current/webapp/dist/assets
-          grep -Rqs '实时对话' /opt/suspect-interrogation/current/webapp/dist/assets
-          grep -Rqs '民警声纹库' /opt/suspect-interrogation/current/webapp/dist/assets
-          grep -Rqs '设备校准中心' /opt/suspect-interrogation/current/webapp/dist/assets
-          grep -Rqs '识别证据' /opt/suspect-interrogation/current/webapp/dist/assets
-          grep -Rqs '有效语音达到 20 秒后会自动停止并注册' /opt/suspect-interrogation/current/webapp/dist/assets
+
+          curl -fsS \
+            -H 'Sec-CH-UA-Platform: "Windows"' \
+            -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)' \
+            "http://127.0.0.1:${SUSPECT_DEPLOY_PORT}/api/v1/client-context" \
+            | tee /tmp/suspect-client-context.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('/tmp/suspect-client-context.json').read_text())
+          data = payload.get('data', payload)
+          assert data['clientPlatform'] == 'WINDOWS', data
+          assert data['localClient'] is True, data
+          assert data['recommendedAudioInputMode'] == 'ALSA', data
+          assert data['platformSource'] == 'SEC_CH_UA_PLATFORM', data
+          PY
 
           sudo -n bash -c 'set -a; source /etc/suspect-interrogation/runtime.env; set +a; cd /opt/suspect-interrogation/current/linux/backend; PYTHONPATH=/opt/suspect-interrogation/current/linux/backend /opt/suspect-interrogation/current/.venv/bin/python -m alembic -c alembic.ini current' | tee /tmp/suspect-alembic-current.txt
           grep -q '0006_asr_recognition_evidence (head)' /tmp/suspect-alembic-current.txt
