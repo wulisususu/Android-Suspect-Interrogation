@@ -1,38 +1,56 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { fetchReadiness, type ReadinessResponse } from '../api/health'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { fetchLive } from '../api/health'
+
+const MAX_CONSECUTIVE_FAILURES = 3
+const PROBE_TIMEOUT_MS = 3000
+const PROBE_INTERVAL_MS = 5000
 
 const phase = ref<'checking' | 'ready' | 'maintenance'>('checking')
-const snapshot = ref<ReadinessResponse | null>(null)
 const error = ref('')
 let timer: number | undefined
-
-const problemDetails = computed(() => {
-  if (!snapshot.value) return []
-  return Object.entries(snapshot.value.checks)
-    .filter(([, item]) => item.required && item.state !== 'READY')
-    .map(([name, item]) => `${name}: ${item.detail}`)
-})
+let consecutiveFailures = 0
+let refreshInFlight = false
 
 async function refresh() {
+  if (refreshInFlight) return
+  refreshInFlight = true
+
   const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), 3000)
+  let timedOut = false
+  const timeout = window.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, PROBE_TIMEOUT_MS)
+
   try {
-    const next = await fetchReadiness(controller.signal)
-    snapshot.value = next
+    await fetchLive(controller.signal)
+    consecutiveFailures = 0
     error.value = ''
-    phase.value = next.status === 'ready' ? 'ready' : 'maintenance'
+    phase.value = 'ready'
   } catch (cause) {
+    consecutiveFailures += 1
+
+    // A single network jitter/AbortController timeout must never unmount an
+    // active interrogation workspace. Only sustained process-level liveness
+    // failures are allowed to move the global application gate to maintenance.
+    if (consecutiveFailures < MAX_CONSECUTIVE_FAILURES) return
+
     phase.value = 'maintenance'
-    error.value = cause instanceof Error ? cause.message : '后端服务暂不可用'
+    error.value = timedOut
+      ? '本地后端连续多次响应超时，系统正在自动重试'
+      : cause instanceof Error
+        ? cause.message
+        : '本地后端连续多次无响应，系统正在自动重试'
   } finally {
     window.clearTimeout(timeout)
+    refreshInFlight = false
   }
 }
 
 onMounted(() => {
   void refresh()
-  timer = window.setInterval(() => void refresh(), 5000)
+  timer = window.setInterval(() => void refresh(), PROBE_INTERVAL_MS)
 })
 
 onUnmounted(() => {
@@ -46,13 +64,10 @@ onUnmounted(() => {
     <section class="maintenance-card">
       <p class="maintenance-kicker">Linux Kiosk</p>
       <h1>{{ phase === 'checking' ? '系统正在启动' : '系统维护中' }}</h1>
-      <p v-if="phase === 'checking'">正在检查本地后端、数据库与存储状态，请稍候。</p>
+      <p v-if="phase === 'checking'">正在检查本地后端进程状态，请稍候。</p>
       <template v-else>
-        <p>页面本身工作正常，但本地后端尚未达到可用状态。系统会自动重试。</p>
-        <ul v-if="problemDetails.length" class="maintenance-details">
-          <li v-for="item in problemDetails" :key="item">{{ item }}</li>
-        </ul>
-        <p v-else-if="error" class="maintenance-details">{{ error }}</p>
+        <p>本地后端已连续多次无响应。业务页面会在服务恢复后自动返回。</p>
+        <p v-if="error" class="maintenance-details">{{ error }}</p>
         <button type="button" @click="refresh">立即重试</button>
       </template>
     </section>
