@@ -10,6 +10,7 @@ from app.ai.errors import AIError, ResourceBusyError
 from app.api.deps import get_db
 from app.api.responses import envelope
 from app.domain.errors import DomainError
+from app.services.officer_voiceprint_library import OfficerVoiceprintLibraryService
 from app.services.voiceprint_service import VoiceprintService
 
 
@@ -36,6 +37,10 @@ class OfficerEnrollmentStartBody(ActorBody):
     source: VoiceprintAudioSource = "ALSA"
 
 
+class OfficerSampleDisableBody(ActorBody):
+    reason: str | None = Field(default=None, max_length=512)
+
+
 class VoiceRoleAssignmentBody(ActorBody):
     interrogator_officer_id: str | None = Field(default=None, max_length=128)
     recorder_officer_id: str | None = Field(default=None, max_length=128)
@@ -57,6 +62,10 @@ def _capture_service(request: Request):
 
 def _service(request: Request, db: Session) -> VoiceprintService:
     return VoiceprintService(db, speech_client=_speech_client(request))
+
+
+def _officer_library(request: Request, db: Session) -> OfficerVoiceprintLibraryService:
+    return OfficerVoiceprintLibraryService(db, speech_client=_speech_client(request))
 
 
 def _context(request: Request) -> dict[str, Any]:
@@ -84,6 +93,17 @@ def _clear_context(request: Request, *, kind: str, subject_id: str) -> dict[str,
 def _raise_ai_error(exc: AIError) -> None:
     status = 409 if isinstance(exc, ResourceBusyError) else 503
     raise DomainError(exc.code, exc.message, status, data=exc.details) from exc
+
+
+def _capture_device_metadata(request: Request, source: str) -> tuple[str, str]:
+    normalized = str(source or "ALSA").upper()
+    if normalized == "BROWSER":
+        return "browser-default", "Windows Browser Microphone"
+    manager = getattr(request.app.state, "hardware_manager", None)
+    audio = getattr(manager, "audio", None) if manager is not None else None
+    device_id = str(getattr(audio, "device", None) or getattr(audio, "device_name", None) or "alsa-default")
+    device_name = str(getattr(audio, "device_name", None) or getattr(audio, "name", None) or "Linux ALSA Microphone")
+    return device_id, device_name
 
 
 @router.get("/cases/{case_id}/voiceprints/readiness")
@@ -155,7 +175,16 @@ def list_officer_voiceprints(
     active_only: bool = Query(True),
     db: Session = Depends(get_db),
 ):
-    return envelope(_service(request, db).list_officers(active_only=active_only))
+    return envelope(_officer_library(request, db).list_profiles(active_only=active_only))
+
+
+@router.get("/officer-voiceprints/{officer_id}")
+def get_officer_voiceprint(
+    officer_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    return envelope(_officer_library(request, db).get_profile(officer_id))
 
 
 @router.post("/officer-voiceprints/{officer_id}/enrollment/start")
@@ -165,7 +194,7 @@ def start_officer_enrollment(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    _service(request, db)
+    _officer_library(request, db)
     result = _capture_service(request).start("officer", officer_id, source=body.source)
     _set_context(
         request,
@@ -191,30 +220,42 @@ def stop_officer_enrollment(
     officer_name = str(context.get("officer_name") or "").strip()
     if not officer_name:
         raise DomainError("OFFICER_IDENTITY_REQUIRED", "民警姓名不能为空", 400)
+    source = str(context.get("source") or "ALSA").upper()
+    device_id, device_name = _capture_device_metadata(request, source)
     pcm = _capture_service(request).stop("officer", officer_id)
     _clear_context(request, kind="officer", subject_id=officer_id)
-    service = _service(request, db)
     try:
-        existing = next(
-            (item for item in service.list_officers(active_only=False) if item["officerId"] == officer_id),
-            None,
+        result = _officer_library(request, db).add_sample(
+            officer_id,
+            officer_name,
+            pcm,
+            actor_id=body.actor_id if body else None,
+            audio_source=source,
+            device_id=device_id,
+            device_name=device_name,
         )
-        if existing is None:
-            result = service.enroll_officer(
-                officer_id,
-                officer_name,
-                pcm,
-                actor_id=body.actor_id if body else None,
-            )
-        else:
-            result = service.update_officer(
-                officer_id,
-                pcm,
-                actor_id=body.actor_id if body else None,
-            )
     except AIError as exc:
         _raise_ai_error(exc)
-    return envelope(result, "民警声纹已保存")
+    return envelope(result, "民警声纹样本已添加")
+
+
+@router.delete("/officer-voiceprints/{officer_id}/samples/{sample_id}")
+def disable_officer_voiceprint_sample(
+    officer_id: str,
+    sample_id: str,
+    request: Request,
+    body: OfficerSampleDisableBody | None = None,
+    db: Session = Depends(get_db),
+):
+    return envelope(
+        _officer_library(request, db).disable_sample(
+            officer_id,
+            sample_id,
+            reason=body.reason if body else None,
+            actor_id=body.actor_id if body else None,
+        ),
+        "民警声纹样本已停用并重新聚合",
+    )
 
 
 @router.delete("/officer-voiceprints/{officer_id}")
@@ -225,8 +266,8 @@ def revoke_officer_voiceprint(
     db: Session = Depends(get_db),
 ):
     return envelope(
-        _service(request, db).revoke_officer(officer_id, actor_id=actor_id),
-        "民警声纹已撤销",
+        _officer_library(request, db).revoke_profile(officer_id, actor_id=actor_id),
+        "民警声纹档案已停用",
     )
 
 
