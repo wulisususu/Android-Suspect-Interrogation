@@ -220,6 +220,7 @@ def test_capture_pushes_each_pcm_chunk_once_persists_verified_fragment_and_broad
     assert payload["rawText"] == "我是嫌疑人"
     assert payload["speaker"] == "SUSPECT"
     assert payload["speakerSource"] == "X_VECTOR"
+    assert payload["thresholdSource"] == "DEVICE_CALIBRATED"
     assert payload["voiceprintVerified"] is True
     engine.dispose()
 
@@ -255,7 +256,7 @@ def test_capture_failure_still_finalizes_worker_stops_alsa_and_marks_db_stopped(
     engine.dispose()
 
 
-def test_capture_refuses_to_start_without_calibrated_speaker_policy(tmp_path: Path):
+def test_capture_starts_with_model_baseline_when_device_calibration_is_missing(tmp_path: Path):
     engine, factory, case_id, _ = _seed_database(tmp_path)
     device = FakeDeviceManager([])
     speech = FakeSpeechSupervisor()
@@ -266,16 +267,18 @@ def test_capture_refuses_to_start_without_calibrated_speaker_policy(tmp_path: Pa
         device_manager=device,
         ai_supervisor=speech,
         publish_event=lambda *_args: None,
+        read_timeout=0.01,
     )
 
-    try:
-        service.start(case_id)
-    except Exception as exc:
-        assert getattr(exc, "code", None) == "SPEAKER_CALIBRATION_REQUIRED"
-    else:
-        raise AssertionError("capture start must fail closed when speaker calibration is missing")
+    started = service.start(case_id)
+    assert started["active"] is True
+    assert started["speakerThreshold"] == 0.70
+    assert started["thresholdSource"] == "MODEL_BASELINE"
+    assert started["speakerMarginConfigured"] is False
+    assert device.started == 1
 
-    assert device.started == 0
+    service.stop(case_id)
+    assert device.stopped == 1
     engine.dispose()
 
 
