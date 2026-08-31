@@ -13,12 +13,21 @@ from app.services.officer_voiceprint_library import OfficerVoiceprintLibraryServ
 
 SAMPLE_RATE = 16_000
 GOOD_SEGMENTS = [[0, 8000], [9000, 17000], [18000, 26000]]
+MODEL_FP = "a" * 64
+MIC_FP = "b" * 64
 
 
 class FakeSpeechClient:
     def __init__(self, embeddings):
         self.embeddings = list(embeddings)
         self.index = 0
+
+    def health(self):
+        return {
+            "speaker_model_id": "xvector",
+            "speaker_model_version": "rk3588-local",
+            "speaker_model_fingerprint": MODEL_FP,
+        }
 
     def speech_segments(self, pcm: bytes, sample_rate: int = SAMPLE_RATE):
         assert pcm and sample_rate == SAMPLE_RATE
@@ -65,6 +74,8 @@ def test_second_enrollment_appends_sample_and_increments_aggregate_version(tmp_p
             audio_source="BROWSER",
             device_id="browser-default",
             device_name="Windows Browser Microphone",
+            microphone_fingerprint="browser-" + MIC_FP[:56],
+            microphone_fingerprint_certainty="REDUCED",
         )
         first_sample_id = first["latestSampleId"]
         first_sample_embedding = db.get(OfficerVoiceSample, first_sample_id).embedding
@@ -77,6 +88,8 @@ def test_second_enrollment_appends_sample_and_increments_aggregate_version(tmp_p
             audio_source="ALSA",
             device_id="default",
             device_name="Linux ALSA Microphone",
+            microphone_fingerprint=MIC_FP,
+            microphone_fingerprint_certainty="STRONG",
         )
 
         profile = db.scalar(select(OfficerVoiceProfile).where(OfficerVoiceProfile.officer_id == "P-001"))
@@ -88,6 +101,10 @@ def test_second_enrollment_appends_sample_and_increments_aggregate_version(tmp_p
         assert db.get(OfficerVoiceSample, first_sample_id).embedding == first_sample_embedding
         assert {row.audio_source for row in samples} == {"BROWSER", "ALSA"}
         assert {row.device_name for row in samples} == {"Windows Browser Microphone", "Linux ALSA Microphone"}
+        alsa_sample = next(row for row in samples if row.audio_source == "ALSA")
+        assert alsa_sample.model_fingerprint == MODEL_FP
+        assert alsa_sample.microphone_fingerprint == MIC_FP
+        assert alsa_sample.microphone_fingerprint_certainty == "STRONG"
     finally:
         db.close()
         engine.dispose()
