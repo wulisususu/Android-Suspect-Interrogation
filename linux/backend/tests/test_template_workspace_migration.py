@@ -48,7 +48,9 @@ def test_template_workspace_models_are_importable():
 
 
 def test_0003_creates_template_workspace_tables(tmp_path):
-    db_file, _env, result = _run_alembic(tmp_path, "upgrade", "head")
+    # This is a revision-specific contract. Keep it pinned to 0003 even when
+    # newer migrations are added after the template workspace feature.
+    db_file, _env, result = _run_alembic(tmp_path, "upgrade", "0003_template_interrogation_workspace")
     assert result.returncode == 0, result.stdout + result.stderr
 
     engine = create_engine(f"sqlite:///{db_file}")
