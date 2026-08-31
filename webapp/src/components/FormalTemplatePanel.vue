@@ -2,10 +2,8 @@
 import { computed, reactive, ref, watch } from 'vue'
 
 import type {
-  CaseSummary,
   DocumentSignerRole,
   DocumentSigningState,
-  SessionState,
 } from '../types/interrogation'
 import type {
   CaseQuestionUpdateInput,
@@ -15,8 +13,6 @@ import type {
 } from '../types/templateInterrogation'
 
 const props = defineProps<{
-  summary: CaseSummary
-  session: SessionState
   questions: FormalQuestion[]
   rounds: FormalQuestionRound[]
   busy: boolean
@@ -46,9 +42,6 @@ const reassociateTargets = reactive<Record<string, string>>({})
 const expandedQuestionIds = ref<Set<string>>(new Set())
 
 const orderedQuestions = computed(() => [...props.questions].sort((left, right) => left.sortOrder - right.sortOrder))
-const sessionStatusText = computed(() => ({
-  READY: '待开始', RUNNING: '审讯中', PAUSED: '已暂停', COMPLETED: '已结束',
-}[props.session.status] || props.session.status))
 
 watch(
   () => props.questions,
@@ -155,15 +148,6 @@ function formatSignedAt(value?: number) {
 
 <template>
   <section class="formal-template-panel">
-    <header class="formal-header">
-      <div>
-        <span class="panel-kicker">正式笔录</span>
-        <h2>嫌疑人讯问笔录</h2>
-        <p>案件 {{ summary.id }} · 被讯问人 {{ summary.suspectName || '待录入' }} · 主审 {{ summary.officerName || '当前警官' }}</p>
-      </div>
-      <span class="formal-state">{{ sessionStatusText }}</span>
-    </header>
-
     <div class="formal-toolbar">
       <div class="formal-summary">
         <span>正式问题 <strong>{{ orderedQuestions.length }}</strong></span>

@@ -31,6 +31,11 @@ const store = useInterrogationStore()
 const templateStore = useTemplateInterrogationStore()
 const autoVoiceprint = useAutoVoiceprintEnrollment()
 const activePage = ref<WorkspacePage>('profile')
+const recorderName = computed(() => {
+  const recorder = store.officerVoiceprints.find((item) => item.officerId === store.selectedRecorderOfficerId)
+  return recorder?.officerName || '未指定'
+})
+
 const voiceprintGuard = computed(() => voiceprintStartGuard(store.voiceprintReadiness))
 const questionDictationDraft = ref('')
 const questionDictationActive = ref(false)
@@ -192,19 +197,14 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
 
     <template v-else>
       <header class="topbar">
-        <div class="case-meta">
-          <button class="back-btn" @click="$emit('back')">‹ 返回</button>
-          <div>
-            <h1>案件审讯工作台</h1>
-            <p>案件：{{ store.caseSummary.id || store.caseId }}　｜　对象：{{ store.caseSummary.suspectName || '待录入' }}</p>
-          </div>
-          <span class="state-chip">{{ store.stateText }}</span>
-        </div>
-        <div class="operator-meta">
-          <AiSettingsPanel />
-          <span>主审：{{ store.caseSummary.officerName || '当前警官' }}</span>
-          <span class="recording" :class="{ muted: store.session.status !== 'RUNNING' }">● {{ store.session.status === 'RUNNING' ? '审讯中' : store.session.status === 'PAUSED' ? '已暂停' : '未录入' }}</span>
-        </div>
+        <button class="back-btn" @click="$emit('back')">‹ 返回</button>
+        <h1>案件审讯工作台</h1>
+        <span class="topbar-field">案件：{{ store.caseSummary.id || store.caseId }}</span>
+        <span class="topbar-field">嫌疑人：{{ store.caseSummary.suspectName || '待录入' }}</span>
+        <span class="topbar-field">主审：{{ store.caseSummary.officerName || '当前警官' }}</span>
+        <span class="topbar-field">记录员：{{ recorderName }}</span>
+        <AiSettingsPanel />
+        <span class="recording" :class="{ muted: store.session.status !== 'RUNNING' }">● {{ store.session.status === 'RUNNING' ? '审讯中' : store.session.status === 'PAUSED' ? '已暂停' : '未录入' }}</span>
       </header>
 
       <nav class="workspace-page-tabs" aria-label="案件工作区页面">

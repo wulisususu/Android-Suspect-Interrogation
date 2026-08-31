@@ -270,8 +270,6 @@ async function confirmSignature() {
         />
 
         <FormalTemplatePanel
-          :summary="summary"
-          :session="session"
           :questions="workspace.questions"
           :rounds="workspace.rounds"
           :busy="templateBusy"

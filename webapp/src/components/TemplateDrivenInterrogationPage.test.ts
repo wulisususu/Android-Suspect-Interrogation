@@ -14,6 +14,12 @@ describe('template-driven interrogation C-page contract', () => {
     expect(pageSource).toContain('LiveDialoguePanel')
   })
 
+  it('keeps the formal transcript header out of the C-page content area', () => {
+    expect(formalSource).not.toContain('class="formal-header"')
+    expect(formalSource).not.toContain('<h2>嫌疑人讯问笔录</h2>')
+    expect(formalSource).not.toContain('<span class="panel-kicker">正式笔录</span>')
+  })
+
   it('keeps legacy conflict and low-confidence business marks out of the new formal page', () => {
     expect(formalSource).not.toContain('矛盾标记')
     expect(formalSource).not.toContain('标记矛盾')

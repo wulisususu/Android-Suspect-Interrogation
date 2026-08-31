@@ -67,7 +67,6 @@
 }
 
 .question-preparation-header,
-.formal-header,
 .live-dialogue-header {
   display: flex;
   align-items: center;
@@ -80,7 +79,6 @@
 }
 
 .question-preparation-header h2,
-.formal-header h2,
 .live-dialogue-header h2,
 .signature-dialog h2 {
   margin: 0;
@@ -257,33 +255,6 @@ button:disabled {
   min-height: 0;
   overflow: auto;
   background: #f7fafc;
-}
-
-.formal-header {
-  position: sticky;
-  z-index: 5;
-  top: 0;
-  padding: 14px 18px;
-  border-bottom: 1px solid #c8d5df;
-  background: rgba(248, 251, 253, .97);
-  backdrop-filter: blur(4px);
-}
-
-.formal-header p {
-  margin: 5px 0 0;
-  color: #607486;
-  font-size: 12px;
-}
-
-.formal-state {
-  padding: 5px 9px;
-  border: 1px solid #a8bdcc;
-  border-radius: 999px;
-  background: #edf4f8;
-  color: #375971;
-  font-size: 12px;
-  font-weight: 800;
-  white-space: nowrap;
 }
 
 .formal-toolbar {
