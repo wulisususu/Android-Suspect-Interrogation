@@ -44,7 +44,7 @@ def _build_supervisor() -> AISupervisor:
     registry = ModelRegistry.load(settings.registry_path, settings.model_root).with_backend_overrides(
         {"asr": settings.asr_backend, "ocr": settings.ocr_backend, "llm": settings.llm_backend}
     )
-    return AISupervisor(
+    supervisor = AISupervisor(
         registry,
         mode=settings.mode,
         request_timeout=settings.request_timeout,
@@ -52,9 +52,10 @@ def _build_supervisor() -> AISupervisor:
         memory_budget_mb=settings.memory_budget_mb,
         speech_socket=settings.speech_socket,
         speaker_accept_threshold=settings.speaker_accept_threshold,
-        speaker_threshold_source=settings.speaker_threshold_source,
         speaker_margin=settings.speaker_margin,
     )
+    supervisor.speaker_threshold_source = settings.speaker_threshold_source
+    return supervisor
 
 
 def _database_url(database_url: str | None, settings: RuntimeSettings) -> str | None:
