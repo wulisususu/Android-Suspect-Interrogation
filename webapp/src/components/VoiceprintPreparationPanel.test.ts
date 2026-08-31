@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   voiceprintEnrollmentProgress,
@@ -86,5 +87,17 @@ describe('VoiceprintPreparationPanel helpers', () => {
       detail: '声纹结果不足以可靠归属，请人工确认',
       needsConfirmation: true,
     })
+  })
+
+  it('keeps officer administration out of a case and retains binding selectors', () => {
+    const source = readFileSync(new URL('./VoiceprintPreparationPanel.vue', import.meta.url), 'utf8')
+    expect(source).toContain('选择主审民警声纹')
+    expect(source).toContain('选择记录民警声纹')
+    expect(source).not.toContain('officer-enrollment-box')
+    expect(source).not.toContain('民警编号')
+    expect(source).not.toContain('民警姓名')
+    expect(source).not.toContain('新注册 / 更新')
+    expect(source).not.toContain("officerStart")
+    expect(source).not.toContain("revokeOfficer")
   })
 })
