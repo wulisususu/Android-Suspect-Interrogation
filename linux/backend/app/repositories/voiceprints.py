@@ -11,10 +11,12 @@ from app.database.models import (
     SessionVoiceAssignment,
     SuspectVoiceprint,
 )
+from app.database.voiceprint_models import OfficerVoiceProfile, SessionOfficerVoiceSnapshot
 from app.domain.errors import DomainError
 
 
 _FLOAT32_BYTES = 4
+_SNAPSHOT_PREFIX = "__session_snapshot__:"
 
 
 def _embedding_bytes(embedding: bytes, embedding_dim: int) -> bytes:
@@ -174,6 +176,76 @@ def _active_officer_or_error(db: Session, officer_id: str | None) -> OfficerVoic
     return item
 
 
+def _snapshot_officer_reference(
+    db: Session,
+    *,
+    session_id: str,
+    role: str,
+    officer: OfficerVoiceprint,
+) -> OfficerVoiceprint:
+    profile = db.scalar(
+        select(OfficerVoiceProfile).where(OfficerVoiceProfile.officer_id == officer.officer_id)
+    )
+    aggregate_version = int(profile.aggregate_version) if profile is not None else 1
+    snapshot = OfficerVoiceprint(
+        id=str(uuid4()),
+        officer_id=f"{_SNAPSHOT_PREFIX}{uuid4().hex}",
+        officer_name=officer.officer_name,
+        embedding=bytes(officer.embedding),
+        embedding_dim=officer.embedding_dim,
+        model_id=officer.model_id,
+        model_version=officer.model_version,
+        enrollment_quality=officer.enrollment_quality,
+        usable_duration_ms=officer.usable_duration_ms,
+        active=True,
+        revoked_at=None,
+    )
+    db.add(snapshot)
+    db.flush()
+
+    metadata = db.scalar(
+        select(SessionOfficerVoiceSnapshot).where(
+            SessionOfficerVoiceSnapshot.session_id == session_id,
+            SessionOfficerVoiceSnapshot.role == role,
+        )
+    )
+    if metadata is None:
+        metadata = SessionOfficerVoiceSnapshot(
+            id=str(uuid4()),
+            session_id=session_id,
+            role=role,
+            officer_id=officer.officer_id,
+            profile_id=profile.id if profile is not None else None,
+            aggregate_version=aggregate_version,
+            voiceprint_snapshot_id=snapshot.id,
+            model_id=snapshot.model_id,
+            model_version=snapshot.model_version,
+        )
+        db.add(metadata)
+    else:
+        metadata.officer_id = officer.officer_id
+        metadata.profile_id = profile.id if profile is not None else None
+        metadata.aggregate_version = aggregate_version
+        metadata.voiceprint_snapshot_id = snapshot.id
+        metadata.model_id = snapshot.model_id
+        metadata.model_version = snapshot.model_version
+        metadata.created_at = datetime.now(timezone.utc)
+    db.flush()
+    return snapshot
+
+
+def _clear_snapshot_metadata(db: Session, *, session_id: str, role: str) -> None:
+    metadata = db.scalar(
+        select(SessionOfficerVoiceSnapshot).where(
+            SessionOfficerVoiceSnapshot.session_id == session_id,
+            SessionOfficerVoiceSnapshot.role == role,
+        )
+    )
+    if metadata is not None:
+        db.delete(metadata)
+        db.flush()
+
+
 def assign_session_roles(
     db: Session,
     *,
@@ -197,15 +269,46 @@ def assign_session_roles(
     else:
         mode = "SUSPECT_ONLY"
 
+    interrogator_snapshot = (
+        _snapshot_officer_reference(
+            db,
+            session_id=session_id,
+            role="INTERROGATOR",
+            officer=interrogator,
+        )
+        if interrogator is not None
+        else None
+    )
+    if interrogator is None:
+        _clear_snapshot_metadata(db, session_id=session_id, role="INTERROGATOR")
+
+    recorder_snapshot = (
+        _snapshot_officer_reference(
+            db,
+            session_id=session_id,
+            role="RECORDER",
+            officer=recorder,
+        )
+        if recorder is not None
+        else None
+    )
+    if recorder is None:
+        _clear_snapshot_metadata(db, session_id=session_id, role="RECORDER")
+
     item = db.scalar(select(SessionVoiceAssignment).where(SessionVoiceAssignment.session_id == session_id))
     if item is None:
-        item = SessionVoiceAssignment(id=str(uuid4()), session_id=session_id, suspect_voiceprint_id=suspect.id, recognition_mode=mode)
+        item = SessionVoiceAssignment(
+            id=str(uuid4()),
+            session_id=session_id,
+            suspect_voiceprint_id=suspect.id,
+            recognition_mode=mode,
+        )
         db.add(item)
     item.suspect_voiceprint_id = suspect.id
     item.interrogator_officer_id = interrogator.officer_id if interrogator else None
-    item.interrogator_voiceprint_id = interrogator.id if interrogator else None
+    item.interrogator_voiceprint_id = interrogator_snapshot.id if interrogator_snapshot else None
     item.recorder_officer_id = recorder.officer_id if recorder else None
-    item.recorder_voiceprint_id = recorder.id if recorder else None
+    item.recorder_voiceprint_id = recorder_snapshot.id if recorder_snapshot else None
     item.recognition_mode = mode
     db.flush()
     return item
