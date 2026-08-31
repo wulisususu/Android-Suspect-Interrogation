@@ -24,6 +24,7 @@ from app.api.identity import router as identity_router
 from app.api.interrogation import router as interrogation_router
 from app.api.responses import envelope
 from app.api.signature import router as signature_router
+from app.api.speaker_calibration import router as speaker_calibration_router
 from app.api.template_workspace import router as template_workspace_router
 from app.api.voiceprints import router as voiceprints_router
 from app.database.session import init_database, make_engine, make_session_factory
@@ -200,6 +201,7 @@ def create_app(
     app.include_router(ai_router, prefix="/api/v1")
     app.include_router(asr_router, prefix="/api/v1")
     app.include_router(voiceprints_router, prefix="/api/v1")
+    app.include_router(speaker_calibration_router, prefix="/api/v1")
     app.include_router(compat_router)
     app.include_router(websocket_router)
     app.include_router(browser_asr_websocket_router)
