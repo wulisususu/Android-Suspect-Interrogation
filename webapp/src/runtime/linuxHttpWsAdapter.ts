@@ -119,7 +119,11 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
     case 'asr.capture.start': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/capture/start`, data: {} }
     case 'asr.capture.stop': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/capture/stop`, data: {} }
     case 'asr.fragment.list': return { method: 'GET', url: `/api/v1/cases/${caseId}/asr/fragments`, params: { include_confirmed: payload.includeConfirmed } }
-    case 'asr.fragment.update': return { method: 'PUT', url: `/api/v1/cases/${caseId}/asr/fragments/${fragmentId}`, data: { edited_text: payload.editedText, speaker: payload.speaker } }
+    case 'asr.fragment.update': return {
+      method: 'PUT',
+      url: `/api/v1/cases/${caseId}/asr/fragments/${fragmentId}`,
+      data: { edited_text: payload.editedText, speaker: payload.speaker, actor_id: payload.actorId, reason: payload.reason },
+    }
     case 'asr.fragment.confirm': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/fragments/${fragmentId}/confirm`, data: {} }
     case 'asr.fragment.confirmBatch': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/fragments/confirm`, data: { fragment_ids: payload.fragmentIds } }
     case 'asr.fragment.applyToRecord': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/fragments/apply`, data: payload }
@@ -190,9 +194,7 @@ export function buildRuntimeWebSocketUrl(origin: string, sessionId: string) {
 
 function normalizeCapabilityState(value: unknown): RuntimeCapabilityState {
   const normalized = String(value || '').toUpperCase()
-  if (['AVAILABLE', 'NOT_CONNECTED', 'NOT_CONFIGURED', 'MODEL_NOT_INSTALLED', 'BUSY', 'ERROR'].includes(normalized)) {
-    return normalized as RuntimeCapabilityState
-  }
+  if (['AVAILABLE', 'NOT_CONNECTED', 'NOT_CONFIGURED', 'MODEL_NOT_INSTALLED', 'BUSY', 'ERROR'].includes(normalized)) return normalized as RuntimeCapabilityState
   if (['READY', 'CONNECTED', 'OK', 'IDLE'].includes(normalized)) return 'AVAILABLE'
   if (['MISSING', 'NOT_INSTALLED'].includes(normalized)) return 'MODEL_NOT_INSTALLED'
   return 'NOT_CONFIGURED'
@@ -239,18 +241,12 @@ export class LinuxHttpWsAdapter implements RuntimeAdapter {
         await startBrowserAsrCapture(String(payload.caseId ?? ''), captureId, runtimeConfig.apiBaseUrl)
       }
 
-      if (audioInputMode === 'BROWSER' && operation === 'asr.capture.stop') {
-        await stopBrowserAsrCapture()
-      }
+      if (audioInputMode === 'BROWSER' && operation === 'asr.capture.stop') await stopBrowserAsrCapture()
       return result
     } catch (error) {
       if (audioInputMode === 'BROWSER' && operation === 'asr.capture.start') {
         if (browserBackendStarted) {
-          try {
-            await this.request(endpoint('asr.capture.stop', payload))
-          } catch {
-            // Preserve the original browser microphone/WS failure.
-          }
+          try { await this.request(endpoint('asr.capture.stop', payload)) } catch { /* preserve original failure */ }
         }
         await stopBrowserAsrCapture().catch(() => undefined)
       } else if (audioInputMode === 'BROWSER' && operation === 'asr.capture.stop') {
@@ -287,11 +283,8 @@ export class LinuxHttpWsAdapter implements RuntimeAdapter {
       return result
     } catch (error) {
       const normalized = normalizeRuntimeError(error, 'capabilities.get')
-      if (normalized.state === 'NOT_CONNECTED') {
-        this.capabilitiesCache = capabilitySet('NOT_CONNECTED', normalized.message)
-      } else {
-        this.capabilitiesCache = capabilityFallback('Linux 后端尚未实现 capability endpoint')
-      }
+      if (normalized.state === 'NOT_CONNECTED') this.capabilitiesCache = capabilitySet('NOT_CONNECTED', normalized.message)
+      else this.capabilitiesCache = capabilityFallback('Linux 后端尚未实现 capability endpoint')
       return this.capabilitiesCache
     }
   }
