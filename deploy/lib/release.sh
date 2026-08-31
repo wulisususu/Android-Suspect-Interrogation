@@ -56,6 +56,16 @@ apply_database_migrations() {
     set +a
     export PYTHONPATH="$backend"
     cd "$backend"
+
+    if [[ -n "${SUSPECT_DB_PATH:-}" ]]; then
+      local legacy_baseline
+      legacy_baseline="$("$python" -m app.database.migration_bootstrap "$SUSPECT_DB_PATH")"
+      if [[ -n "$legacy_baseline" ]]; then
+        printf '[release] adopting verified legacy database baseline: %s\n' "$legacy_baseline" >&2
+        "$python" -m alembic -c "$backend/alembic.ini" stamp "$legacy_baseline"
+      fi
+    fi
+
     "$python" -m alembic -c "$backend/alembic.ini" upgrade head
   )
 }
