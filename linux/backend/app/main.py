@@ -29,6 +29,7 @@ from app.api.responses import envelope
 from app.api.signature import router as signature_router
 from app.api.speaker_calibration import router as speaker_calibration_router
 from app.api.template_workspace import router as template_workspace_router
+from app.api.tls import router as tls_router
 from app.api.voiceprints import router as voiceprints_router
 from app.database.session import init_database, make_engine, make_session_factory
 from app.hardware_gateway.linux import LinuxHardwareGateway
@@ -97,10 +98,7 @@ def create_app(
         manager = manager or create_device_manager()
         hardware_gateway = LinuxHardwareGateway(manager)
 
-    # Browser input is always present. The concrete input is selected per HTTP
-    # capture start request instead of being frozen by one process-wide setting.
     browser_audio_input = BrowserAudioInput()
-
     websocket_manager = ConnectionManager()
     event_loop: dict[str, asyncio.AbstractEventLoop | None] = {"loop": None}
 
@@ -253,6 +251,7 @@ def create_app(
 
     app.include_router(health_router)
     app.include_router(capabilities_router)
+    app.include_router(tls_router)
     app.include_router(cases_router, prefix="/api/v1")
     app.include_router(identity_router, prefix="/api/v1")
     app.include_router(interrogation_router, prefix="/api/v1")
