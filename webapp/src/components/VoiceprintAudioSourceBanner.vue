@@ -1,22 +1,27 @@
 <script setup lang="ts">
+import { computed, unref, type Ref } from 'vue'
 import type { VoiceprintAudioSource } from '../api/browserVoiceprint'
 
-defineProps<{
-  source: VoiceprintAudioSource | null
-  reason: string
-  secureContext: boolean
+const props = defineProps<{
+  source: VoiceprintAudioSource | null | Ref<VoiceprintAudioSource | null>
+  reason: string | Ref<string>
+  secureContext: boolean | Ref<boolean>
 }>()
+
+const sourceValue = computed(() => unref(props.source))
+const reasonValue = computed(() => unref(props.reason))
+const secureContextValue = computed(() => unref(props.secureContext))
 </script>
 
 <template>
-  <aside class="voiceprint-source-banner" :class="source?.toLowerCase() || 'auto'" aria-live="polite">
+  <aside class="voiceprint-source-banner" :class="sourceValue?.toLowerCase() || 'auto'" aria-live="polite">
     <div>
-      <strong v-if="source === 'BROWSER'">音源：本机浏览器麦克风（远程）</strong>
-      <strong v-else-if="source === 'ALSA'">音源：RK3588 开发板麦克风（现场）</strong>
+      <strong v-if="sourceValue === 'BROWSER'">音源：本机浏览器麦克风（远程）</strong>
+      <strong v-else-if="sourceValue === 'ALSA'">音源：RK3588 开发板麦克风（现场）</strong>
       <strong v-else>AUTO 声纹音源</strong>
-      <span>{{ reason }}</span>
+      <span>{{ reasonValue }}</span>
     </div>
-    <span class="security-chip" :class="{ secure: secureContext }">{{ secureContext ? 'HTTPS/安全上下文' : 'HTTP/非安全上下文' }}</span>
+    <span class="security-chip" :class="{ secure: secureContextValue }">{{ secureContextValue ? 'HTTPS/安全上下文' : 'HTTP/非安全上下文' }}</span>
   </aside>
 </template>
 
