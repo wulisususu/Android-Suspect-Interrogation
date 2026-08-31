@@ -70,6 +70,8 @@ class OfficerVoiceprintLibraryService:
         audio_source: str = "ALSA",
         device_id: str | None = None,
         device_name: str | None = None,
+        microphone_fingerprint: str | None = None,
+        microphone_fingerprint_certainty: str | None = None,
     ) -> dict[str, Any]:
         officer_id = str(officer_id or "").strip()
         officer_name = str(officer_name or "").strip()
@@ -81,6 +83,7 @@ class OfficerVoiceprintLibraryService:
 
         self._materialize_legacy_profiles()
         reference = VoiceprintService(self.db, speech_client=self.speech_client)._build_reference(pcm)
+        model_fingerprint = self._current_model_fingerprint()
         profile = self.db.scalar(
             select(OfficerVoiceProfile).where(OfficerVoiceProfile.officer_id == officer_id)
         )
@@ -114,6 +117,7 @@ class OfficerVoiceprintLibraryService:
             embedding_dim=int(reference["dimension"]),
             model_id=str(reference["model_id"]),
             model_version=reference["model_version"],
+            model_fingerprint=model_fingerprint,
             quality=str(reference["quality"]),
             usable_duration_ms=int(reference["usable_duration_ms"]),
             segment_count=int(reference["segment_count"]),
@@ -122,6 +126,8 @@ class OfficerVoiceprintLibraryService:
             device_name=self._optional_text(device_name) or (
                 "Windows Browser Microphone" if source == "BROWSER" else "Linux ALSA Microphone"
             ),
+            microphone_fingerprint=self._optional_text(microphone_fingerprint),
+            microphone_fingerprint_certainty=self._optional_text(microphone_fingerprint_certainty),
             captured_at=datetime.now(timezone.utc),
             active=True,
             disabled_at=None,
@@ -155,6 +161,9 @@ class OfficerVoiceprintLibraryService:
                 "device_name": sample.device_name,
                 "model_id": sample.model_id,
                 "model_version": sample.model_version,
+                "model_fingerprint": sample.model_fingerprint,
+                "microphone_fingerprint": sample.microphone_fingerprint,
+                "microphone_fingerprint_certainty": sample.microphone_fingerprint_certainty,
             },
         )
         self.db.commit()
@@ -277,12 +286,15 @@ class OfficerVoiceprintLibraryService:
                     embedding_dim=bridge.embedding_dim,
                     model_id=bridge.model_id,
                     model_version=bridge.model_version,
+                    model_fingerprint=None,
                     quality=bridge.enrollment_quality,
                     usable_duration_ms=bridge.usable_duration_ms,
                     segment_count=0,
                     audio_source="LEGACY_MIGRATED",
                     device_id=None,
                     device_name="Legacy migrated reference",
+                    microphone_fingerprint=None,
+                    microphone_fingerprint_certainty=None,
                     captured_at=bridge.created_at,
                     active=True,
                     disabled_at=None,
@@ -291,6 +303,19 @@ class OfficerVoiceprintLibraryService:
                 )
             )
         self.db.flush()
+
+    def _current_model_fingerprint(self) -> str | None:
+        health_fn = getattr(self.speech_client, "health", None)
+        if not callable(health_fn):
+            return None
+        try:
+            health = health_fn()
+        except Exception:
+            return None
+        if not isinstance(health, dict):
+            return None
+        value = health.get("speaker_model_fingerprint")
+        return self._optional_text(value)
 
     def _validate_reference_compatibility(self, profile: OfficerVoiceProfile, reference: dict[str, Any]) -> None:
         if profile.embedding_dim != int(reference["dimension"]):
@@ -349,17 +374,6 @@ class OfficerVoiceprintLibraryService:
 
     def _sync_bridge(self, profile: OfficerVoiceProfile) -> OfficerVoiceprint:
         bridge = self._bridge(profile.officer_id)
-        total_duration = int(
-            self.db.scalar(
-                select(OfficerVoiceSample.usable_duration_ms)
-                .where(
-                    OfficerVoiceSample.profile_id == profile.id,
-                    OfficerVoiceSample.active.is_(True),
-                )
-                .limit(1)
-            )
-            or 0
-        )
         active_samples = list(
             self.db.scalars(
                 select(OfficerVoiceSample).where(
@@ -444,6 +458,9 @@ class OfficerVoiceprintLibraryService:
             "deviceName": sample.device_name,
             "modelId": sample.model_id,
             "modelVersion": sample.model_version,
+            "modelFingerprint": sample.model_fingerprint,
+            "microphoneFingerprint": sample.microphone_fingerprint,
+            "microphoneFingerprintCertainty": sample.microphone_fingerprint_certainty,
             "capturedAt": sample.captured_at.isoformat() if sample.captured_at is not None else None,
             "disabledAt": sample.disabled_at.isoformat() if sample.disabled_at is not None else None,
             "disabledReason": sample.disabled_reason,
