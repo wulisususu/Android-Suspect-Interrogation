@@ -33,10 +33,11 @@ from app.api.voiceprints import router as voiceprints_router
 from app.database.session import init_database, make_engine, make_session_factory
 from app.hardware_gateway.linux import LinuxHardwareGateway
 from app.health import capabilities_router, router as health_router
+from app.request_audio_context import AudioSourceContextMiddleware
 from app.runtime_settings import RuntimeSettings
-from app.services.asr_capture_service import AsrCaptureService
 from app.services.audio_capture_service import AudioCaptureService
 from app.services.browser_audio_input import BrowserAudioInput
+from app.services.source_aware_asr_capture_service import SourceAwareAsrCaptureService
 from app.services.speaker_calibration_runtime import resolve_speaker_calibration
 from app.services.speaker_calibration_service import (
     CurrentMicrophoneIdentity,
@@ -96,8 +97,9 @@ def create_app(
         manager = manager or create_device_manager()
         hardware_gateway = LinuxHardwareGateway(manager)
 
-    browser_audio_input = BrowserAudioInput() if settings.audio_input_mode == "BROWSER" else None
-    asr_audio_input = browser_audio_input if browser_audio_input is not None else manager
+    # Browser input is always present. The concrete input is selected per HTTP
+    # capture start request instead of being frozen by one process-wide setting.
+    browser_audio_input = BrowserAudioInput()
 
     websocket_manager = ConnectionManager()
     event_loop: dict[str, asyncio.AbstractEventLoop | None] = {"loop": None}
@@ -143,13 +145,13 @@ def create_app(
             fingerprint,
         )
 
-    def current_microphone_identity() -> CurrentMicrophoneIdentity:
-        if browser_audio_input is not None:
+    def current_microphone_identity(source: str = "ALSA") -> CurrentMicrophoneIdentity:
+        if str(source or "ALSA").upper() == "BROWSER":
             info = DeviceInfo(
                 "audio",
                 "browser-default",
-                "Windows Browser Microphone",
-                source="browser-test",
+                "Browser Microphone",
+                source="browser-lan",
                 path="browser-default",
                 metadata={},
             )
@@ -168,29 +170,31 @@ def create_app(
         fp = fingerprint_microphone(info)
         return CurrentMicrophoneIdentity("ALSA", fp.device_id, fp.device_name, fp.fingerprint, fp.certainty)
 
-    def runtime_calibration_resolver(db):
-        lifecycle = SpeakerCalibrationService(
-            db,
-            model_provider=current_model_identity,
-            microphone_provider=current_microphone_identity,
-        )
-        return resolve_speaker_calibration(lifecycle, SpeakerCalibration.from_env())
+    def runtime_calibration_resolver_factory(source: str):
+        normalized_source = str(source or "ALSA").upper()
+
+        def runtime_calibration_resolver(db):
+            lifecycle = SpeakerCalibrationService(
+                db,
+                model_provider=current_model_identity,
+                microphone_provider=lambda: current_microphone_identity(normalized_source),
+            )
+            return resolve_speaker_calibration(lifecycle, SpeakerCalibration.from_env())
+
+        return runtime_calibration_resolver
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         event_loop["loop"] = asyncio.get_running_loop()
         supervisor = ai_supervisor or _build_supervisor()
         app.state.ai_supervisor = supervisor
-        capture_service = (
-            AsrCaptureService(
-                session_factory=app.state.session_factory,
-                device_manager=asr_audio_input,
-                ai_supervisor=supervisor,
-                publish_event=publish_asr_event,
-                calibration_resolver=runtime_calibration_resolver,
-            )
-            if asr_audio_input is not None
-            else None
+        capture_service = SourceAwareAsrCaptureService(
+            session_factory=app.state.session_factory,
+            device_manager=manager,
+            browser_audio_input=browser_audio_input,
+            ai_supervisor=supervisor,
+            publish_event=publish_asr_event,
+            calibration_resolver_factory=runtime_calibration_resolver_factory,
         )
         app.state.asr_capture_service = capture_service
         try:
@@ -199,8 +203,7 @@ def create_app(
                 manager.start_monitor()
             yield
         finally:
-            if capture_service is not None:
-                capture_service.shutdown()
+            capture_service.shutdown()
             if manager is not None:
                 try:
                     manager.stop_monitor()
@@ -238,13 +241,14 @@ def create_app(
     app.state.websocket_manager = websocket_manager
 
     install_error_handlers(app)
+    app.add_middleware(AudioSourceContextMiddleware)
     if settings.cors_origins_list:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors_origins_list,
             allow_credentials=False,
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            allow_headers=["Accept", "Authorization", "Content-Type"],
+            allow_headers=["Accept", "Authorization", "Content-Type", "X-Suspect-Audio-Input"],
         )
 
     app.include_router(health_router)

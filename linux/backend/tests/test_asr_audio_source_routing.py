@@ -7,7 +7,8 @@ from fastapi.testclient import TestClient
 
 from app.api.asr import router as asr_router
 from app.api.errors import install_error_handlers
-from app.services.asr_capture_service import AsrCaptureService, _CaptureRuntime, _PreparationRuntime
+from app.request_audio_context import AudioSourceContextMiddleware
+from app.services.source_aware_asr_capture_service import SourceAwareAsrCaptureService
 
 
 class FakeCaptureService:
@@ -15,17 +16,19 @@ class FakeCaptureService:
         self.started: list[tuple[str, str]] = []
         self.preparation_started: list[tuple[str, str]] = []
 
-    def start(self, case_id: str, source: str = "ALSA"):
-        self.started.append((case_id, source))
-        return {"caseId": case_id, "active": True, "source": source, "captureSessionId": "CAPTURE-1"}
+    def start(self, case_id: str, source: str | None = None):
+        selected = source or __import__("app.request_audio_context", fromlist=["current_request_audio_source"]).current_request_audio_source()
+        self.started.append((case_id, selected))
+        return {"caseId": case_id, "active": True, "source": selected, "captureSessionId": "CAPTURE-1"}
 
-    def start_preparation(self, case_id: str, source: str = "ALSA"):
-        self.preparation_started.append((case_id, source))
+    def start_preparation(self, case_id: str, source: str | None = None):
+        selected = source or __import__("app.request_audio_context", fromlist=["current_request_audio_source"]).current_request_audio_source()
+        self.preparation_started.append((case_id, selected))
         return {
             "caseId": case_id,
             "active": True,
             "mode": "QUESTION_PREP",
-            "source": source,
+            "source": selected,
             "captureSessionId": "PREP-1",
         }
 
@@ -51,6 +54,7 @@ def make_app() -> tuple[FastAPI, FakeCaptureService]:
     app.state.asr_capture_service = capture
     app.state.ai_supervisor = FakeSupervisor()
     install_error_handlers(app)
+    app.add_middleware(AudioSourceContextMiddleware)
     app.include_router(asr_router, prefix="/api/v1")
     return app, capture
 
@@ -70,13 +74,15 @@ def test_remote_browser_capture_auto_routes_to_browser_audio() -> None:
     assert capture.started == [("CASE-REMOTE", "BROWSER")]
 
 
-def test_explicit_capture_source_overrides_request_topology() -> None:
+def test_explicit_capture_source_header_overrides_request_topology() -> None:
     app, capture = make_app()
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/cases/CASE-OVERRIDE/asr/capture/start",
-            json={"source": "ALSA"},
-            headers={"Sec-CH-UA-Platform": '"Windows"'},
+            headers={
+                "Sec-CH-UA-Platform": '"Windows"',
+                "X-Suspect-Audio-Input": "ALSA",
+            },
         )
     assert response.status_code == 200
     assert response.json()["source"] == "ALSA"
@@ -95,13 +101,8 @@ def test_question_preparation_uses_same_remote_browser_routing() -> None:
     assert capture.preparation_started == [("CASE-PREP", "BROWSER")]
 
 
-def test_asr_capture_service_binds_audio_source_per_runtime() -> None:
-    init_parameters = inspect.signature(AsrCaptureService.__init__).parameters
-    start_parameters = inspect.signature(AsrCaptureService.start).parameters
-    preparation_parameters = inspect.signature(AsrCaptureService.start_preparation).parameters
-
-    assert "browser_audio_input" in init_parameters
+def test_source_aware_asr_service_accepts_per_capture_source() -> None:
+    start_parameters = inspect.signature(SourceAwareAsrCaptureService.start).parameters
+    preparation_parameters = inspect.signature(SourceAwareAsrCaptureService.start_preparation).parameters
     assert "source" in start_parameters
     assert "source" in preparation_parameters
-    assert {"source", "audio_input"}.issubset(_CaptureRuntime.__dataclass_fields__)
-    assert {"source", "audio_input"}.issubset(_PreparationRuntime.__dataclass_fields__)

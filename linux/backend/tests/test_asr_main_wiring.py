@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.services.asr_capture_service import AsrCaptureService
+from app.services.source_aware_asr_capture_service import SourceAwareAsrCaptureService
 
 
 class FakeManager:
@@ -64,7 +64,7 @@ class FakeHardwareGateway:
         return {"audio": {"state": "AVAILABLE"}}
 
 
-def test_create_app_wires_canonical_asr_router_and_capture_lifecycle(tmp_path):
+def test_create_app_wires_source_aware_asr_and_browser_input_lifecycle(tmp_path):
     manager = FakeManager()
     supervisor = FakeSupervisor()
     app = create_app(
@@ -78,10 +78,15 @@ def test_create_app_wires_canonical_asr_router_and_capture_lifecycle(tmp_path):
     assert "/api/v1/asr/status" in paths
     assert "/api/v1/cases/{case_id}/asr/capture/start" in paths
 
+    # Browser input must exist even when the process-level runtime default is
+    # ALSA; the concrete source is selected only when a capture starts.
+    assert app.state.browser_audio_input is not None
+
     with TestClient(app) as client:
         service = app.state.asr_capture_service
-        assert isinstance(service, AsrCaptureService)
+        assert isinstance(service, SourceAwareAsrCaptureService)
         assert service.device_manager is manager
+        assert service.browser_audio_input is app.state.browser_audio_input
         assert service.ai_supervisor is supervisor
         assert service.session_factory is app.state.session_factory
 
