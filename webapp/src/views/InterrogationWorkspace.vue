@@ -259,9 +259,6 @@ function saveFormalQuestionToLibrary(questionId: string) {
               @suspect-stop="autoVoiceprint.stopSuspect()"
               @select-interrogator="store.selectInterrogatorOfficer($event)"
               @select-recorder="store.selectRecorderOfficer($event)"
-              @officer-start="(id, name) => autoVoiceprint.startOfficer(id, name)"
-              @officer-stop="autoVoiceprint.stopOfficer($event)"
-              @revoke-officer="store.revokeOfficerVoiceprint($event)"
               @bind-roles="store.bindVoiceprintRoles()"
             />
           </div>
