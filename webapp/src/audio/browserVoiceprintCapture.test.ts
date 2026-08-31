@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   Pcm16Resampler,
   browserVoiceprintCapability,
+  buildBrowserVoiceprintWebSocketUrl,
   float32ToPcm16,
 } from './browserVoiceprintCapture'
 
@@ -52,5 +53,15 @@ describe('browser voiceprint capability guard', () => {
       isSecureContext: true,
       mediaDevices: { getUserMedia: async () => ({}) },
     })).toEqual({ available: true, reason: '' })
+  })
+})
+
+
+describe('browser voiceprint websocket URL', () => {
+  it('uses WSS for enrollment on the production HTTPS origin', () => {
+    expect(buildBrowserVoiceprintWebSocketUrl(
+      'capture/1',
+      'https://192.168.0.9:18080',
+    )).toBe('wss://192.168.0.9:18080/ws/voiceprints/enrollment/capture%2F1')
   })
 })
