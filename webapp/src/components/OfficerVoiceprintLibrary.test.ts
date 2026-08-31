@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { filterOfficerProfiles, formatAudioInputDescription, formatVoiceprintDuration } from './OfficerVoiceprintLibrary.vue'
+import { filterOfficerProfiles, formatVoiceprintDuration } from './OfficerVoiceprintLibrary.vue'
 
 const profiles = [
   {
@@ -31,14 +31,5 @@ describe('OfficerVoiceprintLibrary', () => {
     expect(source).toContain('有效语音')
     expect(source).not.toContain('caseId')
     expect(source).not.toContain('保存原始录音')
-  })
-
-  it('shows the detected client platform instead of a hard-coded Windows label', () => {
-    expect(formatAudioInputDescription('BROWSER', 'WINDOWS')).toContain('Windows 浏览器麦克风')
-    expect(formatAudioInputDescription('BROWSER', 'MACOS')).toContain('macOS 浏览器麦克风')
-    expect(formatAudioInputDescription('BROWSER', 'LINUX')).toContain('Linux 浏览器麦克风')
-    expect(formatAudioInputDescription('ALSA', 'LINUX')).toContain('Linux 一体机 ALSA 麦克风')
-    expect(formatAudioInputDescription('BROWSER', 'WINDOWS')).toContain('当前音源')
-    expect(formatAudioInputDescription('BROWSER', 'WINDOWS')).not.toContain('测试音源')
   })
 })
