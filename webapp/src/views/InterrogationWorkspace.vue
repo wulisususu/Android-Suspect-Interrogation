@@ -11,7 +11,9 @@ import CaseProfilePage from '../components/CaseProfilePage.vue'
 import DeviceStatusBar from '../components/DeviceStatusBar.vue'
 import SessionControls from '../components/SessionControls.vue'
 import TemplateDrivenInterrogationPage from '../components/TemplateDrivenInterrogationPage.vue'
+import VoiceprintAudioSourceBanner from '../components/VoiceprintAudioSourceBanner.vue'
 import VoiceprintPreparationPanel, { voiceprintStartGuard } from '../components/VoiceprintPreparationPanel.vue'
+import { useAutoVoiceprintEnrollment } from '../composables/useAutoVoiceprintEnrollment'
 import { useInterrogationStore } from '../stores/interrogation'
 import { useTemplateInterrogationStore } from '../stores/templateInterrogation'
 import type {
@@ -27,6 +29,7 @@ const props = defineProps<{ caseId: string }>()
 defineEmits<{ back: [] }>()
 const store = useInterrogationStore()
 const templateStore = useTemplateInterrogationStore()
+const autoVoiceprint = useAutoVoiceprintEnrollment()
 const activePage = ref<WorkspacePage>('profile')
 const voiceprintGuard = computed(() => voiceprintStartGuard(store.voiceprintReadiness))
 const questionDictationDraft = ref('')
@@ -45,6 +48,7 @@ watch(
   () => props.caseId,
   async (nextCaseId) => {
     const previousCaseId = store.caseId
+    await autoVoiceprint.dispose()
     if (questionDictationActive.value && previousCaseId && previousCaseId !== nextCaseId) {
       void stopQuestionPreparationDictation(previousCaseId).catch(() => undefined)
     }
@@ -64,6 +68,7 @@ watch(
 )
 
 onUnmounted(() => {
+  void autoVoiceprint.dispose()
   if (questionDictationActive.value && store.caseId) {
     void stopQuestionPreparationDictation(store.caseId).catch(() => undefined)
   }
@@ -124,8 +129,6 @@ async function refreshCaseWorkspace() {
 }
 
 function openInterrogation() {
-  // Entering the page must never mutate session state. Operators explicitly
-  // start / pause / resume / finish from the dedicated touch controls.
   activePage.value = 'interrogation'
 }
 
@@ -237,25 +240,31 @@ function saveFormalQuestionToLibrary(questionId: string) {
         />
 
         <div v-else class="interrogation-workspace-stack">
-          <VoiceprintPreparationPanel
-            v-if="store.session.status === 'READY'"
-            :suspect-name="store.caseSummary.suspectName"
-            :readiness="store.voiceprintReadiness"
-            :officers="store.officerVoiceprints"
-            :selected-interrogator-officer-id="store.selectedInterrogatorOfficerId"
-            :selected-recorder-officer-id="store.selectedRecorderOfficerId"
-            :enrollment-state="store.voiceprintEnrollmentState"
-            :busy="store.voiceprintBusy"
-            :session-status="store.session.status"
-            @suspect-start="store.startSuspectVoiceprintEnrollment()"
-            @suspect-stop="store.stopSuspectVoiceprintEnrollment()"
-            @select-interrogator="store.selectInterrogatorOfficer($event)"
-            @select-recorder="store.selectRecorderOfficer($event)"
-            @officer-start="(id, name) => store.startOfficerVoiceprintEnrollment(id, name)"
-            @officer-stop="store.stopOfficerVoiceprintEnrollment($event)"
-            @revoke-officer="store.revokeOfficerVoiceprint($event)"
-            @bind-roles="store.bindVoiceprintRoles()"
-          />
+          <div v-if="store.session.status === 'READY'" class="voiceprint-prep-stack">
+            <VoiceprintAudioSourceBanner
+              :source="autoVoiceprint.source"
+              :reason="autoVoiceprint.reason"
+              :secure-context="autoVoiceprint.secureContext"
+            />
+            <VoiceprintPreparationPanel
+              :suspect-name="store.caseSummary.suspectName"
+              :readiness="store.voiceprintReadiness"
+              :officers="store.officerVoiceprints"
+              :selected-interrogator-officer-id="store.selectedInterrogatorOfficerId"
+              :selected-recorder-officer-id="store.selectedRecorderOfficerId"
+              :enrollment-state="store.voiceprintEnrollmentState"
+              :busy="store.voiceprintBusy"
+              :session-status="store.session.status"
+              @suspect-start="autoVoiceprint.startSuspect()"
+              @suspect-stop="autoVoiceprint.stopSuspect()"
+              @select-interrogator="store.selectInterrogatorOfficer($event)"
+              @select-recorder="store.selectRecorderOfficer($event)"
+              @officer-start="(id, name) => autoVoiceprint.startOfficer(id, name)"
+              @officer-stop="autoVoiceprint.stopOfficer($event)"
+              @revoke-officer="store.revokeOfficerVoiceprint($event)"
+              @bind-roles="store.bindVoiceprintRoles()"
+            />
+          </div>
 
           <SessionControls
             :session="store.session"
@@ -321,12 +330,12 @@ function saveFormalQuestionToLibrary(questionId: string) {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
 }
-.interrogation-workspace-stack > :deep(.voiceprint-preparation-panel) {
+.voiceprint-prep-stack {
   max-height: 44vh;
   overflow: auto;
 }
 .interrogation-workspace-stack > :deep(.session-controls):first-child,
-.interrogation-workspace-stack > :deep(.voiceprint-preparation-panel) + :deep(.session-controls) {
+.interrogation-workspace-stack > .voiceprint-prep-stack + :deep(.session-controls) {
   min-height: 68px;
 }
 .interrogation-workspace-stack :deep(.session-controls) {
