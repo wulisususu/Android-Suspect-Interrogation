@@ -106,6 +106,9 @@ deploy_release() {
   install_python_dependencies "$destination"
   build_webapp "$destination"
   "$destination/scripts/check-release.sh" --staged "$destination"
+  if [[ "$SUSPECT_DRY_RUN" != "1" ]]; then
+    apply_database_migrations "$destination"
+  fi
   atomic_switch "$destination"
   if [[ "$SUSPECT_DRY_RUN" != "1" ]]; then
     restart_runtime
