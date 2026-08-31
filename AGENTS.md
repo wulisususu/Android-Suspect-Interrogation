@@ -15,10 +15,12 @@ Required completion chain:
 3. Run `RK3588 Production Redeploy` for that exact final commit.
 4. Build and install the frontend and backend on the RK3588 production host.
 5. Restart the interrogation runtime as part of the atomic deployment.
-6. Verify `http://192.168.0.9:18080` is serving the new frontend and backend.
-7. Verify the deployed release SHA matches the final GitHub commit SHA.
-8. Verify relevant user-visible behavior/API behavior on the deployed server.
-9. Verify TCP/8000 remains untouched and available for the existing FunASR service.
+6. Verify `https://192.168.0.9:18080` is serving the new frontend and backend with a certificate signed by the project LAN CA.
+7. Verify `/health/live` and `/health/ready` over HTTPS with certificate verification enabled; do not use `-k` for ordinary production checks.
+8. Verify browser audio endpoints derive `wss://` from the HTTPS origin.
+9. Verify the deployed release SHA matches the final GitHub commit SHA.
+10. Verify relevant user-visible behavior/API behavior on the deployed server.
+11. Verify TCP/8000 remains untouched and available for the existing FunASR service.
 
 Do not report a task as "completed", "fixed", or "deployed" until the production verification above succeeds.
 
@@ -38,6 +40,12 @@ Runtime changes must never leave the browser frontend and Linux backend on diffe
 
 The deployed frontend under `/opt/suspect-interrogation/current/webapp/dist` and backend under `/opt/suspect-interrogation/current/linux/backend` must come from the same release directory and commit.
 
+## Trusted LAN TLS
+
+The canonical production URL is `https://192.168.0.9:18080`.
+
+The project LAN CA and server private keys live under `/etc/suspect-interrogation/tls/` on the RK3588 and must never be committed to GitHub. Production checks must trust the project CA explicitly or through the operating-system trust store. Browser ASR and voiceprint audio must use WSS under the HTTPS origin.
+
 ## Database migrations
 
 When a change adds or modifies an Alembic migration, production deployment must apply the migration to the production database before the new runtime is considered ready. A schema created incidentally by ORM `create_all()` is not a substitute for running required migration/backfill logic.
@@ -46,6 +54,6 @@ When a change adds or modifies an Alembic migration, production deployment must 
 
 TCP/8000 belongs to the existing FunASR service. Do not bind to it, stop it, restart it, or replace it.
 
-The suspect-interrogation service uses TCP/18080.
+The suspect-interrogation service uses TCP/18080 with HTTPS/TLS.
 
 Production deployment verification must inspect both ports and prove TCP/8000 was preserved.
