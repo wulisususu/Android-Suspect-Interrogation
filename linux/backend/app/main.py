@@ -11,7 +11,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.ai.registry import ModelRegistry
 from app.ai.settings import AISettings
+from app.ai.speech.calibration import SpeakerCalibration
 from app.ai.speech.client import SpeechWorkerClient
+from app.ai.speech.fingerprint import fingerprint_microphone
 from app.ai.supervisor import AISupervisor
 from app.ai_gateway.mock import DeterministicAIGateway
 from app.api.ai_runtime import router as ai_router
@@ -34,9 +36,16 @@ from app.runtime_settings import RuntimeSettings
 from app.services.asr_capture_service import AsrCaptureService
 from app.services.audio_capture_service import AudioCaptureService
 from app.services.browser_audio_input import BrowserAudioInput
+from app.services.speaker_calibration_runtime import resolve_speaker_calibration
+from app.services.speaker_calibration_service import (
+    CurrentMicrophoneIdentity,
+    CurrentSpeakerModelIdentity,
+    SpeakerCalibrationService,
+)
 from app.websocket.browser_asr import router as browser_asr_websocket_router
 from app.websocket.manager import ConnectionManager, router as websocket_router
 from app.websocket.voiceprint_enrollment import router as voiceprint_enrollment_websocket_router
+from hardware.base import DeviceInfo
 from hardware.factory import create_device_manager
 
 
@@ -116,6 +125,56 @@ def create_app(
     if manager is not None and manager.device_monitor is not None:
         manager.device_monitor.subscribe(publish_hardware_event)
 
+    speech_client = SpeechWorkerClient(
+        ai_settings.speech_socket,
+        timeout=ai_settings.request_timeout,
+    )
+
+    def current_model_identity() -> CurrentSpeakerModelIdentity:
+        try:
+            health = speech_client.health()
+        except Exception:
+            health = {}
+        fingerprint = str(health.get("speaker_model_fingerprint") or "UNAVAILABLE")
+        return CurrentSpeakerModelIdentity(
+            str(health.get("speaker_model_id") or "xvector"),
+            None if health.get("speaker_model_version") is None else str(health.get("speaker_model_version")),
+            fingerprint,
+        )
+
+    def current_microphone_identity() -> CurrentMicrophoneIdentity:
+        if browser_audio_input is not None:
+            info = DeviceInfo(
+                "audio",
+                "browser-default",
+                "Windows Browser Microphone",
+                source="browser-test",
+                path="browser-default",
+                metadata={},
+            )
+            fp = fingerprint_microphone(info)
+            return CurrentMicrophoneIdentity("BROWSER", fp.device_id, fp.device_name, fp.fingerprint, fp.certainty)
+
+        audio = getattr(manager, "audio", None) if manager is not None else None
+        info_fn = getattr(audio, "device_info", None)
+        try:
+            info = info_fn() if callable(info_fn) else None
+        except Exception:
+            info = None
+        if not isinstance(info, DeviceInfo):
+            device = str(getattr(audio, "device", None) or "default")
+            info = DeviceInfo("audio", f"alsa:{device}", f"ALSA {device}", source="real", path=device, metadata={})
+        fp = fingerprint_microphone(info)
+        return CurrentMicrophoneIdentity("ALSA", fp.device_id, fp.device_name, fp.fingerprint, fp.certainty)
+
+    def runtime_calibration_resolver(db):
+        lifecycle = SpeakerCalibrationService(
+            db,
+            model_provider=current_model_identity,
+            microphone_provider=current_microphone_identity,
+        )
+        return resolve_speaker_calibration(lifecycle, SpeakerCalibration.from_env())
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         event_loop["loop"] = asyncio.get_running_loop()
@@ -127,6 +186,7 @@ def create_app(
                 device_manager=asr_audio_input,
                 ai_supervisor=supervisor,
                 publish_event=publish_asr_event,
+                calibration_resolver=runtime_calibration_resolver,
             )
             if asr_audio_input is not None
             else None
@@ -161,10 +221,6 @@ def create_app(
     app.state.hardware_gateway = hardware_gateway
     app.state.asr_capture_service = None
     app.state.browser_audio_input = browser_audio_input
-    speech_client = SpeechWorkerClient(
-        ai_settings.speech_socket,
-        timeout=ai_settings.request_timeout,
-    )
     app.state.speech_client = speech_client
     app.state.voiceprint_capture = (
         AudioCaptureService(
