@@ -154,7 +154,7 @@ def test_0004_migrates_legacy_officer_reference_and_freezes_existing_assignment(
                 "SELECT officer_id, officer_name, sample_count, aggregate_version FROM officer_voice_profiles WHERE officer_id='P-001'"
             )).mappings().one()
             sample = connection.execute(text(
-                "SELECT source, active FROM officer_voice_samples WHERE officer_id='P-001'"
+                "SELECT audio_source, active FROM officer_voice_samples WHERE officer_id='P-001'"
             )).mappings().one()
             snapshot = connection.execute(text(
                 "SELECT officer_id, aggregate_version FROM session_officer_voice_snapshots WHERE session_id='SESSION-M' AND role='INTERROGATOR'"
@@ -162,7 +162,7 @@ def test_0004_migrates_legacy_officer_reference_and_freezes_existing_assignment(
         assert profile["officer_name"] == "张警官"
         assert profile["sample_count"] == 1
         assert profile["aggregate_version"] == 1
-        assert sample["source"] == "LEGACY_MIGRATED"
+        assert sample["audio_source"] == "LEGACY_MIGRATED"
         assert bool(sample["active"]) is True
         assert snapshot["officer_id"] == "P-001"
         assert snapshot["aggregate_version"] == 1
