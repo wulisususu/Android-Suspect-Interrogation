@@ -252,10 +252,18 @@ class SpeechSession:
                 text=str(asr.get("text") or ""),
                 confidence=None if asr.get("confidence") is None else float(asr["confidence"]),
                 model_id=str(asr.get("model_id") or "paraformer"),
-                details=common_details,
+                details={
+                    **common_details,
+                    **({"model_version": str(asr["model_version"])} if asr.get("model_version") is not None else {}),
+                },
             ),
         ]
         if speaker is not None:
+            speaker_details: dict[str, Any] = {"forced_final": True} if forced_final else {}
+            if speaker.get("model_version") is not None:
+                speaker_details["model_version"] = str(speaker["model_version"])
+            if speaker.get("model_fingerprint") is not None:
+                speaker_details["model_fingerprint"] = str(speaker["model_fingerprint"])
             events.append(
                 SpeechEvent(
                     type=SpeechEventType.SPEAKER_RESULT,
@@ -264,7 +272,7 @@ class SpeechSession:
                     end_ms=end_ms,
                     embedding=[float(value) for value in speaker.get("embedding", [])],
                     model_id=str(speaker.get("model_id") or "xvector"),
-                    details={"forced_final": True} if forced_final else {},
+                    details=speaker_details,
                 )
             )
         return events
