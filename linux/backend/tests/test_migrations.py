@@ -151,11 +151,11 @@ def test_0004_migrates_legacy_officer_reference_and_freezes_existing_assignment(
     try:
         with engine.connect() as connection:
             profile = connection.execute(text(
-                "SELECT officer_id, officer_name, sample_count, aggregate_version FROM officer_voice_profiles WHERE officer_id='P-001'"
+                "SELECT id, officer_id, officer_name, sample_count, aggregate_version FROM officer_voice_profiles WHERE officer_id='P-001'"
             )).mappings().one()
             sample = connection.execute(text(
-                "SELECT audio_source, active FROM officer_voice_samples WHERE officer_id='P-001'"
-            )).mappings().one()
+                "SELECT audio_source, active FROM officer_voice_samples WHERE profile_id=:profile_id"
+            ), {"profile_id": profile["id"]}).mappings().one()
             snapshot = connection.execute(text(
                 "SELECT officer_id, aggregate_version FROM session_officer_voice_snapshots WHERE session_id='SESSION-M' AND role='INTERROGATOR'"
             )).mappings().one()
