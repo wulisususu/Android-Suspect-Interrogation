@@ -161,7 +161,10 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
 
   async function refreshWorkspace(scope = currentScope()) {
     try {
-      await loadTemplateWorkspace(scope)
+      // The WebSocket event is intentionally lightweight. Re-read both the
+      // template projection and fragment list so a just-created fragment picks
+      // up its independently stored recognitionEvidence/revisions immediately.
+      await Promise.all([loadTemplateWorkspace(scope), loadDialogueHistory(scope)])
       if (isCurrentScope(scope)) error.value = ''
     } catch (err) {
       if (isCurrentScope(scope)) error.value = backendErrorMessage(err)
