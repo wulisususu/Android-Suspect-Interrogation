@@ -217,6 +217,15 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
         <button :class="{ active: activePage === 'interrogation' }" @click="openInterrogation">
           <b>C</b><span>审讯记录</span>
         </button>
+        <SessionControls
+          :session="store.session"
+          :start-disabled="voiceprintGuard.disabled || questionDictationActive || questionDictationBusy"
+          :start-disabled-reason="questionDictationActive || questionDictationBusy ? '请先停止准备阶段语音输入，再开始正式审讯。' : voiceprintGuard.reason"
+          @start="store.startSession"
+          @toggle-pause="store.togglePause"
+          @finish="store.finishSession"
+          @next-stage="store.nextStage"
+        />
       </nav>
 
       <div class="workspace-toast-region" aria-live="polite">
@@ -248,17 +257,6 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
               @bind-roles="store.bindVoiceprintRoles()"
             />
           </div>
-
-          <SessionControls
-            :session="store.session"
-            :stage-text="store.stageText"
-            :start-disabled="voiceprintGuard.disabled || questionDictationActive || questionDictationBusy"
-            :start-disabled-reason="questionDictationActive || questionDictationBusy ? '请先停止准备阶段语音输入，再开始正式审讯。' : voiceprintGuard.reason"
-            @start="store.startSession"
-            @toggle-pause="store.togglePause"
-            @finish="store.finishSession"
-            @next-stage="store.nextStage"
-          />
 
           <TemplateDrivenInterrogationPage
             :case-id="store.caseId"
@@ -309,41 +307,7 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
   min-height: 0;
   height: 100%;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
 }
 .voiceprint-prep-stack { max-height: 44vh; overflow: auto; }
-.interrogation-workspace-stack > :deep(.session-controls):first-child,
-.interrogation-workspace-stack > .voiceprint-prep-stack + :deep(.session-controls) { min-height: 68px; }
-.interrogation-workspace-stack :deep(.session-controls) {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 10px 18px;
-  border-bottom: 1px solid #c9d7e2;
-  background: #f7fbff;
-}
-.interrogation-workspace-stack :deep(.session-state) {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 20px;
-  color: #43586c;
-  font-size: 14px;
-}
-.interrogation-workspace-stack :deep(.session-start-guard) { flex-basis: 100%; color: #ad3c32; font-weight: 700; }
-.interrogation-workspace-stack :deep(.session-buttons) { display: flex; gap: 10px; align-items: center; }
-.interrogation-workspace-stack :deep(.session-buttons button) {
-  min-width: 112px;
-  min-height: 48px;
-  border: 1px solid #aebfcd;
-  border-radius: 7px;
-  background: #fff;
-  color: #29455d;
-  font-weight: 700;
-  font-size: 15px;
-  touch-action: manipulation;
-}
-.interrogation-workspace-stack :deep(.session-buttons .session-primary) { border-color: #2476c9; background: #2476c9; color: #fff; }
-.interrogation-workspace-stack :deep(.session-buttons .danger-button) { border-color: #d95045; color: #b02d24; }
-.interrogation-workspace-stack :deep(.session-buttons button:disabled) { opacity: .45; }
 </style>

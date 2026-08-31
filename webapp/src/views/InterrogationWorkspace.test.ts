@@ -6,4 +6,16 @@ describe('interrogation workspace top bar', () => {
     expect(source).not.toContain("import DeviceStatusBar from '../components/DeviceStatusBar.vue'")
     expect(source).not.toContain('<DeviceStatusBar />')
   })
+
+  it('places session actions beside the page tabs instead of above the interrogation content', () => {
+    const navigation = source.indexOf('<nav class="workspace-page-tabs"')
+    const controls = source.indexOf('<SessionControls')
+    const content = source.indexOf('<section class="workspace-page-body"')
+
+    expect(navigation).toBeGreaterThanOrEqual(0)
+    expect(controls).toBeGreaterThan(navigation)
+    expect(controls).toBeLessThan(content)
+    expect(source).not.toContain(':stage-text="store.stageText"')
+  })
+
 })

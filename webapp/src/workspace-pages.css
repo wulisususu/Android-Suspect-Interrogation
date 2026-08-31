@@ -8,7 +8,7 @@
   background: #fff;
   border-bottom: 1px solid #dce5ec;
 }
-.workspace-page-tabs button {
+.workspace-page-tabs > button {
   min-width: 150px;
   border: 0;
   border-bottom: 3px solid transparent;
@@ -20,7 +20,7 @@
   gap: 8px;
   font-weight: 700;
 }
-.workspace-page-tabs button b {
+.workspace-page-tabs > button b {
   width: 23px;
   height: 23px;
   border-radius: 7px;
@@ -30,12 +30,22 @@
   color: #617487;
   font-size: 12px;
 }
-.workspace-page-tabs button.active {
+.workspace-page-tabs > button.active {
   color: #1f5f9e;
   border-bottom-color: #2f80ed;
   background: #f8fbff;
 }
-.workspace-page-tabs button.active b { background: #e7f1ff; color: #1769c8; }
+.workspace-page-tabs > button.active b { background: #e7f1ff; color: #1769c8; }
+.workspace-page-tabs > .session-controls {
+  margin-left: auto;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.workspace-page-tabs .session-buttons { display: flex; align-items: center; gap: 10px; }
+.workspace-page-tabs .session-buttons button { min-width: 96px; min-height: 38px; font-weight: 700; }
+
 
 .workspace-page-body {
   flex: 1 1 auto;

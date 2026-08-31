@@ -3,7 +3,6 @@ import type { SessionState } from '../types/interrogation'
 
 defineProps<{
   session: SessionState
-  stageText: string
   startDisabled?: boolean
   startDisabledReason?: string
 }>()
@@ -16,12 +15,7 @@ defineEmits<{
 </script>
 
 <template>
-  <section class="session-controls">
-    <div class="session-state">
-      <span>当前阶段：<strong>{{ stageText }}</strong></span>
-      <span>会话状态：<strong>{{ session.status }}</strong></span>
-      <span v-if="session.status === 'READY' && startDisabled" class="session-start-guard">{{ startDisabledReason }}</span>
-    </div>
+  <div class="session-controls">
     <div class="session-buttons">
       <button
         v-if="session.status === 'READY'"
@@ -36,5 +30,5 @@ defineEmits<{
       <button class="danger-button" :disabled="!['RUNNING', 'PAUSED'].includes(session.status)" @click="$emit('finish')">结束审讯</button>
       <span v-if="session.status === 'COMPLETED'" class="completed-chip">本次审讯已结束</span>
     </div>
-  </section>
+  </div>
 </template>
