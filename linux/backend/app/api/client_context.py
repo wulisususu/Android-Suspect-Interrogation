@@ -35,6 +35,8 @@ def _normalize_platform(value: str) -> str:
 
 
 def _detect_platform(headers: Mapping[str, str]) -> tuple[str, str]:
+    # Prefer the canonical Sec-CH-UA-Platform client hint. HTTP header lookup
+    # itself is case-insensitive, so the normalized key below is lowercase.
     client_hint = _header(headers, "sec-ch-ua-platform")
     if client_hint:
         platform = _normalize_platform(client_hint)
