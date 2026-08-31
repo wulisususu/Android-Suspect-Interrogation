@@ -20,7 +20,10 @@ TEMPLATE_TABLES = {
 OFFICER_LIBRARY_TABLES = {
     "officer_voice_profiles", "officer_voice_samples", "session_officer_voice_snapshots",
 }
-REQUIRED_TABLES = CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES | OFFICER_LIBRARY_TABLES
+CALIBRATION_TABLES = {
+    "speaker_device_calibrations", "session_speaker_calibration_snapshots",
+}
+REQUIRED_TABLES = CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES | OFFICER_LIBRARY_TABLES | CALIBRATION_TABLES
 
 
 def _run_alembic(tmp_path, target: str):
@@ -48,6 +51,7 @@ def test_alembic_revision_0001_remains_core_only(tmp_path):
         assert VOICEPRINT_TABLES.isdisjoint(tables)
         assert TEMPLATE_TABLES.isdisjoint(tables)
         assert OFFICER_LIBRARY_TABLES.isdisjoint(tables)
+        assert CALIBRATION_TABLES.isdisjoint(tables)
     finally:
         engine.dispose()
 
@@ -61,6 +65,7 @@ def test_alembic_revision_0002_remains_voiceprint_only(tmp_path):
         assert CORE_TABLES | VOICEPRINT_TABLES <= tables
         assert TEMPLATE_TABLES.isdisjoint(tables)
         assert OFFICER_LIBRARY_TABLES.isdisjoint(tables)
+        assert CALIBRATION_TABLES.isdisjoint(tables)
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
         assert revision == "0002_voiceprint_speech_pipeline"
@@ -76,7 +81,7 @@ def test_alembic_upgrade_head_builds_required_schema(tmp_path):
         assert REQUIRED_TABLES <= set(inspect(engine).get_table_names())
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert revision == "0004_global_officer_voiceprint_library"
+        assert revision == "0005_speaker_device_calibration"
     finally:
         engine.dispose()
 
@@ -134,6 +139,8 @@ def test_0004_migrates_legacy_officer_reference_and_freezes_existing_assignment(
         assert profile["sample_count"] == 1
         assert bytes(profile["aggregate_embedding"]) == embedding
         assert sample["audio_source"] == "LEGACY_MIGRATED"
+        assert sample["model_fingerprint"] is None
+        assert sample["microphone_fingerprint"] is None
         assert bytes(sample["embedding"]) == embedding
         assert snapshot["officer_id"].startswith("__session_snapshot__:")
         assert bytes(snapshot["embedding"]) == embedding
@@ -161,5 +168,6 @@ def test_voiceprint_migration_downgrades_to_core_schema(tmp_path):
         assert VOICEPRINT_TABLES.isdisjoint(tables)
         assert TEMPLATE_TABLES.isdisjoint(tables)
         assert OFFICER_LIBRARY_TABLES.isdisjoint(tables)
+        assert CALIBRATION_TABLES.isdisjoint(tables)
     finally:
         engine.dispose()
