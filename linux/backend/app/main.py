@@ -32,6 +32,8 @@ from app.health import capabilities_router, router as health_router
 from app.runtime_settings import RuntimeSettings
 from app.services.asr_capture_service import AsrCaptureService
 from app.services.audio_capture_service import AudioCaptureService
+from app.services.browser_audio_input import BrowserAudioInput
+from app.websocket.browser_asr import router as browser_asr_websocket_router
 from app.websocket.manager import ConnectionManager, router as websocket_router
 from app.websocket.voiceprint_enrollment import router as voiceprint_enrollment_websocket_router
 from hardware.factory import create_device_manager
@@ -81,6 +83,9 @@ def create_app(
         manager = manager or create_device_manager()
         hardware_gateway = LinuxHardwareGateway(manager)
 
+    browser_audio_input = BrowserAudioInput() if settings.audio_input_mode == "BROWSER" else None
+    asr_audio_input = browser_audio_input if browser_audio_input is not None else manager
+
     websocket_manager = ConnectionManager()
     event_loop: dict[str, asyncio.AbstractEventLoop | None] = {"loop": None}
 
@@ -116,11 +121,11 @@ def create_app(
         capture_service = (
             AsrCaptureService(
                 session_factory=app.state.session_factory,
-                device_manager=manager,
+                device_manager=asr_audio_input,
                 ai_supervisor=supervisor,
                 publish_event=publish_asr_event,
             )
-            if manager is not None
+            if asr_audio_input is not None
             else None
         )
         app.state.asr_capture_service = capture_service
@@ -152,6 +157,7 @@ def create_app(
     app.state.hardware_manager = manager
     app.state.hardware_gateway = hardware_gateway
     app.state.asr_capture_service = None
+    app.state.browser_audio_input = browser_audio_input
     speech_client = SpeechWorkerClient(
         ai_settings.speech_socket,
         timeout=ai_settings.request_timeout,
@@ -194,6 +200,7 @@ def create_app(
     app.include_router(voiceprints_router, prefix="/api/v1")
     app.include_router(compat_router)
     app.include_router(websocket_router)
+    app.include_router(browser_asr_websocket_router)
     app.include_router(voiceprint_enrollment_websocket_router)
 
     @app.get("/health")
