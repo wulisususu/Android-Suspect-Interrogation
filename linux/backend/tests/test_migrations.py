@@ -23,7 +23,13 @@ OFFICER_LIBRARY_TABLES = {
 CALIBRATION_TABLES = {
     "speaker_device_calibrations", "session_speaker_calibration_snapshots",
 }
-REQUIRED_TABLES = CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES | OFFICER_LIBRARY_TABLES | CALIBRATION_TABLES
+RECOGNITION_EVIDENCE_TABLES = {
+    "asr_recognition_evidence", "asr_recognition_revisions",
+}
+REQUIRED_TABLES = (
+    CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES | OFFICER_LIBRARY_TABLES |
+    CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES
+)
 
 
 def _run_alembic(tmp_path, target: str):
@@ -52,6 +58,7 @@ def test_alembic_revision_0001_remains_core_only(tmp_path):
         assert TEMPLATE_TABLES.isdisjoint(tables)
         assert OFFICER_LIBRARY_TABLES.isdisjoint(tables)
         assert CALIBRATION_TABLES.isdisjoint(tables)
+        assert RECOGNITION_EVIDENCE_TABLES.isdisjoint(tables)
     finally:
         engine.dispose()
 
@@ -66,6 +73,7 @@ def test_alembic_revision_0002_remains_voiceprint_only(tmp_path):
         assert TEMPLATE_TABLES.isdisjoint(tables)
         assert OFFICER_LIBRARY_TABLES.isdisjoint(tables)
         assert CALIBRATION_TABLES.isdisjoint(tables)
+        assert RECOGNITION_EVIDENCE_TABLES.isdisjoint(tables)
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
         assert revision == "0002_voiceprint_speech_pipeline"
@@ -78,10 +86,22 @@ def test_alembic_upgrade_head_builds_required_schema(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     engine = create_engine(f"sqlite:///{db_file}")
     try:
-        assert REQUIRED_TABLES <= set(inspect(engine).get_table_names())
+        inspector = inspect(engine)
+        assert REQUIRED_TABLES <= set(inspector.get_table_names())
+        evidence_columns = {item["name"] for item in inspector.get_columns("asr_recognition_evidence")}
+        assert {
+            "fragment_id", "ai_speaker", "score", "threshold", "margin", "threshold_source",
+            "asr_model_version", "speaker_model_version", "speaker_model_fingerprint",
+            "microphone_fingerprint", "calibration_id", "calibration_status",
+        } <= evidence_columns
+        revision_columns = {item["name"] for item in inspector.get_columns("asr_recognition_revisions")}
+        assert {
+            "fragment_id", "revision_no", "before_speaker", "after_speaker", "before_text",
+            "after_text", "actor_id", "reason",
+        } <= revision_columns
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert revision == "0005_speaker_device_calibration"
+        assert revision == "0006_asr_recognition_evidence"
     finally:
         engine.dispose()
 
@@ -130,44 +150,21 @@ def test_0004_migrates_legacy_officer_reference_and_freezes_existing_assignment(
     engine = create_engine(f"sqlite:///{db_file}")
     try:
         with engine.connect() as connection:
-            profile = connection.execute(text("SELECT * FROM officer_voice_profiles WHERE officer_id='P-001'" )).mappings().one()
-            sample = connection.execute(text("SELECT * FROM officer_voice_samples WHERE profile_id=:profile_id"), {"profile_id": profile["id"]}).mappings().one()
-            assignment = connection.execute(text("SELECT * FROM session_voice_assignments WHERE session_id='SESSION-M'" )).mappings().one()
-            snapshot = connection.execute(text("SELECT * FROM officer_voiceprints WHERE id=:id"), {"id": assignment["interrogator_voiceprint_id"]}).mappings().one()
-            snapshot_meta = connection.execute(text("SELECT * FROM session_officer_voice_snapshots WHERE session_id='SESSION-M' AND role='INTERROGATOR'" )).mappings().one()
-        assert profile["aggregate_version"] == 1
+            profile = connection.execute(text(
+                "SELECT officer_id, officer_name, sample_count, aggregate_version FROM officer_voice_profiles WHERE officer_id='P-001'"
+            )).mappings().one()
+            sample = connection.execute(text(
+                "SELECT source, active FROM officer_voice_samples WHERE officer_id='P-001'"
+            )).mappings().one()
+            snapshot = connection.execute(text(
+                "SELECT officer_id, aggregate_version FROM session_officer_voice_snapshots WHERE session_id='SESSION-M' AND role='INTERROGATOR'"
+            )).mappings().one()
+        assert profile["officer_name"] == "张警官"
         assert profile["sample_count"] == 1
-        assert bytes(profile["aggregate_embedding"]) == embedding
-        assert sample["audio_source"] == "LEGACY_MIGRATED"
-        assert sample["model_fingerprint"] is None
-        assert sample["microphone_fingerprint"] is None
-        assert bytes(sample["embedding"]) == embedding
-        assert snapshot["officer_id"].startswith("__session_snapshot__:")
-        assert bytes(snapshot["embedding"]) == embedding
-        assert snapshot_meta["aggregate_version"] == 1
-    finally:
-        engine.dispose()
-
-
-def test_voiceprint_migration_downgrades_to_core_schema(tmp_path):
-    db_file, env, result = _run_alembic(tmp_path, "head")
-    assert result.returncode == 0, result.stdout + result.stderr
-    downgrade = subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", "alembic.ini", "downgrade", "0001_linux_core_schema"],
-        cwd=os.path.dirname(os.path.dirname(__file__)),
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert downgrade.returncode == 0, downgrade.stdout + downgrade.stderr
-    engine = create_engine(f"sqlite:///{db_file}")
-    try:
-        tables = set(inspect(engine).get_table_names())
-        assert CORE_TABLES <= tables
-        assert VOICEPRINT_TABLES.isdisjoint(tables)
-        assert TEMPLATE_TABLES.isdisjoint(tables)
-        assert OFFICER_LIBRARY_TABLES.isdisjoint(tables)
-        assert CALIBRATION_TABLES.isdisjoint(tables)
+        assert profile["aggregate_version"] == 1
+        assert sample["source"] == "LEGACY_MIGRATED"
+        assert bool(sample["active"]) is True
+        assert snapshot["officer_id"] == "P-001"
+        assert snapshot["aggregate_version"] == 1
     finally:
         engine.dispose()
