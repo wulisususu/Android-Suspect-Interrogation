@@ -57,6 +57,11 @@ def _seed(tmp_path):
             low_confidence=False,
             model_id="paraformer",
             model_version="asr-v3",
+            speaker_threshold_source="DEVICE_CALIBRATED",
+            speaker_model_id="xvector",
+            speaker_model_version="sv-v2",
+            speaker_model_fingerprint="a" * 64,
+            microphone_fingerprint="b" * 64,
         )
         db.commit()
         return engine, factory, case.id, fragment.id
@@ -86,8 +91,10 @@ def test_every_fragment_records_immutable_ai_recognition_evidence(tmp_path):
         assert detail["threshold"] == 0.78
         assert detail["margin"] == 0.06
         assert detail["threshold_source"] == "DEVICE_CALIBRATED"
-        assert detail["model_id"] == "paraformer"
-        assert detail["model_version"] == "asr-v3"
+        assert detail["asr_model_id"] == "paraformer"
+        assert detail["asr_model_version"] == "asr-v3"
+        assert detail["speaker_model_id"] == "xvector"
+        assert detail["speaker_model_version"] == "sv-v2"
         assert detail["speaker_model_fingerprint"] == "a" * 64
         assert detail["microphone_fingerprint"] == "b" * 64
     engine.dispose()
