@@ -1,6 +1,8 @@
 import os
+import struct
 import subprocess
 import sys
+from uuid import uuid4
 
 from sqlalchemy import create_engine, inspect, text
 
@@ -15,7 +17,10 @@ VOICEPRINT_TABLES = {
 TEMPLATE_TABLES = {
     "standard_questions", "case_questions", "question_rounds", "pending_questions", "processed_speech_fragments",
 }
-REQUIRED_TABLES = CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES
+OFFICER_LIBRARY_TABLES = {
+    "officer_voice_profiles", "officer_voice_samples", "session_officer_voice_snapshots",
+}
+REQUIRED_TABLES = CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES | OFFICER_LIBRARY_TABLES
 
 
 def _run_alembic(tmp_path, target: str):
@@ -42,6 +47,7 @@ def test_alembic_revision_0001_remains_core_only(tmp_path):
         assert CORE_TABLES <= tables
         assert VOICEPRINT_TABLES.isdisjoint(tables)
         assert TEMPLATE_TABLES.isdisjoint(tables)
+        assert OFFICER_LIBRARY_TABLES.isdisjoint(tables)
     finally:
         engine.dispose()
 
@@ -54,6 +60,7 @@ def test_alembic_revision_0002_remains_voiceprint_only(tmp_path):
         tables = set(inspect(engine).get_table_names())
         assert CORE_TABLES | VOICEPRINT_TABLES <= tables
         assert TEMPLATE_TABLES.isdisjoint(tables)
+        assert OFFICER_LIBRARY_TABLES.isdisjoint(tables)
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
         assert revision == "0002_voiceprint_speech_pipeline"
@@ -69,7 +76,68 @@ def test_alembic_upgrade_head_builds_required_schema(tmp_path):
         assert REQUIRED_TABLES <= set(inspect(engine).get_table_names())
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert revision == "0003_template_interrogation_workspace"
+        assert revision == "0004_global_officer_voiceprint_library"
+    finally:
+        engine.dispose()
+
+
+def test_0004_migrates_legacy_officer_reference_and_freezes_existing_assignment(tmp_path):
+    db_file, env, result = _run_alembic(tmp_path, "0003_template_interrogation_workspace")
+    assert result.returncode == 0, result.stdout + result.stderr
+    engine = create_engine(f"sqlite:///{db_file}")
+    try:
+        now = "2026-08-31 00:00:00"
+        embedding = struct.pack("<3f", 1.0, 0.0, 0.0)
+        with engine.begin() as connection:
+            connection.execute(text(
+                "INSERT INTO cases (id, operator_id, case_type, suspect_name, gender, age, officer_name, workflow_state, stage, document_status, report_status, created_at, updated_at) "
+                "VALUES ('CASE-M', NULL, 'suspect_interrogation', '嫌疑人', NULL, NULL, '测试警官', 'IDENTITY_REQUIRED', 'IDENTITY', 'DRAFT', 'PENDING', :now, :now)"
+            ), {"now": now})
+            connection.execute(text(
+                "INSERT INTO interrogation_sessions (id, case_id, status, stage, started_at, paused_at, ended_at, created_at, updated_at) "
+                "VALUES ('SESSION-M', 'CASE-M', 'READY', 'IDENTITY', NULL, NULL, NULL, :now, :now)"
+            ), {"now": now})
+            connection.execute(text(
+                "INSERT INTO suspect_voiceprints (id, case_id, embedding, embedding_dim, model_id, model_version, enrollment_quality, usable_duration_ms, active, created_at, updated_at) "
+                "VALUES ('SUS-M', 'CASE-M', :embedding, 3, 'xvector', 'v1', 'GOOD', 20000, 1, :now, :now)"
+            ), {"embedding": embedding, "now": now})
+            connection.execute(text(
+                "INSERT INTO officer_voiceprints (id, officer_id, officer_name, embedding, embedding_dim, model_id, model_version, enrollment_quality, usable_duration_ms, active, revoked_at, created_at, updated_at) "
+                "VALUES ('OFF-M', 'P-001', '张警官', :embedding, 3, 'xvector', 'v1', 'GOOD', 24000, 1, NULL, :now, :now)"
+            ), {"embedding": embedding, "now": now})
+            connection.execute(text(
+                "INSERT INTO session_voice_assignments (id, session_id, suspect_voiceprint_id, interrogator_officer_id, interrogator_voiceprint_id, recorder_officer_id, recorder_voiceprint_id, recognition_mode, created_at, updated_at) "
+                "VALUES (:id, 'SESSION-M', 'SUS-M', 'P-001', 'OFF-M', NULL, NULL, 'SUSPECT_PLUS_INTERROGATOR', :now, :now)"
+            ), {"id": str(uuid4()), "now": now})
+    finally:
+        engine.dispose()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    engine = create_engine(f"sqlite:///{db_file}")
+    try:
+        with engine.connect() as connection:
+            profile = connection.execute(text("SELECT * FROM officer_voice_profiles WHERE officer_id='P-001'" )).mappings().one()
+            sample = connection.execute(text("SELECT * FROM officer_voice_samples WHERE profile_id=:profile_id"), {"profile_id": profile["id"]}).mappings().one()
+            assignment = connection.execute(text("SELECT * FROM session_voice_assignments WHERE session_id='SESSION-M'" )).mappings().one()
+            snapshot = connection.execute(text("SELECT * FROM officer_voiceprints WHERE id=:id"), {"id": assignment["interrogator_voiceprint_id"]}).mappings().one()
+            snapshot_meta = connection.execute(text("SELECT * FROM session_officer_voice_snapshots WHERE session_id='SESSION-M' AND role='INTERROGATOR'" )).mappings().one()
+        assert profile["aggregate_version"] == 1
+        assert profile["sample_count"] == 1
+        assert bytes(profile["aggregate_embedding"]) == embedding
+        assert sample["audio_source"] == "LEGACY_MIGRATED"
+        assert bytes(sample["embedding"]) == embedding
+        assert snapshot["officer_id"].startswith("__session_snapshot__:")
+        assert bytes(snapshot["embedding"]) == embedding
+        assert snapshot_meta["aggregate_version"] == 1
     finally:
         engine.dispose()
 
@@ -92,5 +160,6 @@ def test_voiceprint_migration_downgrades_to_core_schema(tmp_path):
         assert CORE_TABLES <= tables
         assert VOICEPRINT_TABLES.isdisjoint(tables)
         assert TEMPLATE_TABLES.isdisjoint(tables)
+        assert OFFICER_LIBRARY_TABLES.isdisjoint(tables)
     finally:
         engine.dispose()
