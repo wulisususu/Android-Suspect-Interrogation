@@ -7,11 +7,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.ai.errors import AIError, ResourceBusyError
+from app.ai.speech.fingerprint import fingerprint_microphone
 from app.api.deps import get_db
 from app.api.responses import envelope
 from app.domain.errors import DomainError
 from app.services.officer_voiceprint_library import OfficerVoiceprintLibraryService
 from app.services.voiceprint_service import VoiceprintService
+from hardware.base import DeviceInfo
 
 
 router = APIRouter(tags=["voiceprints"])
@@ -95,15 +97,36 @@ def _raise_ai_error(exc: AIError) -> None:
     raise DomainError(exc.code, exc.message, status, data=exc.details) from exc
 
 
-def _capture_device_metadata(request: Request, source: str) -> tuple[str, str]:
+def _capture_device_metadata(request: Request, source: str) -> tuple[str, str, str, str]:
     normalized = str(source or "ALSA").upper()
     if normalized == "BROWSER":
-        return "browser-default", "Windows Browser Microphone"
+        info = DeviceInfo(
+            "audio",
+            "browser-default",
+            "Windows Browser Microphone",
+            source="browser-test",
+            path="browser-default",
+            metadata={},
+        )
+        identity = fingerprint_microphone(info)
+        return identity.device_id, identity.device_name, identity.fingerprint, identity.certainty
+
     manager = getattr(request.app.state, "hardware_manager", None)
     audio = getattr(manager, "audio", None) if manager is not None else None
-    device_id = str(getattr(audio, "device", None) or getattr(audio, "device_name", None) or "alsa-default")
-    device_name = str(getattr(audio, "device_name", None) or getattr(audio, "name", None) or "Linux ALSA Microphone")
-    return device_id, device_name
+    info_fn = getattr(audio, "device_info", None)
+    if callable(info_fn):
+        try:
+            info = info_fn()
+        except Exception:
+            info = None
+    else:
+        info = None
+    if not isinstance(info, DeviceInfo):
+        device = str(getattr(audio, "device", None) or getattr(audio, "device_name", None) or "alsa-default")
+        name = str(getattr(audio, "device_name", None) or getattr(audio, "name", None) or "Linux ALSA Microphone")
+        info = DeviceInfo("audio", f"alsa:{device}", name, source="real", path=device, metadata={})
+    identity = fingerprint_microphone(info)
+    return identity.device_id, identity.device_name, identity.fingerprint, identity.certainty
 
 
 @router.get("/cases/{case_id}/voiceprints/readiness")
@@ -221,7 +244,7 @@ def stop_officer_enrollment(
     if not officer_name:
         raise DomainError("OFFICER_IDENTITY_REQUIRED", "民警姓名不能为空", 400)
     source = str(context.get("source") or "ALSA").upper()
-    device_id, device_name = _capture_device_metadata(request, source)
+    device_id, device_name, microphone_fingerprint, microphone_certainty = _capture_device_metadata(request, source)
     pcm = _capture_service(request).stop("officer", officer_id)
     _clear_context(request, kind="officer", subject_id=officer_id)
     try:
@@ -233,6 +256,8 @@ def stop_officer_enrollment(
             audio_source=source,
             device_id=device_id,
             device_name=device_name,
+            microphone_fingerprint=microphone_fingerprint,
+            microphone_fingerprint_certainty=microphone_certainty,
         )
     except AIError as exc:
         _raise_ai_error(exc)
