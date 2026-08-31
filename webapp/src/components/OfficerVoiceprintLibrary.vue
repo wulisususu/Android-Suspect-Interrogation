@@ -1,7 +1,7 @@
 <script lang="ts">
-import type { OfficerVoiceProfile } from '../api/officerVoiceprints'
+import type { OfficerVoiceProfile as FilterableOfficerVoiceProfile } from '../api/officerVoiceprints'
 
-export function filterOfficerProfiles(profiles: OfficerVoiceProfile[], query: string): OfficerVoiceProfile[] {
+export function filterOfficerProfiles(profiles: FilterableOfficerVoiceProfile[], query: string): FilterableOfficerVoiceProfile[] {
   const needle = String(query || '').trim().toLowerCase()
   if (!needle) return profiles
   return profiles.filter((item) =>
