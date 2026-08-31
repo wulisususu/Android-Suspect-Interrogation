@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from app.api.asr import FragmentUpdateRequest, update_fragment as update_fragment_api
-from app.database.models import ASRRecognitionEvidence, ASRRecognitionRevision, AuditLog
+from app.database.models import AuditLog
+from app.database.recognition_models import ASRRecognitionEvidence, ASRRecognitionRevision
 from app.database.session import init_database, make_engine, make_session_factory
 from app.repositories import asr_fragments as asr_repo
 from app.repositories import cases as case_repo
@@ -16,12 +17,7 @@ def _seed(tmp_path):
     with factory() as db:
         case = case_repo.create(db, {"id": "CASE-EVIDENCE", "suspectName": "张某", "officerName": "李警官"})
         session = session_repo.create(db, case.id)
-        capture = asr_repo.create_capture_session(
-            db,
-            case_id=case.id,
-            interrogation_session_id=session.id,
-            sample_rate=16_000,
-        )
+        capture = asr_repo.create_capture_session(db, case_id=case.id, interrogation_session_id=session.id, sample_rate=16_000)
         calibration_repo.create_session_snapshot(
             db,
             capture_session_id=capture.id,
