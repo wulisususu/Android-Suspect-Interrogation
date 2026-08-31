@@ -53,13 +53,13 @@ def test_tls_helper_reuses_ca_and_renews_leaf_when_lan_ip_changes(tmp_path: Path
     second_ca, second_san = run_tls_helper(tmp_path, "192.168.0.99")
 
     assert first_ca == second_ca
-    assert "IP Address:192.168.0.9" in first_san
+    assert "IP Address:192.168.0.9," in first_san
     assert "IP Address:127.0.0.1" in first_san
     assert "DNS:localhost" in first_san
-    assert "IP Address:192.168.0.99" in second_san
+    assert "IP Address:192.168.0.99," in second_san
     assert "IP Address:127.0.0.1" in second_san
     assert "DNS:localhost" in second_san
-    assert "IP Address:192.168.0.9" not in second_san
+    assert "IP Address:192.168.0.9," not in second_san
 
 
 def test_tls_helper_refuses_to_silently_replace_an_existing_broken_ca(tmp_path: Path):
