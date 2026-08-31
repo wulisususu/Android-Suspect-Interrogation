@@ -8,7 +8,6 @@ import {
 import AiSettingsPanel from '../components/AiSettingsPanel.vue'
 import CaseOverviewPage from '../components/CaseOverviewPage.vue'
 import CaseProfilePage from '../components/CaseProfilePage.vue'
-import DeviceStatusBar from '../components/DeviceStatusBar.vue'
 import SessionControls from '../components/SessionControls.vue'
 import TemplateDrivenInterrogationPage from '../components/TemplateDrivenInterrogationPage.vue'
 import VoiceprintAudioSourceBanner from '../components/VoiceprintAudioSourceBanner.vue'
@@ -203,7 +202,6 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
         </div>
         <div class="operator-meta">
           <AiSettingsPanel />
-          <DeviceStatusBar />
           <span>主审：{{ store.caseSummary.officerName || '当前警官' }}</span>
           <span class="recording" :class="{ muted: store.session.status !== 'RUNNING' }">● {{ store.session.status === 'RUNNING' ? '审讯中' : store.session.status === 'PAUSED' ? '已暂停' : '未录入' }}</span>
         </div>
