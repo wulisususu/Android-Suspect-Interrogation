@@ -8,6 +8,8 @@ import {
 } from '../runtime'
 import type {
   AsrCaptureStatus,
+  AsrRecognitionEvidence,
+  AsrRecognitionRevision,
   AsrRuntimeStatus,
   CaseAiAnalysis,
   CaseSummary,
@@ -141,6 +143,51 @@ function normalizeOfficerVoiceprint(value: unknown): OfficerVoiceprint {
   }
 }
 
+function normalizeRecognitionEvidence(value: unknown): AsrRecognitionEvidence | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = asRecord(value)
+  const evidenceId = String(raw.evidenceId ?? '')
+  if (!evidenceId) return null
+  return {
+    evidenceId,
+    aiSpeaker: String(raw.aiSpeaker ?? 'UNKNOWN') as TemporaryAsrSpeaker,
+    speakerId: raw.speakerId == null ? null : String(raw.speakerId),
+    speakerName: raw.speakerName == null ? null : String(raw.speakerName),
+    speakerSource: String(raw.speakerSource ?? 'UNASSIGNED') as AsrRecognitionEvidence['speakerSource'],
+    score: nullableNumber(raw.score),
+    secondBestScore: nullableNumber(raw.secondBestScore),
+    threshold: nullableNumber(raw.threshold),
+    margin: nullableNumber(raw.margin),
+    thresholdSource: raw.thresholdSource == null ? null : String(raw.thresholdSource),
+    voiceprintVerified: Boolean(raw.voiceprintVerified),
+    lowConfidence: Boolean(raw.lowConfidence),
+    asrModelId: raw.asrModelId == null ? null : String(raw.asrModelId),
+    asrModelVersion: raw.asrModelVersion == null ? null : String(raw.asrModelVersion),
+    speakerModelId: raw.speakerModelId == null ? null : String(raw.speakerModelId),
+    speakerModelVersion: raw.speakerModelVersion == null ? null : String(raw.speakerModelVersion),
+    speakerModelFingerprint: raw.speakerModelFingerprint == null ? null : String(raw.speakerModelFingerprint),
+    microphoneFingerprint: raw.microphoneFingerprint == null ? null : String(raw.microphoneFingerprint),
+    calibrationId: raw.calibrationId == null ? null : String(raw.calibrationId),
+    calibrationStatus: raw.calibrationStatus == null ? null : String(raw.calibrationStatus),
+    createdAt: toTimestamp(raw.createdAt) ?? null,
+  }
+}
+
+function normalizeRecognitionRevision(value: unknown): AsrRecognitionRevision {
+  const raw = asRecord(value)
+  return {
+    revisionId: String(raw.revisionId ?? ''),
+    revisionNo: Number(raw.revisionNo ?? 0),
+    beforeSpeaker: String(raw.beforeSpeaker ?? 'UNKNOWN') as TemporaryAsrSpeaker,
+    afterSpeaker: String(raw.afterSpeaker ?? 'UNKNOWN') as TemporaryAsrSpeaker,
+    beforeText: String(raw.beforeText ?? ''),
+    afterText: String(raw.afterText ?? ''),
+    actorId: raw.actorId == null ? null : String(raw.actorId),
+    reason: raw.reason == null ? null : String(raw.reason),
+    createdAt: toTimestamp(raw.createdAt) ?? null,
+  }
+}
+
 export function normalizeTemporaryAsrFragment(value: unknown): TemporaryAsrFragment {
   const raw = asRecord(value)
   const startedAtMs = Number(raw.startedAtMs ?? 0)
@@ -149,6 +196,9 @@ export function normalizeTemporaryAsrFragment(value: unknown): TemporaryAsrFragm
   const createdAt = toTimestamp(raw.createdAt ?? raw.created_at) ?? Date.now()
   const updatedAt = toTimestamp(raw.updatedAt ?? raw.updated_at) ?? createdAt
   const confidence = nullableNumber(raw.asrConfidence ?? raw.confidence)
+  const recognitionRevisions = Array.isArray(raw.recognitionRevisions)
+    ? raw.recognitionRevisions.map(normalizeRecognitionRevision)
+    : []
   return {
     id: String(raw.id ?? raw.fragmentId ?? ''),
     captureSessionId,
@@ -175,12 +225,9 @@ export function normalizeTemporaryAsrFragment(value: unknown): TemporaryAsrFragm
     confirmedMessageId: raw.confirmedMessageId == null ? null : String(raw.confirmedMessageId),
     modelId: raw.modelId == null ? null : String(raw.modelId),
     modelVersion: raw.modelVersion == null ? null : String(raw.modelVersion),
-    audio: {
-      captureSessionId,
-      startOffsetMs: startedAtMs,
-      endOffsetMs: endedAtMs,
-      available: false,
-    },
+    recognitionEvidence: normalizeRecognitionEvidence(raw.recognitionEvidence),
+    recognitionRevisions,
+    audio: { captureSessionId, startOffsetMs: startedAtMs, endOffsetMs: endedAtMs, available: false },
     createdAt,
     updatedAt,
   }
@@ -194,9 +241,7 @@ async function loadNormalizedFragments(caseId: string, includeConfirmed = false)
 async function normalizeCaptureStatus(caseId: string, value: unknown): Promise<AsrCaptureStatus> {
   const raw = asRecord(value)
   const normalizedCaseId = String(raw.caseId ?? caseId)
-  const fragments = Array.isArray(raw.fragments)
-    ? raw.fragments.map(normalizeTemporaryAsrFragment)
-    : await loadNormalizedFragments(normalizedCaseId)
+  const fragments = Array.isArray(raw.fragments) ? raw.fragments.map(normalizeTemporaryAsrFragment) : await loadNormalizedFragments(normalizedCaseId)
   return {
     caseId: normalizedCaseId,
     captureSessionId: raw.captureSessionId == null ? null : String(raw.captureSessionId),
@@ -215,43 +260,27 @@ export function backendErrorMessage(error: unknown): string {
   const axiosError = error as AxiosError<{ message?: string; code?: string }>
   const responseMessage = axiosError?.response?.data?.message
   if (responseMessage) return responseMessage
-  if (axiosError?.code === 'ERR_NETWORK' || (error instanceof TypeError && /fetch/i.test(error.message))) {
-    return '无法连接 Linux 本地后端，请确认本机 FastAPI 服务已启动'
-  }
+  if (axiosError?.code === 'ERR_NETWORK' || (error instanceof TypeError && /fetch/i.test(error.message))) return '无法连接 Linux 本地后端，请确认本机 FastAPI 服务已启动'
   if (error instanceof Error) return error.message
   return String(error)
 }
 
-export function fetchRuntimeCapabilities(force = false): Promise<RuntimeCapabilities> {
-  return runtime().getCapabilities(force)
-}
-
-export function connectRuntimeSession(sessionId: string, listener: RuntimeEventListener): RuntimeSessionConnection {
-  return runtime().connectSession(sessionId, listener)
-}
+export function fetchRuntimeCapabilities(force = false): Promise<RuntimeCapabilities> { return runtime().getCapabilities(force) }
+export function connectRuntimeSession(sessionId: string, listener: RuntimeEventListener): RuntimeSessionConnection { return runtime().connectSession(sessionId, listener) }
 
 export async function createCase(payload: Partial<CaseSummary> = {}): Promise<CaseSummary> {
   const request = { ...payload, operator_id: payload.officerName || '当前警官', case_type: 'suspect_interrogation' } as unknown as Record<string, unknown>
   return normalizeCaseSummary(await runtime().invoke<unknown>('case.create', request), payload)
 }
-
 export async function fetchCases(limit = 50): Promise<CaseSummary[]> {
   const result = await runtime().invoke<unknown[]>('case.list', { limit })
   return Array.isArray(result) ? result.map((item) => normalizeCaseSummary(item)) : []
 }
-
-export async function fetchCase(caseId: string): Promise<CaseSummary> {
-  return normalizeCaseSummary(await runtime().invoke<unknown>('case.get', { caseId }), { id: caseId })
-}
-
+export async function fetchCase(caseId: string): Promise<CaseSummary> { return normalizeCaseSummary(await runtime().invoke<unknown>('case.get', { caseId }), { id: caseId }) }
 export function fetchMessages(caseId: string): Promise<TranscriptMessage[]> { return runtime().invoke<TranscriptMessage[]>('message.list', { caseId, limit: 1000 }) }
 export function fetchFacts(caseId: string): Promise<FactItem[]> { return runtime().invoke<FactItem[]>('fact.list', { caseId }) }
 export function fetchTimeline(caseId: string): Promise<TimelineEvent[]> { return runtime().invoke<TimelineEvent[]>('timeline.list', { caseId }) }
-
-export async function fetchSessionState(caseId: string): Promise<SessionState> {
-  return normalizeSessionState(await runtime().invoke<unknown>('session.get', { caseId }), caseId)
-}
-
+export async function fetchSessionState(caseId: string): Promise<SessionState> { return normalizeSessionState(await runtime().invoke<unknown>('session.get', { caseId }), caseId) }
 export async function fetchCaseAiAnalyses(caseId: string): Promise<CaseAiAnalysis[]> {
   try { return await runtime().invoke<CaseAiAnalysis[]>('case.ai.list', { caseId }) }
   catch (error) {
@@ -259,7 +288,6 @@ export async function fetchCaseAiAnalyses(caseId: string): Promise<CaseAiAnalysi
     throw error
   }
 }
-
 export function generateCaseAiAnalysis(caseId: string): Promise<CaseAiAnalysis> { return runtime().invoke<CaseAiAnalysis>('case.ai.generate', { caseId }, { timeoutMs: 15 * 60_000 }) }
 export function persistQuestionOrAnswer(caseId: string, text: string, from: '民警' | '嫌疑人'): Promise<TranscriptMessage> { return runtime().invoke<TranscriptMessage>('message.add', { caseId, text, from }) }
 export function updateTranscriptMessage(caseId: string, messageId: string, text: string): Promise<TranscriptMessage> { return runtime().invoke<TranscriptMessage>('message.update', { caseId, messageId, text, reason: '警官在审讯工作台修订' }) }
@@ -269,16 +297,11 @@ export function fetchRevisions(caseId: string, messageId?: string): Promise<Reco
 async function sessionAction(caseId: string, action: 'start' | 'pause' | 'resume' | 'finish'): Promise<SessionState> {
   return normalizeSessionState(await runtime().invoke<unknown>(`session.${action}`, { caseId }), caseId)
 }
-
 export const startSession = (caseId: string) => sessionAction(caseId, 'start')
 export const pauseSession = (caseId: string) => sessionAction(caseId, 'pause')
 export const resumeSession = (caseId: string) => sessionAction(caseId, 'resume')
 export const finishSession = (caseId: string) => sessionAction(caseId, 'finish')
-
-export async function changeSessionStage(caseId: string, stage: InterrogationStage): Promise<SessionState> {
-  return normalizeSessionState(await runtime().invoke<unknown>('session.stage', { caseId, stage }), caseId)
-}
-
+export async function changeSessionStage(caseId: string, stage: InterrogationStage): Promise<SessionState> { return normalizeSessionState(await runtime().invoke<unknown>('session.stage', { caseId, stage }), caseId) }
 export function invokeDeviceAction(type: 'identity' | 'fingerprint' | 'signature'): Promise<DeviceActionResult> { return runtime().invoke<DeviceActionResult>('device.action', { type }) }
 
 const emptyModelCatalog: LocalModelCatalog = { rootPath: 'Linux 本地模型目录（未就绪）', models: [] }
@@ -325,12 +348,17 @@ export async function fetchAsrCaptureStatus(caseId: string): Promise<AsrCaptureS
 export async function startAsrCapture(caseId: string): Promise<AsrCaptureStatus> { return normalizeCaptureStatus(caseId, await runtime().invoke<unknown>('asr.capture.start', { caseId }, { timeoutMs: 120_000 })) }
 export async function stopAsrCapture(caseId: string): Promise<AsrCaptureStatus> { return normalizeCaptureStatus(caseId, await runtime().invoke<unknown>('asr.capture.stop', { caseId }, { timeoutMs: 30_000 })) }
 export function listAsrFragments(caseId: string, includeConfirmed = false): Promise<TemporaryAsrFragment[]> { return loadNormalizedFragments(caseId, includeConfirmed) }
-export async function updateAsrFragment(caseId: string, fragmentId: string, editedText: string, speaker: TemporaryAsrSpeaker): Promise<TemporaryAsrFragment> {
-  return normalizeTemporaryAsrFragment(await runtime().invoke<unknown>('asr.fragment.update', { caseId, fragmentId, editedText, speaker }))
+export async function updateAsrFragment(
+  caseId: string,
+  fragmentId: string,
+  editedText: string,
+  speaker: TemporaryAsrSpeaker,
+  actorId?: string,
+  reason?: string,
+): Promise<TemporaryAsrFragment> {
+  return normalizeTemporaryAsrFragment(await runtime().invoke<unknown>('asr.fragment.update', { caseId, fragmentId, editedText, speaker, actorId, reason }))
 }
-export async function confirmAsrFragment(caseId: string, fragmentId: string): Promise<TemporaryAsrFragment> {
-  return normalizeTemporaryAsrFragment(await runtime().invoke<unknown>('asr.fragment.confirm', { caseId, fragmentId }))
-}
+export async function confirmAsrFragment(caseId: string, fragmentId: string): Promise<TemporaryAsrFragment> { return normalizeTemporaryAsrFragment(await runtime().invoke<unknown>('asr.fragment.confirm', { caseId, fragmentId })) }
 export async function confirmAsrFragmentBatch(caseId: string, fragmentIds: string[]): Promise<{ confirmedCount: number; fragments: TemporaryAsrFragment[] }> {
   const raw = asRecord(await runtime().invoke<unknown>('asr.fragment.confirmBatch', { caseId, fragmentIds }))
   const fragments = Array.isArray(raw.fragments) ? raw.fragments.map(normalizeTemporaryAsrFragment) : []
