@@ -14,6 +14,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
+classify_log() {
+  local file="$1"
+  if grep -Eqi 'already.*login|same.*client|client.*already|proxy.*already|name.*conflict|duplicate' "$file"; then
+    echo 'existing_client_or_proxy_conflict'
+  elif grep -Eqi 'auth|authentication|token|login.*fail|authorization|permission denied' "$file"; then
+    echo 'auth_or_login_rejected'
+  elif grep -Eqi 'vhost|http.*not.*support|https.*not.*support|type.*http.*not|type.*https.*not|vhostHTTPPort|vhostHTTPSPort' "$file"; then
+    echo 'vhost_not_enabled_or_not_supported'
+  elif grep -Eqi 'unmarshal|parse.*config|invalid.*config|unknown field|failed to parse|syntax' "$file"; then
+    echo 'config_invalid'
+  elif grep -Eqi 'connection refused|connect.*fail|dial tcp|timeout|i/o timeout|no route|network is unreachable' "$file"; then
+    echo 'connect_failed'
+  elif grep -Eqi 'proxy.*start.*error|start error|server returned' "$file"; then
+    echo 'server_rejected_proxy'
+  else
+    echo 'unknown'
+  fi
+}
+
 exec_line="$(systemctl show frpc.service --property=ExecStart --value 2>/dev/null || true)"
 config="$(grep -oE '/[^ ;{}]+\.(toml|ini)' <<<"$exec_line" | head -n 1 || true)"
 if [[ -z "$config" || ! -f "$config" ]]; then
@@ -103,6 +122,16 @@ server="${endpoint[0]}"
 host="${endpoint[1]}"
 probe_config="$tmp/probe.${config##*.}"
 
+if frpc verify -c "$probe_config" >"$tmp/verify.log" 2>&1; then
+  echo 'temporary_frpc_config_valid=true'
+else
+  echo 'temporary_frpc_config_valid=false'
+  echo "temporary_frpc_failure_class=$(classify_log "$tmp/verify.log")"
+  echo 'frp_http_vhost_supported=false'
+  echo 'frp_https_vhost_supported=false'
+  exit 0
+fi
+
 mkdir -p "$tmp/www"
 printf 'suspect-vhost-probe\n' > "$tmp/www/index.html"
 python3 -m http.server 18081 --bind 127.0.0.1 --directory "$tmp/www" >"$tmp/http.log" 2>&1 &
@@ -131,6 +160,7 @@ pids+=("$frpc_pid")
 sleep 4
 if ! kill -0 "$frpc_pid" 2>/dev/null; then
   echo 'temporary_frpc_started=false'
+  echo "temporary_frpc_failure_class=$(classify_log "$tmp/frpc.log")"
   echo 'frp_http_vhost_supported=false'
   echo 'frp_https_vhost_supported=false'
   exit 0
