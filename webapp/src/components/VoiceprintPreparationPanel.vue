@@ -46,7 +46,7 @@ export function temporarySpeakerPresentation(speaker: TemporaryAsrSpeaker, speak
 </script>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import type { OfficerVoiceprint, SessionStatus, VoiceprintEnrollmentState, VoiceprintReadiness } from '../types/interrogation'
 
 const props = defineProps<{
@@ -60,45 +60,25 @@ const props = defineProps<{
   sessionStatus: SessionStatus
 }>()
 
-const emit = defineEmits<{
+defineEmits<{
   suspectStart: []
   suspectStop: []
   selectInterrogator: [officerId: string | null]
   selectRecorder: [officerId: string | null]
-  officerStart: [officerId: string, officerName: string]
-  officerStop: [officerId: string]
-  revokeOfficer: [officerId: string]
   bindRoles: []
 }>()
 
-const officerId = ref('')
-const officerName = ref('')
 const guard = computed(() => voiceprintStartGuard(props.readiness))
 const enrollmentRecording = computed(() => props.enrollmentState.phase === 'RECORDING')
 const suspectRecording = computed(() => enrollmentRecording.value && props.enrollmentState.kind === 'SUSPECT')
-const officerRecording = computed(() => enrollmentRecording.value && props.enrollmentState.kind === 'OFFICER')
-const selectedOfficerName = computed(() => props.officers.find((item) => item.officerId === props.enrollmentState.subjectId)?.officerName || props.enrollmentState.officerName || '')
 const finalUsableSeconds = computed(() => Math.floor((props.enrollmentState.usableDurationMs || 0) / 1000))
 const enrollmentProgress = computed(() => voiceprintEnrollmentProgress(props.enrollmentState))
 const sessionActive = computed(() => ['RUNNING', 'PAUSED'].includes(props.sessionStatus))
-
-watch(() => props.enrollmentState, (state) => {
-  if (state.kind === 'OFFICER' && state.subjectId) {
-    officerId.value = state.subjectId
-    if (state.officerName) officerName.value = state.officerName
-  }
-}, { deep: true })
+const showSuspectProgress = computed(() => props.enrollmentState.phase !== 'IDLE' && props.enrollmentState.kind !== 'OFFICER')
 
 function normalizedSelect(event: Event) {
   const value = (event.target as HTMLSelectElement).value.trim()
   return value || null
-}
-
-function beginOfficerEnrollment() {
-  const id = officerId.value.trim()
-  const name = officerName.value.trim()
-  if (!id || !name) return
-  emit('officerStart', id, name)
 }
 </script>
 
@@ -120,7 +100,7 @@ function beginOfficerEnrollment() {
       </article>
 
       <article class="voiceprint-person-row">
-        <div class="voiceprint-person-main"><strong>主审民警</strong><span>可选</span></div>
+        <div class="voiceprint-person-main"><strong>主审民警</strong><span>从全局声纹库选择</span></div>
         <select :value="selectedInterrogatorOfficerId || ''" :disabled="busy || sessionActive" aria-label="选择主审民警声纹" @change="$emit('selectInterrogator', normalizedSelect($event))">
           <option value="">不启用民警声纹</option>
           <option v-for="officer in officers" :key="officer.officerId" :value="officer.officerId">{{ officer.officerName }} · {{ officer.officerId }}</option>
@@ -129,7 +109,7 @@ function beginOfficerEnrollment() {
       </article>
 
       <article class="voiceprint-person-row">
-        <div class="voiceprint-person-main"><strong>记录民警</strong><span>可选</span></div>
+        <div class="voiceprint-person-main"><strong>记录民警</strong><span>从全局声纹库选择</span></div>
         <select :value="selectedRecorderOfficerId || ''" :disabled="busy || sessionActive" aria-label="选择记录民警声纹" @change="$emit('selectRecorder', normalizedSelect($event))">
           <option value="">不启用民警声纹</option>
           <option v-for="officer in officers" :key="officer.officerId" :value="officer.officerId">{{ officer.officerName }} · {{ officer.officerId }}</option>
@@ -138,22 +118,10 @@ function beginOfficerEnrollment() {
       </article>
     </div>
 
-    <section class="officer-enrollment-box">
-      <header><strong>民警声纹库</strong><span>可复用；角色只绑定到本次审讯</span></header>
-      <div class="officer-enrollment-form">
-        <input v-model="officerId" :disabled="busy || officerRecording || sessionActive" placeholder="民警编号" aria-label="民警编号" />
-        <input v-model="officerName" :disabled="busy || officerRecording || sessionActive" placeholder="民警姓名" aria-label="民警姓名" />
-        <button v-if="!officerRecording" :disabled="busy || !officerId.trim() || !officerName.trim() || sessionActive" @click="beginOfficerEnrollment">新注册 / 更新</button>
-        <button v-else class="danger" :disabled="busy" @click="$emit('officerStop', String(enrollmentState.subjectId || officerId))">提前停止并尝试保存</button>
-      </div>
-      <div v-if="officers.length" class="officer-library-list">
-        <span v-for="officer in officers" :key="officer.officerId" class="officer-library-item"><b>{{ officer.officerName }}</b> · {{ officer.officerId }} <button :disabled="busy || sessionActive" @click="$emit('revokeOfficer', officer.officerId)">撤销</button></span>
-      </div>
-    </section>
+    <p class="global-library-hint">民警声纹的注册、补录样本、停用和维护统一在“系统设置 → 民警声纹库”完成；案件内只绑定已有档案。</p>
 
-    <div v-if="enrollmentState.phase !== 'IDLE'" class="voiceprint-enrollment-progress" :class="enrollmentState.phase.toLowerCase()">
-      <strong v-if="enrollmentState.kind === 'SUSPECT'">嫌疑人声纹</strong>
-      <strong v-else>民警声纹 · {{ selectedOfficerName || enrollmentState.subjectId }}</strong>
+    <div v-if="showSuspectProgress" class="voiceprint-enrollment-progress" :class="enrollmentState.phase.toLowerCase()">
+      <strong>嫌疑人声纹</strong>
       <template v-if="enrollmentState.phase === 'RECORDING'">
         <span>请自然说话；有效语音达到 20 秒后会自动停止并注册，停顿和语速慢不会按总时长判失败。</span>
         <div class="voiceprint-capture-meter" role="progressbar" :aria-valuemin="0" :aria-valuemax="enrollmentProgress.targetSeconds" :aria-valuenow="enrollmentProgress.usableSeconds" :aria-label="`有效语音 ${enrollmentProgress.usableSeconds} / ${enrollmentProgress.targetSeconds} 秒`">
@@ -167,7 +135,7 @@ function beginOfficerEnrollment() {
     </div>
 
     <footer class="voiceprint-preparation-footer">
-      <div><strong>{{ guard.disabled ? '尚未满足开始条件' : '可以开始正式审讯' }}</strong><span>{{ guard.reason || '嫌疑人声纹已就绪；民警声纹为可选项' }}</span></div>
+      <div><strong>{{ guard.disabled ? '尚未满足开始条件' : '可以开始正式审讯' }}</strong><span>{{ guard.reason || '嫌疑人声纹已就绪；民警声纹为可选项，绑定后冻结本次审讯使用的 reference 版本' }}</span></div>
       <button v-if="sessionStatus === 'READY'" :disabled="busy || guard.disabled" @click="$emit('bindRoles')">保存本次角色选择</button>
     </footer>
   </section>
@@ -175,7 +143,7 @@ function beginOfficerEnrollment() {
 
 <style scoped>
 .voiceprint-preparation-panel { padding: 16px 18px; border-bottom: 1px solid #c9d7e2; background: linear-gradient(180deg, #f8fbfe 0%, #eef5fa 100%); color: #21384d; }
-.voiceprint-preparation-header,.voiceprint-preparation-footer,.officer-enrollment-box header { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.voiceprint-preparation-header,.voiceprint-preparation-footer { display:flex; align-items:center; justify-content:space-between; gap:16px; }
 .voiceprint-preparation-header h2 { margin:3px 0 0; font-size:22px; }
 .section-kicker { color:#5d7184; font-size:12px; letter-spacing:.08em; }
 .voiceprint-mode-chip,.voiceprint-status { border:1px solid #b7c8d7; border-radius:999px; padding:5px 10px; background:#fff; color:#566b7e; font-size:12px; font-weight:700; }
@@ -186,17 +154,12 @@ function beginOfficerEnrollment() {
 .voiceprint-person-row.required { border-left:4px solid #2d78bb; }
 .voiceprint-person-main { display:flex; align-items:center; gap:8px; }
 .voiceprint-person-main > span { color:#73879a; font-size:12px; }
-.voiceprint-person-row select,.officer-enrollment-form input { min-height:38px; border:1px solid #b9c9d7; border-radius:6px; padding:0 10px; background:#fff; color:#243c52; }
-.voiceprint-action,.officer-enrollment-form button,.voiceprint-preparation-footer button,.officer-library-item button { min-height:38px; border:1px solid #9eb3c5; border-radius:6px; padding:0 13px; background:#fff; color:#29465f; font-weight:700; }
+.voiceprint-person-row select { min-height:38px; border:1px solid #b9c9d7; border-radius:6px; padding:0 10px; background:#fff; color:#243c52; }
+.voiceprint-action,.voiceprint-preparation-footer button { min-height:38px; border:1px solid #9eb3c5; border-radius:6px; padding:0 13px; background:#fff; color:#29465f; font-weight:700; }
 .voiceprint-action.primary,.voiceprint-preparation-footer > button { border-color:#2476c9; background:#2476c9; color:#fff; }
-.voiceprint-action.danger,.officer-enrollment-form .danger { border-color:#d95045; color:#b02d24; }
-button:disabled,select:disabled,input:disabled { opacity:.5; }
-.officer-enrollment-box { margin-top:10px; padding:10px 12px; border:1px solid #d2dee8; border-radius:8px; background:#fff; }
-.officer-enrollment-box header span { color:#6c8193; font-size:12px; }
-.officer-enrollment-form { display:grid; grid-template-columns:minmax(130px,.8fr) minmax(130px,1fr) auto; gap:8px; margin-top:8px; }
-.officer-library-list { display:flex; flex-wrap:wrap; gap:7px; margin-top:9px; }
-.officer-library-item { display:inline-flex; align-items:center; gap:5px; border:1px solid #d5e0e8; border-radius:999px; padding:4px 5px 4px 10px; background:#f6f9fb; font-size:12px; }
-.officer-library-item button { min-height:26px; padding:0 8px; border-color:transparent; background:transparent; color:#a23830; }
+.voiceprint-action.danger { border-color:#d95045; color:#b02d24; }
+button:disabled,select:disabled { opacity:.5; }
+.global-library-hint { margin:10px 0 0; padding:9px 12px; border:1px solid #d2dee8; border-radius:7px; background:#fff; color:#5d7184; font-size:12px; }
 .voiceprint-capture-meter { height:8px; overflow:hidden; border-radius:999px; background:#d7e3ec; flex:1 1 180px; min-width:160px; }
 .voiceprint-capture-meter > i { display:block; height:100%; border-radius:inherit; background:#2476c9; transition:width .25s ease; }
 .voiceprint-enrollment-progress { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin-top:10px; padding:9px 12px; border-radius:7px; background:#eaf3fb; color:#315d82; }
@@ -206,5 +169,5 @@ button:disabled,select:disabled,input:disabled { opacity:.5; }
 .voiceprint-preparation-footer { margin-top:11px; padding-top:10px; border-top:1px solid #d2dee8; }
 .voiceprint-preparation-footer > div { display:grid; gap:3px; }
 .voiceprint-preparation-footer span { color:#657a8c; font-size:12px; }
-@media (max-width:980px) { .voiceprint-person-row,.officer-enrollment-form { grid-template-columns:1fr; } .voiceprint-preparation-footer,.voiceprint-preparation-header { align-items:flex-start; flex-direction:column; } }
+@media (max-width:980px) { .voiceprint-person-row { grid-template-columns:1fr; } .voiceprint-preparation-footer,.voiceprint-preparation-header { align-items:flex-start; flex-direction:column; } }
 </style>
