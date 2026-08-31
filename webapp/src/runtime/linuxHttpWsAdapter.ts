@@ -1,5 +1,7 @@
 import type { AxiosRequestConfig } from 'axios'
 import { http } from '../api/http'
+import { startBrowserAsrCapture, stopBrowserAsrCapture } from '../audio/browserAsrCapture'
+import { audioInputMode } from '../config/audioInput'
 import { runtimeConfig } from '../config/runtime'
 import { normalizeRuntimeError, RuntimeAdapterError } from './errors'
 import {
@@ -222,12 +224,38 @@ export class LinuxHttpWsAdapter implements RuntimeAdapter {
   }
 
   async invoke<T>(operation: RuntimeOperation, payload: Record<string, unknown> = {}, options: RuntimeInvokeOptions = {}): Promise<T> {
+    let browserBackendStarted = false
     try {
       const config = endpoint(operation, payload)
       if (options.timeoutMs) config.timeout = options.timeoutMs
       const response = await this.request<T>(config)
-      return unwrap<T>(response.data)
+      const result = unwrap<T>(response.data)
+
+      if (audioInputMode === 'BROWSER' && operation === 'asr.capture.start' && typeof window !== 'undefined') {
+        browserBackendStarted = true
+        const raw = result && typeof result === 'object' ? result as Record<string, unknown> : {}
+        const captureId = String(raw.captureSessionId ?? raw.capture_session_id ?? '')
+        if (!captureId) throw new Error('Linux 后端未返回 ASR captureSessionId，无法建立局域网浏览器音频通道')
+        await startBrowserAsrCapture(String(payload.caseId ?? ''), captureId, runtimeConfig.apiBaseUrl)
+      }
+
+      if (audioInputMode === 'BROWSER' && operation === 'asr.capture.stop') {
+        await stopBrowserAsrCapture()
+      }
+      return result
     } catch (error) {
+      if (audioInputMode === 'BROWSER' && operation === 'asr.capture.start') {
+        if (browserBackendStarted) {
+          try {
+            await this.request(endpoint('asr.capture.stop', payload))
+          } catch {
+            // Preserve the original browser microphone/WS failure.
+          }
+        }
+        await stopBrowserAsrCapture().catch(() => undefined)
+      } else if (audioInputMode === 'BROWSER' && operation === 'asr.capture.stop') {
+        await stopBrowserAsrCapture().catch(() => undefined)
+      }
       throw normalizeRuntimeError(error, operation)
     }
   }

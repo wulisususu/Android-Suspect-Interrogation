@@ -1,24 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { selectAutoVoiceprintSource } from './voiceprintSourceSelection'
+import { selectVoiceprintSource } from './voiceprintSourceSelection'
 
 
-describe('AUTO voiceprint audio source selection', () => {
-  it('prefers the browser microphone when acquisition succeeds', async () => {
+describe('explicit voiceprint audio source selection', () => {
+  it('uses the Windows browser microphone in BROWSER test mode', async () => {
     const browserCapture = { start: async () => undefined, pause: () => undefined, stop: async () => undefined, inputSampleRate: null }
 
-    const selected = await selectAutoVoiceprintSource(async () => browserCapture)
+    const selected = await selectVoiceprintSource('BROWSER', async () => browserCapture)
 
-    expect(selected).toEqual({ source: 'BROWSER', browserCapture, reason: '' })
+    expect(selected).toEqual({
+      source: 'BROWSER',
+      browserCapture,
+      reason: '测试音源：当前 Windows 浏览器麦克风，经局域网发送到 Linux 后端。',
+    })
   })
 
-  it('falls back to RK3588 ALSA only when browser acquisition fails before enrollment starts', async () => {
-    const selected = await selectAutoVoiceprintSource(async () => {
-      throw new Error('当前页面不是 HTTPS 安全环境，浏览器禁止远程麦克风访问')
-    })
-
-    expect(selected.source).toBe('ALSA')
-    expect(selected.browserCapture).toBeNull()
-    expect(selected.reason).toContain('不是 HTTPS')
-    expect(selected.reason).toContain('RK3588')
+  it('does not silently fall back when browser permission acquisition fails', async () => {
+    await expect(selectVoiceprintSource('BROWSER', async () => {
+      throw new Error('当前局域网页面未获得麦克风安全上下文')
+    })).rejects.toThrow('当前局域网页面未获得麦克风安全上下文')
   })
 })

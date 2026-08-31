@@ -1,6 +1,11 @@
 import type { AxiosResponse } from 'axios'
 
-import { http } from './http'
+import {
+  startBrowserQuestionPreparationCapture,
+  stopBrowserQuestionPreparationCapture,
+} from '../audio/browserAsrCapture'
+import { audioInputMode } from '../config/audioInput'
+import { runtimeConfig } from '../config/runtime'
 import type { BackendEnvelope } from '../types/interrogation'
 import type {
   CaseQuestionCreateInput,
@@ -12,12 +17,13 @@ import type {
   StandardQuestion,
   TemplateWorkspace,
 } from '../types/templateInterrogation'
+import { http } from './http'
 
 export interface QuestionDictationStatus {
   caseId: string
   active: boolean
   mode: 'QUESTION_PREP'
-  captureSessionId: null
+  captureSessionId: string | null
   interrogationSessionId: null
   status: 'IDLE' | 'CAPTURING' | 'STOPPED'
   sampleRate: number
@@ -42,15 +48,33 @@ export async function fetchQuestionLibrary(category?: string): Promise<StandardQ
 }
 
 export async function startQuestionPreparationDictation(caseId: string): Promise<QuestionDictationStatus> {
-  return unwrap(await http.post<BackendEnvelope<QuestionDictationStatus>>(
+  const status = unwrap(await http.post<BackendEnvelope<QuestionDictationStatus>>(
     `/api/v1/cases/${encodeURIComponent(caseId)}/asr/question-preparation/start`,
   ))
+  if (audioInputMode !== 'BROWSER') return status
+
+  try {
+    await startBrowserQuestionPreparationCapture(
+      caseId,
+      status.captureSessionId || 'question-preparation',
+      runtimeConfig.apiBaseUrl,
+    )
+    return status
+  } catch (error) {
+    await http.post(`/api/v1/cases/${encodeURIComponent(caseId)}/asr/question-preparation/stop`).catch(() => undefined)
+    await stopBrowserQuestionPreparationCapture().catch(() => undefined)
+    throw error
+  }
 }
 
 export async function stopQuestionPreparationDictation(caseId: string): Promise<QuestionDictationStatus> {
-  return unwrap(await http.post<BackendEnvelope<QuestionDictationStatus>>(
-    `/api/v1/cases/${encodeURIComponent(caseId)}/asr/question-preparation/stop`,
-  ))
+  try {
+    return unwrap(await http.post<BackendEnvelope<QuestionDictationStatus>>(
+      `/api/v1/cases/${encodeURIComponent(caseId)}/asr/question-preparation/stop`,
+    ))
+  } finally {
+    if (audioInputMode === 'BROWSER') await stopBrowserQuestionPreparationCapture().catch(() => undefined)
+  }
 }
 
 export async function createCaseQuestion(caseId: string, input: CaseQuestionCreateInput): Promise<FormalQuestion> {
