@@ -23,13 +23,16 @@ from app.repositories import asr_fragments as asr_repo
 from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
 from app.repositories import sessions as session_repo
+from app.repositories import speaker_calibrations as calibration_repo
 from app.repositories import voiceprints as voiceprint_repo
 from app.services.interrogation_projection_service import InterrogationProjectionService
+from app.services.speaker_calibration_runtime import ResolvedSpeakerCalibration
 from app.services.speaker_policy import SpeakerRole, decide_speaker
 
 
 logger = logging.getLogger(__name__)
 PublishEvent = Callable[[str, str, dict[str, Any]], None]
+CalibrationResolver = Callable[[Any], ResolvedSpeakerCalibration]
 _FLOAT32_BYTES = 4
 
 
@@ -39,6 +42,13 @@ class _CaptureRuntime:
     interrogation_session_id: str
     capture_session_id: str
     speech_session_id: str
+    speaker_threshold: float
+    speaker_margin: float | None
+    threshold_source: str
+    calibration_id: str | None
+    calibration_status: str
+    speaker_model_fingerprint: str | None
+    microphone_fingerprint: str | None
     stop_event: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     ordinal: int = 0
@@ -75,6 +85,7 @@ class AsrCaptureService:
         publish_event: PublishEvent,
         sample_rate: int = 16_000,
         read_timeout: float = 0.2,
+        calibration_resolver: CalibrationResolver | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.device_manager = device_manager
@@ -82,6 +93,7 @@ class AsrCaptureService:
         self.publish_event = publish_event
         self.sample_rate = int(sample_rate)
         self.read_timeout = max(0.001, float(read_timeout))
+        self.calibration_resolver = calibration_resolver
         if self.sample_rate <= 0:
             raise ValueError("sample_rate must be positive")
 
@@ -110,11 +122,25 @@ class AsrCaptureService:
                 raise DomainError("SESSION_NOT_ACTIVE", "请先开始审讯再启动语音采集", 409)
             if voiceprint_repo.get_suspect(db, case_id) is None:
                 raise DomainError("SUSPECT_VOICEPRINT_REQUIRED", "请先完成嫌疑人声纹注册", 409)
+            resolved = self._resolve_calibration(db)
             capture = asr_repo.create_capture_session(
                 db,
                 case_id=case_id,
                 interrogation_session_id=interrogation_session.id,
                 sample_rate=self.sample_rate,
+            )
+            db.flush()
+            calibration_repo.create_session_snapshot(
+                db,
+                capture_session_id=capture.id,
+                interrogation_session_id=interrogation_session.id,
+                calibration_id=resolved.calibration_id,
+                threshold=resolved.threshold,
+                margin=resolved.margin,
+                threshold_source=resolved.source,
+                calibration_status=resolved.status,
+                speaker_model_fingerprint=resolved.speaker_model_fingerprint,
+                microphone_fingerprint=resolved.microphone_fingerprint,
             )
             db.commit()
             capture_session_id = capture.id
@@ -125,6 +151,13 @@ class AsrCaptureService:
             interrogation_session_id=interrogation_session_id,
             capture_session_id=capture_session_id,
             speech_session_id=capture_session_id,
+            speaker_threshold=float(resolved.threshold),
+            speaker_margin=None if resolved.margin is None else float(resolved.margin),
+            threshold_source=str(resolved.source),
+            calibration_id=resolved.calibration_id,
+            calibration_status=str(resolved.status),
+            speaker_model_fingerprint=resolved.speaker_model_fingerprint,
+            microphone_fingerprint=resolved.microphone_fingerprint,
         )
 
         speech_open = False
@@ -419,21 +452,9 @@ class AsrCaptureService:
                 speaker_event=speaker_event,
             )
 
-            configured_threshold = getattr(self.ai_supervisor, "speaker_accept_threshold", None)
-            threshold = (
-                MODEL_BASELINE_THRESHOLD
-                if configured_threshold is None
-                else float(configured_threshold)
-            )
-            threshold_source = str(
-                getattr(
-                    self.ai_supervisor,
-                    "speaker_threshold_source",
-                    "MODEL_BASELINE" if configured_threshold is None else "DEVICE_CALIBRATED",
-                )
-            )
-            configured_margin = getattr(self.ai_supervisor, "speaker_margin", None)
-            persisted_margin = None if configured_margin is None else float(configured_margin)
+            threshold = float(runtime.speaker_threshold)
+            threshold_source = str(runtime.threshold_source)
+            persisted_margin = runtime.speaker_margin
 
             # A calibrated margin is needed only for comparing multiple enrolled
             # references. Without it, formal interrogation remains available but
@@ -493,6 +514,8 @@ class AsrCaptureService:
             fragment_id = fragment.id
             payload = self._fragment_payload(fragment)
             payload["thresholdSource"] = threshold_source
+            payload["calibrationId"] = runtime.calibration_id
+            payload["calibrationStatus"] = runtime.calibration_status
 
         runtime.ordinal += 1
         self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)
@@ -625,6 +648,29 @@ class AsrCaptureService:
         enabled.add(role)
         references.append((role, officer, officer.officer_id, officer.officer_name))
 
+    def _resolve_calibration(self, db) -> ResolvedSpeakerCalibration:
+        if self.calibration_resolver is not None:
+            return self.calibration_resolver(db)
+        configured_threshold = getattr(self.ai_supervisor, "speaker_accept_threshold", None)
+        threshold = MODEL_BASELINE_THRESHOLD if configured_threshold is None else float(configured_threshold)
+        source = str(
+            getattr(
+                self.ai_supervisor,
+                "speaker_threshold_source",
+                "MODEL_BASELINE" if configured_threshold is None else "DEVICE_CALIBRATED",
+            )
+        )
+        margin = getattr(self.ai_supervisor, "speaker_margin", None)
+        return ResolvedSpeakerCalibration(
+            calibration_id=None,
+            threshold=threshold,
+            margin=None if margin is None else float(margin),
+            source=source,
+            status="NOT_CALIBRATED",
+            speaker_model_fingerprint=None,
+            microphone_fingerprint=None,
+        )
+
     def _finish_capture_row(self, capture_session_id: str) -> None:
         with self.session_factory() as db:
             capture = db.get(ASRCaptureSession, capture_session_id)
@@ -740,7 +786,6 @@ class AsrCaptureService:
         active: bool,
         last_error: str | None,
     ) -> dict[str, Any]:
-        configured_threshold = getattr(self.ai_supervisor, "speaker_accept_threshold", None)
         return {
             "caseId": runtime.case_id,
             "active": active,
@@ -748,19 +793,11 @@ class AsrCaptureService:
             "interrogationSessionId": runtime.interrogation_session_id,
             "status": "CAPTURING" if active else "STOPPED",
             "sampleRate": self.sample_rate,
-            "speakerThreshold": (
-                MODEL_BASELINE_THRESHOLD
-                if configured_threshold is None
-                else float(configured_threshold)
-            ),
-            "thresholdSource": str(
-                getattr(
-                    self.ai_supervisor,
-                    "speaker_threshold_source",
-                    "MODEL_BASELINE" if configured_threshold is None else "DEVICE_CALIBRATED",
-                )
-            ),
-            "speakerMarginConfigured": getattr(self.ai_supervisor, "speaker_margin", None) is not None,
+            "speakerThreshold": runtime.speaker_threshold,
+            "thresholdSource": runtime.threshold_source,
+            "speakerMarginConfigured": runtime.speaker_margin is not None,
+            "calibrationId": runtime.calibration_id,
+            "calibrationStatus": runtime.calibration_status,
             "lastError": last_error,
         }
 
