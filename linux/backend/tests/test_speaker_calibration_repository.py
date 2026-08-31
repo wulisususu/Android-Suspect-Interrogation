@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.database.session import init_database, make_engine, make_session_factory
+from app.repositories import asr_fragments as asr_repo
+from app.repositories import cases as case_repo
+from app.repositories import sessions as session_repo
 
 
 def test_calibration_history_is_append_only_and_snapshot_is_immutable(tmp_path):
@@ -43,7 +46,27 @@ def test_calibration_history_is_append_only_and_snapshot_is_immutable(tmp_path):
 
     with factory() as db:
         first = repo.create_calibration(db, **payload)
-        second = repo.create_calibration(db, **{**payload, "threshold": 0.75, "corpus_digest": "d" * 64})
+        second = repo.create_calibration(
+            db,
+            **{
+                **payload,
+                "threshold": 0.75,
+                "corpus_digest": "d" * 64,
+                "created_at": now + timedelta(seconds=1),
+            },
+        )
+
+        case = case_repo.create(
+            db,
+            {"id": "CASE-CAL-REPO", "suspectName": "测试嫌疑人", "officerName": "测试民警"},
+        )
+        interrogation = session_repo.create(db, case.id)
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case.id,
+            interrogation_session_id=interrogation.id,
+            sample_rate=16000,
+        )
         db.commit()
 
         history = repo.list_calibrations(db)
@@ -54,8 +77,8 @@ def test_calibration_history_is_append_only_and_snapshot_is_immutable(tmp_path):
 
         snapshot = repo.create_session_snapshot(
             db,
-            capture_session_id="CAPTURE-1",
-            interrogation_session_id="SESSION-1",
+            capture_session_id=capture.id,
+            interrogation_session_id=interrogation.id,
             calibration_id=second.id,
             threshold=0.75,
             margin=0.08,
@@ -66,7 +89,7 @@ def test_calibration_history_is_append_only_and_snapshot_is_immutable(tmp_path):
         )
         db.commit()
 
-        loaded = repo.get_session_snapshot(db, "CAPTURE-1")
+        loaded = repo.get_session_snapshot(db, capture.id)
         assert loaded is not None
         assert loaded.id == snapshot.id
         assert loaded.calibration_id == second.id
