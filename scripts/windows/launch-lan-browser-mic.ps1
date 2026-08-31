@@ -63,23 +63,26 @@ if (-not $browserExe) {
     throw '未找到 Edge/Chrome。可安装后重试，或用 -Browser edge / chrome 指定。'
 }
 
-$builder = [System.UriBuilder]$uri
-$query = [System.Web.HttpUtility]::ParseQueryString($builder.Query)
-$query['audioInput'] = 'browser'
-$builder.Query = $query.ToString()
-$target = $builder.Uri.AbsoluteUri
+$authority = $uri.GetLeftPart([System.UriPartial]::Authority)
+$path = if ([string]::IsNullOrWhiteSpace($uri.AbsolutePath)) { '/' } else { $uri.AbsolutePath }
+$target = "$authority$path"
+if ($uri.Query) {
+    $target = "$target$($uri.Query)&audioInput=browser"
+} else {
+    $target = "$target?audioInput=browser"
+}
 
 $profile = Join-Path $env:TEMP 'suspect-interrogation-lan-browser-profile'
 New-Item -ItemType Directory -Force -Path $profile | Out-Null
 
 $args = @(
     "--user-data-dir=$profile",
-    "--unsafely-treat-insecure-origin-as-secure=$($uri.GetLeftPart([System.UriPartial]::Authority))",
+    "--unsafely-treat-insecure-origin-as-secure=$authority",
     '--new-window',
     $target
 )
 
-Write-Host "LAN browser microphone test origin: $($uri.GetLeftPart([System.UriPartial]::Authority))"
+Write-Host "LAN browser microphone test origin: $authority"
 Write-Host '浏览器打开后，请在地址栏左侧站点权限中允许“麦克风”。'
 Write-Host '此模式不会创建公网入口，也不会使用 FRP。'
 Start-Process -FilePath $browserExe -ArgumentList $args

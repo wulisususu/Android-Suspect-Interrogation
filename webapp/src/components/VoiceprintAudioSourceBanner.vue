@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, unref, type Ref } from 'vue'
 import type { VoiceprintAudioSource } from '../api/browserVoiceprint'
+import { audioInputMode } from '../config/audioInput'
 
 const props = defineProps<{
   source: VoiceprintAudioSource | null | Ref<VoiceprintAudioSource | null>
@@ -9,19 +10,25 @@ const props = defineProps<{
 }>()
 
 const sourceValue = computed(() => unref(props.source))
-const reasonValue = computed(() => unref(props.reason))
+const effectiveSource = computed<VoiceprintAudioSource>(() => sourceValue.value ?? audioInputMode)
+const reasonValue = computed(() => {
+  if (sourceValue.value) return unref(props.reason)
+  return effectiveSource.value === 'BROWSER'
+    ? '局域网测试模式：固定使用当前 Windows 浏览器麦克风；失败会直接提示，不回退 Linux 麦克风。'
+    : '生产模式：固定使用 Linux 一体机 ALSA 麦克风，不请求浏览器权限。'
+})
 const secureContextValue = computed(() => unref(props.secureContext))
 </script>
 
 <template>
-  <aside class="voiceprint-source-banner" :class="sourceValue?.toLowerCase() || 'auto'" aria-live="polite">
+  <aside class="voiceprint-source-banner" :class="effectiveSource.toLowerCase()" aria-live="polite">
     <div>
-      <strong v-if="sourceValue === 'BROWSER'">音源：本机浏览器麦克风（远程）</strong>
-      <strong v-else-if="sourceValue === 'ALSA'">音源：RK3588 开发板麦克风（现场）</strong>
-      <strong v-else>AUTO 声纹音源</strong>
+      <strong v-if="effectiveSource === 'BROWSER'">音源：Windows 浏览器麦克风（局域网测试）</strong>
+      <strong v-else>音源：Linux 一体机麦克风（生产）</strong>
       <span>{{ reasonValue }}</span>
     </div>
-    <span class="security-chip" :class="{ secure: secureContextValue }">{{ secureContextValue ? 'HTTPS/安全上下文' : 'HTTP/非安全上下文' }}</span>
+    <span v-if="effectiveSource === 'BROWSER'" class="security-chip" :class="{ secure: secureContextValue }">{{ secureContextValue ? '浏览器麦克风上下文可用' : '需用 LAN 测试启动脚本' }}</span>
+    <span v-else class="security-chip secure">ALSA 本机音源</span>
   </aside>
 </template>
 
