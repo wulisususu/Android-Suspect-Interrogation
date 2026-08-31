@@ -213,21 +213,26 @@ def update_fragment(
     except ValueError as exc:
         raise DomainError("INVALID_SPEAKER_ROLE", "无效的说话人角色", 400) from exc
 
+    speaker_changed = role.value != fragment.speaker
     before = {
         "edited_text": fragment.edited_text,
         "speaker": fragment.speaker,
+        "speaker_id": fragment.speaker_id,
+        "speaker_name": fragment.speaker_name,
         "speaker_source": fragment.speaker_source,
+        "voiceprint_verified": fragment.voiceprint_verified,
+        "low_confidence": fragment.low_confidence,
     }
     row = asr_repo.update_fragment(
         db,
         fragment_id=fragment_id,
         edited_text=body.edited_text,
         speaker=role.value,
-        speaker_id=None,
-        speaker_name=None,
-        speaker_source=SpeakerSource.MANUAL.value,
-        voiceprint_verified=False,
-        low_confidence=role is SpeakerRole.UNKNOWN,
+        speaker_id=None if speaker_changed else fragment.speaker_id,
+        speaker_name=None if speaker_changed else fragment.speaker_name,
+        speaker_source=(SpeakerSource.MANUAL.value if speaker_changed else fragment.speaker_source),
+        voiceprint_verified=False if speaker_changed else fragment.voiceprint_verified,
+        low_confidence=(role is SpeakerRole.UNKNOWN if speaker_changed else fragment.low_confidence),
     )
     audit_repo.add(
         db,
@@ -240,9 +245,16 @@ def update_fragment(
         after={
             "edited_text": row.edited_text,
             "speaker": row.speaker,
+            "speaker_id": row.speaker_id,
+            "speaker_name": row.speaker_name,
             "speaker_source": row.speaker_source,
+            "voiceprint_verified": row.voiceprint_verified,
+            "low_confidence": row.low_confidence,
         },
-        detail={"raw_text_unchanged": True},
+        detail={
+            "raw_text_unchanged": True,
+            "speaker_changed": speaker_changed,
+        },
     )
     db.commit()
     return _fragment_payload(row)
