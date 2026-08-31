@@ -36,4 +36,27 @@ mkdir -p "$TMP_ROOT/release-under-test"
 SUSPECT_SKIP_DEP_INSTALL=1 install_python_dependencies "$TMP_ROOT/release-under-test"
 [[ -x "$TMP_ROOT/release-under-test/.venv/bin/python" ]]
 
+# Production migrations are part of the release transaction. The helper must
+# run Alembic against the staged release while loading the production runtime
+# environment, before the release is switched live.
+MIGRATION_RELEASE="$TMP_ROOT/migration-release"
+mkdir -p "$MIGRATION_RELEASE/.venv/bin" "$MIGRATION_RELEASE/linux/backend" "$TMP_ROOT/etc" "$TMP_ROOT/data"
+touch "$MIGRATION_RELEASE/linux/backend/alembic.ini"
+cat >"$TMP_ROOT/etc/runtime.env" <<EOF
+SUSPECT_DB_PATH=$TMP_ROOT/data/interrogation.db
+EOF
+cat >"$MIGRATION_RELEASE/.venv/bin/python" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'args=%s\n' "$*" >"$MIGRATION_TRACE"
+printf 'db=%s\n' "${SUSPECT_DB_PATH:-}" >>"$MIGRATION_TRACE"
+printf 'pythonpath=%s\n' "${PYTHONPATH:-}" >>"$MIGRATION_TRACE"
+EOF
+chmod +x "$MIGRATION_RELEASE/.venv/bin/python"
+export MIGRATION_TRACE="$TMP_ROOT/migration.trace"
+SUSPECT_ETC_DIR="$TMP_ROOT/etc" apply_database_migrations "$MIGRATION_RELEASE"
+grep -q 'args=-m alembic -c .*alembic.ini upgrade head' "$MIGRATION_TRACE"
+grep -q "db=$TMP_ROOT/data/interrogation.db" "$MIGRATION_TRACE"
+grep -q "pythonpath=$MIGRATION_RELEASE/linux/backend" "$MIGRATION_TRACE"
+
 echo "deploy control contract: ok"
