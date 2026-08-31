@@ -228,6 +228,8 @@ export class LinuxHttpWsAdapter implements RuntimeAdapter {
   async invoke<T>(operation: RuntimeOperation, payload: Record<string, unknown> = {}, options: RuntimeInvokeOptions = {}): Promise<T> {
     let browserBackendStarted = false
     try {
+      const stoppingBrowserCapture = audioInputMode === 'BROWSER' && operation === 'asr.capture.stop'
+      if (stoppingBrowserCapture) await stopBrowserAsrCapture().catch(() => undefined)
       const config = endpoint(operation, payload)
       if (options.timeoutMs) config.timeout = options.timeoutMs
       const response = await this.request<T>(config)
@@ -241,7 +243,6 @@ export class LinuxHttpWsAdapter implements RuntimeAdapter {
         await startBrowserAsrCapture(String(payload.caseId ?? ''), captureId, runtimeConfig.apiBaseUrl)
       }
 
-      if (audioInputMode === 'BROWSER' && operation === 'asr.capture.stop') await stopBrowserAsrCapture()
       return result
     } catch (error) {
       if (audioInputMode === 'BROWSER' && operation === 'asr.capture.start') {
