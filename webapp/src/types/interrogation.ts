@@ -183,6 +183,42 @@ export interface AsrAudioReference {
   available: boolean
 }
 
+export interface AsrRecognitionEvidence {
+  evidenceId: string
+  aiSpeaker: TemporaryAsrSpeaker
+  speakerId?: string | null
+  speakerName?: string | null
+  speakerSource: AsrSpeakerSource
+  score?: number | null
+  secondBestScore?: number | null
+  threshold?: number | null
+  margin?: number | null
+  thresholdSource?: string | null
+  voiceprintVerified: boolean
+  lowConfidence: boolean
+  asrModelId?: string | null
+  asrModelVersion?: string | null
+  speakerModelId?: string | null
+  speakerModelVersion?: string | null
+  speakerModelFingerprint?: string | null
+  microphoneFingerprint?: string | null
+  calibrationId?: string | null
+  calibrationStatus?: string | null
+  createdAt?: number | null
+}
+
+export interface AsrRecognitionRevision {
+  revisionId: string
+  revisionNo: number
+  beforeSpeaker: TemporaryAsrSpeaker
+  afterSpeaker: TemporaryAsrSpeaker
+  beforeText: string
+  afterText: string
+  actorId?: string | null
+  reason?: string | null
+  createdAt?: number | null
+}
+
 export interface TemporaryAsrFragment {
   id: string
   captureSessionId: string
@@ -209,6 +245,8 @@ export interface TemporaryAsrFragment {
   confirmedMessageId?: string | null
   modelId?: string | null
   modelVersion?: string | null
+  recognitionEvidence?: AsrRecognitionEvidence | null
+  recognitionRevisions: AsrRecognitionRevision[]
   audio: AsrAudioReference
   createdAt: number
   updatedAt: number
