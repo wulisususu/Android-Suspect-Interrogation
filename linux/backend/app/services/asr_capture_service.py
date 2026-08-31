@@ -11,6 +11,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+from app.ai.speech.calibration import MODEL_BASELINE_THRESHOLD
 from app.ai.speech.types import SpeechEvent, SpeechEventType
 from app.database.models import (
     ASRCaptureSession,
@@ -94,7 +95,6 @@ class AsrCaptureService:
         case_id = str(case_id).strip()
         if not case_id:
             raise DomainError("CASE_ID_REQUIRED", "案件编号不能为空", 400)
-        self._require_calibration()
 
         with self._lock:
             existing = self._active.get(case_id)
@@ -418,11 +418,39 @@ class AsrCaptureService:
                 interrogation_session_id=runtime.interrogation_session_id,
                 speaker_event=speaker_event,
             )
+
+            configured_threshold = getattr(self.ai_supervisor, "speaker_accept_threshold", None)
+            threshold = (
+                MODEL_BASELINE_THRESHOLD
+                if configured_threshold is None
+                else float(configured_threshold)
+            )
+            threshold_source = str(
+                getattr(
+                    self.ai_supervisor,
+                    "speaker_threshold_source",
+                    "MODEL_BASELINE" if configured_threshold is None else "DEVICE_CALIBRATED",
+                )
+            )
+            configured_margin = getattr(self.ai_supervisor, "speaker_margin", None)
+            persisted_margin = None if configured_margin is None else float(configured_margin)
+
+            # A calibrated margin is needed only for comparing multiple enrolled
+            # references. Without it, formal interrogation remains available but
+            # deliberately degrades to suspect-only verification.
+            decision_roles = enabled_roles
+            decision_candidates = candidates
+            if persisted_margin is None:
+                decision_roles = {SpeakerRole.SUSPECT}
+                decision_candidates = [
+                    item for item in candidates if item.get("role") is SpeakerRole.SUSPECT
+                ]
+
             decision = decide_speaker(
-                candidates=candidates,
-                enabled_roles=enabled_roles,
-                threshold=float(self.ai_supervisor.speaker_accept_threshold),
-                margin=float(self.ai_supervisor.speaker_margin),
+                candidates=decision_candidates,
+                enabled_roles=decision_roles,
+                threshold=threshold,
+                margin=0.0 if persisted_margin is None else persisted_margin,
                 usable_duration_ms=max(0, end_ms - start_ms),
                 overlap=bool(
                     (asr_event.details or {}).get("overlap")
@@ -444,7 +472,7 @@ class AsrCaptureService:
                 speaker_score=decision.score,
                 second_best_score=decision.second_best_score,
                 speaker_threshold=decision.threshold,
-                speaker_margin=decision.margin,
+                speaker_margin=persisted_margin,
                 speaker_source=decision.source.value,
                 voiceprint_verified=decision.voiceprint_verified,
                 low_confidence=decision.low_confidence,
@@ -456,12 +484,15 @@ class AsrCaptureService:
                 case_id=runtime.case_id,
                 fragment_id=fragment.id,
                 decision=decision,
+                threshold_source=threshold_source,
+                margin=persisted_margin,
                 usable_duration_ms=max(0, end_ms - start_ms),
                 asr_event=asr_event,
             )
             db.commit()
             fragment_id = fragment.id
             payload = self._fragment_payload(fragment)
+            payload["thresholdSource"] = threshold_source
 
         runtime.ordinal += 1
         self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)
@@ -479,6 +510,8 @@ class AsrCaptureService:
         case_id: str,
         fragment_id: str,
         decision,
+        threshold_source: str,
+        margin: float | None,
         usable_duration_ms: int,
         asr_event: SpeechEvent,
     ) -> None:
@@ -494,7 +527,8 @@ class AsrCaptureService:
             "score": decision.score,
             "second_best_score": decision.second_best_score,
             "threshold": decision.threshold,
-            "margin": decision.margin,
+            "threshold_source": threshold_source,
+            "margin": margin,
             "usable_duration_ms": int(usable_duration_ms),
         }
         if event_details.get("speaker_unavailable"):
@@ -514,6 +548,7 @@ class AsrCaptureService:
                 "speaker_source": decision.source.value,
                 "voiceprint_verified": decision.voiceprint_verified,
                 "low_confidence": decision.low_confidence,
+                "threshold_source": threshold_source,
             },
             detail=detail,
         )
@@ -589,17 +624,6 @@ class AsrCaptureService:
             return
         enabled.add(role)
         references.append((role, officer, officer.officer_id, officer.officer_name))
-
-    def _require_calibration(self) -> None:
-        if (
-            getattr(self.ai_supervisor, "speaker_accept_threshold", None) is None
-            or getattr(self.ai_supervisor, "speaker_margin", None) is None
-        ):
-            raise DomainError(
-                "SPEAKER_CALIBRATION_REQUIRED",
-                "声纹阈值和区分 margin 尚未完成设备实测校准",
-                503,
-            )
 
     def _finish_capture_row(self, capture_session_id: str) -> None:
         with self.session_factory() as db:
@@ -716,6 +740,7 @@ class AsrCaptureService:
         active: bool,
         last_error: str | None,
     ) -> dict[str, Any]:
+        configured_threshold = getattr(self.ai_supervisor, "speaker_accept_threshold", None)
         return {
             "caseId": runtime.case_id,
             "active": active,
@@ -723,6 +748,19 @@ class AsrCaptureService:
             "interrogationSessionId": runtime.interrogation_session_id,
             "status": "CAPTURING" if active else "STOPPED",
             "sampleRate": self.sample_rate,
+            "speakerThreshold": (
+                MODEL_BASELINE_THRESHOLD
+                if configured_threshold is None
+                else float(configured_threshold)
+            ),
+            "thresholdSource": str(
+                getattr(
+                    self.ai_supervisor,
+                    "speaker_threshold_source",
+                    "MODEL_BASELINE" if configured_threshold is None else "DEVICE_CALIBRATED",
+                )
+            ),
+            "speakerMarginConfigured": getattr(self.ai_supervisor, "speaker_margin", None) is not None,
             "lastError": last_error,
         }
 
