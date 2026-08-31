@@ -11,6 +11,7 @@ import type {
   DocumentSigningState,
   SessionState,
   TemporaryAsrFragment,
+  TemporaryAsrSpeaker,
 } from '../types/interrogation'
 import type {
   CaseQuestionCreateInput,
@@ -63,6 +64,7 @@ const emit = defineEmits<{
   reassociateRound: [roundId: string, input: RoundReassociateInput]
   updateAnswer: [roundId: string, answerText: string]
   saveLibrary: [questionId: string]
+  correctFragment: [fragmentId: string, speaker: TemporaryAsrSpeaker, reason: string]
 }>()
 
 type SignaturePoint = { x: number; y: number; t: number; p: number }
@@ -175,12 +177,7 @@ function prepareCanvas() {
 
 function pointFromEvent(event: PointerEvent): SignaturePoint {
   const rect = signatureCanvas.value?.getBoundingClientRect()
-  return {
-    x: event.clientX - (rect?.left || 0),
-    y: event.clientY - (rect?.top || 0),
-    t: Date.now(),
-    p: event.pressure || 0.5,
-  }
+  return { x: event.clientX - (rect?.left || 0), y: event.clientY - (rect?.top || 0), t: Date.now(), p: event.pressure || 0.5 }
 }
 
 function drawSegment(from: SignaturePoint, to: SignaturePoint) {
@@ -308,6 +305,7 @@ async function confirmSignature() {
         :capture-elapsed-ms="captureElapsedMs"
         @capture-toggle="toggleCapture"
         @resolve-pending="(id, resolution) => emit('resolvePending', id, resolution)"
+        @correct-fragment="(id, speaker, reason) => emit('correctFragment', id, speaker, reason)"
       />
     </div>
 
