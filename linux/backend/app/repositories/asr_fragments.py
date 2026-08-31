@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.database.models import ASRCaptureSession, ASRFragment, Message, ProcessedSpeechFragment
 from app.domain.errors import DomainError
+from app.repositories import audit as audit_repo
+from app.repositories import speaker_calibrations as calibration_repo
 
 
 def create_capture_session(
@@ -109,6 +111,11 @@ def create_fragment(
     speaker_threshold: float | None = None,
     speaker_margin: float | None = None,
     model_version: str | None = None,
+    speaker_threshold_source: str | None = None,
+    speaker_model_id: str | None = None,
+    speaker_model_version: str | None = None,
+    speaker_model_fingerprint: str | None = None,
+    microphone_fingerprint: str | None = None,
 ) -> ASRFragment:
     if ordinal < 0 or started_at_ms < 0 or ended_at_ms < started_at_ms:
         raise DomainError("INVALID_ASR_FRAGMENT_RANGE", "ASR 片段序号或时间范围无效", 400)
@@ -140,6 +147,46 @@ def create_fragment(
     )
     db.add(item)
     db.flush()
+
+    snapshot = calibration_repo.get_session_snapshot(db, capture_session_id)
+    threshold_source = speaker_threshold_source
+    if threshold_source is None and snapshot is not None:
+        threshold_source = snapshot.threshold_source
+    if speaker_model_fingerprint is None and snapshot is not None:
+        speaker_model_fingerprint = snapshot.speaker_model_fingerprint
+    if microphone_fingerprint is None and snapshot is not None:
+        microphone_fingerprint = snapshot.microphone_fingerprint
+
+    audit_repo.add(
+        db,
+        case_id=case_id,
+        action="ASR_SPEAKER_DECISION",
+        target_type="ASR_FRAGMENT",
+        target_id=item.id,
+        after={
+            "speaker": item.speaker,
+            "speaker_id": item.speaker_id,
+            "speaker_name": item.speaker_name,
+            "speaker_source": item.speaker_source,
+            "voiceprint_verified": item.voiceprint_verified,
+            "low_confidence": item.low_confidence,
+        },
+        detail={
+            "score": item.speaker_score,
+            "second_best_score": item.second_best_score,
+            "threshold": item.speaker_threshold,
+            "margin": item.speaker_margin,
+            "threshold_source": threshold_source,
+            "asr_model_id": item.model_id,
+            "asr_model_version": item.model_version,
+            "speaker_model_id": speaker_model_id,
+            "speaker_model_version": speaker_model_version,
+            "speaker_model_fingerprint": speaker_model_fingerprint,
+            "microphone_fingerprint": microphone_fingerprint,
+            "calibration_id": None if snapshot is None else snapshot.calibration_id,
+            "calibration_status": None if snapshot is None else snapshot.calibration_status,
+        },
+    )
     return item
 
 
