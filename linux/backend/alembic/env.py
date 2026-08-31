@@ -7,7 +7,9 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from app.database.base import Base
-import app.database.models  # noqa: F401 - registers all ORM tables
+import app.database.models  # noqa: F401 - registers core ORM tables
+import app.database.recognition_models  # noqa: F401 - registers recognition evidence tables
+import app.database.voiceprint_models  # noqa: F401 - registers global voiceprint/calibration tables
 
 config = context.config
 if config.config_file_name is not None:
@@ -44,10 +46,6 @@ def run_migrations_online() -> None:
     )
     with connectable.connect() as connection:
         if connection.dialect.name == "sqlite":
-            # SQLAlchemy 2.x autobegins a transaction for exec_driver_sql().
-            # Commit the PRAGMA transaction before Alembic opens its migration
-            # transaction, otherwise version-table writes can be rolled back on
-            # connection close even though SQLite DDL appears to have succeeded.
             connection.exec_driver_sql("PRAGMA foreign_keys=ON")
             connection.commit()
         context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
