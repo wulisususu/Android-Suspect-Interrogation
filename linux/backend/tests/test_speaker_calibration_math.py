@@ -39,7 +39,7 @@ def test_far_and_frr_use_genuine_and_all_impostor_trials():
         CalibrationProbe("B", genuine_score=0.80, impostor_scores=(0.70, 0.20)),
     ]
 
-    conservative = evaluate_operating_point(probes, threshold=0.75, margin=0.0)
+    conservative = evaluate_operating_point(probes, threshold=0.85, margin=0.0)
     assert conservative.frr == pytest.approx(0.5)
     assert conservative.far == pytest.approx(0.0)
     assert conservative.genuine_trial_count == 2
