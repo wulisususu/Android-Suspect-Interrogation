@@ -223,7 +223,7 @@ class SpeechSession:
 
         # ASR is authoritative for text. Its failure must propagate so callers
         # never fabricate a transcript. Speaker attribution is independent and
-        # is allowed to degrade to UNKNOWN when XVector is unavailable.
+        # may degrade to UNKNOWN when the configured speaker backend is unavailable.
         asr = self.runtime.transcribe(utterance_pcm, self.sample_rate)
         common_details: dict[str, Any] = {"forced_final": True} if forced_final else {}
         speaker: dict[str, Any] | None = None
@@ -259,11 +259,27 @@ class SpeechSession:
             ),
         ]
         if speaker is not None:
-            speaker_details: dict[str, Any] = {"forced_final": True} if forced_final else {}
+            backend_key = str(speaker.get("backend_key") or "").strip()
+            model_id = str(speaker.get("model_id") or "").strip()
+            if not backend_key or not model_id:
+                raise WorkerCrashedError(
+                    "speaker result did not contain required model metadata",
+                    details={
+                        "has_backend_key": bool(backend_key),
+                        "has_model_id": bool(model_id),
+                    },
+                )
+
+            speaker_details: dict[str, Any] = {
+                "backend_key": backend_key,
+                **({"forced_final": True} if forced_final else {}),
+            }
             if speaker.get("model_version") is not None:
                 speaker_details["model_version"] = str(speaker["model_version"])
             if speaker.get("model_fingerprint") is not None:
                 speaker_details["model_fingerprint"] = str(speaker["model_fingerprint"])
+            if speaker.get("latency_ms") is not None:
+                speaker_details["latency_ms"] = float(speaker["latency_ms"])
             events.append(
                 SpeechEvent(
                     type=SpeechEventType.SPEAKER_RESULT,
@@ -271,7 +287,7 @@ class SpeechSession:
                     start_ms=start_ms,
                     end_ms=end_ms,
                     embedding=[float(value) for value in speaker.get("embedding", [])],
-                    model_id=str(speaker.get("model_id") or "xvector"),
+                    model_id=model_id,
                     details=speaker_details,
                 )
             )
