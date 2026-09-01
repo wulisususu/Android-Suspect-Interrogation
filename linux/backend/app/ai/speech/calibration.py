@@ -8,7 +8,13 @@ from dataclasses import dataclass
 _ACCEPT_THRESHOLD_ENV = "SUSPECT_SPEAKER_ACCEPT_THRESHOLD"
 _MARGIN_ENV = "SUSPECT_SPEAKER_MARGIN"
 _BASELINE_THRESHOLD_ENV = "SUSPECT_SPEAKER_BASELINE_THRESHOLD"
-MODEL_BASELINE_THRESHOLD = 0.70
+
+# The production legacy FunASR/ModelScope XVector runtime uses the historical
+# Speech2Xvector `resnet1_dense` speaker-verification pipeline. Its model-level
+# operating point is 0.9465. Device calibration remains authoritative when a
+# valid calibration exists; this value is only the safe uncalibrated fallback.
+LEGACY_XVECTOR_BASELINE_THRESHOLD = 0.9465
+MODEL_BASELINE_THRESHOLD = LEGACY_XVECTOR_BASELINE_THRESHOLD
 
 
 def _optional_unit_float(name: str) -> float | None:
