@@ -50,5 +50,8 @@ jobs:
             linux/backend/tests/test_speech_session.py \
             linux/backend/tests/test_dual_speaker_voiceprint_persistence.py \
             linux/backend/tests/test_dual_speaker_voiceprint_migration.py \
+            linux/backend/tests/test_voiceprint_repositories.py \
+            linux/backend/tests/test_officer_voiceprint_library.py \
+            linux/backend/tests/test_migrations.py \
             tests/release/test_funasr_probe_script.py \
             -q
