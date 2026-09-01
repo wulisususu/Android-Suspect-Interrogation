@@ -51,24 +51,6 @@ class FakeLlamaPiHandler(BaseHTTPRequestHandler):
             "candidate_question_ids": [],
             "reason_code": "NEW_SPOKEN_QUESTION",
         },
-        {
-            "classification": "NEEDS_REVIEW",
-            "target_question_id": None,
-            "formal_question": None,
-            "formal_answer": None,
-            "confidence": 0.55,
-            "candidate_question_ids": ["case-time", "case-leave"],
-            "reason_code": "AMBIGUOUS_REFERENCE",
-        },
-        {
-            "classification": "IGNORE",
-            "target_question_id": None,
-            "formal_question": None,
-            "formal_answer": None,
-            "confidence": 0.99,
-            "candidate_question_ids": [],
-            "reason_code": "OPERATIONAL_CHATTER",
-        },
     ]
     requests: list[dict] = []
 
@@ -109,7 +91,7 @@ class FakeLlamaPiHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def test_probe_runs_all_five_classes_with_thinking_disabled(tmp_path, monkeypatch):
+def test_probe_runs_five_effective_classes_but_only_three_model_inferences(tmp_path, monkeypatch):
     probe = load_probe_module()
     FakeLlamaPiHandler.requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlamaPiHandler)
@@ -137,6 +119,8 @@ def test_probe_runs_all_five_classes_with_thinking_disabled(tmp_path, monkeypatc
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["success"] is True
     assert report["model_id"] == "qwen3:4b@rk3588"
+    assert report["effective_decision_count"] == 5
+    assert report["model_inference_count"] == 3
     assert [row["case"] for row in report["cases"]] == ["A", "B", "C", "D", "E"]
     assert [row["classification"] for row in report["cases"]] == [
         "MATCH_FIXED",
@@ -146,9 +130,12 @@ def test_probe_runs_all_five_classes_with_thinking_disabled(tmp_path, monkeypatc
         "IGNORE",
     ]
     assert all(row["passed"] for row in report["cases"])
+    assert [row["route_source"] for row in report["cases"]] == ["MODEL", "MODEL", "MODEL", "PRECHECK", "PRECHECK"]
     assert all(isinstance(row["latency_ms"], (int, float)) and row["latency_ms"] >= 0 for row in report["cases"])
+    assert report["cases"][3]["raw_decision"] is None
+    assert report["cases"][4]["raw_decision"] is None
 
-    assert len(FakeLlamaPiHandler.requests) == 5
+    assert len(FakeLlamaPiHandler.requests) == 3
     for request in FakeLlamaPiHandler.requests:
         assert request["model"] == "qwen3:4b@rk3588"
         assert request["stream"] is False
@@ -156,7 +143,7 @@ def test_probe_runs_all_five_classes_with_thinking_disabled(tmp_path, monkeypatc
         assert request["temperature"] <= 0.2
 
 
-def test_probe_can_measure_twenty_requests_and_report_percentiles(tmp_path, monkeypatch):
+def test_probe_can_measure_twenty_effective_decisions_with_twelve_model_inferences(tmp_path, monkeypatch):
     probe = load_probe_module()
     FakeLlamaPiHandler.requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlamaPiHandler)
@@ -187,9 +174,11 @@ def test_probe_can_measure_twenty_requests_and_report_percentiles(tmp_path, monk
     assert report["success"] is True
     assert report["repetitions"] == 4
     assert len(report["samples"]) == 20
-    assert len(FakeLlamaPiHandler.requests) == 20
+    assert report["effective_decision_count"] == 20
+    assert report["model_inference_count"] == 12
+    assert len(FakeLlamaPiHandler.requests) == 12
     latency = report["latency_ms"]
-    assert latency["count"] == 20
+    assert latency["count"] == 12
     assert 0 <= latency["p50"] <= latency["p95"] <= latency["max"]
 
 
