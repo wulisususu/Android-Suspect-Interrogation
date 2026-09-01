@@ -11,6 +11,7 @@ from app.domain.errors import DomainError
 from app.repositories import asr_fragments as asr_repo
 from app.repositories import question_rounds as rounds_repo
 from app.repositories import template_questions as question_repo
+from app.services.formal_record_policy import assert_formal_record_mutable
 from app.services.question_matching import (
     QuestionCandidate,
     QuestionMatchStatus,
@@ -44,6 +45,7 @@ class InterrogationProjectionService:
         processed = asr_repo.get_processed(self.db, fragment_id)
         if processed is not None:
             return self._processed_result(processed)
+        assert_formal_record_mutable(self.db, case_id)
         capture = asr_repo.get_capture_session(self.db, fragment.capture_session_id)
         session_id = capture.interrogation_session_id
         text = str(fragment.edited_text or fragment.raw_text or "").strip()
@@ -105,6 +107,7 @@ class InterrogationProjectionService:
 
     def add_pending_as_question(self, pending_id: str, *, after_question_id: str | None = None) -> dict:
         pending = self._pending_for_action(pending_id, allow_deferred=True)
+        assert_formal_record_mutable(self.db, pending.case_id)
         is_deferred = pending.status == "DEFERRED"
         after_id = after_question_id or self._last_formal_question_id(pending.case_id, pending.session_id)
         created = TemplateWorkspaceService(self.db).add_case_question(
@@ -130,6 +133,7 @@ class InterrogationProjectionService:
 
     def link_pending(self, pending_id: str, case_question_id: str, *, round_mode: str) -> dict:
         pending = self._pending_for_action(pending_id, allow_deferred=True)
+        assert_formal_record_mutable(self.db, pending.case_id)
         is_deferred = pending.status == "DEFERRED"
         mode = str(round_mode or "").upper()
         if mode not in _ALLOWED_ROUND_MODES:
@@ -169,12 +173,14 @@ class InterrogationProjectionService:
 
     def ignore_pending(self, pending_id: str) -> dict:
         pending = self._pending_for_action(pending_id, allow_deferred=True)
+        assert_formal_record_mutable(self.db, pending.case_id)
         pending.status = "IGNORED"
         self.db.flush()
         return pending_question_dict(pending)
 
     def update_round_answer(self, round_id: str, *, answer_text: str) -> dict:
         round_row = rounds_repo.get_round(self.db, round_id)
+        assert_formal_record_mutable(self.db, round_row.case_id)
         round_row.answer_text = str(answer_text or "").strip()
         self.db.flush()
         return question_round_dict(round_row)
@@ -187,6 +193,7 @@ class InterrogationProjectionService:
         new_question_text: str | None = None,
     ) -> dict:
         round_row = rounds_repo.get_round(self.db, round_id)
+        assert_formal_record_mutable(self.db, round_row.case_id)
         if case_question_id is None and not str(new_question_text or "").strip():
             round_row.status = "DETACHED"
             round_row.ended_at = datetime.now(timezone.utc)
