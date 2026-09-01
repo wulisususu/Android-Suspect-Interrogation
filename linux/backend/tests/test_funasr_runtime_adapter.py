@@ -113,6 +113,7 @@ def test_speaker_embedding_is_flat_normalized_float_list(tmp_path: Path):
     result = runtime.speaker_embedding(b"\x00\x00" * 1600, 16000)
 
     embedding = result["embedding"]
+    assert result["backend_key"] == "xvector"
     assert result["model_id"] == "xvector"
     assert embedding == pytest.approx([0.6, 0.8], abs=1e-6)
     assert all(isinstance(value, float) for value in embedding)
