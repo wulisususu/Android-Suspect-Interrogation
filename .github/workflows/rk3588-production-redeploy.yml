@@ -49,7 +49,9 @@ jobs:
           test -d "$FUNASR_MODEL_ROOT/fsmn-vad"
           test -d "$FUNASR_MODEL_ROOT/xvector"
           echo '--- preserve TCP/8000 ---'
-          sudo -n ss -ltnp 'sport = :8000' || true
+          tcp8000_before="$(sudo -n ss -H -ltnp 'sport = :8000' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' || true)"
+          printf '%s\n' "$tcp8000_before" | tee "$RUNNER_TEMP/tcp8000-before.txt"
+          test -n "$tcp8000_before"
           echo '--- current release before deploy ---'
           readlink -f /opt/suspect-interrogation/current || true
 
@@ -230,7 +232,7 @@ jobs:
           grep -q "base.protocol === 'https:' ? 'wss:' : 'ws:'" /opt/suspect-interrogation/current/webapp/src/audio/browserVoiceprintCapture.ts
 
           sudo -n bash -c 'set -a; source /etc/suspect-interrogation/runtime.env; set +a; cd /opt/suspect-interrogation/current/linux/backend; PYTHONPATH=/opt/suspect-interrogation/current/linux/backend /opt/suspect-interrogation/current/.venv/bin/python -m alembic -c alembic.ini current' | tee /tmp/suspect-alembic-current.txt
-          grep -q '0006_asr_recognition_evidence (head)' /tmp/suspect-alembic-current.txt
+          grep -q '0007_formal_record_sections (head)' /tmp/suspect-alembic-current.txt
 
           sudo -n -u suspect-interrogation env \
             PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \
@@ -279,7 +281,15 @@ jobs:
           echo '--- TCP/18080 HTTPS ---'
           sudo -n ss -ltnp "sport = :${SUSPECT_DEPLOY_PORT}" || true
           echo '--- TCP/8000 preserved ---'
-          sudo -n ss -ltnp 'sport = :8000' || true
+          tcp8000_after="$(sudo -n ss -H -ltnp 'sport = :8000' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' || true)"
+          printf '%s\n' "$tcp8000_after" | tee "$RUNNER_TEMP/tcp8000-after.txt"
+          test -n "$tcp8000_after"
+          if ! cmp -s "$RUNNER_TEMP/tcp8000-before.txt" "$RUNNER_TEMP/tcp8000-after.txt"; then
+            echo 'TCP/8000 listener changed during deployment; refusing successful deployment.' >&2
+            diff -u "$RUNNER_TEMP/tcp8000-before.txt" "$RUNNER_TEMP/tcp8000-after.txt" || true
+            exit 1
+          fi
+          echo 'tcp8000_identity=preserved'
 
       - name: Restart and verify kiosk when graphical session is available
         shell: bash
