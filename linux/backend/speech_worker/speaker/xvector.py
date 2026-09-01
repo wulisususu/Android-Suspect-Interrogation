@@ -89,6 +89,7 @@ class XVectorBackend:
         self._legacy_speaker_factory = legacy_speaker_factory
         self.model_version = model_version or os.environ.get("SUSPECT_XVECTOR_MODEL_VERSION", "local")
         self.model_fingerprint: str | None = None
+        self.fingerprint_error_type: str | None = None
         self.model: Any | None = None
         self.implementation: str | None = None
 
@@ -96,13 +97,22 @@ class XVectorBackend:
         self.model = None
         self.implementation = None
         self.model_fingerprint = None
+        self.fingerprint_error_type = None
         if not self.model_path.is_dir():
             raise ModelNotInstalledError(
                 "xvector model directory is not installed",
                 details={"model": self.model_id, "path": str(self.model_path)},
             )
 
-        self.model_fingerprint = fingerprint_model_directory(self.model_path)
+        try:
+            self.model_fingerprint = fingerprint_model_directory(self.model_path)
+        except Exception as exc:
+            # Fingerprint metadata is important for calibration staleness, but
+            # historical runtime behavior allowed speaker inference to remain
+            # available when fingerprinting itself failed.
+            self.model_fingerprint = None
+            self.fingerprint_error_type = type(exc).__name__
+
         primary_error: Exception | None = None
         try:
             self.model = self._model_factory(
