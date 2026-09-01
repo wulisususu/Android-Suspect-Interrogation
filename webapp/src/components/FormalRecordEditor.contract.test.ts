@@ -42,4 +42,8 @@ describe('formal record editor source contract', () => {
     expect(templateStore).toContain('interrogation.formalRecordRevision')
     expect(templateStore).toContain('watch(')
   })
+
+  it('retains raw-fragment workspace refresh as legacy-mode compatibility only', () => {
+    expect(templateStore).toContain('upsertDialogue(fragment, scope)\n    scheduleWorkspaceRefresh(scope)')
+  })
 })
