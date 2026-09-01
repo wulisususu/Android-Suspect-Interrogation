@@ -12,6 +12,23 @@ def replace_once(path: str, old: str, new: str) -> None:
     target.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+types_path = "webapp/src/types/templateInterrogation.ts"
+replace_once(
+    types_path,
+    "export type RoundStatus = 'ACTIVE' | 'CLOSED' | 'DETACHED'\n",
+    "export type RoundStatus = 'ACTIVE' | 'CLOSED' | 'DETACHED'\nexport type QARouteClass = 'MATCH_FIXED' | 'MATCH_EXISTING' | 'CREATE_LIVE_FROM_SPEECH' | 'NEEDS_REVIEW' | 'IGNORE'\n\nexport interface FormalQAUnit {\n  id: string; caseId: string; sessionId: string | null; status: 'OPEN' | 'CLOSED' | 'ROUTING' | 'ROUTED' | 'APPLIED' | 'NEEDS_REVIEW' | 'IGNORED'\n  classification: QARouteClass | null; rawQuestionText: string; rawAnswerText: string\n  formalQuestionText: string | null; formalAnswerText: string | null; targetQuestionId: string | null\n  candidateQuestionIds: string[]; questionFragmentIds: string[]; answerFragmentIds: string[]\n  confidence: number | null; modelId: string | null; reasonCode: string | null\n  startedAt: string | null; endedAt: string | null; createdAt: string | null; updatedAt: string | null\n}\n",
+)
+replace_once(
+    types_path,
+    "  templateItemKey: string | null; locked: boolean; sortOrder: number; active: boolean; rounds: FormalQuestionRound[]\n  createdAt: string | null; updatedAt: string | null\n",
+    "  templateItemKey: string | null; locked: boolean; formalAnswerText: string; firstAskedAt: string | null\n  sortOrder: number; active: boolean; rounds: FormalQuestionRound[]\n  createdAt: string | null; updatedAt: string | null\n",
+)
+replace_once(
+    types_path,
+    "export interface TemplateWorkspace {\n  caseId: string; templateKey?: string | null; questions: FormalQuestion[]; rounds: FormalQuestionRound[]; pendingQuestions: PendingFormalQuestion[]\n}\n",
+    "export interface TemplateWorkspace {\n  caseId: string; templateKey?: string | null; questions: FormalQuestion[]; rounds: FormalQuestionRound[]; pendingQuestions: PendingFormalQuestion[]; qaUnits: FormalQAUnit[]\n}\n",
+)
+
 formal = "webapp/src/components/FormalTemplatePanel.vue"
 replace_once(
     formal,
@@ -67,6 +84,11 @@ replace_once(
 )
 
 template_store = "webapp/src/stores/templateInterrogation.ts"
+replace_once(
+    template_store,
+    "function emptyWorkspace(caseId = ''): TemplateWorkspace {\n  return { caseId, questions: [], rounds: [], pendingQuestions: [] }\n}\n",
+    "function emptyWorkspace(caseId = ''): TemplateWorkspace {\n  return { caseId, questions: [], rounds: [], pendingQuestions: [], qaUnits: [] }\n}\n",
+)
 replace_once(
     template_store,
     "  let workspaceRefreshTimer: ReturnType<typeof setTimeout> | undefined\n  let captureBridgeStop: WatchStopHandle | undefined\n",
