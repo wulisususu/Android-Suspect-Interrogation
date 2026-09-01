@@ -1,0 +1,72 @@
+name: Apply compact probe CLI
+
+on:
+  push:
+    branches:
+      - perf/qwen-routing-latency-experiment
+    paths:
+      - '.github/workflows/perf-qwen-compact-cli-apply.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/qwen-routing-latency-experiment
+      - name: Apply exact compact CLI patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/ci/probe-llamapi-qwen-routing.py')
+          text = path.read_text(encoding='utf-8')
+
+          old_prompt_sig = '''def _prompt(case: dict[str, Any]) -> str:\n    context = {\n'''
+          new_prompt_sig = '''def _prompt(case: dict[str, Any], *, protocol: str = "full") -> str:\n    if protocol not in {"full", "compact"}:\n        raise ValueError("protocol must be full or compact")\n    context = {\n'''
+          if text.count(old_prompt_sig) != 1:
+              raise SystemExit(f'prompt signature anchor count={text.count(old_prompt_sig)}')
+          text = text.replace(old_prompt_sig, new_prompt_sig, 1)
+
+          old_prompt_return = '''    context_json = json.dumps(context, ensure_ascii=False, separators=(",", ":"))\n    return f"""你是完全离线运行的正式询问笔录问答归档路由器。\n只能根据真实 ASR 问答事实进行分类、匹配和忠实书面化，禁止补充不存在的人名、时间、地点、数量、动机、因果或确定性。存在歧义、冲突或对应关系不可靠时必须选择 NEEDS_REVIEW。\n分类只能为 MATCH_FIXED、MATCH_EXISTING、CREATE_LIVE_FROM_SPEECH、NEEDS_REVIEW、IGNORE 之一。\nMATCH_FIXED/MATCH_EXISTING 必须保留已有正式问题原文，只返回合并后的完整 formal_answer。CREATE_LIVE_FROM_SPEECH 只允许轻度书面化真实民警问题。IGNORE 不得产生正式内容。\n禁止输出思考过程或解释，只输出严格 JSON，且字段只能是 classification、target_question_id、formal_question、formal_answer、confidence、candidate_question_ids、reason_code。\n输入上下文 JSON：\n{context_json}\n"""\n'''
+          new_prompt_return = '''    context_json = json.dumps(context, ensure_ascii=False, separators=(",", ":"))\n    if protocol == "compact":\n        return f"""你是完全离线运行的正式询问笔录问答归档路由器。\n只能根据真实 ASR 问答事实进行匹配和忠实书面化，禁止补充不存在的人名、时间、地点、数量、动机、因果或确定性。D/E 已由确定性前置规则拦截，本实验模型阶段只处理 A/B/C。\nA=命中 locked=true 的 FIXED 已有问题；B=命中 CASE/LIVE 已有问题；C=真实民警问题不对应任何已有问题但属于有效新现场问答。\nA/B 只输出 {{"c":"A或B","t":"已有问题id","a":"完整书面答案"}}；C 只输出 {{"c":"C","q":"真实问题的轻度书面化","a":"完整书面答案"}}。不得解释，不得输出其他字段。\n输入上下文 JSON：\n{context_json}\n"""\n    return f"""你是完全离线运行的正式询问笔录问答归档路由器。\n只能根据真实 ASR 问答事实进行分类、匹配和忠实书面化，禁止补充不存在的人名、时间、地点、数量、动机、因果或确定性。存在歧义、冲突或对应关系不可靠时必须选择 NEEDS_REVIEW。\n分类只能为 MATCH_FIXED、MATCH_EXISTING、CREATE_LIVE_FROM_SPEECH、NEEDS_REVIEW、IGNORE 之一。\nMATCH_FIXED/MATCH_EXISTING 必须保留已有正式问题原文，只返回合并后的完整 formal_answer。CREATE_LIVE_FROM_SPEECH 只允许轻度书面化真实民警问题。IGNORE 不得产生正式内容。\n禁止输出思考过程或解释，只输出严格 JSON，且字段只能是 classification、target_question_id、formal_question、formal_answer、confidence、candidate_question_ids、reason_code。\n输入上下文 JSON：\n{context_json}\n"""\n'''
+          if text.count(old_prompt_return) != 1:
+              raise SystemExit(f'prompt return anchor count={text.count(old_prompt_return)}')
+          text = text.replace(old_prompt_return, new_prompt_return, 1)
+
+          old_args = '''    parser.add_argument("--repetitions", type=int, default=1, help="Number of A/B/C/D/E cycles; use 4 for the 20-decision RK3588 acceptance sample")\n    args = parser.parse_args(argv)\n'''
+          new_args = '''    parser.add_argument("--repetitions", type=int, default=1, help="Number of A/B/C/D/E cycles; use 4 for the 20-decision RK3588 acceptance sample")\n    parser.add_argument("--protocol", choices=("full", "compact"), default="full", help="Model response protocol; compact is experiment-only")\n    args = parser.parse_args(argv)\n'''
+          if text.count(old_args) != 1:
+              raise SystemExit(f'args anchor count={text.count(old_args)}')
+          text = text.replace(old_args, new_args, 1)
+
+          old_report = '''        "repetitions": args.repetitions,\n        "effective_decision_count": 0,\n'''
+          new_report = '''        "repetitions": args.repetitions,\n        "protocol": args.protocol,\n        "effective_decision_count": 0,\n'''
+          if text.count(old_report) != 1:
+              raise SystemExit(f'report anchor count={text.count(old_report)}')
+          text = text.replace(old_report, new_report, 1)
+
+          old_call = '''                        prompt = _prompt(case)\n                        raw_decision, latency_ms, telemetry = _complete(base_url, model_id, prompt, args.timeout)\n'''
+          new_call = '''                        prompt = _prompt(case, protocol=args.protocol)\n                        raw_decision, latency_ms, telemetry = _complete(\n                            base_url, model_id, prompt, args.timeout, protocol=args.protocol\n                        )\n'''
+          if text.count(old_call) != 1:
+              raise SystemExit(f'call anchor count={text.count(old_call)}')
+          text = text.replace(old_call, new_call, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          python -m py_compile scripts/ci/probe-llamapi-qwen-routing.py
+          rm .github/workflows/perf-qwen-compact-cli-apply.yml
+      - name: Commit exact patch and self-delete
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/ci/probe-llamapi-qwen-routing.py .github/workflows/perf-qwen-compact-cli-apply.yml
+          git commit -m 'feat: wire compact qwen probe protocol'
+          git push origin HEAD:perf/qwen-routing-latency-experiment
