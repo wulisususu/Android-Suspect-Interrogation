@@ -48,5 +48,7 @@ jobs:
             linux/backend/tests/test_xvector_backend.py \
             linux/backend/tests/test_eres2net_large_backend.py \
             linux/backend/tests/test_speech_session.py \
+            linux/backend/tests/test_dual_speaker_voiceprint_persistence.py \
+            linux/backend/tests/test_dual_speaker_voiceprint_migration.py \
             tests/release/test_funasr_probe_script.py \
             -q
