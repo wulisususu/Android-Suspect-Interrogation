@@ -45,5 +45,6 @@ jobs:
             linux/backend/tests/test_speaker_backend_registry.py \
             linux/backend/tests/test_funasr_runtime_adapter.py \
             linux/backend/tests/test_xvector_backend.py \
+            linux/backend/tests/test_eres2net_large_backend.py \
             linux/backend/tests/test_speech_session.py \
             -q
