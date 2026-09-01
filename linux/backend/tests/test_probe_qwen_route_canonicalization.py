@@ -35,7 +35,7 @@ class RealisticFourBHandler(BaseHTTPRequestHandler):
             "classification": "MATCH_FIXED",
             "target_question_id": "case-time",
             "formal_question": "你什么时候到现场？",
-            "formal_answer": "约20时15分到达现场。",
+            "formal_answer": "约20时到达现场。",
             "confidence": 0.95,
             "candidate_question_ids": ["case-time"],
             "reason_code": "MODEL_LABEL_MISMATCH",
@@ -98,7 +98,7 @@ class RealisticFourBHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def test_probe_preserves_raw_existing_route_mismatch_but_validates_effective_backend_route(tmp_path, monkeypatch):
+def test_probe_preserves_raw_model_output_but_validates_backend_effective_route(tmp_path, monkeypatch):
     probe = load_probe_module()
     RealisticFourBHandler.requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), RealisticFourBHandler)
@@ -134,6 +134,9 @@ def test_probe_preserves_raw_existing_route_mismatch_but_validates_effective_bac
 
     assert b["raw_decision"]["classification"] == "MATCH_FIXED"
     assert b["raw_decision"]["formal_question"] == "你什么时候到现场？"
+    assert b["raw_decision"]["formal_answer"] == "约20时到达现场。"
     assert b["decision"]["classification"] == "MATCH_EXISTING"
     assert b["decision"]["formal_question"] is None
+    assert b["decision"]["formal_answer"] == "大概晚上八点十五分。"
+    assert b["decision"]["reason_code"] == "FACT_LOSS_RAW_FALLBACK"
     assert b["passed"] is True
