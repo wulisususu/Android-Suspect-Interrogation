@@ -10,9 +10,11 @@ from app.database.base import Base, TimestampMixin, utc_now
 
 class OfficerVoiceProfile(TimestampMixin, Base):
     __tablename__ = "officer_voice_profiles"
+    __table_args__ = (UniqueConstraint("officer_id", "model_key", name="uq_officer_voice_profile_officer_model"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    officer_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    officer_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    model_key: Mapped[str] = mapped_column(String(64), default="xvector", nullable=False, index=True)
     officer_name: Mapped[str] = mapped_column(String(128), nullable=False)
     aggregate_embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -31,6 +33,7 @@ class OfficerVoiceSample(TimestampMixin, Base):
     profile_id: Mapped[str] = mapped_column(
         ForeignKey("officer_voice_profiles.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    model_key: Mapped[str] = mapped_column(String(64), default="xvector", nullable=False, index=True)
     embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
     model_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -68,6 +71,7 @@ class SessionOfficerVoiceSnapshot(Base):
     voiceprint_snapshot_id: Mapped[str] = mapped_column(
         ForeignKey("officer_voiceprints.id", ondelete="RESTRICT"), nullable=False
     )
+    model_key: Mapped[str] = mapped_column(String(64), default="xvector", nullable=False, index=True)
     model_id: Mapped[str] = mapped_column(String(128), nullable=False)
     model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
