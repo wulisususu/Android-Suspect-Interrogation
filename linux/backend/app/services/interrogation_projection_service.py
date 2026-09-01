@@ -35,6 +35,16 @@ def _json_list(raw: str) -> list[str]:
 
 
 class InterrogationProjectionService:
+    """Legacy deterministic regex projection compatibility path.
+
+    Production ASR capture reaches this service only when
+    ``formal_routing_mode == 'legacy'`` (AsrCaptureService has no Qwen fragment
+    sink). The explicit ``/speech-fragments/{id}/process`` API also keeps this
+    path available for rollback/manual compatibility. Qwen mode must not invoke
+    it in parallel with QARoutingCoordinator, otherwise one raw fragment could
+    produce two formal projections.
+    """
+
     def __init__(self, db: Session):
         self.db = db
 

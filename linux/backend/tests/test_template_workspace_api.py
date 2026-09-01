@@ -100,6 +100,9 @@ def test_fragment_processing_pending_actions_round_edit_and_reassociation(tmp_pa
         hardware_gateway=MockHardwareGateway(simulated=True),
     )
     with TestClient(app) as client:
+        # This endpoint intentionally remains even after Qwen routing is added:
+        # operators/releases can use it as the explicit legacy/manual fallback.
+        assert "/api/v1/cases/{case_id}/speech-fragments/{fragment_id}/process" in app.openapi()["paths"]
         case_id = create_case(client)
         first = payload(
             client.post(

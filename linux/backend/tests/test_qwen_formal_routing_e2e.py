@@ -160,7 +160,8 @@ def test_qwen_routing_e2e_preserves_raw_evidence_and_builds_formal_record(tmp_pa
                 unit = qa_repo.get(db, payload["qaUnitId"])
                 assert unit.status == "APPLIED"
                 assert unit.target_question_id == payload["targetQuestionId"]
-                assert CaseQuestion.__table__.c.formal_answer_text is not None
+                question = db.get(CaseQuestion, payload["targetQuestionId"])
+                assert question is not None and question.formal_answer_text
             commit_visible_events.append((session, event))
 
     coordinator = QARoutingCoordinator(
@@ -180,7 +181,8 @@ def test_qwen_routing_e2e_preserves_raw_evidence_and_builds_formal_record(tmp_pa
         def routed():
             with factory() as db:
                 rows = qa_repo.list_for_case(db, case_id)
-                return len(rows) == 6 and all(row.status != "OPEN" for row in rows)
+                terminal = {"APPLIED", "NEEDS_REVIEW", "IGNORED"}
+                return len(rows) == 6 and all(row.status in terminal for row in rows)
 
         wait_until(routed)
     finally:

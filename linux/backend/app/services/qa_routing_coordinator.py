@@ -20,6 +20,7 @@ from app.services.serializers import qa_unit_dict
 
 logger = logging.getLogger(__name__)
 PublishEvent = Callable[[str, str, dict[str, Any]], None]
+RouterFactory = Callable[[Any, Any], Any]
 
 
 class QARoutingCoordinator:
@@ -40,10 +41,15 @@ class QARoutingCoordinator:
         idle_close_seconds: float = 4.0,
         poll_interval: float = 0.25,
         queue_size: int = 256,
+        router_factory: RouterFactory | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.ai_supervisor = ai_supervisor
         self.publish_event = publish_event
+        # Injection is intentionally limited to semantic classification. The
+        # deterministic write service remains production-owned, so tests can
+        # drive A/B/C/D/E without granting a fake router database write access.
+        self.router_factory = router_factory or (lambda db, ai: FormalRecordRouter(db, ai_supervisor=ai))
         self.idle_close_seconds = max(0.01, float(idle_close_seconds))
         self.poll_interval = max(0.01, float(poll_interval))
         self._queue: queue.Queue[tuple[str, str, str] | None] = queue.Queue(maxsize=max(1, int(queue_size)))
@@ -196,7 +202,7 @@ class QARoutingCoordinator:
                     return
                 qa_repo.mark_routing(db, unit)
                 db.commit()
-                decision = FormalRecordRouter(db, ai_supervisor=self.ai_supervisor).route(unit.id)
+                decision = self.router_factory(db, self.ai_supervisor).route(unit.id)
                 try:
                     FormalRecordRoutingService(db).apply_auto(unit.id, decision)
                     payload = qa_unit_dict(unit)
