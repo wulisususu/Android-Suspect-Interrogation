@@ -101,6 +101,28 @@ def test_fixed_template_question_text_cannot_be_edited_or_soft_removed(db, case)
     assert remove_error.value.code == "FIXED_QUESTION_LOCKED"
 
 
+def test_fixed_question_answer_can_be_created_without_an_asr_round_and_freeze_blocks_later_edits(db, case):
+    svc = TemplateWorkspaceService(db)
+    workspace = svc.ensure_formal_record(case.id, template_key="SUSPECT_INQUIRY_V1")
+    fixed = next(q for q in workspace["questions"] if q["sectionType"] == "OPENING")
+    assert not [r for r in workspace["rounds"] if r["caseQuestionId"] == fixed["id"]]
+
+    created = svc.upsert_case_question_answer(case.id, fixed["id"], answer_text="听清楚了。")
+
+    assert created["caseQuestionId"] == fixed["id"]
+    assert created["answerText"] == "听清楚了。"
+    assert created["officerFragmentId"] is None
+    refreshed = svc.workspace(case.id)
+    assert [r["answerText"] for r in refreshed["rounds"] if r["caseQuestionId"] == fixed["id"]] == ["听清楚了。"]
+
+    case.workflow_state = "FROZEN"
+    case.document_status = "FROZEN"
+    db.commit()
+    with pytest.raises(DomainError) as error:
+        svc.upsert_case_question_answer(case.id, fixed["id"], answer_text="冻结后篡改。")
+    assert error.value.code == "FORMAL_RECORD_FROZEN"
+
+
 def test_body_questions_are_editable_removable_and_reorder_only_within_body(db, case):
     svc = TemplateWorkspaceService(db)
     first = svc.add_case_question(case.id, text="问题一？", source="CASE")
