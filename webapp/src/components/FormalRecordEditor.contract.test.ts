@@ -43,6 +43,7 @@ describe('formal record editor source contract', () => {
     expect(templateStore).toContain('watch(')
   })
 
+  // legacy routing emits ASR_FRAGMENT but no committed Qwen routing revision event.
   it('retains raw-fragment workspace refresh as legacy-mode compatibility only', () => {
     expect(templateStore).toContain('upsertDialogue(fragment, scope)\n    scheduleWorkspaceRefresh(scope)')
   })
