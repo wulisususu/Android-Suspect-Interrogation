@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - feat/qwen-formal-record-routing
+      - perf/qwen-routing-latency-experiment
     paths:
       - '.github/workflows/qwen-routing-dev-ci.yml'
       - 'linux/**'
