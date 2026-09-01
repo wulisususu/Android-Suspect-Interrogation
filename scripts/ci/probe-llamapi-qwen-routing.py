@@ -2,7 +2,7 @@
 """Read-only Qwen formal-record routing probe for the RK3588 LlamaPi runtime.
 
 The probe only performs HTTP reads/inference against the configured local
-OpenAI-compatible endpoint and writes its JSON evidence inside GitHub Actions
+OpenAI-compatible endpoint and writes JSON evidence inside GitHub Actions
 runtime directories. It does not manage services or model files.
 """
 
@@ -41,6 +41,32 @@ ROUTE_CLASSES = {
     "IGNORE",
 }
 FENCED_JSON = re.compile(r"\A```(?:json)?\s*(\{.*\})\s*```\Z", re.DOTALL | re.IGNORECASE)
+
+_CN_DIGITS = {
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+_CN_NUMBER = r"[零〇一二两三四五六七八九十百]+"
+_NUM_TOKEN = rf"(?:\d+(?:\.\d+)?|{_CN_NUMBER})"
+_TIME_RE = re.compile(
+    rf"(?P<daypart>凌晨|清晨|早上|上午|中午|下午|傍晚|晚上|夜里|夜间)?\s*"
+    rf"(?P<hour>{_NUM_TOKEN})\s*(?:点|时)"
+    rf"(?:(?P<minute>{_NUM_TOKEN})\s*分?)?"
+)
+_COLON_TIME_RE = re.compile(r"(?<!\d)(?P<hour>\d{1,2})\s*[:：]\s*(?P<minute>\d{1,2})(?!\d)")
+_QUANTITY_RE = re.compile(
+    rf"(?P<number>{_NUM_TOKEN})\s*(?:个)?(?P<unit>人|次|辆|件|元|岁|米|公里|天|年|月|日)"
+)
 
 
 class ProbeError(RuntimeError):
@@ -138,6 +164,80 @@ def _parse_decision(raw: str) -> dict[str, Any]:
     return payload
 
 
+def _parse_number(token: str) -> float | None:
+    clean = str(token or "").strip()
+    if not clean:
+        return None
+    try:
+        return float(clean)
+    except ValueError:
+        pass
+    if "百" in clean:
+        left, right = clean.split("百", 1)
+        hundreds = _CN_DIGITS.get(left[-1], 1) if left else 1
+        tail = _parse_number(right) if right else 0
+        return float(hundreds * 100 + (tail or 0))
+    if "十" in clean:
+        left, right = clean.split("十", 1)
+        tens = _CN_DIGITS.get(left[-1], 1) if left else 1
+        ones = _CN_DIGITS.get(right[0], 0) if right else 0
+        return float(tens * 10 + ones)
+    if all(char in _CN_DIGITS for char in clean):
+        value = 0
+        for char in clean:
+            value = value * 10 + _CN_DIGITS[char]
+        return float(value)
+    return None
+
+
+def _normalize_hour(hour: int, daypart: str | None) -> int:
+    if daypart in {"下午", "傍晚", "晚上", "夜里", "夜间"} and 1 <= hour < 12:
+        return hour + 12
+    if daypart == "中午" and 1 <= hour <= 5:
+        return hour + 12
+    return hour
+
+
+def _time_facts(text: str) -> set[tuple[int, int | None]]:
+    value = str(text or "")
+    facts: set[tuple[int, int | None]] = set()
+    for match in _COLON_TIME_RE.finditer(value):
+        hour = int(match.group("hour"))
+        minute = int(match.group("minute"))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            facts.add((hour, minute))
+    for match in _TIME_RE.finditer(value):
+        raw_hour = _parse_number(match.group("hour"))
+        if raw_hour is None or not raw_hour.is_integer():
+            continue
+        hour = _normalize_hour(int(raw_hour), match.group("daypart"))
+        raw_minute = match.group("minute")
+        minute: int | None = None
+        if raw_minute:
+            parsed_minute = _parse_number(raw_minute)
+            if parsed_minute is None or not parsed_minute.is_integer():
+                continue
+            minute = int(parsed_minute)
+        if 0 <= hour <= 23 and (minute is None or 0 <= minute <= 59):
+            facts.add((hour, minute))
+    return facts
+
+
+def _quantity_facts(text: str) -> set[tuple[float, str]]:
+    facts: set[tuple[float, str]] = set()
+    for match in _QUANTITY_RE.finditer(str(text or "")):
+        number = _parse_number(match.group("number"))
+        if number is not None:
+            facts.add((number, match.group("unit")))
+    return facts
+
+
+def _explicit_facts_preserved(raw_answer: str, formal_answer: str) -> bool:
+    return _time_facts(raw_answer).issubset(_time_facts(formal_answer)) and _quantity_facts(raw_answer).issubset(
+        _quantity_facts(formal_answer)
+    )
+
+
 def _contains_any(text: str | None, alternatives: tuple[str, ...]) -> bool:
     value = str(text or "")
     return any(item in value for item in alternatives)
@@ -153,13 +253,9 @@ def _validate_case(case: dict[str, Any], decision: dict[str, Any]) -> None:
     expected = case["expected_classification"]
     if decision["classification"] != expected:
         raise ProbeError(f"expected {expected}, got {decision['classification']}")
-
     expected_target = case.get("expected_target")
     if decision["target_question_id"] != expected_target:
-        raise ProbeError(
-            f"expected target {expected_target!r}, got {decision['target_question_id']!r}"
-        )
-
+        raise ProbeError(f"expected target {expected_target!r}, got {decision['target_question_id']!r}")
     classification = decision["classification"]
     if classification in {"MATCH_FIXED", "MATCH_EXISTING"}:
         if decision["formal_question"] is not None:
@@ -182,14 +278,7 @@ def _validate_case(case: dict[str, Any], decision: dict[str, Any]) -> None:
         if allowed and (not returned or not returned.issubset(allowed)):
             raise ProbeError(f"unexpected review candidates: {sorted(returned)}")
     elif classification == "IGNORE":
-        if any(
-            value is not None
-            for value in (
-                decision["target_question_id"],
-                decision["formal_question"],
-                decision["formal_answer"],
-            )
-        ):
+        if any(value is not None for value in (decision["target_question_id"], decision["formal_question"], decision["formal_answer"])):
             raise ProbeError("ignored operational chatter must not produce formal content")
 
 
@@ -222,20 +311,15 @@ def _formal_questions() -> list[dict[str, Any]]:
     ]
 
 
-def _canonicalize_existing_target_decision(decision: dict[str, Any]) -> dict[str, Any]:
-    """Mirror the production router's deterministic existing-target policy.
-
-    The raw model response remains evidence. Only the effective decision used
-    for acceptance is canonicalized: persisted target metadata owns whether an
-    existing target is FIXED or CASE/LIVE, and persisted question text owns the
-    formal question string.
-    """
+def _canonicalize_existing_target_decision(decision: dict[str, Any], *, raw_answer: str | None) -> dict[str, Any]:
+    """Mirror production existing-target authority and explicit-fact fallback."""
 
     effective = dict(decision)
     if decision["classification"] not in {"MATCH_FIXED", "MATCH_EXISTING"}:
         return effective
     target_id = decision.get("target_question_id")
-    if not target_id or not str(decision.get("formal_answer") or "").strip():
+    formal_answer = str(decision.get("formal_answer") or "").strip()
+    if not target_id or not formal_answer:
         return effective
     target = next((row for row in _formal_questions() if row["id"] == target_id), None)
     if target is None:
@@ -247,6 +331,10 @@ def _canonicalize_existing_target_decision(decision: dict[str, Any]) -> dict[str
     else:
         return effective
     effective["formal_question"] = None
+    raw = str(raw_answer or "").strip()
+    if raw and not _explicit_facts_preserved(raw, formal_answer):
+        effective["formal_answer"] = raw
+        effective["reason_code"] = "FACT_LOSS_RAW_FALLBACK"
     return effective
 
 
@@ -338,9 +426,7 @@ def _prompt(case: dict[str, Any]) -> str:
         },
         "previousQaUnits": case.get("previous", []),
         "formalQuestions": _formal_questions(),
-        "recentTargetQuestionId": (
-            case.get("previous", [{}])[-1].get("targetQuestionId") if case.get("previous") else None
-        ),
+        "recentTargetQuestionId": case.get("previous", [{}])[-1].get("targetQuestionId") if case.get("previous") else None,
     }
     context_json = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
     return f"""你是完全离线运行的正式询问笔录问答归档路由器。
@@ -373,12 +459,7 @@ def _complete(base_url: str, model_id: str, prompt: str, timeout: float) -> tupl
         "enable_thinking": False,
     }
     started = time.perf_counter()
-    response = _json_request(
-        "POST",
-        base_url.rstrip("/") + "/chat/completions",
-        payload=request_payload,
-        timeout=timeout,
-    )
+    response = _json_request("POST", base_url.rstrip("/") + "/chat/completions", payload=request_payload, timeout=timeout)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     choices = response.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -404,26 +485,12 @@ def _percentile(values: list[float], quantile: float) -> float:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only LlamaPi Qwen formal-routing acceptance probe")
-    parser.add_argument(
-        "--base-url",
-        default=os.environ.get("LLAMAPI_BASE_URL", DEFAULT_BASE_URL),
-        help="OpenAI-compatible LlamaPi base URL",
-    )
-    parser.add_argument(
-        "--model-hint",
-        default=os.environ.get("LLAMAPI_MODEL_HINT", DEFAULT_MODEL_HINT),
-        help="Exact model ID or qwen3:4b base hint",
-    )
+    parser.add_argument("--base-url", default=os.environ.get("LLAMAPI_BASE_URL", DEFAULT_BASE_URL), help="OpenAI-compatible LlamaPi base URL")
+    parser.add_argument("--model-hint", default=os.environ.get("LLAMAPI_MODEL_HINT", DEFAULT_MODEL_HINT), help="Exact model ID or qwen3:4b base hint")
     parser.add_argument("--output", required=True, help="JSON result path under GITHUB_WORKSPACE or RUNNER_TEMP")
     parser.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout seconds per request")
-    parser.add_argument(
-        "--repetitions",
-        type=int,
-        default=1,
-        help="Number of A/B/C/D/E cycles; use 4 for the 20-request RK3588 acceptance sample",
-    )
+    parser.add_argument("--repetitions", type=int, default=1, help="Number of A/B/C/D/E cycles; use 4 for the 20-request RK3588 acceptance sample")
     args = parser.parse_args(argv)
-
     if args.timeout <= 0:
         raise ValueError("--timeout must be positive")
     if args.repetitions <= 0:
@@ -446,7 +513,6 @@ def main(argv: list[str] | None = None) -> int:
         "samples": [],
         "latency_ms": {"count": 0, "p50": None, "p95": None, "max": None},
     }
-
     try:
         model_id = resolve_model_id(_model_ids(base_url, args.timeout), args.model_hint)
         report["model_id"] = model_id
@@ -454,14 +520,10 @@ def main(argv: list[str] | None = None) -> int:
         cases = _cases()
         for iteration in range(1, args.repetitions + 1):
             for case in cases:
-                row: dict[str, Any] = {
-                    "case": case["case"],
-                    "iteration": iteration,
-                    "passed": False,
-                }
+                row: dict[str, Any] = {"case": case["case"], "iteration": iteration, "passed": False}
                 try:
                     raw_decision, latency_ms = _complete(base_url, model_id, _prompt(case), args.timeout)
-                    decision = _canonicalize_existing_target_decision(raw_decision)
+                    decision = _canonicalize_existing_target_decision(raw_decision, raw_answer=case.get("answer"))
                     rounded_latency = round(latency_ms, 3)
                     row["latency_ms"] = rounded_latency
                     latency_values.append(rounded_latency)
@@ -475,7 +537,6 @@ def main(argv: list[str] | None = None) -> int:
                 report["samples"].append(row)
                 if iteration == 1:
                     report["cases"].append(row)
-
         if latency_values:
             report["latency_ms"] = {
                 "count": len(latency_values),
@@ -484,10 +545,7 @@ def main(argv: list[str] | None = None) -> int:
                 "max": round(max(latency_values), 3),
             }
         expected_samples = args.repetitions * len(cases)
-        report["success"] = (
-            len(report["samples"]) == expected_samples
-            and all(row["passed"] for row in report["samples"])
-        )
+        report["success"] = len(report["samples"]) == expected_samples and all(row["passed"] for row in report["samples"])
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
 
