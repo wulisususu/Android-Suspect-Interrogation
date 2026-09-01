@@ -29,22 +29,10 @@ def next_standard_sort_order(db: Session) -> int:
     return int(current) + 10
 
 
-def create_standard(
-    db: Session,
-    *,
-    text: str,
-    category: str,
-    regex_patterns_json: str,
-    aliases_json: str,
-) -> StandardQuestion:
+def create_standard(db: Session, *, text: str, category: str, regex_patterns_json: str, aliases_json: str) -> StandardQuestion:
     row = StandardQuestion(
-        id=str(uuid4()),
-        text=text,
-        category=category,
-        regex_patterns_json=regex_patterns_json,
-        aliases_json=aliases_json,
-        sort_order=next_standard_sort_order(db),
-        active=True,
+        id=str(uuid4()), text=text, category=category, regex_patterns_json=regex_patterns_json,
+        aliases_json=aliases_json, sort_order=next_standard_sort_order(db), active=True,
     )
     db.add(row)
     db.flush()
@@ -61,45 +49,29 @@ def list_case(db: Session, case_id: str) -> list[CaseQuestion]:
 
 
 def get_case(db: Session, case_id: str, question_id: str) -> CaseQuestion:
-    row = db.scalar(
-        select(CaseQuestion).where(
-            CaseQuestion.id == question_id,
-            CaseQuestion.case_id == case_id,
-            CaseQuestion.active.is_(True),
-        )
-    )
+    row = db.scalar(select(CaseQuestion).where(
+        CaseQuestion.id == question_id, CaseQuestion.case_id == case_id, CaseQuestion.active.is_(True),
+    ))
     if row is None:
         raise DomainError("CASE_QUESTION_NOT_FOUND", "本案问题不存在", 404)
     return row
 
 
 def next_case_sort_order(db: Session, case_id: str) -> int:
-    current = db.scalar(
-        select(func.coalesce(func.max(CaseQuestion.sort_order), 0)).where(CaseQuestion.case_id == case_id)
-    ) or 0
+    current = db.scalar(select(func.coalesce(func.max(CaseQuestion.sort_order), 0)).where(CaseQuestion.case_id == case_id)) or 0
     return int(current) + 10
 
 
 def create_case(
-    db: Session,
-    *,
-    case_id: str,
-    source: str,
-    text: str,
-    standard_question_id: str | None,
-    regex_patterns_json: str,
-    aliases_json: str,
+    db: Session, *, case_id: str, source: str, text: str, standard_question_id: str | None,
+    regex_patterns_json: str, aliases_json: str, section_type: str = "BODY",
+    template_key: str | None = None, template_item_key: str | None = None, locked: bool = False,
 ) -> CaseQuestion:
     row = CaseQuestion(
-        id=str(uuid4()),
-        case_id=case_id,
-        source=source,
-        standard_question_id=standard_question_id,
-        text=text,
-        regex_patterns_json=regex_patterns_json,
-        aliases_json=aliases_json,
-        sort_order=next_case_sort_order(db, case_id),
-        active=True,
+        id=str(uuid4()), case_id=case_id, source=source, standard_question_id=standard_question_id, text=text,
+        regex_patterns_json=regex_patterns_json, aliases_json=aliases_json, section_type=section_type,
+        template_key=template_key, template_item_key=template_item_key, locked=locked,
+        sort_order=next_case_sort_order(db, case_id), active=True,
     )
     db.add(row)
     db.flush()

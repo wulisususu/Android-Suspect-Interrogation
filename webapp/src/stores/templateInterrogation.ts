@@ -5,6 +5,8 @@ import { backendErrorMessage, listAsrFragments } from '../api/interrogation'
 import {
   addPendingQuestion,
   createCaseQuestion as createCaseQuestionApi,
+  deactivateCaseQuestion as deactivateCaseQuestionApi,
+  ensureFormalRecord,
   fetchQuestionLibrary,
   fetchTemplateWorkspace,
   ignorePendingQuestion,
@@ -147,6 +149,8 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     const scope = currentScope()
     loading.value = true
     try {
+      await ensureFormalRecord(scope.caseId)
+      if (!isCurrentScope(scope)) return
       await Promise.all([loadTemplateWorkspace(scope), loadDialogueHistory(scope)])
       if (!isCurrentScope(scope)) return
       attachCaptureBridge(scope)
@@ -199,6 +203,10 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
 
   async function reorderCaseQuestions(questionIds: string[]) {
     await runMutation((scope) => reorderCaseQuestionsApi(scope.caseId, questionIds))
+  }
+
+  async function deactivateCaseQuestion(questionId: string) {
+    await runMutation((scope) => deactivateCaseQuestionApi(scope.caseId, questionId))
   }
 
   async function resolvePendingQuestion(pendingId: string, resolution: PendingResolution) {
@@ -261,6 +269,7 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     createCaseQuestion,
     updateCaseQuestion,
     reorderCaseQuestions,
+    deactivateCaseQuestion,
     resolvePendingQuestion,
     reassociateRound,
     updateRoundAnswer,

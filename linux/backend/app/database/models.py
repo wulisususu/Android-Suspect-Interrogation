@@ -300,6 +300,10 @@ class CaseQuestion(TimestampMixin, Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     regex_patterns_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     aliases_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    section_type: Mapped[str] = mapped_column(String(16), default="BODY", nullable=False, index=True)
+    template_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    template_item_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 

@@ -119,28 +119,29 @@ class DocumentService:
                 rounds_by_question[round_row.case_question_id].append(round_row)
 
         entries = []
-        for round_row in rounds:
-            question = questions_by_id.get(round_row.case_question_id)
-            if question is None:
-                continue
-            serialized = question_round_dict(round_row)
-            entries.append(
-                {
-                    "roundId": round_row.id,
-                    "questionId": round_row.case_question_id,
-                    "questionText": question.text,
-                    "caseQuestionId": round_row.case_question_id,
-                    "roundNo": round_row.round_no,
-                    "formalQuestionText": question.text,
-                    "actualQuestionText": round_row.actual_question_text,
-                    "answerText": round_row.answer_text,
-                    "officerFragmentId": round_row.officer_fragment_id,
-                    "answerFragmentIds": serialized["answerFragmentIds"],
-                    "status": round_row.status,
-                    "startedAt": serialized["startedAt"],
-                    "endedAt": serialized["endedAt"],
-                }
-            )
+        for question in case_questions:
+            for round_row in rounds_by_question.get(question.id, []):
+                serialized = question_round_dict(round_row)
+                entries.append(
+                    {
+                        "roundId": round_row.id,
+                        "questionId": round_row.case_question_id,
+                        "questionText": question.text,
+                        "sectionType": question.section_type or "BODY",
+                        "templateKey": question.template_key,
+                        "templateItemKey": question.template_item_key,
+                        "caseQuestionId": round_row.case_question_id,
+                        "roundNo": round_row.round_no,
+                        "formalQuestionText": question.text,
+                        "actualQuestionText": round_row.actual_question_text,
+                        "answerText": round_row.answer_text,
+                        "officerFragmentId": round_row.officer_fragment_id,
+                        "answerFragmentIds": serialized["answerFragmentIds"],
+                        "status": round_row.status,
+                        "startedAt": serialized["startedAt"],
+                        "endedAt": serialized["endedAt"],
+                    }
+                )
 
         return {
             "source": "TEMPLATE_ROUNDS",

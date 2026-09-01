@@ -98,6 +98,13 @@ function resolve(pending: PendingFormalQuestion, resolution: PendingResolution) 
   emit('resolvePending', pending.id, resolution)
 }
 
+function startPendingDrag(event: DragEvent, fragmentId: string) {
+  const pending = pendingFor(fragmentId)
+  if (!pending || !event.dataTransfer) return
+  event.dataTransfer.effectAllowed = 'copy'
+  event.dataTransfer.setData('application/x-formal-pending-question', JSON.stringify({ pendingId: pending.id }))
+}
+
 function correctionRole(item: TemporaryAsrFragment): TemporaryAsrSpeaker {
   return correctionSpeaker.value[item.id] || item.speaker
 }
@@ -157,8 +164,10 @@ onMounted(() => { void scrollToLatest(true) })
       <template v-for="item in dialogue" :key="item.id">
         <article
           class="dialogue-turn"
-          :class="`side-${dialoguePresentation(item).side}`"
+          :class="[`side-${dialoguePresentation(item).side}`, { 'pending-draggable': !!pendingFor(item.id) }]"
           :data-fragment-id="item.id"
+          :draggable="!!pendingFor(item.id)"
+          @dragstart="startPendingDrag($event, item.id)"
         >
           <div class="dialogue-meta">
             <strong>{{ speakerName(item) }}</strong>
@@ -234,7 +243,7 @@ onMounted(() => { void scrollToLatest(true) })
 
           <section v-if="pendingFor(item.id)" class="pending-resolution-card">
             <template v-if="pendingFor(item.id)?.matchStatus === 'UNMATCHED'">
-              <p>未匹配正式笔录问题</p>
+              <p>未匹配正式笔录问题 · 可直接拖到左侧正式笔录指定位置</p>
               <div class="pending-actions">
                 <button class="primary" @click="resolve(pendingFor(item.id)!, { action: 'ADD' })">加入本案笔录</button>
                 <button @click="resolve(pendingFor(item.id)!, { action: 'IGNORE' })">忽略</button>

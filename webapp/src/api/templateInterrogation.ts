@@ -149,3 +149,12 @@ export async function saveQuestionToLibrary(caseId: string, questionId: string, 
     { category },
   ))
 }
+
+
+export async function ensureFormalRecord(caseId: string): Promise<TemplateWorkspace> {
+  return unwrap(await http.post<BackendEnvelope<TemplateWorkspace>>(`/api/v1/cases/${encodeURIComponent(caseId)}/formal-record/ensure`))
+}
+
+export async function deactivateCaseQuestion(caseId: string, questionId: string): Promise<FormalQuestion> {
+  return unwrap(await http.delete<BackendEnvelope<FormalQuestion>>(`/api/v1/cases/${encodeURIComponent(caseId)}/questions/${encodeURIComponent(questionId)}`))
+}

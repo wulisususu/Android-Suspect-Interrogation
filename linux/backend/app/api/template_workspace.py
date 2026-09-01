@@ -147,3 +147,17 @@ def save_question_to_library(case_id: str, question_id: str, body: SaveQuestionT
     )
     db.commit()
     return envelope(result, "问题已保存到常用问题库")
+
+
+@router.post("/cases/{case_id}/formal-record/ensure")
+def ensure_formal_record(case_id: str, db: Session = Depends(get_db)):
+    result = TemplateWorkspaceService(db).ensure_formal_record(case_id, template_key="SUSPECT_INQUIRY_V1")
+    db.commit()
+    return envelope(result, "正式询问笔录模板已就绪")
+
+
+@router.delete("/cases/{case_id}/questions/{question_id}")
+def deactivate_case_question(case_id: str, question_id: str, db: Session = Depends(get_db)):
+    result = TemplateWorkspaceService(db).deactivate_case_question(case_id, question_id)
+    db.commit()
+    return envelope(result, "动态问题已从正式笔录移出")

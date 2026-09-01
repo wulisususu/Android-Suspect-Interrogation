@@ -60,6 +60,7 @@ const emit = defineEmits<{
   createQuestion: [input: CaseQuestionCreateInput]
   updateQuestion: [questionId: string, input: CaseQuestionUpdateInput]
   reorderQuestions: [questionIds: string[]]
+  removeQuestion: [questionId: string]
   resolvePending: [pendingId: string, resolution: PendingResolution]
   reassociateRound: [roundId: string, input: RoundReassociateInput]
   updateAnswer: [roundId: string, answerText: string]
@@ -255,8 +256,9 @@ async function confirmSignature() {
 
     <div class="template-interrogation-grid">
       <div class="formal-column">
+        <details v-if="session.status === 'READY'" class="record-preparation-drawer record-no-print">
+          <summary>问题准备 / 常用问题库</summary>
         <QuestionPreparationPanel
-          v-if="session.status === 'READY'"
           :library="questionLibrary"
           :busy="templateBusy"
           :voice-available="questionDictationAvailable"
@@ -268,8 +270,11 @@ async function confirmSignature() {
           @voice-start="emit('questionDictationStart')"
           @voice-stop="emit('questionDictationStop')"
         />
+        </details>
 
         <FormalTemplatePanel
+          :summary="summary"
+          :session="session"
           :questions="workspace.questions"
           :rounds="workspace.rounds"
           :busy="templateBusy"
@@ -282,6 +287,8 @@ async function confirmSignature() {
           :ai-error="aiError"
           @update-question="(id, input) => emit('updateQuestion', id, input)"
           @reorder="emit('reorderQuestions', $event)"
+          @remove-question="(id) => emit('removeQuestion', id)"
+          @insert-pending="(pendingId, afterQuestionId) => emit('resolvePending', pendingId, { action: 'ADD', afterQuestionId })"
           @update-answer="(id, text) => emit('updateAnswer', id, text)"
           @reassociate="(id, input) => emit('reassociateRound', id, input)"
           @save-library="emit('saveLibrary', $event)"
