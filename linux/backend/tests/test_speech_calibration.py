@@ -42,6 +42,20 @@ def test_calibration_uses_production_env_names_and_missing_values_are_not_config
     assert calibration.state == "NOT_CONFIGURED"
 
 
+def test_current_legacy_xvector_model_baseline_matches_vendor_sv_operating_point(monkeypatch):
+    from app.ai.speech.calibration import MODEL_BASELINE_THRESHOLD, SpeakerCalibration
+
+    monkeypatch.delenv("SUSPECT_SPEAKER_ACCEPT_THRESHOLD", raising=False)
+    monkeypatch.delenv("SUSPECT_SPEAKER_MARGIN", raising=False)
+    monkeypatch.delenv("SUSPECT_SPEAKER_BASELINE_THRESHOLD", raising=False)
+
+    calibration = SpeakerCalibration.from_env()
+
+    assert MODEL_BASELINE_THRESHOLD == pytest.approx(0.9465)
+    assert calibration.effective_threshold == pytest.approx(0.9465)
+    assert calibration.threshold_source == "MODEL_BASELINE"
+
+
 def test_calibration_rejects_non_finite_or_out_of_range_values(monkeypatch):
     from app.ai.speech.calibration import SpeakerCalibration
 
