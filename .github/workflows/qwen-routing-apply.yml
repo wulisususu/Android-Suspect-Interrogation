@@ -1,11 +1,11 @@
-name: Qwen Routing Patch Gate
+name: Qwen Routing Edit Gate
 
 on:
   push:
     branches:
       - feat/qwen-formal-record-routing
     paths:
-      - '.superpowers/qwen-routing-apply.patch'
+      - '.superpowers/qwen-routing-apply.py'
 
 permissions:
   contents: write
@@ -29,13 +29,12 @@ jobs:
           fetch-depth: 0
           ref: feat/qwen-formal-record-routing
 
-      - name: Apply proposed patch
+      - name: Apply proposed edits
         shell: bash
         run: |
           set -euo pipefail
-          test -s .superpowers/qwen-routing-apply.patch
-          git apply --check .superpowers/qwen-routing-apply.patch
-          git apply .superpowers/qwen-routing-apply.patch
+          test -s .superpowers/qwen-routing-apply.py
+          python .superpowers/qwen-routing-apply.py
 
       - uses: actions/setup-python@v5
         with:
@@ -65,20 +64,20 @@ jobs:
           npm run typecheck
           npm run build
 
-      - name: Commit verified patch
+      - name: Commit verified edits
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'qwen-routing-ci'
           git config user.email 'qwen-routing-ci@users.noreply.github.com'
-          git add -A ':!.superpowers/qwen-routing-apply.patch'
+          git add -A ':!.superpowers/qwen-routing-apply.py' ':!.superpowers/qwen-routing-apply.patch'
           if git diff --cached --quiet; then
-            echo 'Patch produced no tracked code changes' >&2
+            echo 'Edit script produced no tracked code changes' >&2
             exit 1
           fi
-          subject="$(sed -n '1s/^# commit: //p' .superpowers/qwen-routing-apply.patch)"
+          subject="$(sed -n '1s/^# commit: //p' .superpowers/qwen-routing-apply.py)"
           if [[ -z "$subject" ]]; then
-            subject='feat: apply verified qwen routing patch'
+            subject='feat: apply verified qwen routing edits'
           fi
           git commit -m "$subject"
           git push origin HEAD:feat/qwen-formal-record-routing
