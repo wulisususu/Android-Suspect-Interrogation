@@ -209,6 +209,30 @@ class TemplateWorkspaceService:
             self._apply_order([by_id[row_id] for row_id in supplied])
         return [case_question_dict(row, rounds=round_repo.list_for_question(self.db, case_id, row.id)) for row in question_repo.list_case(self.db, case_id)]
 
+    def apply_actual_body_order(self, case_id: str) -> list[dict]:
+        self._assert_case_mutable(case_id)
+        rows = question_repo.list_case(self.db, case_id)
+        body = [row for row in rows if row.section_type == "BODY"]
+        asked = sorted(
+            [row for row in body if row.first_asked_at is not None],
+            key=lambda row: (row.first_asked_at, row.sort_order),
+        )
+        unasked = sorted(
+            [row for row in body if row.first_asked_at is None],
+            key=lambda row: row.sort_order,
+        )
+        body_order = asked + unasked
+        template_key = next((row.template_key for row in rows if row.template_key), None)
+        if template_key:
+            self._apply_section_order(rows, template_key=template_key, body_order=body_order)
+        else:
+            non_body = [row for row in rows if row.section_type != "BODY"]
+            self._apply_order(non_body + body_order)
+        return [
+            case_question_dict(row, rounds=round_repo.list_for_question(self.db, case_id, row.id))
+            for row in question_repo.list_case(self.db, case_id)
+        ]
+
     def save_to_library(self, case_id: str, question_id: str, category: str) -> dict:
         self._assert_case_mutable(case_id)
         row = question_repo.get_case(self.db, case_id, question_id)
