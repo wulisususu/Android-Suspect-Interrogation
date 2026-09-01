@@ -49,6 +49,22 @@ def test_formal_record_template_is_seeded_idempotently_around_body_questions(db,
     )
 
 
+def test_ensure_does_not_seed_or_reorder_a_frozen_legacy_record(db, case):
+    svc = TemplateWorkspaceService(db)
+    body = svc.add_case_question(case.id, text="历史问题？", source="CASE")
+    original_sort_order = body["sortOrder"]
+    case.workflow_state = "FROZEN"
+    case.document_status = "FROZEN"
+    db.commit()
+
+    workspace = svc.ensure_formal_record(case.id, template_key="SUSPECT_INQUIRY_V1")
+
+    assert workspace["templateKey"] is None
+    assert [q["id"] for q in workspace["questions"]] == [body["id"]]
+    assert workspace["questions"][0]["sortOrder"] == original_sort_order
+    assert workspace["questions"][0]["sectionType"] == "BODY"
+
+
 def test_fixed_template_question_text_cannot_be_edited_or_soft_removed(db, case):
     svc = TemplateWorkspaceService(db)
     workspace = svc.ensure_formal_record(case.id, template_key="SUSPECT_INQUIRY_V1")
