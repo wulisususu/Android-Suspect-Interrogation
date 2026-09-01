@@ -30,6 +30,7 @@ REQUIRED_TABLES = (
     CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES | OFFICER_LIBRARY_TABLES |
     CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES
 )
+ALEMBIC_HEAD = "0007_formal_record_sections"
 
 
 def _run_alembic(tmp_path, target: str):
@@ -67,7 +68,7 @@ def test_alembic_honors_runtime_suspect_db_path(tmp_path):
     try:
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert revision == "0006_asr_recognition_evidence"
+        assert revision == ALEMBIC_HEAD
     finally:
         engine.dispose()
 
@@ -124,9 +125,11 @@ def test_alembic_upgrade_head_builds_required_schema(tmp_path):
             "fragment_id", "revision_no", "before_speaker", "after_speaker", "before_text",
             "after_text", "actor_id", "reason",
         } <= revision_columns
+        formal_columns = {item["name"] for item in inspector.get_columns("case_questions")}
+        assert {"section_type", "template_key", "template_item_key", "locked"} <= formal_columns
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert revision == "0006_asr_recognition_evidence"
+        assert revision == ALEMBIC_HEAD
     finally:
         engine.dispose()
 
