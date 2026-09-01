@@ -63,13 +63,15 @@ def resolve_speaker_backend_selection(
     raw_authoritative = env.get("SUSPECT_SPEAKER_AUTHORITATIVE_BACKEND", "").strip().lower()
     if not raw_authoritative:
         raise ValueError(
-            "SUSPECT_SPEAKER_AUTHORITATIVE_BACKEND is required when speaker mode is compare"
+            "an authoritative speaker backend is required in compare mode; "
+            "set SUSPECT_SPEAKER_AUTHORITATIVE_BACKEND to xvector or eres2net_large"
         )
     try:
         authoritative = SpeakerBackendKey(raw_authoritative)
     except ValueError as exc:
         raise ValueError(
-            "SUSPECT_SPEAKER_AUTHORITATIVE_BACKEND must be xvector or eres2net_large"
+            "authoritative speaker backend must be xvector or eres2net_large; "
+            "check SUSPECT_SPEAKER_AUTHORITATIVE_BACKEND"
         ) from exc
 
     return SpeakerBackendSelection(
