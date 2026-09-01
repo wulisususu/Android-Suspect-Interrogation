@@ -544,7 +544,7 @@ def _model_ids(base_url: str, timeout: float) -> list[str]:
     return [str(item) for item in ids if isinstance(item, str) and item.strip()]
 
 
-def _complete(base_url: str, model_id: str, prompt: str, timeout: float) -> tuple[dict[str, Any], float]:
+def _complete(base_url: str, model_id: str, prompt: str, timeout: float) -> tuple[dict[str, Any], float, dict[str, Any]]:
     request_payload = {
         "model": model_id,
         "messages": [{"role": "user", "content": prompt}],
@@ -563,7 +563,23 @@ def _complete(base_url: str, model_id: str, prompt: str, timeout: float) -> tupl
     message = choices[0].get("message")
     if not isinstance(message, dict) or not isinstance(message.get("content"), str):
         raise ProbeError("chat completion response has no message content")
-    return _parse_decision(message["content"]), elapsed_ms
+    content = message["content"]
+    usage_raw = response.get("usage")
+    usage: dict[str, int] | None = None
+    if isinstance(usage_raw, dict):
+        clean_usage: dict[str, int] = {}
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = usage_raw.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                clean_usage[key] = value
+        if clean_usage:
+            usage = clean_usage
+    telemetry = {
+        "prompt_chars": len(prompt),
+        "response_chars": len(content),
+        "usage": usage,
+    }
+    return _parse_decision(content), elapsed_ms, telemetry
 
 
 def _percentile(values: list[float], quantile: float) -> float:
@@ -624,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
                     "iteration": iteration,
                     "passed": False,
                     "raw_decision": None,
+                    "telemetry": None,
                 }
                 try:
                     prechecked = _precheck_case(case)
@@ -632,13 +649,15 @@ def main(argv: list[str] | None = None) -> int:
                         row["latency_ms"] = 0.0
                         row["route_source"] = "PRECHECK"
                     else:
-                        raw_decision, latency_ms = _complete(base_url, model_id, _prompt(case), args.timeout)
+                        prompt = _prompt(case)
+                        raw_decision, latency_ms, telemetry = _complete(base_url, model_id, prompt, args.timeout)
                         model_inference_count += 1
                         rounded_latency = round(latency_ms, 3)
                         row["latency_ms"] = rounded_latency
                         latency_values.append(rounded_latency)
                         row["route_source"] = "MODEL"
                         row["raw_decision"] = raw_decision
+                        row["telemetry"] = telemetry
                         decision = _canonicalize_existing_target_decision(raw_decision, raw_answer=case.get("answer"))
                         decision = _repair_existing_target_intent_mismatch(decision, case)
                     row["classification"] = decision["classification"]
