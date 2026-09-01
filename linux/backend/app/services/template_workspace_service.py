@@ -174,13 +174,10 @@ class TemplateWorkspaceService:
         if row.locked or row.section_type != "BODY":
             raise DomainError("FIXED_QUESTION_LOCKED", "固定笔录问题不可移除", 409)
         row.active = False
+        # Keep its historical sort_order. Active queries simply omit this row, so
+        # compacting the remaining sequence is unnecessary and would make the
+        # inactive row collide with the (case_id, sort_order) uniqueness constraint.
         self.db.flush()
-        remaining = question_repo.list_case(self.db, case_id)
-        template_key = next((item.template_key for item in remaining if item.template_key), None)
-        if template_key:
-            self._apply_section_order(remaining, template_key=template_key)
-        else:
-            self._apply_order(remaining)
         result = case_question_dict(row, rounds=round_repo.list_for_question(self.db, case_id, row.id))
         result["active"] = False
         return result
