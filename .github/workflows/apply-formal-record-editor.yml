@@ -1,0 +1,50 @@
+name: Apply Formal Record Editor
+
+on:
+  push:
+    branches:
+      - feature/formal-record-editor
+    paths:
+      - scripts/dev_apply_formal_record_editor.py
+      - .github/workflows/apply-formal-record-editor.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/formal-record-editor
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply implementation codemod
+        run: python scripts/dev_apply_formal_record_editor.py
+
+      - name: Sanity checks
+        run: |
+          set -euo pipefail
+          python -m compileall -q linux/backend
+          grep -q 'SUSPECT_INQUIRY_V1' linux/backend/app/services/template_workspace_service.py
+          grep -q '正式询问笔录编辑器' webapp/src/components/FormalTemplatePanel.vue
+          grep -q 'application/x-formal-pending-question' webapp/src/components/LiveDialoguePanel.vue
+          test ! -e scripts/dev_apply_formal_record_editor.py
+
+      - name: Commit implementation
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat: add formal interrogation record editor'
+          git push origin HEAD:feature/formal-record-editor
