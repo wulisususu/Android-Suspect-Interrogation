@@ -554,7 +554,9 @@ def _cases() -> list[dict[str, Any]]:
     ]
 
 
-def _prompt(case: dict[str, Any]) -> str:
+def _prompt(case: dict[str, Any], *, protocol: str = "full") -> str:
+    if protocol not in {"full", "compact"}:
+        raise ValueError("protocol must be full or compact")
     context = {
         "qaUnit": {
             "id": f"probe-{case['case'].lower()}",
@@ -572,6 +574,14 @@ def _prompt(case: dict[str, Any]) -> str:
         "recentTargetQuestionId": case.get("previous", [{}])[-1].get("targetQuestionId") if case.get("previous") else None,
     }
     context_json = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+    if protocol == "compact":
+        return f"""你是完全离线运行的正式询问笔录问答归档路由器。
+只能根据真实 ASR 问答事实进行匹配和忠实书面化，禁止补充不存在的人名、时间、地点、数量、动机、因果或确定性。D/E 已由确定性前置规则拦截，本实验模型阶段只处理 A/B/C。
+A=命中 locked=true 的 FIXED 已有问题；B=命中 CASE/LIVE 已有问题；C=真实民警问题不对应任何已有问题但属于有效新现场问答。
+A/B 只输出 {{"c":"A或B","t":"已有问题id","a":"完整书面答案"}}；C 只输出 {{"c":"C","q":"真实问题的轻度书面化","a":"完整书面答案"}}。不得解释，不得输出其他字段。
+输入上下文 JSON：
+{context_json}
+"""
     return f"""你是完全离线运行的正式询问笔录问答归档路由器。
 只能根据真实 ASR 问答事实进行分类、匹配和忠实书面化，禁止补充不存在的人名、时间、地点、数量、动机、因果或确定性。存在歧义、冲突或对应关系不可靠时必须选择 NEEDS_REVIEW。
 分类只能为 MATCH_FIXED、MATCH_EXISTING、CREATE_LIVE_FROM_SPEECH、NEEDS_REVIEW、IGNORE 之一。
@@ -659,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", required=True, help="JSON result path under GITHUB_WORKSPACE or RUNNER_TEMP")
     parser.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout seconds per request")
     parser.add_argument("--repetitions", type=int, default=1, help="Number of A/B/C/D/E cycles; use 4 for the 20-decision RK3588 acceptance sample")
+    parser.add_argument("--protocol", choices=("full", "compact"), default="full", help="Model response protocol; compact is experiment-only")
     args = parser.parse_args(argv)
     if args.timeout <= 0:
         raise ValueError("--timeout must be positive")
@@ -678,6 +689,7 @@ def main(argv: list[str] | None = None) -> int:
         "machine": platform.machine(),
         "python": sys.version.split()[0],
         "repetitions": args.repetitions,
+        "protocol": args.protocol,
         "effective_decision_count": 0,
         "model_inference_count": 0,
         "cases": [],
@@ -706,8 +718,10 @@ def main(argv: list[str] | None = None) -> int:
                         row["latency_ms"] = 0.0
                         row["route_source"] = "PRECHECK"
                     else:
-                        prompt = _prompt(case)
-                        raw_decision, latency_ms, telemetry = _complete(base_url, model_id, prompt, args.timeout)
+                        prompt = _prompt(case, protocol=args.protocol)
+                        raw_decision, latency_ms, telemetry = _complete(
+                            base_url, model_id, prompt, args.timeout, protocol=args.protocol
+                        )
                         model_inference_count += 1
                         rounded_latency = round(latency_ms, 3)
                         row["latency_ms"] = rounded_latency
