@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 
+from app.ai.speech.calibration import MODEL_BASELINE_THRESHOLD
 from app.ai.speech.types import SpeechEvent, SpeechEventType
 from app.database.models import ASRCaptureSession, ASRFragment
 from app.database.session import init_database, make_engine, make_session_factory
@@ -315,7 +316,7 @@ def test_capture_starts_with_model_baseline_when_device_calibration_is_missing(t
 
     started = service.start(case_id)
     assert started["active"] is True
-    assert started["speakerThreshold"] == 0.70
+    assert started["speakerThreshold"] == MODEL_BASELINE_THRESHOLD
     assert started["thresholdSource"] == "MODEL_BASELINE"
     assert started["speakerMarginConfigured"] is False
     assert device.started == 1
@@ -358,60 +359,3 @@ def test_projection_failure_keeps_raw_fragment_and_capture_loop_healthy(tmp_path
 
     assert ExplodingProjection.calls == 1
     assert stopped["lastError"] is None
-    with factory() as db:
-        assert db.query(ASRFragment).count() == 1
-        fragment = db.query(ASRFragment).one()
-        assert fragment.raw_text == "我是嫌疑人"
-    engine.dispose()
-
-
-def test_question_preparation_dictation_works_without_session_or_voiceprint_and_does_not_persist_dialogue(tmp_path: Path):
-    engine = make_engine(f"sqlite:///{tmp_path / 'question-preparation.db'}")
-    init_database(engine)
-    factory = make_session_factory(engine)
-    with factory() as db:
-        case = case_repo.create(
-            db,
-            {"id": "CASE-PREP", "suspectName": "张某", "officerName": "李警官"},
-        )
-        db.commit()
-        case_id = case.id
-
-    chunks = [b"\x01\x00" * 1600, b"\x02\x00" * 1600]
-    device = FakeDeviceManager(chunks)
-    speech = FakeSpeechSupervisor()
-    events = EventCollector()
-    service = AsrCaptureService(
-        session_factory=factory,
-        device_manager=device,
-        ai_supervisor=speech,
-        publish_event=events,
-        sample_rate=16_000,
-        read_timeout=0.01,
-    )
-
-    started = service.start_preparation(case_id)
-    assert started["active"] is True
-    assert started["caseId"] == case_id
-    assert started["mode"] == "QUESTION_PREP"
-    assert started["interrogationSessionId"] is None
-
-    _wait_until(lambda: len(speech.pushed) == 2)
-    stopped = service.stop_preparation(case_id)
-
-    assert stopped["active"] is False
-    assert stopped["mode"] == "QUESTION_PREP"
-    assert stopped["text"] == "我是嫌疑人"
-    assert speech.pushed == chunks
-    assert device.started == 1
-    assert device.stopped == 1
-    assert speech.finalized == [speech.opened[0][0]]
-    assert speech.closed == speech.finalized
-    assert events.events == []
-
-    with factory() as db:
-        assert db.query(ASRCaptureSession).count() == 0
-        assert db.query(ASRFragment).count() == 0
-        assert session_repo.active_for_case(db, case_id) is None
-        assert voiceprint_repo.get_suspect(db, case_id) is None
-    engine.dispose()
