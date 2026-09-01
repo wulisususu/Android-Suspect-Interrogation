@@ -1,4 +1,4 @@
-# commit: feat: route live qa units asynchronously
+# commit: feat: resolve uncertain qa units manually
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,352 +12,418 @@ def replace_once(path: str, old: str, new: str) -> None:
     target.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
-def write_new(path: str, content: str) -> None:
+def write(path: str, content: str) -> None:
     target = Path(path)
-    if target.exists():
-        raise SystemExit(f"refusing to overwrite existing file: {path}")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
 
 
-coordinator = '''from __future__ import annotations
+# API request contract.
+replace_once(
+    "linux/backend/app/api/schemas.py",
+    'class SaveQuestionToLibraryRequest(FlexibleModel):\n    category: str = "通用"\n',
+    'class SaveQuestionToLibraryRequest(FlexibleModel):\n    category: str = "通用"\n\n\nclass QAUnitResolutionRequest(FlexibleModel):\n    action: Literal["CREATE_LIVE", "LINK_QA", "LINK_ANSWER", "IGNORE"]\n    case_question_id: str | None = Field(default=None, alias="caseQuestionId")\n    formal_question: str | None = Field(default=None, alias="formalQuestion")\n    formal_answer: str | None = Field(default=None, alias="formalAnswer")\n',
+)
 
-import logging
-import queue
-import threading
-from datetime import datetime, timezone
-from typing import Any, Callable
+# Workspace must expose persisted QA units to the review UI.
+replace_once(
+    "linux/backend/app/services/template_workspace_service.py",
+    'from app.repositories import question_rounds as round_repo\nfrom app.repositories import template_questions as question_repo\n',
+    'from app.repositories import qa_units as qa_repo\nfrom app.repositories import question_rounds as round_repo\nfrom app.repositories import template_questions as question_repo\n',
+)
+replace_once(
+    "linux/backend/app/services/template_workspace_service.py",
+    'from app.services.serializers import case_question_dict, pending_question_dict, question_round_dict, standard_question_dict\n',
+    'from app.services.serializers import case_question_dict, pending_question_dict, qa_unit_dict, question_round_dict, standard_question_dict\n',
+)
+replace_once(
+    "linux/backend/app/services/template_workspace_service.py",
+    '            "pendingQuestions": [pending_question_dict(row) for row in round_repo.list_pending_for_case(self.db, case_id)],\n        }\n',
+    '            "pendingQuestions": [pending_question_dict(row) for row in round_repo.list_pending_for_case(self.db, case_id)],\n            "qaUnits": [qa_unit_dict(row) for row in qa_repo.list_for_case(self.db, case_id)],\n        }\n',
+)
 
-from sqlalchemy import select
+# Manual routing service: only D/NEEDS_REVIEW units are resolvable, exactly once.
+# Whole-QA links preserve real question+answer provenance. Answer-only links create
+# no fabricated officer fragment or actual-question text.
+write(
+    "linux/backend/app/services/formal_record_routing_service.py",
+    '''from __future__ import annotations
 
-from app.database.models import ASRCaptureSession
+from sqlalchemy.orm import Session
+
+from app.domain.errors import DomainError
 from app.repositories import audit as audit_repo
-from app.repositories import asr_fragments as asr_repo
 from app.repositories import qa_units as qa_repo
-from app.services.formal_record_router import FormalRecordRouteDecision, FormalRecordRouter, RouteClass
-from app.services.formal_record_routing_service import FormalRecordRoutingService
-from app.services.qa_unit_builder import QAUnitBuilder
-from app.services.serializers import qa_unit_dict
+from app.repositories import question_rounds as round_repo
+from app.repositories import template_questions as question_repo
+from app.services.formal_record_policy import assert_formal_record_mutable
+from app.services.formal_record_router import FormalRecordRouteDecision, RouteClass
+from app.services.serializers import qa_unit_dict, question_round_dict
+from app.services.template_workspace_service import TemplateWorkspaceService
 
 
-logger = logging.getLogger(__name__)
-PublishEvent = Callable[[str, str, dict[str, Any]], None]
+_MANUAL_ACTIONS = {"CREATE_LIVE", "LINK_QA", "LINK_ANSWER", "IGNORE"}
 
 
-class QARoutingCoordinator:
-    """Move semantic formal-record routing off the realtime ASR capture thread.
+class FormalRecordRoutingService:
+    def __init__(self, db: Session):
+        self.db = db
 
-    Fragment notifications are best-effort wakeups only. Persisted ASR rows are
-    authoritative and are recovered while a capture is active and again when a
-    capture flushes, so queue saturation or process restart cannot silently lose
-    attributable speech.
-    """
+    def apply_auto(self, qa_unit_id: str, decision: FormalRecordRouteDecision) -> dict:
+        unit = qa_repo.get(self.db, qa_unit_id)
+        if decision.classification is RouteClass.NEEDS_REVIEW:
+            return self._review(unit, decision)
+        if decision.classification is RouteClass.IGNORE:
+            return self._ignore(unit, decision, manual=False)
 
-    def __init__(
+        if decision.classification is RouteClass.MATCH_FIXED:
+            question = self._valid_target(unit.case_id, decision.target_question_id, fixed=True)
+            if question is None or not decision.formal_answer:
+                return self._review(unit, decision, reason_code="INVALID_AUTO_DECISION")
+            assert_formal_record_mutable(self.db, unit.case_id)
+            return self._apply_existing(unit, question, decision, audit_action="QA_ROUTE_AUTO_APPLIED")
+
+        if decision.classification is RouteClass.MATCH_EXISTING:
+            question = self._valid_target(unit.case_id, decision.target_question_id, fixed=False)
+            if question is None or not decision.formal_answer:
+                return self._review(unit, decision, reason_code="INVALID_AUTO_DECISION")
+            assert_formal_record_mutable(self.db, unit.case_id)
+            return self._apply_existing(unit, question, decision, audit_action="QA_ROUTE_AUTO_APPLIED")
+
+        if decision.classification is RouteClass.CREATE_LIVE_FROM_SPEECH:
+            if not self._can_create_live(unit, decision):
+                return self._review(unit, decision, reason_code="INVALID_AUTO_DECISION")
+            assert_formal_record_mutable(self.db, unit.case_id)
+            created = TemplateWorkspaceService(self.db).add_case_question(
+                unit.case_id,
+                text=decision.formal_question or "",
+                source="LIVE",
+            )
+            question = question_repo.get_case(self.db, unit.case_id, created["id"])
+            return self._apply_existing(unit, question, decision, audit_action="QA_ROUTE_AUTO_APPLIED")
+
+        return self._review(unit, decision, reason_code="INVALID_AUTO_DECISION")
+
+    def resolve_manual(
         self,
+        qa_unit_id: str,
         *,
-        session_factory,
-        ai_supervisor: Any,
-        publish_event: PublishEvent,
-        idle_close_seconds: float = 4.0,
-        poll_interval: float = 0.25,
-        queue_size: int = 256,
-    ) -> None:
-        self.session_factory = session_factory
-        self.ai_supervisor = ai_supervisor
-        self.publish_event = publish_event
-        self.idle_close_seconds = max(0.01, float(idle_close_seconds))
-        self.poll_interval = max(0.01, float(poll_interval))
-        self._queue: queue.Queue[tuple[str, str, str] | None] = queue.Queue(maxsize=max(1, int(queue_size)))
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._state_lock = threading.RLock()
-        self._pending_flushes: set[tuple[str, str]] = set()
-        self._recovery_markers: set[str] = set()
+        action: str,
+        case_question_id: str | None = None,
+        formal_question: str | None = None,
+        formal_answer: str | None = None,
+    ) -> dict:
+        unit = qa_repo.get(self.db, qa_unit_id)
+        self._assert_manual_resolvable(unit)
+        normalized = str(action or "").strip().upper()
+        if normalized not in _MANUAL_ACTIONS:
+            raise DomainError("INVALID_QA_RESOLUTION_ACTION", "问答单元处理动作无效", 400)
 
-    @property
-    def running(self) -> bool:
-        thread = self._thread
-        return bool(thread is not None and thread.is_alive())
+        if normalized == "IGNORE":
+            manual_decision = FormalRecordRouteDecision(
+                classification=RouteClass.IGNORE,
+                target_question_id=None,
+                formal_question=None,
+                formal_answer=None,
+                confidence=unit.confidence,
+                candidate_question_ids=(),
+                reason_code="MANUAL_IGNORE",
+                model_id=unit.model_id,
+            )
+            return self._ignore(unit, manual_decision, manual=True)
 
-    def start(self) -> None:
-        with self._state_lock:
-            if self.running:
-                return
-            self._stop.clear()
-            thread = threading.Thread(target=self._run, daemon=True, name="qa-routing-coordinator")
-            self._thread = thread
-            thread.start()
+        assert_formal_record_mutable(self.db, unit.case_id)
+        clean_answer = self._manual_text(
+            formal_answer,
+            unit.formal_answer_text,
+            unit.raw_answer_text,
+        )
+        if not clean_answer:
+            raise DomainError("FORMAL_ANSWER_REQUIRED", "正式答案不能为空", 400)
 
-    def enqueue_fragment(self, case_id: str, fragment_id: str) -> None:
-        notice = ("fragment", str(case_id), str(fragment_id))
+        if normalized == "CREATE_LIVE":
+            question_ids = self._question_fragment_ids(unit)
+            if not question_ids or not str(unit.raw_question_text or "").strip():
+                raise DomainError("FORMAL_QUESTION_REQUIRED", "创建现场问题必须来自真实民警提问", 400)
+            clean_question = self._manual_text(
+                formal_question,
+                unit.formal_question_text,
+                unit.raw_question_text,
+            )
+            if not clean_question:
+                raise DomainError("FORMAL_QUESTION_REQUIRED", "创建现场问题必须来自真实民警提问", 400)
+            created = TemplateWorkspaceService(self.db).add_case_question(
+                unit.case_id,
+                text=clean_question,
+                source="LIVE",
+            )
+            question = question_repo.get_case(self.db, unit.case_id, created["id"])
+            manual_decision = FormalRecordRouteDecision(
+                classification=RouteClass.CREATE_LIVE_FROM_SPEECH,
+                target_question_id=question.id,
+                formal_question=clean_question,
+                formal_answer=clean_answer,
+                confidence=unit.confidence,
+                candidate_question_ids=(),
+                reason_code="MANUAL_CREATE_LIVE",
+                model_id=unit.model_id,
+            )
+            return self._apply_existing(unit, question, manual_decision, audit_action="QA_ROUTE_MANUAL_APPLIED")
+
+        if not case_question_id:
+            raise DomainError("CASE_QUESTION_REQUIRED", "必须选择目标正式问题", 400)
+        question = question_repo.get_case(self.db, unit.case_id, case_question_id)
+
+        if normalized == "LINK_ANSWER":
+            if not self._answer_fragment_ids(unit):
+                raise DomainError("QA_ANSWER_FRAGMENT_REQUIRED", "仅关联回答必须包含真实嫌疑人回答片段", 400)
+            return self._apply_answer_only(unit, question, formal_answer=clean_answer)
+
+        manual_decision = FormalRecordRouteDecision(
+            classification=RouteClass.MATCH_EXISTING,
+            target_question_id=question.id,
+            formal_question=None,
+            formal_answer=clean_answer,
+            confidence=unit.confidence,
+            candidate_question_ids=(),
+            reason_code="MANUAL_LINK_QA",
+            model_id=unit.model_id,
+        )
+        return self._apply_existing(unit, question, manual_decision, audit_action="QA_ROUTE_MANUAL_APPLIED")
+
+    @staticmethod
+    def _manual_text(request_value: str | None, suggested_value: str | None, raw_value: str | None) -> str:
+        for value in (request_value, suggested_value, raw_value):
+            if value is None:
+                continue
+            clean = str(value).strip()
+            if clean:
+                return clean
+        return ""
+
+    @staticmethod
+    def _assert_manual_resolvable(unit) -> None:
+        if unit.status != "NEEDS_REVIEW":
+            raise DomainError("QA_UNIT_ALREADY_RESOLVED", "该问答单元已处理，不能重复处置", 409)
+
+    def _apply_existing(self, unit, question, decision: FormalRecordRouteDecision, *, audit_action: str) -> dict:
+        question_ids = self._question_fragment_ids(unit)
+        answer_ids = self._answer_fragment_ids(unit)
+        round_row = round_repo.create_round(
+            self.db,
+            case_id=unit.case_id,
+            session_id=unit.session_id,
+            case_question_id=question.id,
+            actual_question_text=str(unit.raw_question_text or question.text).strip(),
+            officer_fragment_id=question_ids[0] if question_ids else None,
+            answer_text=str(unit.raw_answer_text or "").strip(),
+            answer_fragment_ids=answer_ids,
+            status="CLOSED",
+            started_at=unit.started_at,
+            ended_at=unit.ended_at,
+        )
+        question_repo.set_canonical_answer(
+            self.db,
+            question,
+            answer_text=decision.formal_answer or "",
+            first_asked_at=unit.started_at,
+        )
+        TemplateWorkspaceService(self.db).apply_actual_body_order(unit.case_id)
+        qa_repo.save_decision(
+            self.db,
+            unit,
+            classification=decision.classification.value,
+            target_question_id=question.id,
+            formal_question_text=decision.formal_question,
+            formal_answer_text=decision.formal_answer,
+            confidence=decision.confidence,
+            model_id=decision.model_id,
+            reason_code=decision.reason_code,
+            status="APPLIED",
+            candidate_question_ids=list(decision.candidate_question_ids),
+        )
+        self._audit(unit, decision, action=audit_action, target_question_id=question.id)
+        return {
+            "status": "APPLIED",
+            "targetQuestionId": question.id,
+            "round": question_round_dict(round_row),
+            "qaUnit": qa_unit_dict(unit),
+        }
+
+    def _apply_answer_only(self, unit, question, *, formal_answer: str) -> dict:
+        answer_ids = self._answer_fragment_ids(unit)
+        round_row = round_repo.create_round(
+            self.db,
+            case_id=unit.case_id,
+            session_id=unit.session_id,
+            case_question_id=question.id,
+            actual_question_text="",
+            officer_fragment_id=None,
+            answer_text=str(unit.raw_answer_text or "").strip(),
+            answer_fragment_ids=answer_ids,
+            status="CLOSED",
+            started_at=unit.started_at,
+            ended_at=unit.ended_at,
+        )
+        question_repo.set_canonical_answer(
+            self.db,
+            question,
+            answer_text=formal_answer,
+            first_asked_at=unit.started_at,
+        )
+        TemplateWorkspaceService(self.db).apply_actual_body_order(unit.case_id)
+        decision = FormalRecordRouteDecision(
+            classification=RouteClass.MATCH_EXISTING,
+            target_question_id=question.id,
+            formal_question=None,
+            formal_answer=formal_answer,
+            confidence=unit.confidence,
+            candidate_question_ids=(),
+            reason_code="MANUAL_LINK_ANSWER",
+            model_id=unit.model_id,
+        )
+        qa_repo.save_decision(
+            self.db,
+            unit,
+            classification=decision.classification.value,
+            target_question_id=question.id,
+            formal_question_text=None,
+            formal_answer_text=formal_answer,
+            confidence=decision.confidence,
+            model_id=decision.model_id,
+            reason_code=decision.reason_code,
+            status="APPLIED",
+            candidate_question_ids=[],
+        )
+        self._audit(unit, decision, action="QA_ROUTE_MANUAL_APPLIED", target_question_id=question.id)
+        return {
+            "status": "APPLIED",
+            "targetQuestionId": question.id,
+            "round": question_round_dict(round_row),
+            "qaUnit": qa_unit_dict(unit),
+        }
+
+    def _review(self, unit, decision: FormalRecordRouteDecision, *, reason_code: str | None = None) -> dict:
+        code = reason_code or decision.reason_code
+        qa_repo.save_decision(
+            self.db,
+            unit,
+            classification=RouteClass.NEEDS_REVIEW.value,
+            target_question_id=None,
+            formal_question_text=decision.formal_question,
+            formal_answer_text=decision.formal_answer,
+            confidence=decision.confidence,
+            model_id=decision.model_id,
+            reason_code=code,
+            status="NEEDS_REVIEW",
+            candidate_question_ids=list(decision.candidate_question_ids),
+        )
+        review_decision = FormalRecordRouteDecision(
+            classification=RouteClass.NEEDS_REVIEW,
+            target_question_id=None,
+            formal_question=decision.formal_question,
+            formal_answer=decision.formal_answer,
+            confidence=decision.confidence,
+            candidate_question_ids=decision.candidate_question_ids,
+            reason_code=code,
+            model_id=decision.model_id,
+        )
+        self._audit(unit, review_decision, action="QA_ROUTE_REVIEW_REQUIRED", target_question_id=None)
+        return {"status": "NEEDS_REVIEW", "qaUnit": qa_unit_dict(unit)}
+
+    def _ignore(self, unit, decision: FormalRecordRouteDecision, *, manual: bool) -> dict:
+        qa_repo.save_decision(
+            self.db,
+            unit,
+            classification=RouteClass.IGNORE.value,
+            target_question_id=None,
+            formal_question_text=None,
+            formal_answer_text=None,
+            confidence=decision.confidence,
+            model_id=decision.model_id,
+            reason_code=decision.reason_code,
+            status="IGNORED",
+            candidate_question_ids=[],
+        )
+        self._audit(
+            unit,
+            decision,
+            action="QA_ROUTE_MANUAL_APPLIED" if manual else "QA_ROUTE_IGNORED",
+            target_question_id=None,
+        )
+        return {"status": "IGNORED", "qaUnit": qa_unit_dict(unit)}
+
+    def _valid_target(self, case_id: str, question_id: str | None, *, fixed: bool):
+        if not question_id:
+            return None
         try:
-            self._queue.put_nowait(notice)
-        except queue.Full:
-            with self._state_lock:
-                self._recovery_markers.add(str(case_id))
-            logger.warning("qa routing queue full; persisted fragment will be recovered: %s", fragment_id)
+            row = question_repo.get_case(self.db, case_id, question_id)
+        except DomainError:
+            return None
+        if fixed:
+            return row if row.locked and row.template_key else None
+        return row if not row.locked and row.source in {"CASE", "LIVE"} else None
 
-    def flush_capture(self, case_id: str, session_id: str) -> None:
-        pair = (str(case_id), str(session_id))
-        with self._state_lock:
-            self._pending_flushes.add(pair)
-        try:
-            self._queue.put_nowait(("wake", pair[0], pair[1]))
-        except queue.Full:
-            # Flush intent is retained in _pending_flushes, so a saturated queue
-            # cannot lose the final unit even though this wakeup is dropped.
-            pass
+    def _can_create_live(self, unit, decision: FormalRecordRouteDecision) -> bool:
+        return bool(
+            decision.formal_question
+            and decision.formal_answer
+            and str(unit.raw_question_text or "").strip()
+            and self._question_fragment_ids(unit)
+        )
 
-    def shutdown(self) -> None:
-        self._stop.set()
-        try:
-            self._queue.put_nowait(None)
-        except queue.Full:
-            pass
-        thread = self._thread
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=5.0)
-        with self._state_lock:
-            if self._thread is thread and (thread is None or not thread.is_alive()):
-                self._thread = None
+    @staticmethod
+    def _question_fragment_ids(unit) -> list[str]:
+        return [link.fragment_id for link in sorted(unit.fragments, key=lambda item: item.position) if link.role == "QUESTION"]
 
-    def _run(self) -> None:
-        try:
-            while not self._stop.is_set():
-                try:
-                    self._write_recovery_markers()
-                    self._recover_active_sessions()
-                    self._apply_pending_flushes()
-                    self._close_idle()
-                    try:
-                        notice = self._queue.get(timeout=self.poll_interval)
-                    except queue.Empty:
-                        continue
-                    if notice is None:
-                        continue
-                    kind, case_id, value = notice
-                    if kind == "fragment":
-                        self._consume_fragment(case_id, value)
-                except Exception:
-                    logger.exception("qa routing worker iteration failed")
-        finally:
-            # A normal application shutdown stops capture first, which records a
-            # flush intent. Process those persisted fragments before exiting.
-            try:
-                self._write_recovery_markers()
-                self._apply_pending_flushes()
-            except Exception:
-                logger.exception("qa routing final flush failed")
+    @staticmethod
+    def _answer_fragment_ids(unit) -> list[str]:
+        return [link.fragment_id for link in sorted(unit.fragments, key=lambda item: item.position) if link.role == "ANSWER"]
 
-    def _consume_fragment(self, case_id: str, fragment_id: str) -> None:
-        with self.session_factory() as db:
-            builder = QAUnitBuilder(db, idle_close_seconds=self.idle_close_seconds)
-            closed_ids = builder.consume_fragment(case_id, fragment_id)
-            db.commit()
-        for qa_unit_id in closed_ids:
-            self._route_unit(qa_unit_id)
-
-    def _recover_session(self, case_id: str, session_id: str) -> None:
-        closed_ids: list[str] = []
-        with self.session_factory() as db:
-            builder = QAUnitBuilder(db, idle_close_seconds=self.idle_close_seconds)
-            for fragment in asr_repo.list_unassigned_for_session(db, case_id, session_id):
-                closed_ids.extend(builder.consume_fragment(case_id, fragment.id))
-            db.commit()
-        for qa_unit_id in dict.fromkeys(closed_ids):
-            self._route_unit(qa_unit_id)
-
-    def _recover_active_sessions(self) -> None:
-        with self.session_factory() as db:
-            pairs = list(db.execute(
-                select(ASRCaptureSession.case_id, ASRCaptureSession.interrogation_session_id)
-                .where(
-                    ASRCaptureSession.status == "CAPTURING",
-                    ASRCaptureSession.interrogation_session_id.is_not(None),
-                )
-                .distinct()
-            ))
-        for case_id, session_id in pairs:
-            if session_id:
-                self._recover_session(str(case_id), str(session_id))
-
-    def _apply_pending_flushes(self) -> None:
-        with self._state_lock:
-            pending = list(self._pending_flushes)
-        for case_id, session_id in pending:
-            self._recover_session(case_id, session_id)
-            with self.session_factory() as db:
-                builder = QAUnitBuilder(db, idle_close_seconds=self.idle_close_seconds)
-                closed_ids = builder.flush_session(case_id, session_id)
-                db.commit()
-            for qa_unit_id in closed_ids:
-                self._route_unit(qa_unit_id)
-            with self._state_lock:
-                self._pending_flushes.discard((case_id, session_id))
-
-    def _close_idle(self) -> None:
-        with self.session_factory() as db:
-            builder = QAUnitBuilder(db, idle_close_seconds=self.idle_close_seconds)
-            closed_ids = builder.close_idle(now=datetime.now(timezone.utc))
-            db.commit()
-        for qa_unit_id in closed_ids:
-            self._route_unit(qa_unit_id)
-
-    def _route_unit(self, qa_unit_id: str) -> None:
-        with self.session_factory() as db:
-            unit = qa_repo.get(db, qa_unit_id)
-            if unit.status in {"APPLIED", "IGNORED"}:
-                return
-            if unit.status == "NEEDS_REVIEW":
-                payload = qa_unit_dict(unit)
-                session_id = unit.session_id
-                db.commit()
-            else:
-                if unit.status not in {"CLOSED", "ROUTING"}:
-                    return
-                qa_repo.mark_routing(db, unit)
-                db.commit()
-                decision = FormalRecordRouter(db, ai_supervisor=self.ai_supervisor).route(unit.id)
-                try:
-                    FormalRecordRoutingService(db).apply_auto(unit.id, decision)
-                    payload = qa_unit_dict(unit)
-                    session_id = unit.session_id
-                    applied = unit.status == "APPLIED"
-                    db.commit()
-                except Exception:
-                    db.rollback()
-                    logger.exception("formal routing application failed for qa unit %s", qa_unit_id)
-                    fallback = FormalRecordRouteDecision(
-                        classification=RouteClass.NEEDS_REVIEW,
-                        target_question_id=None,
-                        formal_question=None,
-                        formal_answer=None,
-                        confidence=None,
-                        candidate_question_ids=(),
-                        reason_code="ROUTING_APPLICATION_FAILED",
-                        model_id=decision.model_id,
-                    )
-                    unit = qa_repo.get(db, qa_unit_id)
-                    FormalRecordRoutingService(db).apply_auto(unit.id, fallback)
-                    payload = qa_unit_dict(unit)
-                    session_id = unit.session_id
-                    applied = False
-                    db.commit()
-                if session_id:
-                    self.publish_event(session_id, "QA_UNIT_UPDATED", payload)
-                    if applied:
-                        self.publish_event(
-                            session_id,
-                            "FORMAL_RECORD_UPDATED",
-                            {"qaUnitId": qa_unit_id, "targetQuestionId": unit.target_question_id},
-                        )
-                return
-
-        if session_id:
-            self.publish_event(session_id, "QA_UNIT_UPDATED", payload)
-
-    def _write_recovery_markers(self) -> None:
-        with self._state_lock:
-            case_ids = list(self._recovery_markers)
-            self._recovery_markers.clear()
-        if not case_ids:
-            return
-        with self.session_factory() as db:
-            for case_id in case_ids:
-                audit_repo.add(
-                    db,
-                    case_id=case_id,
-                    action="QA_ROUTING_RECOVERY_REQUIRED",
-                    target_type="CASE",
-                    target_id=case_id,
-                    detail={"reason": "QUEUE_FULL", "recovery": "PERSISTED_FRAGMENT_SCAN"},
-                )
-            db.commit()
-'''
-write_new("linux/backend/app/services/qa_routing_coordinator.py", coordinator)
-
-# Runtime feature flag and idle close setting.
-replace_once(
-    "linux/backend/app/runtime_settings.py",
-    '    audio_input_mode: str = "ALSA"\n\n    data_dir: Path = Path("/var/lib/suspect-interrogation")',
-    '    audio_input_mode: str = "ALSA"\n    formal_routing_mode: str = "legacy"\n    qa_idle_close_seconds: float = 4.0\n\n    data_dir: Path = Path("/var/lib/suspect-interrogation")',
-)
-replace_once(
-    "linux/backend/app/runtime_settings.py",
-    '    @property\n    def cors_origins_list(self) -> list[str]:',
-    '    @field_validator("formal_routing_mode")\n    @classmethod\n    def validate_formal_routing_mode(cls, value: str) -> str:\n        normalized = str(value or "legacy").strip().lower()\n        if normalized not in {"legacy", "qwen"}:\n            raise ValueError("formal_routing_mode must be legacy or qwen")\n        return normalized\n\n    @field_validator("qa_idle_close_seconds")\n    @classmethod\n    def validate_qa_idle_close_seconds(cls, value: float) -> float:\n        seconds = float(value)\n        if seconds <= 0:\n            raise ValueError("qa_idle_close_seconds must be positive")\n        return seconds\n\n    @property\n    def cors_origins_list(self) -> list[str]:',
+    def _audit(self, unit, decision: FormalRecordRouteDecision, *, action: str, target_question_id: str | None) -> None:
+        audit_repo.add(
+            self.db,
+            case_id=unit.case_id,
+            action=action,
+            target_type="QA_UNIT",
+            target_id=unit.id,
+            detail={
+                "qa_unit_id": unit.id,
+                "classification": decision.classification.value,
+                "target_question_id": target_question_id,
+                "confidence": decision.confidence,
+                "model_id": decision.model_id,
+                "reason_code": decision.reason_code,
+                "question_fragment_ids": self._question_fragment_ids(unit),
+                "answer_fragment_ids": self._answer_fragment_ids(unit),
+            },
+        )
+''',
 )
 
-# Capture service sink seam: realtime capture publishes raw ASR first, then only
-# enqueues IDs in qwen mode. Legacy projection remains the default fallback.
+# Endpoint: case path is authoritative; cross-case QA ids are deliberately 404.
 replace_once(
-    "linux/backend/app/services/asr_capture_service.py",
-    'PublishEvent = Callable[[str, str, dict[str, Any]], None]\nCalibrationResolver = Callable[[Any], ResolvedSpeakerCalibration]\n',
-    'PublishEvent = Callable[[str, str, dict[str, Any]], None]\nFragmentSink = Callable[[str, str], None]\nCaptureFinishedSink = Callable[[str, str], None]\nCalibrationResolver = Callable[[Any], ResolvedSpeakerCalibration]\n',
+    "linux/backend/app/api/template_workspace.py",
+    '    QuestionReorderRequest,\n    RoundReassociateRequest,\n',
+    '    QuestionReorderRequest,\n    QAUnitResolutionRequest,\n    RoundReassociateRequest,\n',
 )
 replace_once(
-    "linux/backend/app/services/asr_capture_service.py",
-    '        read_timeout: float = 0.2,\n        calibration_resolver: CalibrationResolver | None = None,\n    ) -> None:',
-    '        read_timeout: float = 0.2,\n        calibration_resolver: CalibrationResolver | None = None,\n        fragment_sink: FragmentSink | None = None,\n        capture_finished_sink: CaptureFinishedSink | None = None,\n    ) -> None:',
+    "linux/backend/app/api/template_workspace.py",
+    'from app.repositories import question_rounds as round_repo\n',
+    'from app.repositories import qa_units as qa_repo\nfrom app.repositories import question_rounds as round_repo\n',
 )
 replace_once(
-    "linux/backend/app/services/asr_capture_service.py",
-    '        self.read_timeout = max(0.001, float(read_timeout))\n        self.calibration_resolver = calibration_resolver\n',
-    '        self.read_timeout = max(0.001, float(read_timeout))\n        self.calibration_resolver = calibration_resolver\n        self.fragment_sink = fragment_sink\n        self.capture_finished_sink = capture_finished_sink\n',
+    "linux/backend/app/api/template_workspace.py",
+    'from app.services.interrogation_projection_service import InterrogationProjectionService\n',
+    'from app.services.formal_record_routing_service import FormalRecordRoutingService\nfrom app.services.interrogation_projection_service import InterrogationProjectionService\n',
 )
 replace_once(
-    "linux/backend/app/services/asr_capture_service.py",
-    '            try:\n                self._finish_capture_row(runtime.capture_session_id)\n            except Exception as exc:\n                if failure is None:\n                    failure = exc\n\n            with self._lock:',
-    '            try:\n                self._finish_capture_row(runtime.capture_session_id)\n            except Exception as exc:\n                if failure is None:\n                    failure = exc\n            if self.capture_finished_sink is not None:\n                try:\n                    self.capture_finished_sink(runtime.case_id, runtime.interrogation_session_id)\n                except Exception:\n                    logger.exception("capture finished sink failed for case %s", runtime.case_id)\n\n            with self._lock:',
+    "linux/backend/app/api/template_workspace.py",
+    'def _round_for_case(db: Session, case_id: str, round_id: str):\n    row = round_repo.get_round(db, round_id)\n    if row.case_id != case_id:\n        raise DomainError("QUESTION_ROUND_NOT_FOUND", "问答轮次不存在", 404)\n    return row\n\n\n@router.get("/cases/{case_id}/template-workspace")\n',
+    'def _round_for_case(db: Session, case_id: str, round_id: str):\n    row = round_repo.get_round(db, round_id)\n    if row.case_id != case_id:\n        raise DomainError("QUESTION_ROUND_NOT_FOUND", "问答轮次不存在", 404)\n    return row\n\n\ndef _qa_unit_for_case(db: Session, case_id: str, qa_unit_id: str):\n    row = qa_repo.get(db, qa_unit_id)\n    if row.case_id != case_id:\n        raise DomainError("QA_UNIT_NOT_FOUND", "问答单元不存在", 404)\n    return row\n\n\n@router.get("/cases/{case_id}/template-workspace")\n',
 )
 replace_once(
-    "linux/backend/app/services/asr_capture_service.py",
-    '        self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)\n        try:\n            with self.session_factory() as projection_db:\n                InterrogationProjectionService(projection_db).process_fragment(runtime.case_id, fragment_id)\n                projection_db.commit()\n        except Exception:\n            logger.exception("formal interrogation projection failed for fragment %s", fragment_id)\n',
-    '        self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)\n        if self.fragment_sink is not None:\n            try:\n                self.fragment_sink(runtime.case_id, fragment_id)\n            except Exception:\n                # The ASR row is already committed. Qwen mode recovery scans\n                # persisted unassigned fragments, so never fall back to legacy\n                # projection or block the capture thread here.\n                logger.exception("qa fragment sink failed for fragment %s", fragment_id)\n            return\n        try:\n            with self.session_factory() as projection_db:\n                InterrogationProjectionService(projection_db).process_fragment(runtime.case_id, fragment_id)\n                projection_db.commit()\n        except Exception:\n            logger.exception("formal interrogation projection failed for fragment %s", fragment_id)\n',
-)
-
-# Propagate sink seam to both ALSA and browser-backed concrete capture services.
-replace_once(
-    "linux/backend/app/services/source_aware_asr_capture_service.py",
-    '        read_timeout: float = 0.2,\n        calibration_resolver_factory: CalibrationResolverFactory | None = None,\n    ) -> None:',
-    '        read_timeout: float = 0.2,\n        calibration_resolver_factory: CalibrationResolverFactory | None = None,\n        fragment_sink: Callable[[str, str], None] | None = None,\n        capture_finished_sink: Callable[[str, str], None] | None = None,\n    ) -> None:',
-)
-replace_once(
-    "linux/backend/app/services/source_aware_asr_capture_service.py",
-    '        self.read_timeout = float(read_timeout)\n        self._lock = threading.RLock()\n',
-    '        self.read_timeout = float(read_timeout)\n        self.fragment_sink = fragment_sink\n        self.capture_finished_sink = capture_finished_sink\n        self._lock = threading.RLock()\n',
-)
-replace_once(
-    "linux/backend/app/services/source_aware_asr_capture_service.py",
-    '                read_timeout=read_timeout,\n                calibration_resolver=resolver,\n            )',
-    '                read_timeout=read_timeout,\n                calibration_resolver=resolver,\n                fragment_sink=fragment_sink,\n                capture_finished_sink=capture_finished_sink,\n            )',
-)
-
-# Application lifecycle: qwen mode owns one coordinator and injects only its
-# non-blocking sinks into capture. Legacy remains untouched by default.
-replace_once(
-    "linux/backend/app/main.py",
-    'from app.services.source_aware_asr_capture_service import SourceAwareAsrCaptureService\n',
-    'from app.services.source_aware_asr_capture_service import SourceAwareAsrCaptureService\nfrom app.services.qa_routing_coordinator import QARoutingCoordinator\n',
-)
-replace_once(
-    "linux/backend/app/main.py",
-    '        supervisor = ai_supervisor or _build_supervisor()\n        app.state.ai_supervisor = supervisor\n        capture_service = SourceAwareAsrCaptureService(\n',
-    '        supervisor = ai_supervisor or _build_supervisor()\n        app.state.ai_supervisor = supervisor\n        routing_coordinator = None\n        if settings.formal_routing_mode == "qwen":\n            routing_coordinator = QARoutingCoordinator(\n                session_factory=app.state.session_factory,\n                ai_supervisor=supervisor,\n                publish_event=publish_asr_event,\n                idle_close_seconds=settings.qa_idle_close_seconds,\n            )\n            routing_coordinator.start()\n        app.state.qa_routing_coordinator = routing_coordinator\n        capture_service = SourceAwareAsrCaptureService(\n',
-)
-replace_once(
-    "linux/backend/app/main.py",
-    '            calibration_resolver_factory=runtime_calibration_resolver_factory,\n        )\n',
-    '            calibration_resolver_factory=runtime_calibration_resolver_factory,\n            fragment_sink=None if routing_coordinator is None else routing_coordinator.enqueue_fragment,\n            capture_finished_sink=None if routing_coordinator is None else routing_coordinator.flush_capture,\n        )\n',
-)
-replace_once(
-    "linux/backend/app/main.py",
-    '        finally:\n            capture_service.shutdown()\n            if manager is not None:\n',
-    '        finally:\n            capture_service.shutdown()\n            if routing_coordinator is not None:\n                routing_coordinator.shutdown()\n            if manager is not None:\n',
-)
-replace_once(
-    "linux/backend/app/main.py",
-    '    app.state.asr_capture_service = None\n    app.state.browser_audio_input = browser_audio_input\n',
-    '    app.state.asr_capture_service = None\n    app.state.qa_routing_coordinator = None\n    app.state.browser_audio_input = browser_audio_input\n',
+    "linux/backend/app/api/template_workspace.py",
+    '@router.post("/cases/{case_id}/pending-questions/{pending_id}/add")\ndef add_pending_question',
+    '@router.post("/cases/{case_id}/qa-units/{qa_unit_id}/resolve")\ndef resolve_qa_unit(case_id: str, qa_unit_id: str, body: QAUnitResolutionRequest, db: Session = Depends(get_db)):\n    _qa_unit_for_case(db, case_id, qa_unit_id)\n    result = FormalRecordRoutingService(db).resolve_manual(\n        qa_unit_id,\n        action=body.action,\n        case_question_id=body.case_question_id,\n        formal_question=body.formal_question,\n        formal_answer=body.formal_answer,\n    )\n    db.commit()\n    return envelope(result, "待处理问答已人工确认")\n\n\n@router.post("/cases/{case_id}/pending-questions/{pending_id}/add")\ndef add_pending_question',
 )
