@@ -359,3 +359,44 @@ def test_projection_failure_keeps_raw_fragment_and_capture_loop_healthy(tmp_path
 
     assert ExplodingProjection.calls == 1
     assert stopped["lastError"] is None
+
+
+def test_fragment_sink_bypasses_legacy_projection_and_capture_finished_sink_flushes(tmp_path: Path, monkeypatch):
+    engine, factory, case_id, session_id = _seed_database(tmp_path)
+    device = FakeDeviceManager([b"\x01\x00" * 1600, b"\x02\x00" * 1600])
+    speech = FakeSpeechSupervisor()
+    events = EventCollector()
+    fragments: list[tuple[str, str]] = []
+    finished: list[tuple[str, str]] = []
+
+    class ForbiddenProjection:
+        calls = 0
+
+        def __init__(self, _db):
+            pass
+
+        def process_fragment(self, _case_id: str, _fragment_id: str):
+            type(self).calls += 1
+            raise AssertionError("legacy projection must not run in qwen sink mode")
+
+    monkeypatch.setattr(capture_module, "InterrogationProjectionService", ForbiddenProjection, raising=False)
+    service = AsrCaptureService(
+        session_factory=factory,
+        device_manager=device,
+        ai_supervisor=speech,
+        publish_event=events,
+        fragment_sink=lambda case, fragment: fragments.append((case, fragment)),
+        capture_finished_sink=lambda case, session: finished.append((case, session)),
+        sample_rate=16_000,
+        read_timeout=0.01,
+    )
+
+    service.start(case_id)
+    _wait_until(lambda: bool(fragments))
+    service.stop(case_id)
+
+    assert ForbiddenProjection.calls == 0
+    assert len(fragments) == 1
+    assert fragments[0][0] == case_id
+    assert finished == [(case_id, session_id)]
+    engine.dispose()
