@@ -1,0 +1,193 @@
+name: RK3588 Qwen Formal Routing Acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/qwen-formal-record-routing
+      - linux-adaptation
+    paths:
+      - '.github/workflows/rk3588-qwen-formal-routing-acceptance.yml'
+      - 'scripts/ci/probe-llamapi-qwen-routing.py'
+      - 'linux/backend/app/ai/**'
+      - 'linux/backend/app/services/formal_record_router.py'
+      - 'linux/backend/app/services/formal_record_routing_service.py'
+      - 'linux/backend/app/services/qa_routing_coordinator.py'
+      - 'linux/backend/tests/test_probe_llamapi_qwen_routing.py'
+      - 'linux/backend/tests/test_llamapi_llm_engine.py'
+      - 'linux/backend/tests/test_qwen_formal_routing_e2e.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rk3588-qwen-formal-routing-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  hosted-gate:
+    name: Hosted Qwen routing gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: linux/backend
+      HARDWARE_MODE: mock
+      DEVICE_SIMULATOR: '1'
+      AI_MODE: mock
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: linux/backend/requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r linux/backend/requirements.txt pytest httpx
+
+      - name: Focused semantic-routing verification
+        run: |
+          python -m compileall -q linux/backend scripts/ci/probe-llamapi-qwen-routing.py
+          python -m pytest \
+            linux/backend/tests/test_probe_llamapi_qwen_routing.py \
+            linux/backend/tests/test_llamapi_llm_engine.py \
+            linux/backend/tests/test_qwen_formal_routing_e2e.py -q
+
+  rk3588-probe:
+    name: RK3588 read-only LlamaPi probe
+    needs: hosted-gate
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 30
+    env:
+      GIT_TERMINAL_PROMPT: '0'
+      LLAMAPI_BASE_URL: 'http://127.0.0.1:9265/v1'
+      LLAMAPI_MODEL_HINT: 'qwen3:4b'
+    steps:
+      - name: Exact read-only checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner_name=${RUNNER_NAME:-unknown}"
+          echo "runner_arch=${RUNNER_ARCH:-unknown}"
+          hostname
+          uname -a
+          test "$(uname -m)" = aarch64 -o "$(uname -m)" = arm64
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --local gc.auto 0
+          git config --local http.version HTTP/1.1
+          git sparse-checkout init --cone
+          git sparse-checkout set .github linux scripts docs
+          fetched=0
+          for attempt in 1 2 3 4 5; do
+            if timeout 120s git -c protocol.version=2 fetch --filter=blob:none --no-tags --depth=1 \
+              origin "+${GITHUB_SHA}:refs/remotes/origin/__qwen_acceptance"; then
+              fetched=1
+              break
+            fi
+            sleep $((attempt * 3))
+          done
+          test "$fetched" -eq 1
+          git checkout --force --detach "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 -m py_compile scripts/ci/probe-llamapi-qwen-routing.py
+
+      - name: Verify LlamaPi preconditions without mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemctl is-active llamapi-server.service | tee "$RUNNER_TEMP/llamapi-service-state.txt"
+          curl -fsS "$LLAMAPI_BASE_URL/models" | tee "$RUNNER_TEMP/llamapi-models.json"
+          echo '--- unrelated TCP/8000 observation only ---' | tee "$RUNNER_TEMP/port-8000.txt"
+          ss -ltnp 'sport = :8000' 2>&1 | tee -a "$RUNNER_TEMP/port-8000.txt" || true
+
+      - name: Run 20-request semantic routing probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          PID="$(systemctl show -p MainPID --value llamapi-server.service)"
+          test -n "$PID"
+          test "$PID" != '0'
+          : > "$RUNNER_TEMP/llamapi-rss-kb.txt"
+          (
+            while kill -0 "$PID" 2>/dev/null; do
+              ps -o rss= -p "$PID" 2>/dev/null | tr -d ' ' >> "$RUNNER_TEMP/llamapi-rss-kb.txt" || true
+              sleep 1
+            done
+          ) &
+          MONITOR_PID=$!
+          cleanup_monitor() {
+            kill "$MONITOR_PID" 2>/dev/null || true
+            wait "$MONITOR_PID" 2>/dev/null || true
+          }
+          trap cleanup_monitor EXIT
+          python3 scripts/ci/probe-llamapi-qwen-routing.py \
+            --base-url "$LLAMAPI_BASE_URL" \
+            --model-hint "$LLAMAPI_MODEL_HINT" \
+            --repetitions 4 \
+            --timeout 120 \
+            --output "$RUNNER_TEMP/qwen-routing-probe.json"
+          cleanup_monitor
+          trap - EXIT
+          PROBE_PATH="$RUNNER_TEMP/qwen-routing-probe.json" RSS_PATH="$RUNNER_TEMP/llamapi-rss-kb.txt" \
+            python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          probe = json.loads(Path(os.environ['PROBE_PATH']).read_text(encoding='utf-8'))
+          rss_values = []
+          for raw in Path(os.environ['RSS_PATH']).read_text(encoding='utf-8').splitlines():
+              try:
+                  value = int(raw.strip())
+              except ValueError:
+                  continue
+              if value > 0:
+                  rss_values.append(value)
+          runtime = {
+              'sample_count': probe.get('latency_ms', {}).get('count', 0),
+              'latency_ms': probe.get('latency_ms'),
+              'llamapi_peak_rss_kb': max(rss_values) if rss_values else None,
+              'llamapi_peak_rss_mb': round(max(rss_values) / 1024.0, 2) if rss_values else None,
+          }
+          Path(os.environ['RUNNER_TEMP'], 'qwen-routing-runtime.json').write_text(
+              json.dumps(runtime, ensure_ascii=False, indent=2) + '\n', encoding='utf-8'
+          )
+          print(json.dumps(runtime, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Final read-only diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          echo '--- LlamaPi service ---'
+          systemctl --no-pager --full status llamapi-server.service || true
+          echo '--- LlamaPi models ---'
+          cat "$RUNNER_TEMP/llamapi-models.json" 2>/dev/null || true
+          echo '--- Qwen routing probe ---'
+          cat "$RUNNER_TEMP/qwen-routing-probe.json" 2>/dev/null || true
+          echo '--- runtime metrics ---'
+          cat "$RUNNER_TEMP/qwen-routing-runtime.json" 2>/dev/null || true
+          echo '--- unrelated TCP/8000 observation ---'
+          cat "$RUNNER_TEMP/port-8000.txt" 2>/dev/null || true
+
+      - name: Upload RK3588 Qwen acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rk3588-qwen-formal-routing-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/llamapi-service-state.txt
+            ${{ runner.temp }}/llamapi-models.json
+            ${{ runner.temp }}/qwen-routing-probe.json
+            ${{ runner.temp }}/qwen-routing-runtime.json
+            ${{ runner.temp }}/llamapi-rss-kb.txt
+            ${{ runner.temp }}/port-8000.txt
+          if-no-files-found: warn
+          retention-days: 30
