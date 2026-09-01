@@ -17,6 +17,7 @@ import type {
   CaseQuestionCreateInput,
   CaseQuestionUpdateInput,
   PendingResolution,
+  QAUnitResolution,
   RoundReassociateInput,
   StandardQuestion,
   TemplateWorkspace,
@@ -62,6 +63,7 @@ const emit = defineEmits<{
   reorderQuestions: [questionIds: string[]]
   removeQuestion: [questionId: string]
   resolvePending: [pendingId: string, resolution: PendingResolution]
+  resolveQaUnit: [qaUnitId: string, resolution: QAUnitResolution]
   reassociateRound: [roundId: string, input: RoundReassociateInput]
   updateAnswer: [roundId: string, answerText: string]
   saveLibrary: [questionId: string]
@@ -293,6 +295,7 @@ async function confirmSignature() {
           @reorder="emit('reorderQuestions', $event)"
           @remove-question="(id) => emit('removeQuestion', id)"
           @insert-pending="(pendingId, afterQuestionId) => emit('resolvePending', pendingId, { action: 'ADD', afterQuestionId })"
+          @resolve-qa-unit="(qaUnitId, resolution) => emit('resolveQaUnit', qaUnitId, resolution)"
           @update-answer="(id, text) => emit('updateAnswer', id, text)"
           @save-library="emit('saveLibrary', $event)"
           @generate-ai="emit('generateAi')"
@@ -305,6 +308,7 @@ async function confirmSignature() {
         :dialogue="dialogueHistory"
         :partial-text="capture.partialText"
         :pending-questions="workspace.pendingQuestions"
+        :qa-units="workspace.qaUnits"
         :questions="workspace.questions"
         :suspect-name="summary.suspectName"
         :capture-running="capture.running"
@@ -313,6 +317,7 @@ async function confirmSignature() {
         :capture-elapsed-ms="captureElapsedMs"
         @capture-toggle="toggleCapture"
         @resolve-pending="(id, resolution) => emit('resolvePending', id, resolution)"
+        @resolve-qa-unit="(id, resolution) => emit('resolveQaUnit', id, resolution)"
         @correct-fragment="(id, speaker, reason) => emit('correctFragment', id, speaker, reason)"
       />
     </div>

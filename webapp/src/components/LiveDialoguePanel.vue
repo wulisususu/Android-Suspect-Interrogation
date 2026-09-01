@@ -3,9 +3,11 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
 import type { TemporaryAsrFragment, TemporaryAsrSpeaker } from '../types/interrogation'
 import type {
+  FormalQAUnit,
   FormalQuestion,
   PendingFormalQuestion,
   PendingResolution,
+  QAUnitResolution,
 } from '../types/templateInterrogation'
 import { dialoguePresentation } from '../utils/templateInterrogation'
 
@@ -13,6 +15,7 @@ const props = defineProps<{
   dialogue: TemporaryAsrFragment[]
   partialText: string
   pendingQuestions: PendingFormalQuestion[]
+  qaUnits: FormalQAUnit[]
   questions: FormalQuestion[]
   suspectName?: string
   captureRunning: boolean
@@ -24,6 +27,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   captureToggle: []
   resolvePending: [pendingId: string, resolution: PendingResolution]
+  resolveQaUnit: [qaUnitId: string, resolution: QAUnitResolution]
   correctFragment: [fragmentId: string, speaker: TemporaryAsrSpeaker, reason: string]
 }>()
 
@@ -31,6 +35,8 @@ const feed = ref<HTMLElement | null>(null)
 const pinnedToBottom = ref(true)
 const correctionSpeaker = ref<Record<string, TemporaryAsrSpeaker>>({})
 const correctionReason = ref<Record<string, string>>({})
+const qaReviewUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'NEEDS_REVIEW'))
+const qaResolvedUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'APPLIED' || unit.status === 'IGNORED'))
 
 const elapsed = computed(() => {
   const total = Math.floor(props.captureElapsedMs / 1000)
@@ -105,6 +111,33 @@ function startPendingDrag(event: DragEvent, fragmentId: string) {
   event.dataTransfer.setData('application/x-formal-pending-question', JSON.stringify({ pendingId: pending.id }))
 }
 
+function startQaDrag(event: DragEvent, payload: { qaUnitId: string; mode: 'QA' | 'ANSWER' }) {
+  if (!event.dataTransfer) return
+  event.dataTransfer.effectAllowed = 'copy'
+  event.dataTransfer.setData('application/x-formal-qa-unit', JSON.stringify(payload))
+}
+
+function startWholeQaDrag(event: DragEvent, unit: FormalQAUnit) {
+  startQaDrag(event, { qaUnitId: unit.id, mode: 'QA' })
+}
+
+function startAnswerDrag(event: DragEvent, unit: FormalQAUnit) {
+  startQaDrag(event, { qaUnitId: unit.id, mode: 'ANSWER' })
+}
+
+function resolveQa(unit: FormalQAUnit, resolution: QAUnitResolution) {
+  emit('resolveQaUnit', unit.id, resolution)
+}
+
+function qaStatusLabel(unit: FormalQAUnit) {
+  if (unit.status === 'IGNORED' || unit.classification === 'IGNORE') return '已忽略·仅原始对话'
+  if (unit.status === 'NEEDS_REVIEW') return '待处理'
+  if (unit.classification === 'MATCH_FIXED') return '已归档·固定模板'
+  if (unit.classification === 'MATCH_EXISTING') return '已归档·已有问题'
+  if (unit.classification === 'CREATE_LIVE_FROM_SPEECH') return '已新增·现场问题'
+  return unit.status
+}
+
 function correctionRole(item: TemporaryAsrFragment): TemporaryAsrSpeaker {
   return correctionSpeaker.value[item.id] || item.speaker
 }
@@ -156,6 +189,24 @@ onMounted(() => { void scrollToLatest(true) })
     </header>
 
     <div ref="feed" class="dialogue-feed" @scroll="onFeedScroll">
+      <section v-if="qaReviewUnits.length || qaResolvedUnits.length" class="qa-review-rail" aria-label="Qwen 正式笔录路由状态">
+        <article v-for="unit in qaReviewUnits" :key="unit.id" class="qa-review-card">
+          <header><span class="qa-status-chip">待处理</span><small>{{ unit.reasonCode || 'NEEDS_REVIEW' }}</small></header>
+          <p v-if="unit.rawQuestionText"><b>原始问：</b>{{ unit.rawQuestionText }}</p>
+          <p v-if="unit.rawAnswerText"><b>原始答：</b>{{ unit.rawAnswerText }}</p>
+          <p v-if="unit.formalQuestionText" class="qa-suggestion"><b>建议问：</b>{{ unit.formalQuestionText }}</p>
+          <p v-if="unit.formalAnswerText" class="qa-suggestion"><b>建议答：</b>{{ unit.formalAnswerText }}</p>
+          <div class="qa-review-actions">
+            <button draggable="true" @dragstart="startWholeQaDrag($event, unit)">拖动整组问答</button>
+            <button v-if="unit.answerFragmentIds.length" draggable="true" @dragstart="startAnswerDrag($event, unit)">仅拖动答案</button>
+            <button class="qa-ignore" @click="resolveQa(unit, { action: 'IGNORE' })">忽略</button>
+          </div>
+        </article>
+        <div v-for="unit in qaResolvedUnits" :key="`status-${unit.id}`" class="qa-routing-status" :class="{ 'qa-status-muted': unit.status === 'IGNORED' || unit.classification === 'IGNORE' }">
+          <span>{{ qaStatusLabel(unit) }}</span>
+          <small v-if="unit.rawQuestionText">{{ unit.rawQuestionText }}</small>
+        </div>
+      </section>
       <div v-if="!dialogue.length && !partialText" class="dialogue-empty">
         <strong>等待现场对话</strong>
         <p>这里按实际说话顺序保留原始识别结果；正式笔录在左侧独立整理。</p>
@@ -377,4 +428,16 @@ onMounted(() => { void scrollToLatest(true) })
   .revision-row { grid-template-columns: auto 1fr; }
   .correction-controls { grid-template-columns: 1fr; }
 }
+.qa-review-rail { display: grid; gap: 8px; margin-bottom: 10px; }
+.qa-review-card { border: 1px solid #d5a73f; background: #fff9e8; border-radius: 10px; padding: 10px; }
+.qa-review-card header { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.qa-review-card p { margin: 6px 0; line-height: 1.45; }
+.qa-status-chip { display: inline-flex; padding: 2px 8px; border-radius: 999px; background: #f3c760; color: #5b4308; font-weight: 800; }
+.qa-suggestion { color: #536274; }
+.qa-review-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.qa-review-actions button { cursor: grab; }
+.qa-review-actions .qa-ignore { cursor: pointer; }
+.qa-routing-status { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 8px; background: #edf6ef; color: #2d6040; font-size: 12px; }
+.qa-routing-status small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qa-status-muted { background: #f2f3f5; color: #7a8088; opacity: .78; }
 </style>

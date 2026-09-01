@@ -13,6 +13,7 @@ import {
   linkPendingQuestion,
   reassociateRound as reassociateRoundApi,
   reorderCaseQuestions as reorderCaseQuestionsApi,
+  resolveQaUnit as resolveQaUnitApi,
   saveQuestionToLibrary as saveQuestionToLibraryApi,
   updateCaseQuestion as updateCaseQuestionApi,
   updateRoundAnswer as updateRoundAnswerApi,
@@ -23,6 +24,7 @@ import type {
   CaseQuestionCreateInput,
   CaseQuestionUpdateInput,
   PendingResolution,
+  QAUnitResolution,
   RoundReassociateInput,
   StandardQuestion,
   TemplateWorkspace,
@@ -113,6 +115,8 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
   function handleAsrFragment(fragment: TemporaryAsrFragment, scope = currentScope()) {
     if (!isCurrentScope(scope) || fragment.caseId !== scope.caseId) return
     upsertDialogue(fragment, scope)
+    // Legacy projection mode has no committed QA routing revision event.
+    scheduleWorkspaceRefresh(scope)
   }
 
   function attachCaptureBridge(scope: StoreScope) {
@@ -234,6 +238,10 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     })
   }
 
+  async function resolveQaUnit(qaUnitId: string, resolution: QAUnitResolution) {
+    await runMutation((scope) => resolveQaUnitApi(scope.caseId, qaUnitId, resolution))
+  }
+
   async function reassociateRound(roundId: string, input: RoundReassociateInput) {
     await runMutation((scope) => reassociateRoundApi(scope.caseId, roundId, input))
   }
@@ -287,6 +295,7 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     reorderCaseQuestions,
     deactivateCaseQuestion,
     resolvePendingQuestion,
+    resolveQaUnit,
     reassociateRound,
     updateRoundAnswer,
     loadQuestionLibrary,

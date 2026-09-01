@@ -13,6 +13,7 @@ import type {
   FormalQuestion,
   FormalQuestionRound,
   PendingFormalQuestion,
+  QAUnitResolution,
   RoundReassociateInput,
   StandardQuestion,
   TemplateWorkspace,
@@ -154,6 +155,14 @@ export async function saveQuestionToLibrary(caseId: string, questionId: string, 
   return unwrap(await http.post<BackendEnvelope<StandardQuestion>>(
     `/api/v1/cases/${encodeURIComponent(caseId)}/questions/${encodeURIComponent(questionId)}/save-to-library`,
     { category },
+  ))
+}
+
+
+export async function resolveQaUnit(caseId: string, qaUnitId: string, resolution: QAUnitResolution): Promise<unknown> {
+  return unwrap(await http.post<BackendEnvelope<unknown>>(
+    `/api/v1/cases/${encodeURIComponent(caseId)}/qa-units/${encodeURIComponent(qaUnitId)}/resolve`,
+    resolution,
   ))
 }
 

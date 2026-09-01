@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import type { CaseSummary, DocumentSignerRole, DocumentSigningState, SessionState } from '../types/interrogation'
-import type { CaseQuestionUpdateInput, FormalQuestion, FormalQuestionRound } from '../types/templateInterrogation'
+import type { CaseQuestionUpdateInput, FormalQuestion, FormalQuestionRound, QAUnitResolution } from '../types/templateInterrogation'
 
 const props = defineProps<{
   summary: CaseSummary
@@ -25,6 +25,7 @@ const emit = defineEmits<{
   updateAnswer: [targetId: string, answerText: string]
   saveLibrary: [questionId: string]
   insertPending: [pendingId: string, afterQuestionId: string | null]
+  resolveQaUnit: [qaUnitId: string, resolution: QAUnitResolution]
   generateAi: []
   freeze: []
   sign: [role: DocumentSignerRole]
@@ -87,10 +88,50 @@ function dropBody(event: DragEvent, targetId: string) {
   emit('reorder', ids)
   draggingBodyId.value = ''; dragOverKey.value = ''
 }
+const QA_MIME = 'application/x-formal-qa-unit'
+type QaDragPayload = { qaUnitId: string; mode: 'QA' | 'ANSWER' }
+
+function qaDragPayload(event: DragEvent): QaDragPayload | null {
+  const raw = event.dataTransfer?.getData(QA_MIME)
+  if (!raw) return null
+  try {
+    const payload = JSON.parse(raw) as Partial<QaDragPayload>
+    if (!payload.qaUnitId || (payload.mode !== 'QA' && payload.mode !== 'ANSWER')) return null
+    return payload as QaDragPayload
+  } catch { return null }
+}
+
 function allowPendingDrop(event: DragEvent, key: string) {
-  if (!props.documentFrozen && event.dataTransfer?.types.includes('application/x-formal-pending-question')) {
-    event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; dragOverKey.value = key
+  const types = event.dataTransfer?.types ?? []
+  if (!props.documentFrozen && (types.includes('application/x-formal-pending-question') || types.includes(QA_MIME))) {
+    event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; dragOverKey.value = key
   }
+}
+
+function dropQaCreateLive(event: DragEvent) {
+  event.preventDefault(); dragOverKey.value = ''
+  if (props.documentFrozen) return
+  const payload = qaDragPayload(event)
+  if (payload?.mode === 'QA') emit('resolveQaUnit', payload.qaUnitId, { action: 'CREATE_LIVE' })
+}
+
+function dropQaOnQuestion(event: DragEvent, questionId: string) {
+  event.preventDefault(); dragOverKey.value = ''
+  if (props.documentFrozen) return
+  const payload = qaDragPayload(event)
+  if (payload?.mode === 'QA') emit('resolveQaUnit', payload.qaUnitId, { action: 'LINK_QA', caseQuestionId: questionId })
+}
+
+function dropAnswerOnQuestion(event: DragEvent, questionId: string) {
+  event.preventDefault(); dragOverKey.value = ''
+  if (props.documentFrozen) return
+  const payload = qaDragPayload(event)
+  if (payload?.mode === 'ANSWER') emit('resolveQaUnit', payload.qaUnitId, { action: 'LINK_ANSWER', caseQuestionId: questionId })
+}
+
+function dropGap(event: DragEvent, afterQuestionId: string | null) {
+  if (event.dataTransfer?.types.includes(QA_MIME)) { dropQaCreateLive(event); return }
+  dropPending(event, afterQuestionId)
 }
 function dropPending(event: DragEvent, afterQuestionId: string | null) {
   event.preventDefault(); dragOverKey.value = ''
@@ -142,15 +183,15 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
       </section>
 
       <div class="record-section-label record-no-print"><span>案件动态问答区</span><small>右侧实时对话可拖入；本区可拖动排序、编辑或移出</small></div>
-      <div class="record-drop-zone record-no-print" :class="{ active: dragOverKey === 'body-start' }" @dragover="allowPendingDrop($event, 'body-start')" @dragleave="dragOverKey = ''" @drop="dropPending($event, lastOpeningId)">拖到这里插入为第一条案件问题</div>
+      <div class="record-drop-zone record-no-print" :class="{ active: dragOverKey === 'body-start' }" @dragover="allowPendingDrop($event, 'body-start')" @dragleave="dragOverKey = ''" @drop="dropGap($event, lastOpeningId)">拖到这里插入为第一条案件问题 / 整组问答</div>
 
       <section class="record-qa-section body-section">
         <article v-for="q in bodyQuestions" :key="q.id" class="record-qa body-question" draggable="true" @dragstart="startBodyDrag($event, q.id)" @dragover.prevent @drop="dropBody($event, q.id)">
           <div class="body-question-tools record-no-print"><span class="drag-handle" title="拖动排序">⋮⋮</span><span>{{ q.source === 'LIVE' ? '实时对话' : q.source === 'STANDARD' ? '问题库' : '本案问题' }}</span><button :disabled="busy || documentFrozen" @click="emit('saveLibrary', q.id)">存入题库</button><button class="danger-link" :disabled="busy || documentFrozen" @click="emit('removeQuestion', q.id)">移出笔录</button></div>
-          <label class="record-question editable-question"><b>问：</b><textarea v-model="questionDrafts[q.id]" :disabled="busy || documentFrozen" rows="1" @blur="saveQuestion(q)"></textarea></label>
-          <label class="record-answer"><b>答：</b><textarea v-model="canonicalAnswerDrafts[q.id]" :disabled="busy || documentFrozen" rows="2" placeholder="等待现场回答" @blur="saveCanonicalAnswer(q)"></textarea></label>
+          <label class="record-question editable-question qa-question-drop" @dragover="allowPendingDrop($event, `qa-${q.id}`)" @drop.stop="dropQaOnQuestion($event, q.id)"><b>问：</b><textarea v-model="questionDrafts[q.id]" :disabled="busy || documentFrozen" rows="1" @blur="saveQuestion(q)"></textarea><small class="record-no-print">整组 QA 可拖到本题</small></label>
+          <label class="record-answer qa-answer-drop" @dragover="allowPendingDrop($event, `answer-${q.id}`)" @drop.stop="dropAnswerOnQuestion($event, q.id)"><b>答：</b><textarea v-model="canonicalAnswerDrafts[q.id]" :disabled="busy || documentFrozen" rows="2" placeholder="等待现场回答" @blur="saveCanonicalAnswer(q)"></textarea><small class="record-no-print">仅答案可拖到这里</small></label>
           <small v-if="latestRound(q.id)?.actualQuestionText && latestRound(q.id)?.actualQuestionText !== q.text" class="actual-question record-no-print">现场原问法：{{ latestRound(q.id)?.actualQuestionText }}</small>
-          <div class="record-drop-zone compact record-no-print" :class="{ active: dragOverKey === q.id }" @dragover="allowPendingDrop($event, q.id)" @dragleave="dragOverKey = ''" @drop="dropPending($event, q.id)">拖到这里，插入在本题之后</div>
+          <div class="record-drop-zone compact record-no-print" :class="{ active: dragOverKey === q.id }" @dragover="allowPendingDrop($event, q.id)" @dragleave="dragOverKey = ''" @drop="dropGap($event, q.id)">拖到这里，插入在本题之后 / 新建现场问题</div>
         </article>
         <div v-if="!bodyQuestions.length" class="record-body-empty record-no-print">案件动态问答区暂为空。将右侧民警提问拖到这里，或从问题准备区加入。</div>
       </section>
@@ -169,4 +210,9 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
       </footer>
     </article>
   </section>
+<style scoped>
+.qa-question-drop, .qa-answer-drop { position: relative; border-radius: 6px; }
+.qa-question-drop:has(textarea:focus), .qa-answer-drop:has(textarea:focus) { outline: none; }
+.qa-question-drop > small, .qa-answer-drop > small { margin-left: 8px; color: #84909d; font-size: 10px; }
+</style>
 </template>
