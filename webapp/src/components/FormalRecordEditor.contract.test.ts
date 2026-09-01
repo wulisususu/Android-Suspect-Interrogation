@@ -18,11 +18,22 @@ describe('formal record editor source contract', () => {
     expect(formal).toContain('结束并冻结笔录')
   })
 
-  it('shares one stable drag MIME between live dialogue and the formal BODY', () => {
-    const mime = 'application/x-formal-pending-question'
-    expect(live).toContain(mime)
-    expect(formal).toContain(mime)
-    expect(formal).toContain("emit('insertPending'")
+  it('keeps legacy pending drag compatibility and adds the qa-unit drag MIME', () => {
+    expect(live).toContain('application/x-formal-pending-question')
+    expect(formal).toContain('application/x-formal-pending-question')
+    const qaMime = 'application/x-formal-qa-unit'
+    expect(live).toContain(qaMime)
+    expect(formal).toContain(qaMime)
+    expect(formal).toContain("emit('resolveQaUnit'")
+  })
+
+  it('accepts whole QA on BODY gaps/questions and answer-only on answer areas', () => {
+    expect(formal).toContain('dropQaCreateLive')
+    expect(formal).toContain("action: 'CREATE_LIVE'")
+    expect(formal).toContain('dropQaOnQuestion')
+    expect(formal).toContain("action: 'LINK_QA'")
+    expect(formal).toContain('dropAnswerOnQuestion')
+    expect(formal).toContain("action: 'LINK_ANSWER'")
   })
 
   it('renders the canonical case-question answer while retaining round provenance', () => {
