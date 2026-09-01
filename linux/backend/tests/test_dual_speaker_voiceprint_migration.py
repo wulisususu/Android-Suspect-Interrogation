@@ -99,6 +99,14 @@ def test_0009_migrates_preexisting_rows_to_xvector_without_changing_embedding_by
             )
             connection.execute(
                 text(
+                    "INSERT INTO interrogation_sessions "
+                    "(id, case_id, status, stage, started_at, paused_at, ended_at, created_at, updated_at) "
+                    "VALUES ('SESSION-DUAL-M', 'CASE-DUAL-M', 'READY', 'IDENTITY', NULL, NULL, NULL, :now, :now)"
+                ),
+                {"now": now},
+            )
+            connection.execute(
+                text(
                     "INSERT INTO suspect_voiceprints "
                     "(id, case_id, embedding, embedding_dim, model_id, model_version, enrollment_quality, "
                     "usable_duration_ms, active, created_at, updated_at) "
@@ -136,6 +144,26 @@ def test_0009_migrates_preexisting_rows_to_xvector_without_changing_embedding_by
                 ),
                 {"embedding": officer_embedding, "fingerprint": "a" * 64, "now": now},
             )
+            connection.execute(
+                text(
+                    "INSERT INTO session_voice_assignments "
+                    "(id, session_id, suspect_voiceprint_id, interrogator_officer_id, interrogator_voiceprint_id, "
+                    "recorder_officer_id, recorder_voiceprint_id, recognition_mode, created_at, updated_at) "
+                    "VALUES ('ASSIGN-DUAL-M', 'SESSION-DUAL-M', 'SUS-DUAL-M', 'P-DUAL', 'OFF-DUAL-M', "
+                    "NULL, NULL, 'SUSPECT_PLUS_INTERROGATOR', :now, :now)"
+                ),
+                {"now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO session_officer_voice_snapshots "
+                    "(id, session_id, role, officer_id, profile_id, aggregate_version, voiceprint_snapshot_id, "
+                    "model_id, model_version, created_at) "
+                    "VALUES ('SNAP-DUAL-M', 'SESSION-DUAL-M', 'INTERROGATOR', 'P-DUAL', 'PROF-DUAL-M', 1, "
+                    "'OFF-DUAL-M', 'xvector', 'legacy-v1', :now)"
+                ),
+                {"now": now},
+            )
     finally:
         engine.dispose()
 
@@ -155,7 +183,19 @@ def test_0009_migrates_preexisting_rows_to_xvector_without_changing_embedding_by
                 text("SELECT model_key, aggregate_embedding FROM officer_voice_profiles WHERE id='PROF-DUAL-M'")
             ).mappings().one()
             sample = connection.execute(
-                text("SELECT model_key, embedding, model_fingerprint FROM officer_voice_samples WHERE id='SAMPLE-DUAL-M'")
+                text("SELECT model_key, embedding, model_fingerprint, profile_id FROM officer_voice_samples WHERE id='SAMPLE-DUAL-M'")
+            ).mappings().one()
+            assignment = connection.execute(
+                text(
+                    "SELECT suspect_voiceprint_id, interrogator_officer_id, interrogator_voiceprint_id "
+                    "FROM session_voice_assignments WHERE id='ASSIGN-DUAL-M'"
+                )
+            ).mappings().one()
+            snapshot = connection.execute(
+                text(
+                    "SELECT model_key, profile_id, voiceprint_snapshot_id, model_id, model_version "
+                    "FROM session_officer_voice_snapshots WHERE id='SNAP-DUAL-M'"
+                )
             ).mappings().one()
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
 
@@ -164,10 +204,24 @@ def test_0009_migrates_preexisting_rows_to_xvector_without_changing_embedding_by
         assert officer["model_key"] == XVECTOR
         assert profile["model_key"] == XVECTOR
         assert sample["model_key"] == XVECTOR
+        assert snapshot["model_key"] == XVECTOR
         assert bytes(suspect["embedding"]) == suspect_embedding
         assert bytes(officer["embedding"]) == officer_embedding
         assert bytes(profile["aggregate_embedding"]) == officer_embedding
         assert bytes(sample["embedding"]) == officer_embedding
         assert sample["model_fingerprint"] == "a" * 64
+        assert sample["profile_id"] == "PROF-DUAL-M"
+        assert assignment == {
+            "suspect_voiceprint_id": "SUS-DUAL-M",
+            "interrogator_officer_id": "P-DUAL",
+            "interrogator_voiceprint_id": "OFF-DUAL-M",
+        }
+        assert snapshot == {
+            "model_key": XVECTOR,
+            "profile_id": "PROF-DUAL-M",
+            "voiceprint_snapshot_id": "OFF-DUAL-M",
+            "model_id": "xvector",
+            "model_version": "legacy-v1",
+        }
     finally:
         engine.dispose()
