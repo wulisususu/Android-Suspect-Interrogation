@@ -6,6 +6,7 @@ on:
       - feat/qwen-formal-record-routing
     paths:
       - '.superpowers/qwen-routing-apply.py'
+      - '.superpowers/qwen-routing-apply.trigger'
 
 permissions:
   contents: write
@@ -70,7 +71,7 @@ jobs:
           set -euo pipefail
           git config user.name 'qwen-routing-ci'
           git config user.email 'qwen-routing-ci@users.noreply.github.com'
-          git add -A ':!.superpowers/qwen-routing-apply.py' ':!.superpowers/qwen-routing-apply.patch'
+          git add -A ':!.superpowers/qwen-routing-apply.py' ':!.superpowers/qwen-routing-apply.patch' ':!.superpowers/qwen-routing-apply.trigger'
           if git diff --cached --quiet; then
             echo 'Edit script produced no tracked code changes' >&2
             exit 1
