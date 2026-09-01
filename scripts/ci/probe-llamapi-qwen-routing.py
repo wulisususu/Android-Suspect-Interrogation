@@ -42,6 +42,20 @@ ROUTE_CLASSES = {
 }
 FENCED_JSON = re.compile(r"\A```(?:json)?\s*(\{.*\})\s*```\Z", re.DOTALL | re.IGNORECASE)
 
+_OPERATIONAL_UTTERANCES = (
+    re.compile(r"^(请)?继续(说|讲|陈述)(下去|一下|吧)?[。！!]*$"),
+    re.compile(r"^(请)?(把)?声音(再)?大(一)?点[。！!]*$"),
+    re.compile(r"^(请)?说(清楚|慢一点|大声一点)[。！!]*$"),
+    re.compile(r"^(嗯|好|好的|行|知道了|明白了|继续)[。！!]*$"),
+)
+_AMBIGUOUS_REFERENCE_RE = re.compile(r"(?:那个|这个|刚才(?:那个|这个)?)(?:时间|时候|问题|情况|事|事情)")
+_TIME_QUESTION_RE = re.compile(r"(?:什么时候|何时|几点|时间|哪天)")
+_QUESTION_CUES = (
+    "吗", "么", "呢", "谁", "什么", "何时", "什么时候", "几点", "哪", "哪里", "哪儿",
+    "为何", "为什么", "怎么", "怎样", "如何", "是否", "是不是", "有没有", "能否", "可否",
+    "多少", "几次", "几个", "几人", "多久", "多长", "多远", "哪天", "哪次",
+)
+
 _CN_DIGITS = {
     "零": 0,
     "〇": 0,
@@ -162,6 +176,63 @@ def _parse_decision(raw: str) -> dict[str, Any]:
     if not isinstance(payload["reason_code"], str) or not payload["reason_code"].strip():
         raise ProbeError("reason_code is required")
     return payload
+
+
+def _normalize_question_text(text: str | None) -> str:
+    value = str(text or "").strip()
+    value = re.sub(r"\s+", "", value)
+    return value.replace("？", "?")
+
+
+def _is_operational_utterance(text: str | None) -> bool:
+    normalized = _normalize_question_text(text)
+    return bool(normalized and any(pattern.fullmatch(normalized) for pattern in _OPERATIONAL_UTTERANCES))
+
+
+def _is_question_utterance(text: str | None) -> bool:
+    normalized = _normalize_question_text(text)
+    if not normalized or _is_operational_utterance(normalized):
+        return False
+    if "?" in normalized:
+        return True
+    return any(cue in normalized for cue in _QUESTION_CUES)
+
+
+def _unique_recent_targets(case: dict[str, Any]) -> tuple[str, ...]:
+    result: list[str] = []
+    for row in case.get("previous", []):
+        if not isinstance(row, dict):
+            continue
+        value = str(row.get("targetQuestionId") or "").strip()
+        if value and value not in result:
+            result.append(value)
+    return tuple(result)
+
+
+def _precheck_case(case: dict[str, Any]) -> dict[str, Any] | None:
+    question = str(case.get("question") or "").strip()
+    if _is_operational_utterance(question):
+        return {
+            "classification": "IGNORE",
+            "target_question_id": None,
+            "formal_question": None,
+            "formal_answer": None,
+            "confidence": 1.0,
+            "candidate_question_ids": [],
+            "reason_code": "OPERATIONAL_CHATTER_PRECHECK",
+        }
+    candidates = _unique_recent_targets(case)
+    if _AMBIGUOUS_REFERENCE_RE.search(question) and len(candidates) > 1:
+        return {
+            "classification": "NEEDS_REVIEW",
+            "target_question_id": None,
+            "formal_question": None,
+            "formal_answer": None,
+            "confidence": None,
+            "candidate_question_ids": list(candidates),
+            "reason_code": "AMBIGUOUS_REFERENCE_PRECHECK",
+        }
+    return None
 
 
 def _parse_number(token: str) -> float | None:
@@ -338,6 +409,31 @@ def _canonicalize_existing_target_decision(decision: dict[str, Any], *, raw_answ
     return effective
 
 
+def _repair_existing_target_intent_mismatch(decision: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
+    if decision.get("classification") not in {"MATCH_FIXED", "MATCH_EXISTING"}:
+        return decision
+    target_id = decision.get("target_question_id")
+    target = next((row for row in _formal_questions() if row["id"] == target_id), None)
+    if target is None:
+        return decision
+    question = str(case.get("question") or "").strip()
+    answer = str(case.get("answer") or "").strip()
+    target_text = str(target.get("text") or "").strip()
+    if not question or not answer or not _is_question_utterance(question):
+        return decision
+    if not _TIME_QUESTION_RE.search(target_text) or _TIME_QUESTION_RE.search(question):
+        return decision
+    return {
+        "classification": "CREATE_LIVE_FROM_SPEECH",
+        "target_question_id": None,
+        "formal_question": question,
+        "formal_answer": answer,
+        "confidence": decision.get("confidence"),
+        "candidate_question_ids": [],
+        "reason_code": "TARGET_INTENT_MISMATCH_CREATE_LIVE",
+    }
+
+
 def _cases() -> list[dict[str, Any]]:
     return [
         {
@@ -489,7 +585,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model-hint", default=os.environ.get("LLAMAPI_MODEL_HINT", DEFAULT_MODEL_HINT), help="Exact model ID or qwen3:4b base hint")
     parser.add_argument("--output", required=True, help="JSON result path under GITHUB_WORKSPACE or RUNNER_TEMP")
     parser.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout seconds per request")
-    parser.add_argument("--repetitions", type=int, default=1, help="Number of A/B/C/D/E cycles; use 4 for the 20-request RK3588 acceptance sample")
+    parser.add_argument("--repetitions", type=int, default=1, help="Number of A/B/C/D/E cycles; use 4 for the 20-decision RK3588 acceptance sample")
     args = parser.parse_args(argv)
     if args.timeout <= 0:
         raise ValueError("--timeout must be positive")
@@ -509,6 +605,8 @@ def main(argv: list[str] | None = None) -> int:
         "machine": platform.machine(),
         "python": sys.version.split()[0],
         "repetitions": args.repetitions,
+        "effective_decision_count": 0,
+        "model_inference_count": 0,
         "cases": [],
         "samples": [],
         "latency_ms": {"count": 0, "p50": None, "p95": None, "max": None},
@@ -517,17 +615,32 @@ def main(argv: list[str] | None = None) -> int:
         model_id = resolve_model_id(_model_ids(base_url, args.timeout), args.model_hint)
         report["model_id"] = model_id
         latency_values: list[float] = []
+        model_inference_count = 0
         cases = _cases()
         for iteration in range(1, args.repetitions + 1):
             for case in cases:
-                row: dict[str, Any] = {"case": case["case"], "iteration": iteration, "passed": False}
+                row: dict[str, Any] = {
+                    "case": case["case"],
+                    "iteration": iteration,
+                    "passed": False,
+                    "raw_decision": None,
+                }
                 try:
-                    raw_decision, latency_ms = _complete(base_url, model_id, _prompt(case), args.timeout)
-                    decision = _canonicalize_existing_target_decision(raw_decision, raw_answer=case.get("answer"))
-                    rounded_latency = round(latency_ms, 3)
-                    row["latency_ms"] = rounded_latency
-                    latency_values.append(rounded_latency)
-                    row["raw_decision"] = raw_decision
+                    prechecked = _precheck_case(case)
+                    if prechecked is not None:
+                        decision = prechecked
+                        row["latency_ms"] = 0.0
+                        row["route_source"] = "PRECHECK"
+                    else:
+                        raw_decision, latency_ms = _complete(base_url, model_id, _prompt(case), args.timeout)
+                        model_inference_count += 1
+                        rounded_latency = round(latency_ms, 3)
+                        row["latency_ms"] = rounded_latency
+                        latency_values.append(rounded_latency)
+                        row["route_source"] = "MODEL"
+                        row["raw_decision"] = raw_decision
+                        decision = _canonicalize_existing_target_decision(raw_decision, raw_answer=case.get("answer"))
+                        decision = _repair_existing_target_intent_mismatch(decision, case)
                     row["classification"] = decision["classification"]
                     row["decision"] = decision
                     _validate_case(case, decision)
@@ -537,6 +650,8 @@ def main(argv: list[str] | None = None) -> int:
                 report["samples"].append(row)
                 if iteration == 1:
                     report["cases"].append(row)
+        report["effective_decision_count"] = len(report["samples"])
+        report["model_inference_count"] = model_inference_count
         if latency_values:
             report["latency_ms"] = {
                 "count": len(latency_values),
