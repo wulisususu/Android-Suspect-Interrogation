@@ -4,19 +4,14 @@ import json
 
 from sqlalchemy.orm import Session
 
-from app.domain.enums import WorkflowState
 from app.domain.errors import DomainError
 from app.repositories import cases as case_repo
 from app.repositories import question_rounds as round_repo
 from app.repositories import template_questions as question_repo
+from app.services.formal_record_policy import assert_formal_record_mutable, is_formal_record_immutable
 from app.services.serializers import case_question_dict, pending_question_dict, question_round_dict, standard_question_dict
 
 _ALLOWED_SOURCES = {"STANDARD", "CASE", "LIVE"}
-_IMMUTABLE_WORKFLOW_STATES = {
-    WorkflowState.FROZEN.value,
-    WorkflowState.SIGNED.value,
-    WorkflowState.REPORT_GENERATED.value,
-}
 
 # Wording is transcribed from the supplied Nantong Chongchuan inquiry-record samples.
 # The key is versioned so later legal/template changes never rewrite frozen historical records.
@@ -68,10 +63,7 @@ class TemplateWorkspaceService:
         self.db = db
 
     def _assert_case_mutable(self, case_id: str):
-        case = case_repo.get(self.db, case_id)
-        if case.workflow_state in _IMMUTABLE_WORKFLOW_STATES:
-            raise DomainError("FORMAL_RECORD_FROZEN", "正式笔录冻结后不可修改", 409)
-        return case
+        return assert_formal_record_mutable(self.db, case_id)
 
     def workspace(self, case_id: str) -> dict:
         case_repo.get(self.db, case_id)
@@ -97,7 +89,7 @@ class TemplateWorkspaceService:
         rows = question_repo.list_case(self.db, case_id)
         # The frontend calls ensure on page load. Historical frozen/signed records
         # must remain byte-for-byte stable and must never be retrofitted merely by viewing them.
-        if case.workflow_state in _IMMUTABLE_WORKFLOW_STATES:
+        if is_formal_record_immutable(case):
             return self.workspace(case_id)
         existing_keys = {row.template_item_key for row in rows if row.template_key == template_key}
         for section in ("OPENING", "CLOSING"):
