@@ -4,6 +4,7 @@ import json
 
 from sqlalchemy.orm import Session
 
+from app.domain.enums import WorkflowState
 from app.domain.errors import DomainError
 from app.repositories import cases as case_repo
 from app.repositories import question_rounds as round_repo
@@ -11,7 +12,11 @@ from app.repositories import template_questions as question_repo
 from app.services.serializers import case_question_dict, pending_question_dict, question_round_dict, standard_question_dict
 
 _ALLOWED_SOURCES = {"STANDARD", "CASE", "LIVE"}
-_SECTION_RANK = {"OPENING": 0, "BODY": 1, "CLOSING": 2}
+_IMMUTABLE_WORKFLOW_STATES = {
+    WorkflowState.FROZEN.value,
+    WorkflowState.SIGNED.value,
+    WorkflowState.REPORT_GENERATED.value,
+}
 
 # Wording is transcribed from the supplied Nantong Chongchuan inquiry-record samples.
 # The key is versioned so later legal/template changes never rewrite frozen historical records.
@@ -79,11 +84,15 @@ class TemplateWorkspaceService:
         }
 
     def ensure_formal_record(self, case_id: str, *, template_key: str = "SUSPECT_INQUIRY_V1") -> dict:
-        case_repo.get(self.db, case_id)
+        case = case_repo.get(self.db, case_id)
         template = _FORMAL_RECORD_TEMPLATES.get(template_key)
         if template is None:
             raise DomainError("FORMAL_RECORD_TEMPLATE_NOT_FOUND", "正式笔录模板不存在", 404)
         rows = question_repo.list_case(self.db, case_id)
+        # The frontend calls ensure on page load. Historical frozen/signed records
+        # must remain byte-for-byte stable and must never be retrofitted merely by viewing them.
+        if case.workflow_state in _IMMUTABLE_WORKFLOW_STATES:
+            return self.workspace(case_id)
         existing_keys = {row.template_item_key for row in rows if row.template_key == template_key}
         for section in ("OPENING", "CLOSING"):
             for item_key, text in template[section]:
