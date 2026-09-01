@@ -34,6 +34,43 @@ class FormalRecordRouteDecision:
     model_id: str | None
 
 
+def canonicalize_existing_target_decision(
+    decision: FormalRecordRouteDecision,
+    target: Any | None,
+) -> FormalRecordRouteDecision:
+    """Make persisted target metadata authoritative for existing-question routes.
+
+    Qwen only needs to select the semantic target. Whether that target is a
+    locked template question or an existing CASE/LIVE question is already a
+    deterministic database fact, so a model label mismatch must not invalidate
+    an otherwise correct target. Existing question text is likewise owned by
+    the database and never accepted from model output.
+    """
+
+    if decision.classification not in {RouteClass.MATCH_FIXED, RouteClass.MATCH_EXISTING}:
+        return decision
+    if target is None or not decision.target_question_id or not decision.formal_answer:
+        return decision
+
+    if bool(getattr(target, "locked", False)) and getattr(target, "template_key", None):
+        classification = RouteClass.MATCH_FIXED
+    elif not bool(getattr(target, "locked", False)) and getattr(target, "source", None) in {"CASE", "LIVE"}:
+        classification = RouteClass.MATCH_EXISTING
+    else:
+        return decision
+
+    return FormalRecordRouteDecision(
+        classification=classification,
+        target_question_id=decision.target_question_id,
+        formal_question=None,
+        formal_answer=decision.formal_answer,
+        confidence=decision.confidence,
+        candidate_question_ids=decision.candidate_question_ids,
+        reason_code=decision.reason_code,
+        model_id=decision.model_id,
+    )
+
+
 _EXPECTED_KEYS = {
     "classification",
     "target_question_id",
@@ -93,6 +130,8 @@ class FormalRecordRouter:
                 },
             )
             decision = self._decision_from_payload(_parse_payload(result.text), model_id=result.model_id)
+            target = self._case_question(unit.case_id, decision.target_question_id)
+            decision = canonicalize_existing_target_decision(decision, target)
             if not self._policy_valid(unit, decision):
                 return self._invalid(result.model_id)
             return decision
