@@ -11,6 +11,7 @@ from app.ai.engines.llamapi import LlamaPiLLMEngine
 from app.ai.errors import BackendUnavailableError
 from app.ai.registry import ModelSpec
 from app.ai.types import EngineState
+from app.ai.worker import _make_engine
 
 
 def llm_spec() -> ModelSpec:
@@ -175,6 +176,22 @@ def test_generate_rejects_malformed_response_and_stream_preserves_interface():
         assert len(chunks) == 1
         assert chunks[0].final is True
         assert chunks[0].model_id == "qwen3:4b@rkllm-rk3588"
+
+
+def test_worker_factory_selects_llamapi_adapter_with_explicit_settings():
+    engine = _make_engine(
+        "llm",
+        "real",
+        llm_spec(),
+        "/tmp/unused-model-root",
+        llamapi_base_url="http://127.0.0.1:9999/v1",
+        llamapi_model_hint="qwen3:4b",
+        request_timeout=2.5,
+    )
+    assert isinstance(engine, LlamaPiLLMEngine)
+    assert engine.base_url == "http://127.0.0.1:9999/v1"
+    assert engine.model_hint == "qwen3:4b"
+    assert engine.timeout == 2.5
 
 
 def test_default_runtime_settings_keep_llamapi_on_loopback(monkeypatch):

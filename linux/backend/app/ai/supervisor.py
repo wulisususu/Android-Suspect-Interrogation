@@ -117,12 +117,14 @@ class _InProcessSpeechClient:
 
 
 class _Worker:
-    def __init__(self, *, kind: str, spec: ModelSpec, registry: ModelRegistry, mode: str, timeout: float):
+    def __init__(self, *, kind: str, spec: ModelSpec, registry: ModelRegistry, mode: str, timeout: float, llamapi_base_url: str = "http://127.0.0.1:9265/v1", llamapi_model_hint: str = "qwen3:4b"):
         self.kind = kind
         self.spec = spec
         self.registry = registry
         self.mode = mode
         self.timeout = timeout
+        self.llamapi_base_url = llamapi_base_url
+        self.llamapi_model_hint = llamapi_model_hint
         self.state = EngineState.STOPPED
         self.pid: int | None = None
         self.restart_count = 0
@@ -155,7 +157,7 @@ class _Worker:
             self.state = EngineState.LOADING
             ctx = mp.get_context("spawn")
             parent_conn, child_conn = ctx.Pipe(duplex=True)
-            process = ctx.Process(target=worker_main, kwargs={"conn": child_conn, "kind": self.kind, "mode": self.mode, "spec": self.spec, "model_root": str(self.registry.model_root)}, daemon=True, name=f"ai-{self.kind}-worker")
+            process = ctx.Process(target=worker_main, kwargs={"conn": child_conn, "kind": self.kind, "mode": self.mode, "spec": self.spec, "model_root": str(self.registry.model_root), "llamapi_base_url": self.llamapi_base_url, "llamapi_model_hint": self.llamapi_model_hint, "request_timeout": self.timeout}, daemon=True, name=f"ai-{self.kind}-worker")
             process.start(); child_conn.close()
             self._process = process; self._conn = parent_conn; self.pid = process.pid
             deadline = time.monotonic() + 5.0
@@ -252,13 +254,13 @@ class _Worker:
 
 
 class AISupervisor:
-    def __init__(self, registry: ModelRegistry, *, mode: str = "mock", request_timeout: float = 30.0, idle_unload_seconds: float = 300.0, memory_budget_mb: int = 6144, speech_socket: str | Path = "/run/suspect-interrogation/speech.sock", speaker_accept_threshold: float | None = None, speaker_margin: float | None = None, speech_client: Any | None = None):
+    def __init__(self, registry: ModelRegistry, *, mode: str = "mock", request_timeout: float = 30.0, idle_unload_seconds: float = 300.0, memory_budget_mb: int = 6144, speech_socket: str | Path = "/run/suspect-interrogation/speech.sock", speaker_accept_threshold: float | None = None, speaker_margin: float | None = None, speech_client: Any | None = None, llamapi_base_url: str = "http://127.0.0.1:9265/v1", llamapi_model_hint: str = "qwen3:4b"):
         if mode not in {"mock", "real"}: raise ValueError("mode must be mock or real")
         self.registry = registry; self.mode = mode; self.request_timeout = request_timeout; self.idle_unload_seconds = idle_unload_seconds; self.memory_budget_mb = memory_budget_mb
         self.speaker_accept_threshold = speaker_accept_threshold
         self.speaker_margin = speaker_margin
         self._resource_lock = threading.RLock()
-        self._workers = {kind: _Worker(kind=kind, spec=registry.default_for(kind), registry=registry, mode=mode, timeout=request_timeout) for kind in ("asr", "ocr", "llm") if self._has_kind(kind)}
+        self._workers = {kind: _Worker(kind=kind, spec=registry.default_for(kind), registry=registry, mode=mode, timeout=request_timeout, llamapi_base_url=llamapi_base_url, llamapi_model_hint=llamapi_model_hint) for kind in ("asr", "ocr", "llm") if self._has_kind(kind)}
         if speech_client is not None:
             self._speech_client = speech_client
             self._speech_backend = "injected"

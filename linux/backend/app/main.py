@@ -67,6 +67,8 @@ def _build_supervisor() -> AISupervisor:
         speech_socket=settings.speech_socket,
         speaker_accept_threshold=settings.speaker_effective_threshold,
         speaker_margin=settings.speaker_margin,
+        llamapi_base_url=settings.llamapi_base_url,
+        llamapi_model_hint=settings.llamapi_model_hint,
     )
     supervisor.speaker_threshold_source = settings.speaker_threshold_source
     return supervisor
