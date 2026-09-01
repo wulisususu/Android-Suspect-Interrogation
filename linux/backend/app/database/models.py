@@ -178,9 +178,11 @@ class SignatureRecord(Base):
 
 class SuspectVoiceprint(TimestampMixin, Base):
     __tablename__ = "suspect_voiceprints"
+    __table_args__ = (UniqueConstraint("case_id", "model_key", name="uq_suspect_voiceprint_case_model"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, unique=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    model_key: Mapped[str] = mapped_column(String(64), default="xvector", nullable=False, index=True)
     embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
     model_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -192,9 +194,11 @@ class SuspectVoiceprint(TimestampMixin, Base):
 
 class OfficerVoiceprint(TimestampMixin, Base):
     __tablename__ = "officer_voiceprints"
+    __table_args__ = (UniqueConstraint("officer_id", "model_key", name="uq_officer_voiceprint_officer_model"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    officer_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    officer_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    model_key: Mapped[str] = mapped_column(String(64), default="xvector", nullable=False, index=True)
     officer_name: Mapped[str] = mapped_column(String(128), nullable=False)
     embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
