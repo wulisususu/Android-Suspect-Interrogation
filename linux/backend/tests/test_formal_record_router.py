@@ -201,29 +201,43 @@ def test_malformed_or_invalid_model_output_degrades_to_review(tmp_path, model_te
         engine.dispose()
 
 
-def test_a_cannot_target_live_question(tmp_path):
+def test_model_fixed_label_targeting_live_is_canonicalized(tmp_path):
     engine, db, _case, unit, _fixed, dynamic = make_context(tmp_path)
     try:
         decision = FormalRecordRouter(
             db,
-            ai_supervisor=FakeSupervisor(text=route_payload("MATCH_FIXED", target=dynamic.id)),
+            ai_supervisor=FakeSupervisor(
+                text=route_payload(
+                    "MATCH_FIXED",
+                    target=dynamic.id,
+                    question=dynamic.text,
+                )
+            ),
         ).route(unit.id)
-        assert decision.classification is RouteClass.NEEDS_REVIEW
-        assert decision.reason_code == "INVALID_MODEL_OUTPUT"
+        assert decision.classification is RouteClass.MATCH_EXISTING
+        assert decision.target_question_id == dynamic.id
+        assert decision.formal_question is None
     finally:
         db.close()
         engine.dispose()
 
 
-def test_b_cannot_target_fixed_question(tmp_path):
+def test_model_existing_label_targeting_fixed_is_canonicalized(tmp_path):
     engine, db, _case, unit, fixed, _dynamic = make_context(tmp_path)
     try:
         decision = FormalRecordRouter(
             db,
-            ai_supervisor=FakeSupervisor(text=route_payload("MATCH_EXISTING", target=fixed.id)),
+            ai_supervisor=FakeSupervisor(
+                text=route_payload(
+                    "MATCH_EXISTING",
+                    target=fixed.id,
+                    question=fixed.text,
+                )
+            ),
         ).route(unit.id)
-        assert decision.classification is RouteClass.NEEDS_REVIEW
-        assert decision.reason_code == "INVALID_MODEL_OUTPUT"
+        assert decision.classification is RouteClass.MATCH_FIXED
+        assert decision.target_question_id == fixed.id
+        assert decision.formal_question is None
     finally:
         db.close()
         engine.dispose()
