@@ -33,7 +33,7 @@ REQUIRED_TABLES = (
     CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES | OFFICER_LIBRARY_TABLES |
     CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES | QWEN_ROUTING_TABLES
 )
-ALEMBIC_HEAD = "0008_qwen_formal_record_routing"
+ALEMBIC_HEAD = "0009_dual_speaker_backends"
 
 
 def _run_alembic(tmp_path, target: str):
