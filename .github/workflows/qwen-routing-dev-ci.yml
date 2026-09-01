@@ -1,6 +1,6 @@
 name: Qwen Routing Dev CI
 
-# Acceptance revision: structured routing output budget = 192 tokens.
+# Final acceptance revision: telemetry, reliable memory evidence, and 20-decision board gate.
 on:
   push:
     branches:
