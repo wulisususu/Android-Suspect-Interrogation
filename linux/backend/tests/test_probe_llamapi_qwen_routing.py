@@ -141,6 +141,7 @@ def test_probe_runs_five_effective_classes_but_only_three_model_inferences(tmp_p
         assert request["stream"] is False
         assert request["enable_thinking"] is False
         assert request["temperature"] <= 0.2
+        assert request["max_tokens"] == 192
 
 
 def test_probe_can_measure_twenty_effective_decisions_with_twelve_model_inferences(tmp_path, monkeypatch):
