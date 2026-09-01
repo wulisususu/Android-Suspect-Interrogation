@@ -6,11 +6,12 @@ from sqlalchemy.orm import Session
 
 from app.domain.errors import DomainError
 from app.repositories import cases as case_repo
+from app.repositories import qa_units as qa_repo
 from app.repositories import question_rounds as round_repo
 from app.repositories import template_questions as question_repo
 from app.services.formal_record_answer_service import FormalRecordAnswerService
 from app.services.formal_record_policy import assert_formal_record_mutable, is_formal_record_immutable
-from app.services.serializers import case_question_dict, pending_question_dict, question_round_dict, standard_question_dict
+from app.services.serializers import case_question_dict, pending_question_dict, qa_unit_dict, question_round_dict, standard_question_dict
 
 _ALLOWED_SOURCES = {"STANDARD", "CASE", "LIVE"}
 
@@ -80,6 +81,7 @@ class TemplateWorkspaceService:
             "questions": [case_question_dict(row, rounds=rounds_by_question.get(row.id, [])) for row in rows],
             "rounds": [question_round_dict(row) for row in rounds],
             "pendingQuestions": [pending_question_dict(row) for row in round_repo.list_pending_for_case(self.db, case_id)],
+            "qaUnits": [qa_unit_dict(row) for row in qa_repo.list_for_case(self.db, case_id)],
         }
 
     def ensure_formal_record(self, case_id: str, *, template_key: str = "SUSPECT_INQUIRY_V1") -> dict:

@@ -65,9 +65,11 @@ class FormalRecordRoutingService:
         formal_answer: str | None = None,
     ) -> dict:
         unit = qa_repo.get(self.db, qa_unit_id)
+        self._assert_manual_resolvable(unit)
         normalized = str(action or "").strip().upper()
         if normalized not in _MANUAL_ACTIONS:
             raise DomainError("INVALID_QA_RESOLUTION_ACTION", "问答单元处理动作无效", 400)
+
         if normalized == "IGNORE":
             manual_decision = FormalRecordRouteDecision(
                 classification=RouteClass.IGNORE,
@@ -82,34 +84,78 @@ class FormalRecordRoutingService:
             return self._ignore(unit, manual_decision, manual=True)
 
         assert_formal_record_mutable(self.db, unit.case_id)
-        clean_answer = str(formal_answer if formal_answer is not None else unit.raw_answer_text or "").strip()
+        clean_answer = self._manual_text(
+            formal_answer,
+            unit.formal_answer_text,
+            unit.raw_answer_text,
+        )
         if not clean_answer:
             raise DomainError("FORMAL_ANSWER_REQUIRED", "正式答案不能为空", 400)
 
         if normalized == "CREATE_LIVE":
-            clean_question = str(formal_question if formal_question is not None else unit.raw_question_text or "").strip()
-            if not clean_question or not self._question_fragment_ids(unit):
+            question_ids = self._question_fragment_ids(unit)
+            if not question_ids or not str(unit.raw_question_text or "").strip():
+                raise DomainError("FORMAL_QUESTION_REQUIRED", "创建现场问题必须来自真实民警提问", 400)
+            clean_question = self._manual_text(
+                formal_question,
+                unit.formal_question_text,
+                unit.raw_question_text,
+            )
+            if not clean_question:
                 raise DomainError("FORMAL_QUESTION_REQUIRED", "创建现场问题必须来自真实民警提问", 400)
             created = TemplateWorkspaceService(self.db).add_case_question(
-                unit.case_id, text=clean_question, source="LIVE"
+                unit.case_id,
+                text=clean_question,
+                source="LIVE",
             )
             question = question_repo.get_case(self.db, unit.case_id, created["id"])
-        else:
-            if not case_question_id:
-                raise DomainError("CASE_QUESTION_REQUIRED", "必须选择目标正式问题", 400)
-            question = question_repo.get_case(self.db, unit.case_id, case_question_id)
+            manual_decision = FormalRecordRouteDecision(
+                classification=RouteClass.CREATE_LIVE_FROM_SPEECH,
+                target_question_id=question.id,
+                formal_question=clean_question,
+                formal_answer=clean_answer,
+                confidence=unit.confidence,
+                candidate_question_ids=(),
+                reason_code="MANUAL_CREATE_LIVE",
+                model_id=unit.model_id,
+            )
+            return self._apply_existing(unit, question, manual_decision, audit_action="QA_ROUTE_MANUAL_APPLIED")
+
+        if not case_question_id:
+            raise DomainError("CASE_QUESTION_REQUIRED", "必须选择目标正式问题", 400)
+        question = question_repo.get_case(self.db, unit.case_id, case_question_id)
+
+        if normalized == "LINK_ANSWER":
+            if not self._answer_fragment_ids(unit):
+                raise DomainError("QA_ANSWER_FRAGMENT_REQUIRED", "仅关联回答必须包含真实嫌疑人回答片段", 400)
+            return self._apply_answer_only(unit, question, formal_answer=clean_answer)
 
         manual_decision = FormalRecordRouteDecision(
-            classification=RouteClass.CREATE_LIVE_FROM_SPEECH if normalized == "CREATE_LIVE" else RouteClass.MATCH_EXISTING,
+            classification=RouteClass.MATCH_EXISTING,
             target_question_id=question.id,
-            formal_question=question.text if normalized == "CREATE_LIVE" else None,
+            formal_question=None,
             formal_answer=clean_answer,
             confidence=unit.confidence,
             candidate_question_ids=(),
-            reason_code=f"MANUAL_{normalized}",
+            reason_code="MANUAL_LINK_QA",
             model_id=unit.model_id,
         )
         return self._apply_existing(unit, question, manual_decision, audit_action="QA_ROUTE_MANUAL_APPLIED")
+
+    @staticmethod
+    def _manual_text(request_value: str | None, suggested_value: str | None, raw_value: str | None) -> str:
+        for value in (request_value, suggested_value, raw_value):
+            if value is None:
+                continue
+            clean = str(value).strip()
+            if clean:
+                return clean
+        return ""
+
+    @staticmethod
+    def _assert_manual_resolvable(unit) -> None:
+        if unit.status != "NEEDS_REVIEW":
+            raise DomainError("QA_UNIT_ALREADY_RESOLVED", "该问答单元已处理，不能重复处置", 409)
 
     def _apply_existing(self, unit, question, decision: FormalRecordRouteDecision, *, audit_action: str) -> dict:
         question_ids = self._question_fragment_ids(unit)
@@ -148,6 +194,59 @@ class FormalRecordRoutingService:
             candidate_question_ids=list(decision.candidate_question_ids),
         )
         self._audit(unit, decision, action=audit_action, target_question_id=question.id)
+        return {
+            "status": "APPLIED",
+            "targetQuestionId": question.id,
+            "round": question_round_dict(round_row),
+            "qaUnit": qa_unit_dict(unit),
+        }
+
+    def _apply_answer_only(self, unit, question, *, formal_answer: str) -> dict:
+        answer_ids = self._answer_fragment_ids(unit)
+        round_row = round_repo.create_round(
+            self.db,
+            case_id=unit.case_id,
+            session_id=unit.session_id,
+            case_question_id=question.id,
+            actual_question_text="",
+            officer_fragment_id=None,
+            answer_text=str(unit.raw_answer_text or "").strip(),
+            answer_fragment_ids=answer_ids,
+            status="CLOSED",
+            started_at=unit.started_at,
+            ended_at=unit.ended_at,
+        )
+        question_repo.set_canonical_answer(
+            self.db,
+            question,
+            answer_text=formal_answer,
+            first_asked_at=unit.started_at,
+        )
+        TemplateWorkspaceService(self.db).apply_actual_body_order(unit.case_id)
+        decision = FormalRecordRouteDecision(
+            classification=RouteClass.MATCH_EXISTING,
+            target_question_id=question.id,
+            formal_question=None,
+            formal_answer=formal_answer,
+            confidence=unit.confidence,
+            candidate_question_ids=(),
+            reason_code="MANUAL_LINK_ANSWER",
+            model_id=unit.model_id,
+        )
+        qa_repo.save_decision(
+            self.db,
+            unit,
+            classification=decision.classification.value,
+            target_question_id=question.id,
+            formal_question_text=None,
+            formal_answer_text=formal_answer,
+            confidence=decision.confidence,
+            model_id=decision.model_id,
+            reason_code=decision.reason_code,
+            status="APPLIED",
+            candidate_question_ids=[],
+        )
+        self._audit(unit, decision, action="QA_ROUTE_MANUAL_APPLIED", target_question_id=question.id)
         return {
             "status": "APPLIED",
             "targetQuestionId": question.id,

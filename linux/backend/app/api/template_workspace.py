@@ -9,12 +9,15 @@ from app.api.schemas import (
     PendingAddRequest,
     PendingLinkRequest,
     QuestionReorderRequest,
+    QAUnitResolutionRequest,
     RoundReassociateRequest,
     RoundUpdateRequest,
     SaveQuestionToLibraryRequest,
 )
 from app.domain.errors import DomainError
+from app.repositories import qa_units as qa_repo
 from app.repositories import question_rounds as round_repo
+from app.services.formal_record_routing_service import FormalRecordRoutingService
 from app.services.interrogation_projection_service import InterrogationProjectionService
 from app.services.template_workspace_service import TemplateWorkspaceService
 
@@ -33,6 +36,13 @@ def _round_for_case(db: Session, case_id: str, round_id: str):
     row = round_repo.get_round(db, round_id)
     if row.case_id != case_id:
         raise DomainError("QUESTION_ROUND_NOT_FOUND", "问答轮次不存在", 404)
+    return row
+
+
+def _qa_unit_for_case(db: Session, case_id: str, qa_unit_id: str):
+    row = qa_repo.get(db, qa_unit_id)
+    if row.case_id != case_id:
+        raise DomainError("QA_UNIT_NOT_FOUND", "问答单元不存在", 404)
     return row
 
 
@@ -96,6 +106,20 @@ def process_speech_fragment(case_id: str, fragment_id: str, db: Session = Depend
     result = InterrogationProjectionService(db).process_fragment(case_id, fragment_id)
     db.commit()
     return envelope(result)
+
+
+@router.post("/cases/{case_id}/qa-units/{qa_unit_id}/resolve")
+def resolve_qa_unit(case_id: str, qa_unit_id: str, body: QAUnitResolutionRequest, db: Session = Depends(get_db)):
+    _qa_unit_for_case(db, case_id, qa_unit_id)
+    result = FormalRecordRoutingService(db).resolve_manual(
+        qa_unit_id,
+        action=body.action,
+        case_question_id=body.case_question_id,
+        formal_question=body.formal_question,
+        formal_answer=body.formal_answer,
+    )
+    db.commit()
+    return envelope(result, "待处理问答已人工确认")
 
 
 @router.post("/cases/{case_id}/pending-questions/{pending_id}/add")
