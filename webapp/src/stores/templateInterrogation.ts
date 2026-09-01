@@ -31,7 +31,7 @@ import { roundGroups } from '../utils/templateInterrogation'
 import { useInterrogationStore } from './interrogation'
 
 function emptyWorkspace(caseId = ''): TemplateWorkspace {
-  return { caseId, questions: [], rounds: [], pendingQuestions: [] }
+  return { caseId, questions: [], rounds: [], pendingQuestions: [], qaUnits: [] }
 }
 
 function dialogueOrder(left: TemporaryAsrFragment, right: TemporaryAsrFragment): number {
@@ -55,6 +55,7 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
   let generation = 0
   let workspaceRefreshTimer: ReturnType<typeof setTimeout> | undefined
   let captureBridgeStop: WatchStopHandle | undefined
+  let formalRevisionBridgeStop: WatchStopHandle | undefined
 
   const groupedRounds = computed(() => roundGroups(workspace.value.questions, workspace.value.rounds))
   const unresolvedPending = computed(() => workspace.value.pendingQuestions.filter((item) => item.status === 'PENDING' || item.status === 'DEFERRED'))
@@ -77,6 +78,8 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     clearScheduledRefresh()
     captureBridgeStop?.()
     captureBridgeStop = undefined
+    formalRevisionBridgeStop?.()
+    formalRevisionBridgeStop = undefined
     caseId.value = nextCaseId
     workspace.value = emptyWorkspace(nextCaseId)
     dialogueHistory.value = []
@@ -110,11 +113,11 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
   function handleAsrFragment(fragment: TemporaryAsrFragment, scope = currentScope()) {
     if (!isCurrentScope(scope) || fragment.caseId !== scope.caseId) return
     upsertDialogue(fragment, scope)
-    scheduleWorkspaceRefresh(scope)
   }
 
   function attachCaptureBridge(scope: StoreScope) {
     captureBridgeStop?.()
+    formalRevisionBridgeStop?.()
     const interrogation = useInterrogationStore()
     captureBridgeStop = watch(
       () => interrogation.capture.fragments,
@@ -123,6 +126,13 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
         for (const fragment of fragments) handleAsrFragment(fragment, scope)
       },
       { deep: true, immediate: true },
+    )
+    formalRevisionBridgeStop = watch(
+      () => interrogation.formalRecordRevision,
+      (revision, previousRevision) => {
+        if (!isCurrentScope(scope) || revision === previousRevision) return
+        scheduleWorkspaceRefresh(scope, 0)
+      },
     )
   }
 

@@ -155,6 +155,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   const captureClock = ref(Date.now())
   const selectedFragmentIds = ref<string[]>([])
   const capture = ref<AsrCaptureStatus>(emptyCapture(caseId.value))
+  const formalRecordRevision = ref(0)
   const caseSummary = ref<CaseSummary>(emptyCaseSummary(caseId.value))
   const session = ref<SessionState>(emptySession(caseId.value))
   const transcript = ref<TranscriptMessage[]>([])
@@ -227,6 +228,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     captureClock.value = Date.now()
     selectedFragmentIds.value = []
     capture.value = emptyCapture(nextCaseId)
+    formalRecordRevision.value = 0
     caseSummary.value = emptyCaseSummary(nextCaseId)
     session.value = emptySession(nextCaseId)
     transcript.value = []
@@ -287,6 +289,10 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     if (sessionConnection || !scope.caseId || !session.value.id) return
     sessionConnection = connectRuntimeSession(session.value.id, (event) => {
       if (!isCurrentScope(scope)) return
+      if (event.event === 'QA_UNIT_UPDATED' || event.event === 'FORMAL_RECORD_UPDATED') {
+        formalRecordRevision.value += 1
+        return
+      }
       if (event.event === 'ASR_PARTIAL') {
         const payload = event.payload as { text?: string; partialText?: string }
         capture.value.partialText = payload.partialText ?? payload.text ?? capture.value.partialText
@@ -915,6 +921,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     revisionsOpen,
     nativeCaptureAvailable: captureAvailable,
     capture,
+    formalRecordRevision,
     captureBusy,
     captureInsertionReceipt,
     captureElapsedMs,
