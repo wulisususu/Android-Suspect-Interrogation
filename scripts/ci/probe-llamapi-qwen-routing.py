@@ -551,7 +551,7 @@ def _complete(base_url: str, model_id: str, prompt: str, timeout: float) -> tupl
         "stream": False,
         "temperature": 0.1,
         "top_p": 0.8,
-        "max_tokens": 512,
+        "max_tokens": 192,
         "enable_thinking": False,
     }
     started = time.perf_counter()
