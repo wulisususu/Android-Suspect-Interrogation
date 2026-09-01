@@ -1,5 +1,6 @@
 name: Qwen Routing Dev CI
 
+# Acceptance revision: structured routing output budget = 192 tokens.
 on:
   push:
     branches:
