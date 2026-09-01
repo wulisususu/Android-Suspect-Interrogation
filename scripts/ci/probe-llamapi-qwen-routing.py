@@ -361,6 +361,19 @@ def _complete(base_url: str, model_id: str, prompt: str, timeout: float) -> tupl
     return _parse_decision(message["content"]), elapsed_ms
 
 
+def _percentile(values: list[float], quantile: float) -> float:
+    if not values:
+        raise ValueError("percentile requires at least one value")
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * float(quantile)
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only LlamaPi Qwen formal-routing acceptance probe")
     parser.add_argument(
@@ -375,10 +388,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output", required=True, help="JSON result path under GITHUB_WORKSPACE or RUNNER_TEMP")
     parser.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout seconds per request")
+    parser.add_argument(
+        "--repetitions",
+        type=int,
+        default=1,
+        help="Number of A/B/C/D/E cycles; use 4 for the 20-request RK3588 acceptance sample",
+    )
     args = parser.parse_args(argv)
 
     if args.timeout <= 0:
         raise ValueError("--timeout must be positive")
+    if args.repetitions <= 0:
+        raise ValueError("--repetitions must be positive")
     output = safe_output_path(args.output)
     base_url = str(args.base_url).rstrip("/")
     if not base_url:
@@ -392,25 +413,51 @@ def main(argv: list[str] | None = None) -> int:
         "host": socket.gethostname(),
         "machine": platform.machine(),
         "python": sys.version.split()[0],
+        "repetitions": args.repetitions,
         "cases": [],
+        "samples": [],
+        "latency_ms": {"count": 0, "p50": None, "p95": None, "max": None},
     }
 
     try:
         model_id = resolve_model_id(_model_ids(base_url, args.timeout), args.model_hint)
         report["model_id"] = model_id
-        for case in _cases():
-            row: dict[str, Any] = {"case": case["case"], "passed": False}
-            try:
-                decision, latency_ms = _complete(base_url, model_id, _prompt(case), args.timeout)
-                row["latency_ms"] = round(latency_ms, 3)
-                row["classification"] = decision["classification"]
-                row["decision"] = decision
-                _validate_case(case, decision)
-                row["passed"] = True
-            except Exception as exc:
-                row["error"] = f"{type(exc).__name__}: {exc}"
-            report["cases"].append(row)
-        report["success"] = len(report["cases"]) == 5 and all(row["passed"] for row in report["cases"])
+        latency_values: list[float] = []
+        cases = _cases()
+        for iteration in range(1, args.repetitions + 1):
+            for case in cases:
+                row: dict[str, Any] = {
+                    "case": case["case"],
+                    "iteration": iteration,
+                    "passed": False,
+                }
+                try:
+                    decision, latency_ms = _complete(base_url, model_id, _prompt(case), args.timeout)
+                    rounded_latency = round(latency_ms, 3)
+                    row["latency_ms"] = rounded_latency
+                    latency_values.append(rounded_latency)
+                    row["classification"] = decision["classification"]
+                    row["decision"] = decision
+                    _validate_case(case, decision)
+                    row["passed"] = True
+                except Exception as exc:
+                    row["error"] = f"{type(exc).__name__}: {exc}"
+                report["samples"].append(row)
+                if iteration == 1:
+                    report["cases"].append(row)
+
+        if latency_values:
+            report["latency_ms"] = {
+                "count": len(latency_values),
+                "p50": round(_percentile(latency_values, 0.50), 3),
+                "p95": round(_percentile(latency_values, 0.95), 3),
+                "max": round(max(latency_values), 3),
+            }
+        expected_samples = args.repetitions * len(cases)
+        report["success"] = (
+            len(report["samples"]) == expected_samples
+            and all(row["passed"] for row in report["samples"])
+        )
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
 
