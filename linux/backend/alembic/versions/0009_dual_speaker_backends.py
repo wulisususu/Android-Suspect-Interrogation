@@ -17,9 +17,68 @@ depends_on = None
 
 
 _XVECTOR = "xvector"
+_DEPENDENT_TABLES = (
+    "officer_voice_samples",
+    "session_officer_voice_snapshots",
+    "session_voice_assignments",
+)
+
+
+def _quoted(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _backup_and_clear_dependencies() -> dict[str, tuple[str, ...]]:
+    """Move FK dependents aside before SQLite batch table recreation.
+
+    Alembic's SQLite batch mode creates a replacement table and drops the old
+    parent table. With foreign_keys=ON that DROP either cascades child rows or
+    is rejected by RESTRICT FKs. A plain CTAS backup intentionally carries no
+    foreign keys, so parent tables can be rebuilt without losing evidence.
+    """
+
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns_by_table: dict[str, tuple[str, ...]] = {}
+    for table in _DEPENDENT_TABLES:
+        columns = tuple(str(column["name"]) for column in inspector.get_columns(table))
+        columns_by_table[table] = columns
+        backup = f"__0009_backup_{table}"
+        bind.execute(sa.text(f"CREATE TABLE {_quoted(backup)} AS SELECT * FROM {_quoted(table)}"))
+        bind.execute(sa.text(f"DELETE FROM {_quoted(table)}"))
+    return columns_by_table
+
+
+def _restore_dependencies(columns_by_table: dict[str, tuple[str, ...]]) -> None:
+    """Restore only columns still present in the target schema.
+
+    On upgrade the backup does not contain ``model_key`` and the new column's
+    server default writes ``xvector``. On downgrade the backup does contain
+    ``model_key`` while the target schema does not, so the intersection omits
+    it. All legacy primary/foreign keys and embedding bytes are copied exactly.
+    """
+
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    for table in _DEPENDENT_TABLES:
+        target_columns = {str(column["name"]) for column in inspector.get_columns(table)}
+        columns = tuple(column for column in columns_by_table[table] if column in target_columns)
+        if not columns:
+            raise RuntimeError(f"0009 cannot restore dependency table without shared columns: {table}")
+        rendered = ", ".join(_quoted(column) for column in columns)
+        backup = f"__0009_backup_{table}"
+        bind.execute(
+            sa.text(
+                f"INSERT INTO {_quoted(table)} ({rendered}) "
+                f"SELECT {rendered} FROM {_quoted(backup)}"
+            )
+        )
+        bind.execute(sa.text(f"DROP TABLE {_quoted(backup)}"))
 
 
 def upgrade() -> None:
+    dependent_columns = _backup_and_clear_dependencies()
+
     with op.batch_alter_table("suspect_voiceprints", recreate="always") as batch:
         batch.add_column(sa.Column("model_key", sa.String(length=64), nullable=False, server_default=_XVECTOR))
         batch.drop_constraint("uq_suspect_voiceprints_case_id", type_="unique")
@@ -49,6 +108,8 @@ def upgrade() -> None:
         batch.add_column(sa.Column("model_key", sa.String(length=64), nullable=False, server_default=_XVECTOR))
         batch.create_index("ix_session_officer_voice_snapshots_model_key", ["model_key"], unique=False)
 
+    _restore_dependencies(dependent_columns)
+
 
 def _assert_downgrade_is_unambiguous() -> None:
     bind = op.get_bind()
@@ -72,6 +133,7 @@ def _assert_downgrade_is_unambiguous() -> None:
 
 def downgrade() -> None:
     _assert_downgrade_is_unambiguous()
+    dependent_columns = _backup_and_clear_dependencies()
 
     with op.batch_alter_table("session_officer_voice_snapshots", recreate="always") as batch:
         batch.drop_index("ix_session_officer_voice_snapshots_model_key")
@@ -101,3 +163,5 @@ def downgrade() -> None:
         batch.drop_constraint("uq_suspect_voiceprint_case_model", type_="unique")
         batch.drop_column("model_key")
         batch.create_unique_constraint("uq_suspect_voiceprints_case_id", ["case_id"])
+
+    _restore_dependencies(dependent_columns)
