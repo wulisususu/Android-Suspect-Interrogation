@@ -294,7 +294,6 @@ async function confirmSignature() {
           @remove-question="(id) => emit('removeQuestion', id)"
           @insert-pending="(pendingId, afterQuestionId) => emit('resolvePending', pendingId, { action: 'ADD', afterQuestionId })"
           @update-answer="(id, text) => emit('updateAnswer', id, text)"
-          @reassociate="(id, input) => emit('reassociateRound', id, input)"
           @save-library="emit('saveLibrary', $event)"
           @generate-ai="emit('generateAi')"
           @freeze="finishAndFreeze"
