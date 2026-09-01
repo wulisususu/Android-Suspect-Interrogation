@@ -2,7 +2,7 @@ import json
 
 from app.database.models import (
     AuditLog, Case, CaseQuestion, DocumentSnapshot, Fact, InterrogationSession, Message,
-    MessageRevision, PendingQuestion, Person, QuestionRound, SignatureRecord, StandardQuestion, TimelineEvent,
+    MessageRevision, PendingQuestion, Person, QAUnit, QuestionRound, SignatureRecord, StandardQuestion, TimelineEvent,
 )
 from app.domain.enums import WorkflowState
 
@@ -173,9 +173,37 @@ def case_question_dict(row: CaseQuestion, *, rounds: list[QuestionRound] | None 
         "templateKey": row.template_key,
         "templateItemKey": row.template_item_key,
         "locked": bool(row.locked),
+        "formalAnswerText": row.formal_answer_text,
+        "firstAskedAt": _iso(row.first_asked_at),
         "sortOrder": row.sort_order,
         "active": bool(row.active),
         "rounds": [question_round_dict(item) for item in (rounds or [])],
+        "createdAt": _iso(row.created_at),
+        "updatedAt": _iso(row.updated_at),
+    }
+
+
+def qa_unit_dict(row: QAUnit) -> dict:
+    fragments = sorted(row.fragments, key=lambda item: item.position)
+    return {
+        "id": row.id,
+        "caseId": row.case_id,
+        "sessionId": row.session_id,
+        "status": row.status,
+        "classification": row.classification,
+        "targetQuestionId": row.target_question_id,
+        "rawQuestionText": row.raw_question_text,
+        "rawAnswerText": row.raw_answer_text,
+        "formalQuestionText": row.formal_question_text,
+        "formalAnswerText": row.formal_answer_text,
+        "candidateQuestionIds": _json_list(row.candidate_question_ids_json),
+        "questionFragmentIds": [item.fragment_id for item in fragments if item.role == "QUESTION"],
+        "answerFragmentIds": [item.fragment_id for item in fragments if item.role == "ANSWER"],
+        "confidence": row.confidence,
+        "modelId": row.model_id,
+        "reasonCode": row.reason_code,
+        "startedAt": _iso(row.started_at),
+        "endedAt": _iso(row.ended_at),
         "createdAt": _iso(row.created_at),
         "updatedAt": _iso(row.updated_at),
     }

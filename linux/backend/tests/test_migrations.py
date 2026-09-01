@@ -26,11 +26,14 @@ CALIBRATION_TABLES = {
 RECOGNITION_EVIDENCE_TABLES = {
     "asr_recognition_evidence", "asr_recognition_revisions",
 }
+QWEN_ROUTING_TABLES = {
+    "qa_units", "qa_unit_fragments",
+}
 REQUIRED_TABLES = (
     CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES | OFFICER_LIBRARY_TABLES |
-    CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES
+    CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES | QWEN_ROUTING_TABLES
 )
-ALEMBIC_HEAD = "0007_formal_record_sections"
+ALEMBIC_HEAD = "0008_qwen_formal_record_routing"
 
 
 def _run_alembic(tmp_path, target: str):
@@ -126,7 +129,7 @@ def test_alembic_upgrade_head_builds_required_schema(tmp_path):
             "after_text", "actor_id", "reason",
         } <= revision_columns
         formal_columns = {item["name"] for item in inspector.get_columns("case_questions")}
-        assert {"section_type", "template_key", "template_item_key", "locked"} <= formal_columns
+        assert {"section_type", "template_key", "template_item_key", "locked", "formal_answer_text", "first_asked_at"} <= formal_columns
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
         assert revision == ALEMBIC_HEAD
