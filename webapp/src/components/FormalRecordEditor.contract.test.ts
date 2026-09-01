@@ -56,6 +56,13 @@ describe('formal record editor source contract', () => {
 
   // legacy routing emits ASR_FRAGMENT but no committed Qwen routing revision event.
   it('retains raw-fragment workspace refresh as legacy-mode compatibility only', () => {
-    expect(templateStore).toContain('upsertDialogue(fragment, scope)\n    scheduleWorkspaceRefresh(scope)')
+    const start = templateStore.indexOf('function handleAsrFragment')
+    const end = templateStore.indexOf('function attachCaptureBridge', start)
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(end).toBeGreaterThan(start)
+    const handler = templateStore.slice(start, end)
+    expect(handler).toContain('upsertDialogue(fragment, scope)')
+    expect(handler).toContain('scheduleWorkspaceRefresh(scope)')
+    expect(handler.indexOf('scheduleWorkspaceRefresh(scope)')).toBeGreaterThan(handler.indexOf('upsertDialogue(fragment, scope)'))
   })
 })
