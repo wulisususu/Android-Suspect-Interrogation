@@ -65,6 +65,28 @@ def test_ensure_does_not_seed_or_reorder_a_frozen_legacy_record(db, case):
     assert workspace["questions"][0]["sectionType"] == "BODY"
 
 
+def test_frozen_formal_record_rejects_all_question_mutations_server_side(db, case):
+    svc = TemplateWorkspaceService(db)
+    body = svc.add_case_question(case.id, text="冻结前问题？", source="CASE")
+    svc.ensure_formal_record(case.id, template_key="SUSPECT_INQUIRY_V1")
+    case.workflow_state = "FROZEN"
+    case.document_status = "FROZEN"
+    db.commit()
+
+    operations = [
+        lambda: svc.add_case_question(case.id, text="冻结后新增？", source="CASE"),
+        lambda: svc.update_case_question(case.id, body["id"], text="冻结后修改？"),
+        lambda: svc.reorder(case.id, [body["id"]]),
+        lambda: svc.deactivate_case_question(case.id, body["id"]),
+        lambda: svc.save_to_library(case.id, body["id"], "通用"),
+    ]
+
+    for operation in operations:
+        with pytest.raises(DomainError) as error:
+            operation()
+        assert error.value.code == "FORMAL_RECORD_FROZEN"
+
+
 def test_fixed_template_question_text_cannot_be_edited_or_soft_removed(db, case):
     svc = TemplateWorkspaceService(db)
     workspace = svc.ensure_formal_record(case.id, template_key="SUSPECT_INQUIRY_V1")
