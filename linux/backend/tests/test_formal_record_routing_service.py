@@ -30,6 +30,13 @@ def decision(kind: RouteClass, *, target=None, question=None, answer=None, confi
     )
 
 
+def as_utc(value: datetime) -> datetime:
+    """Normalize SQLite's timezone-naive datetime round-trip for instant comparison."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def make_context(tmp_path):
     engine = make_engine(f"sqlite:///{tmp_path / 'routing-service.db'}")
     init_database(engine)
@@ -183,10 +190,10 @@ def test_b_followup_creates_rounds_but_one_canonical_answer_and_keeps_first_aske
         second = make_unit(db, case, session, capture, ordinal_base=3, start_ms=5000, question="具体一点呢？", answer="八点十五左右。")
         service.apply_auto(second.id, decision(RouteClass.MATCH_EXISTING, target=body1.id, answer="大概八点十五分左右到达。"))
         assert body1.formal_answer_text == "大概八点十五分左右到达。"
-        assert body1.first_asked_at == first_asked
+        assert as_utc(body1.first_asked_at) == as_utc(first_asked)
         rounds = db.scalars(select(QuestionRound).where(QuestionRound.case_question_id == body1.id).order_by(QuestionRound.round_no)).all()
         assert [row.round_no for row in rounds] == [1, 2]
-        assert rounds[1].started_at == second.started_at
+        assert as_utc(rounds[1].started_at) == as_utc(second.started_at)
     finally:
         db.close(); engine.dispose()
 
@@ -207,7 +214,7 @@ def test_c_creates_live_question_from_real_speech_and_canonical_answer(tmp_path)
         assert created.source == "LIVE"
         assert created.text == "你离开现场后是否再次返回？"
         assert created.formal_answer_text == "返回过一次，因为手机遗留在现场。"
-        assert created.first_asked_at == unit.started_at
+        assert as_utc(created.first_asked_at) == as_utc(unit.started_at)
     finally:
         db.close(); engine.dispose()
 
