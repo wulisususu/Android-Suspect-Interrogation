@@ -214,14 +214,14 @@ try {
   await navigate(client, `${baseUrl}/?caseId=${encodeURIComponent(caseId)}`, '.workspace')
   await clickButtonContaining(client, '审讯记录')
   await waitForSelector(client, '.template-interrogation-grid')
-  await waitForSelector(client, '.formal-template-panel')
+  await waitForSelector(client, '.formal-record-shell')
   await waitForSelector(client, '.live-dialogue-panel')
   await sleep(700)
   const fixturePresent = await waitFor(() => evaluate(client, `(() => {
     const fixture = ${JSON.stringify(visualFixture)}
-    const questionVisible = Array.from(document.querySelectorAll('.formal-question-editor textarea'))
+    const questionVisible = Array.from(document.querySelectorAll('.body-question .editable-question textarea'))
       .some((item) => item.value.includes(fixture.formalQuestion))
-    const answerVisible = Array.from(document.querySelectorAll('.formal-answer-editor textarea'))
+    const answerVisible = Array.from(document.querySelectorAll('.body-question .record-answer textarea'))
       .some((item) => item.value.includes(fixture.formalAnswer))
     const rawText = Array.from(document.querySelectorAll('.dialogue-bubble'))
       .map((item) => item.textContent || '').join('\\n')
