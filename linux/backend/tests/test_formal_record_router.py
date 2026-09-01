@@ -152,7 +152,7 @@ def test_direct_json_match_fixed_and_prompt_contract(tmp_path):
         assert call["options"] == {
             "temperature": 0.1,
             "top_p": 0.8,
-            "max_tokens": 512,
+            "max_tokens": 192,
             "enable_thinking": False,
         }
         prompt = call["prompt"]
