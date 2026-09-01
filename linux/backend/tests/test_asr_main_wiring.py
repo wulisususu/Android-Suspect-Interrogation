@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.runtime_settings import RuntimeSettings
 from app.services.source_aware_asr_capture_service import SourceAwareAsrCaptureService
 
 
@@ -89,6 +90,7 @@ def test_create_app_wires_source_aware_asr_and_browser_input_lifecycle(tmp_path)
         assert service.browser_audio_input is app.state.browser_audio_input
         assert service.ai_supervisor is supervisor
         assert service.session_factory is app.state.session_factory
+        assert app.state.qa_routing_coordinator is None
 
         response = client.get("/api/v1/asr/status")
         assert response.status_code == 200
@@ -99,3 +101,29 @@ def test_create_app_wires_source_aware_asr_and_browser_input_lifecycle(tmp_path)
     assert manager.monitor_stopped == 1
     assert manager.closed == 1
     assert supervisor.shutdown_calls == 1
+
+
+def test_qwen_mode_starts_coordinator_and_injects_sinks_into_all_audio_sources(tmp_path):
+    manager = FakeManager()
+    supervisor = FakeSupervisor()
+    settings = RuntimeSettings(formal_routing_mode="qwen", qa_idle_close_seconds=0.05)
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'main-qwen-wiring.db'}",
+        hardware_gateway=FakeHardwareGateway(),
+        hardware_manager=manager,
+        ai_supervisor=supervisor,
+        runtime_settings=settings,
+    )
+
+    with TestClient(app):
+        coordinator = app.state.qa_routing_coordinator
+        assert coordinator is not None
+        assert coordinator.running is True
+        service = app.state.asr_capture_service
+        assert isinstance(service, SourceAwareAsrCaptureService)
+        assert set(service._services) == {"ALSA", "BROWSER"}
+        for child in service._services.values():
+            assert child.fragment_sink is not None
+            assert child.capture_finished_sink is not None
+
+    assert coordinator.running is False
