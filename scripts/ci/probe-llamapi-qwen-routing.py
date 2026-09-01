@@ -178,6 +178,53 @@ def _parse_decision(raw: str) -> dict[str, Any]:
     return payload
 
 
+def _parse_compact_decision(raw: str) -> dict[str, Any]:
+    text = str(raw or "").strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        raise ProbeError("compact model output must be JSON only")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ProbeError("compact model output is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ProbeError("compact model output must be an object")
+
+    code = payload.get("c")
+    if code not in {"A", "B", "C"}:
+        raise ProbeError(f"invalid compact classification: {code!r}")
+    answer = payload.get("a")
+    if not isinstance(answer, str) or not answer.strip():
+        raise ProbeError("compact formal answer is required")
+
+    if code in {"A", "B"}:
+        target = payload.get("t")
+        if not isinstance(target, str) or not target.strip():
+            raise ProbeError("compact existing route target is required")
+        target = target.strip()
+        return {
+            "classification": "MATCH_FIXED" if code == "A" else "MATCH_EXISTING",
+            "target_question_id": target,
+            "formal_question": None,
+            "formal_answer": answer.strip(),
+            "confidence": None,
+            "candidate_question_ids": [target],
+            "reason_code": f"COMPACT_{code}",
+        }
+
+    question = payload.get("q")
+    if not isinstance(question, str) or not question.strip():
+        raise ProbeError("compact new route question is required")
+    return {
+        "classification": "CREATE_LIVE_FROM_SPEECH",
+        "target_question_id": None,
+        "formal_question": question.strip(),
+        "formal_answer": answer.strip(),
+        "confidence": None,
+        "candidate_question_ids": [],
+        "reason_code": "COMPACT_C",
+    }
+
+
 def _normalize_question_text(text: str | None) -> str:
     value = str(text or "").strip()
     value = re.sub(r"\s+", "", value)
@@ -544,14 +591,23 @@ def _model_ids(base_url: str, timeout: float) -> list[str]:
     return [str(item) for item in ids if isinstance(item, str) and item.strip()]
 
 
-def _complete(base_url: str, model_id: str, prompt: str, timeout: float) -> tuple[dict[str, Any], float, dict[str, Any]]:
+def _complete(
+    base_url: str,
+    model_id: str,
+    prompt: str,
+    timeout: float,
+    *,
+    protocol: str = "full",
+) -> tuple[dict[str, Any], float, dict[str, Any]]:
+    if protocol not in {"full", "compact"}:
+        raise ValueError("protocol must be full or compact")
     request_payload = {
         "model": model_id,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
         "temperature": 0.1,
         "top_p": 0.8,
-        "max_tokens": 192,
+        "max_tokens": 96 if protocol == "compact" else 192,
         "enable_thinking": False,
     }
     started = time.perf_counter()
@@ -579,7 +635,8 @@ def _complete(base_url: str, model_id: str, prompt: str, timeout: float) -> tupl
         "response_chars": len(content),
         "usage": usage,
     }
-    return _parse_decision(content), elapsed_ms, telemetry
+    parser = _parse_compact_decision if protocol == "compact" else _parse_decision
+    return parser(content), elapsed_ms, telemetry
 
 
 def _percentile(values: list[float], quantile: float) -> float:
