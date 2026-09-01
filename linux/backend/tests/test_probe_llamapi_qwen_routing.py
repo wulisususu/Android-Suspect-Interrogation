@@ -93,7 +93,8 @@ class FakeLlamaPiHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         payload = json.loads(self.rfile.read(length))
         self.__class__.requests.append(payload)
-        decision = self.__class__.decisions[len(self.__class__.requests) - 1]
+        index = (len(self.__class__.requests) - 1) % len(self.__class__.decisions)
+        decision = self.__class__.decisions[index]
         body = json.dumps(
             {
                 "model": "qwen3:4b@rk3588",
@@ -153,6 +154,43 @@ def test_probe_runs_all_five_classes_with_thinking_disabled(tmp_path, monkeypatc
         assert request["stream"] is False
         assert request["enable_thinking"] is False
         assert request["temperature"] <= 0.2
+
+
+def test_probe_can_measure_twenty_requests_and_report_percentiles(tmp_path, monkeypatch):
+    probe = load_probe_module()
+    FakeLlamaPiHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlamaPiHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+        output = tmp_path / "qwen-routing-probe-20.json"
+        rc = probe.main(
+            [
+                "--base-url",
+                f"http://127.0.0.1:{server.server_port}/v1",
+                "--model-hint",
+                "qwen3:4b",
+                "--repetitions",
+                "4",
+                "--output",
+                str(output),
+            ]
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert rc == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["success"] is True
+    assert report["repetitions"] == 4
+    assert len(report["samples"]) == 20
+    assert len(FakeLlamaPiHandler.requests) == 20
+    latency = report["latency_ms"]
+    assert latency["count"] == 20
+    assert 0 <= latency["p50"] <= latency["p95"] <= latency["max"]
 
 
 def test_probe_rejects_ambiguous_model_and_unsafe_output(tmp_path, monkeypatch):
