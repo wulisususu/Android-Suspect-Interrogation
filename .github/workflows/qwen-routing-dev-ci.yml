@@ -1,6 +1,6 @@
 name: Qwen Routing Dev CI
 
-# Final acceptance revision: telemetry, reliable memory evidence, and 20-decision board gate.
+# Performance experiment verification: compact probe protocol remains isolated from production routing.
 on:
   push:
     branches:
