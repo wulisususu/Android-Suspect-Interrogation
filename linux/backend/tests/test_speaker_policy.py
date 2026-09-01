@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.ai.speech.calibration import MODEL_BASELINE_THRESHOLD
 from app.services.speaker_policy import (
     SpeakerRole,
     SpeakerSource,
@@ -27,6 +28,37 @@ def decide(candidates, enabled_roles, *, duration=1800, overlap=False, threshold
         usable_duration_ms=duration,
         overlap=overlap,
     )
+
+
+def test_suspect_only_model_baseline_rejects_high_impostor_score_below_vendor_threshold():
+    result = decide_speaker(
+        candidates=[candidate(SpeakerRole.SUSPECT, 0.90, "suspect-1", "张某")],
+        enabled_roles={SpeakerRole.SUSPECT},
+        threshold=MODEL_BASELINE_THRESHOLD,
+        margin=0.0,
+        usable_duration_ms=1800,
+        overlap=False,
+    )
+
+    assert result.role is SpeakerRole.OFFICER_FALLBACK
+    assert result.source is SpeakerSource.SUSPECT_EXCLUSION
+    assert result.voiceprint_verified is False
+    assert result.score == pytest.approx(0.90)
+
+
+def test_suspect_only_model_baseline_accepts_score_above_vendor_threshold():
+    result = decide_speaker(
+        candidates=[candidate(SpeakerRole.SUSPECT, 0.96, "suspect-1", "张某")],
+        enabled_roles={SpeakerRole.SUSPECT},
+        threshold=MODEL_BASELINE_THRESHOLD,
+        margin=0.0,
+        usable_duration_ms=1800,
+        overlap=False,
+    )
+
+    assert result.role is SpeakerRole.SUSPECT
+    assert result.source is SpeakerSource.X_VECTOR
+    assert result.voiceprint_verified is True
 
 
 def test_suspect_only_accepts_verified_suspect():
