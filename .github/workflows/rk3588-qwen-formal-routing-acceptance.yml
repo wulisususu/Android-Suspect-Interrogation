@@ -1,5 +1,6 @@
 name: RK3588 Qwen Formal Routing Acceptance
 
+# Acceptance revision: structured routing output budget = 192 tokens.
 on:
   workflow_dispatch:
   push:
