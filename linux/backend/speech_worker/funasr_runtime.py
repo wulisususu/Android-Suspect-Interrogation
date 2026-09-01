@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-import base64
-import json
-import math
 import os
-import struct
-import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
 from app.ai.errors import BackendUnavailableError, ModelNotInstalledError, WorkerCrashedError
-from app.ai.speech.fingerprint import fingerprint_model_directory
 from speech_worker.speaker.base import SpeakerBackendKey
+from speech_worker.speaker.xvector import LegacySpeakerFactory, XVectorBackend
 
 
 DEFAULT_MODEL_ROOT = Path("/opt/suspect-interrogation/models/funasr")
@@ -19,44 +14,10 @@ _CRITICAL_MODEL_NAMES = ("paraformer", "fsmn-vad")
 _OPTIONAL_MODEL_NAMES = ("xvector",)
 _MODEL_NAMES = _CRITICAL_MODEL_NAMES + _OPTIONAL_MODEL_NAMES
 ModelFactory = Callable[..., Any]
-LegacySpeakerFactory = Callable[[Path], Any]
-
-
-class _LegacyXVectorSubprocessAdapter:
-    """Run the incompatible XVector checkpoint in its own legacy Python."""
-
-    def __init__(self, model_path: Path) -> None:
-        python = os.environ.get("SUSPECT_XVECTOR_LEGACY_PYTHON", "")
-        if not python or not Path(python).is_file():
-            raise BackendUnavailableError("legacy XVector Python is unavailable", details={"model": "xvector"})
-        self.python = python
-        self.model_path = model_path
-        self.script = Path(__file__).with_name("xvector_legacy.py")
-        self._run({"op": "health"})
-
-    def generate(self, **kwargs: Any) -> list[dict[str, Any]]:
-        pcm = kwargs.get("input")
-        sample_rate = int(kwargs.get("fs", 16000))
-        if sample_rate != 16000 or not isinstance(pcm, (bytes, bytearray, memoryview)):
-            raise ValueError("legacy xvector requires 16 kHz PCM bytes")
-        result = self._run({"op": "embedding", "pcm_b64": base64.b64encode(bytes(pcm)).decode("ascii")})
-        return [result]
-
-    def _run(self, request: dict[str, Any]) -> dict[str, Any]:
-        try:
-            completed = subprocess.run([self.python, str(self.script), "--model-root", str(self.model_path)], input=json.dumps(request), text=True, capture_output=True, timeout=90, check=False)
-            if completed.returncode != 0:
-                raise RuntimeError(completed.stderr.strip() or completed.stdout.strip())
-            result = json.loads(completed.stdout)
-            if not isinstance(result, dict):
-                raise RuntimeError("legacy XVector response must be an object")
-            return result
-        except Exception as exc:
-            raise BackendUnavailableError("legacy XVector subprocess failed", details={"model": "xvector", "error_type": type(exc).__name__}) from exc
 
 
 class FunASRSpeechRuntime:
-    """Own local FunASR ASR/VAD plus optional speaker verification."""
+    """Own local FunASR ASR/VAD and delegate speaker embeddings to a backend."""
 
     def __init__(
         self,
@@ -71,6 +32,7 @@ class FunASRSpeechRuntime:
         self.asr_model: Any | None = None
         self.vad_model: Any | None = None
         self.speaker_model: Any | None = None
+        self._speaker_embedding_backend: XVectorBackend | None = None
         self.speaker_backend: str | None = None
         self.speaker_backend_key = SpeakerBackendKey.XVECTOR
         self.speaker_model_id = self.speaker_backend_key.value
@@ -80,7 +42,7 @@ class FunASRSpeechRuntime:
 
     @property
     def loaded(self) -> bool:
-        return self.core_loaded and self.speaker_model is not None
+        return self.core_loaded and self._speaker_embedding_backend is not None
 
     @property
     def core_loaded(self) -> bool:
@@ -110,7 +72,11 @@ class FunASRSpeechRuntime:
                 self._clear_models()
                 raise BackendUnavailableError(
                     f"failed to load FunASR model {name}: {exc}",
-                    details={"model": name, "path": str(model_path), "error_type": type(exc).__name__},
+                    details={
+                        "model": name,
+                        "path": str(model_path),
+                        "error_type": type(exc).__name__,
+                    },
                 ) from exc
 
         self.asr_model = loaded["paraformer"]
@@ -124,34 +90,37 @@ class FunASRSpeechRuntime:
             }
             return
 
+        backend = XVectorBackend(
+            model_path=speaker_path,
+            model_factory=factory,
+            legacy_speaker_factory=self._legacy_speaker_factory,
+            model_version=self.speaker_model_version,
+        )
         try:
-            self.speaker_model_fingerprint = fingerprint_model_directory(speaker_path)
+            backend.load()
         except Exception as exc:
-            self.model_errors["xvector_fingerprint"] = {
-                "code": "FINGERPRINT_FAILED",
+            self.model_errors["xvector"] = {
+                "code": getattr(exc, "code", "BACKEND_UNAVAILABLE"),
                 "error_type": type(exc).__name__,
             }
-            self.speaker_model_fingerprint = None
-
-        primary_error: Exception | None = None
-        try:
-            self.speaker_model = self._load_model(factory, speaker_path)
-            self.speaker_backend = "funasr-automodel"
+            details = getattr(exc, "details", None)
+            if isinstance(details, dict) and details.get("primary_error_type"):
+                self.model_errors["xvector"]["primary_error_type"] = str(
+                    details["primary_error_type"]
+                )
             return
-        except Exception as exc:
-            primary_error = exc
 
-        try:
-            legacy_factory = self._legacy_speaker_factory or self._load_legacy_speaker
-            self.speaker_model = legacy_factory(speaker_path)
-            self.speaker_backend = "legacy-subprocess-xvector"
-        except Exception as exc:
-            self.speaker_model = None
-            self.speaker_backend = None
-            self.model_errors["xvector"] = {
-                "code": "BACKEND_UNAVAILABLE",
-                "error_type": type(exc).__name__,
-                "primary_error_type": type(primary_error).__name__ if primary_error is not None else "Unknown",
+        self._speaker_embedding_backend = backend
+        self.speaker_model = backend.model
+        self.speaker_backend = backend.implementation
+        self.speaker_backend_key = backend.key
+        self.speaker_model_id = backend.model_id
+        self.speaker_model_version = backend.model_version or "local"
+        self.speaker_model_fingerprint = backend.model_fingerprint
+        if backend.fingerprint_error_type is not None:
+            self.model_errors["xvector_fingerprint"] = {
+                "code": "FINGERPRINT_FAILED",
+                "error_type": backend.fingerprint_error_type,
             }
 
     @staticmethod
@@ -162,15 +131,6 @@ class FunASRSpeechRuntime:
             disable_update=True,
             disable_pbar=True,
         )
-
-    @staticmethod
-    def _load_legacy_speaker(model_path: Path) -> Any:
-        if not (model_path / "sv.pth").is_file() or not (model_path / "sv.yaml").is_file():
-            raise ModelNotInstalledError(
-                "legacy xvector checkpoint files are missing",
-                details={"model": "xvector"},
-            )
-        return _LegacyXVectorSubprocessAdapter(model_path)
 
     def health(self) -> dict[str, Any]:
         if self.loaded:
@@ -185,7 +145,7 @@ class FunASRSpeechRuntime:
             "models": {
                 "asr": self.asr_model is not None,
                 "vad": self.vad_model is not None,
-                "speaker": self.speaker_model is not None,
+                "speaker": self._speaker_embedding_backend is not None,
             },
             "speaker_backend": self.speaker_backend,
             "speaker_backend_key": self.speaker_backend_key.value,
@@ -235,39 +195,20 @@ class FunASRSpeechRuntime:
         return {"text": text, "confidence": confidence}
 
     def speaker_embedding(self, pcm: bytes, sample_rate: int) -> dict[str, Any]:
-        model = self._require_model(self.speaker_model, "xvector")
-        result = self._generate(
-            model,
-            "xvector",
-            input=pcm,
-            fs=int(sample_rate),
-            embedding=True,
-        )
-        record = _first_record(result)
-        if "spk_embedding" not in record:
-            raise WorkerCrashedError(
-                "FunASR xvector result did not contain spk_embedding",
-                details={"model": "xvector"},
+        backend = self._speaker_embedding_backend
+        if backend is None:
+            raise BackendUnavailableError(
+                "speaker embedding backend is not loaded",
+                details={"backend_key": self.speaker_backend_key.value},
             )
-        vector = _flatten_embedding(record["spk_embedding"])
-        if not vector:
-            raise WorkerCrashedError(
-                "FunASR xvector returned an empty spk_embedding",
-                details={"model": "xvector"},
-            )
-        norm = math.sqrt(sum(value * value for value in vector))
-        if not math.isfinite(norm) or norm <= 0.0:
-            raise WorkerCrashedError(
-                "FunASR xvector returned a zero or invalid spk_embedding",
-                details={"model": "xvector"},
-            )
-        normalized = [_float32(value / norm) for value in vector]
+        result = backend.extract_embedding(pcm, int(sample_rate))
         return {
-            "embedding": normalized,
-            "backend_key": self.speaker_backend_key.value,
-            "model_id": self.speaker_model_id,
-            "model_version": self.speaker_model_version,
-            "model_fingerprint": self.speaker_model_fingerprint,
+            "embedding": result.embedding,
+            "backend_key": result.backend_key.value,
+            "model_id": result.model_id,
+            "model_version": result.model_version,
+            "model_fingerprint": result.model_fingerprint,
+            "latency_ms": result.latency_ms,
         }
 
     @staticmethod
@@ -321,6 +262,7 @@ class FunASRSpeechRuntime:
         self.asr_model = None
         self.vad_model = None
         self.speaker_model = None
+        self._speaker_embedding_backend = None
         self.speaker_backend = None
         self.speaker_model_fingerprint = None
 
@@ -331,36 +273,3 @@ def _first_record(result: Any) -> dict[str, Any]:
     if isinstance(result, list) and result and isinstance(result[0], dict):
         return result[0]
     return {}
-
-
-def _flatten_embedding(value: Any) -> list[float]:
-    current = value
-    for method_name in ("detach", "cpu"):
-        method = getattr(current, method_name, None)
-        if callable(method):
-            current = method()
-    tolist = getattr(current, "tolist", None)
-    if callable(tolist):
-        current = tolist()
-
-    output: list[float] = []
-
-    def visit(item: Any) -> None:
-        if isinstance(item, (list, tuple)):
-            for child in item:
-                visit(child)
-            return
-        try:
-            number = float(item)
-        except (TypeError, ValueError) as exc:
-            raise WorkerCrashedError("FunASR spk_embedding contained a non-numeric value") from exc
-        if not math.isfinite(number):
-            raise WorkerCrashedError("FunASR spk_embedding contained a non-finite value")
-        output.append(number)
-
-    visit(current)
-    return output
-
-
-def _float32(value: float) -> float:
-    return struct.unpack("!f", struct.pack("!f", float(value)))[0]
