@@ -109,14 +109,14 @@ def test_consecutive_officer_fragments_before_answer_stay_one_question(tmp_path)
         engine.dispose()
 
 
-def test_unknown_fragment_is_not_assigned_to_a_unit(tmp_path):
+def test_unknown_fragment_is_not_assigned_or_recovered(tmp_path):
     engine, db, case, _session, capture = make_context(tmp_path)
     try:
         builder = QAUnitBuilder(db)
         unknown = add_fragment(db, capture, ordinal=1, speaker="UNKNOWN", text="听不清的话", start_ms=0, end_ms=500)
         assert builder.consume_fragment(case.id, unknown.id) == []
         assert qa_repo.list_for_case(db, case.id) == []
-        assert asr_repo.list_unassigned_for_session(db, case.id, "SESSION-QA") == [unknown]
+        assert asr_repo.list_unassigned_for_session(db, case.id, "SESSION-QA") == []
     finally:
         db.close()
         engine.dispose()
