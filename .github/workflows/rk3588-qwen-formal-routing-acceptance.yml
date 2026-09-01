@@ -60,11 +60,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/qwen-probe-bundle"
-          cp scripts/ci/probe-llamapi-qwen-routing.py "$RUNNER_TEMP/qwen-probe-bundle/"
-          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/qwen-probe-bundle/source-sha.txt"
-          sha256sum "$RUNNER_TEMP/qwen-probe-bundle/probe-llamapi-qwen-routing.py" \
-            > "$RUNNER_TEMP/qwen-probe-bundle/probe-llamapi-qwen-routing.py.sha256"
+          BUNDLE="$RUNNER_TEMP/qwen-probe-bundle"
+          rm -rf "$BUNDLE"
+          mkdir -p "$BUNDLE"
+          cp scripts/ci/probe-llamapi-qwen-routing.py "$BUNDLE/"
+          printf '%s\n' "$GITHUB_SHA" > "$BUNDLE/source-sha.txt"
+          (
+            cd "$BUNDLE"
+            sha256sum probe-llamapi-qwen-routing.py > probe-llamapi-qwen-routing.py.sha256
+          )
 
       - name: Upload verified board probe
         uses: actions/upload-artifact@v4
