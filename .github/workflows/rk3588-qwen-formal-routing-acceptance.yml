@@ -20,6 +20,8 @@ on:
 permissions:
   contents: read
 
+actions:
+
 concurrency:
   group: rk3588-qwen-formal-routing-${{ github.ref }}
   cancel-in-progress: false
@@ -56,17 +58,34 @@ jobs:
             linux/backend/tests/test_llamapi_llm_engine.py \
             linux/backend/tests/test_qwen_formal_routing_e2e.py -q
 
+      - name: Stage verified board probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/qwen-probe-bundle"
+          cp scripts/ci/probe-llamapi-qwen-routing.py "$RUNNER_TEMP/qwen-probe-bundle/"
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/qwen-probe-bundle/source-sha.txt"
+          sha256sum "$RUNNER_TEMP/qwen-probe-bundle/probe-llamapi-qwen-routing.py" \
+            > "$RUNNER_TEMP/qwen-probe-bundle/probe-llamapi-qwen-routing.py.sha256"
+
+      - name: Upload verified board probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen-routing-probe-bundle
+          path: ${{ runner.temp }}/qwen-probe-bundle/
+          if-no-files-found: error
+          retention-days: 3
+
   rk3588-probe:
     name: RK3588 read-only LlamaPi probe
     needs: hosted-gate
     runs-on: [self-hosted, rk3588]
     timeout-minutes: 30
     env:
-      GIT_TERMINAL_PROMPT: '0'
       LLAMAPI_BASE_URL: 'http://127.0.0.1:9265/v1'
       LLAMAPI_MODEL_HINT: 'qwen3:4b'
     steps:
-      - name: Exact read-only checkout
+      - name: Runner identity
         shell: bash
         run: |
           set -euo pipefail
@@ -75,27 +94,21 @@ jobs:
           hostname
           uname -a
           test "$(uname -m)" = aarch64 -o "$(uname -m)" = arm64
-          cd "$GITHUB_WORKSPACE"
-          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          git init .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git config --local gc.auto 0
-          git config --local http.version HTTP/1.1
-          git sparse-checkout init --cone
-          git sparse-checkout set .github linux scripts docs
-          fetched=0
-          for attempt in 1 2 3 4 5; do
-            if timeout 120s git -c protocol.version=2 fetch --filter=blob:none --no-tags --depth=1 \
-              origin "+${GITHUB_SHA}:refs/remotes/origin/__qwen_acceptance"; then
-              fetched=1
-              break
-            fi
-            sleep $((attempt * 3))
-          done
-          test "$fetched" -eq 1
-          git checkout --force --detach "$GITHUB_SHA"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          python3 -m py_compile scripts/ci/probe-llamapi-qwen-routing.py
+
+      - name: Download hosted-verified probe
+        uses: actions/download-artifact@v4
+        with:
+          name: qwen-routing-probe-bundle
+          path: ${{ runner.temp }}/qwen-probe-bundle
+
+      - name: Verify probe integrity and source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/qwen-probe-bundle"
+          test "$(cat source-sha.txt)" = "$GITHUB_SHA"
+          sha256sum -c probe-llamapi-qwen-routing.py.sha256
+          python3 -m py_compile probe-llamapi-qwen-routing.py
 
       - name: Verify LlamaPi preconditions without mutation
         shell: bash
@@ -126,7 +139,7 @@ jobs:
             wait "$MONITOR_PID" 2>/dev/null || true
           }
           trap cleanup_monitor EXIT
-          python3 scripts/ci/probe-llamapi-qwen-routing.py \
+          python3 "$RUNNER_TEMP/qwen-probe-bundle/probe-llamapi-qwen-routing.py" \
             --base-url "$LLAMAPI_BASE_URL" \
             --model-hint "$LLAMAPI_MODEL_HINT" \
             --repetitions 4 \
