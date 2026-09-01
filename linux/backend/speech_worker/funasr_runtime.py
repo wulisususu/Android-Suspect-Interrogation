@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from app.ai.errors import BackendUnavailableError, ModelNotInstalledError, WorkerCrashedError
 from app.ai.speech.fingerprint import fingerprint_model_directory
+from speech_worker.speaker.base import SpeakerBackendKey
 
 
 DEFAULT_MODEL_ROOT = Path("/opt/suspect-interrogation/models/funasr")
@@ -71,7 +72,8 @@ class FunASRSpeechRuntime:
         self.vad_model: Any | None = None
         self.speaker_model: Any | None = None
         self.speaker_backend: str | None = None
-        self.speaker_model_id = "xvector"
+        self.speaker_backend_key = SpeakerBackendKey.XVECTOR
+        self.speaker_model_id = self.speaker_backend_key.value
         self.speaker_model_version = os.environ.get("SUSPECT_XVECTOR_MODEL_VERSION", "local")
         self.speaker_model_fingerprint: str | None = None
         self.model_errors: dict[str, dict[str, str]] = {}
@@ -186,6 +188,7 @@ class FunASRSpeechRuntime:
                 "speaker": self.speaker_model is not None,
             },
             "speaker_backend": self.speaker_backend,
+            "speaker_backend_key": self.speaker_backend_key.value,
             "speaker_model_id": self.speaker_model_id,
             "speaker_model_version": self.speaker_model_version,
             "speaker_model_fingerprint": self.speaker_model_fingerprint,
@@ -261,6 +264,7 @@ class FunASRSpeechRuntime:
         normalized = [_float32(value / norm) for value in vector]
         return {
             "embedding": normalized,
+            "backend_key": self.speaker_backend_key.value,
             "model_id": self.speaker_model_id,
             "model_version": self.speaker_model_version,
             "model_fingerprint": self.speaker_model_fingerprint,
