@@ -67,6 +67,12 @@ class TemplateWorkspaceService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _assert_case_mutable(self, case_id: str):
+        case = case_repo.get(self.db, case_id)
+        if case.workflow_state in _IMMUTABLE_WORKFLOW_STATES:
+            raise DomainError("FORMAL_RECORD_FROZEN", "正式笔录冻结后不可修改", 409)
+        return case
+
     def workspace(self, case_id: str) -> dict:
         case_repo.get(self.db, case_id)
         rows = question_repo.list_case(self.db, case_id)
@@ -113,7 +119,7 @@ class TemplateWorkspaceService:
         self, case_id: str, *, text: str, source: str, standard_question_id: str | None = None,
         regex_patterns: list[str] | None = None, after_question_id: str | None = None,
     ) -> dict:
-        case_repo.get(self.db, case_id)
+        self._assert_case_mutable(case_id)
         normalized_source = str(source or "").strip().upper()
         if normalized_source not in _ALLOWED_SOURCES:
             raise DomainError("INVALID_QUESTION_SOURCE", "无效的问题来源", 400)
@@ -153,6 +159,7 @@ class TemplateWorkspaceService:
         return case_question_dict(row, rounds=[])
 
     def update_case_question(self, case_id: str, question_id: str, *, text: str | None = None, regex_patterns: list[str] | None = None) -> dict:
+        self._assert_case_mutable(case_id)
         row = question_repo.get_case(self.db, case_id, question_id)
         if row.locked and (text is not None or regex_patterns is not None):
             raise DomainError("FIXED_QUESTION_LOCKED", "固定笔录问题不可修改", 409)
@@ -170,6 +177,7 @@ class TemplateWorkspaceService:
         return case_question_dict(row, rounds=round_repo.list_for_question(self.db, case_id, row.id))
 
     def deactivate_case_question(self, case_id: str, question_id: str) -> dict:
+        self._assert_case_mutable(case_id)
         row = question_repo.get_case(self.db, case_id, question_id)
         if row.locked or row.section_type != "BODY":
             raise DomainError("FIXED_QUESTION_LOCKED", "固定笔录问题不可移除", 409)
@@ -183,7 +191,7 @@ class TemplateWorkspaceService:
         return result
 
     def reorder(self, case_id: str, ordered_ids: list[str]) -> list[dict]:
-        case_repo.get(self.db, case_id)
+        self._assert_case_mutable(case_id)
         rows = question_repo.list_case(self.db, case_id)
         template_key = next((row.template_key for row in rows if row.template_key), None)
         supplied = [str(value) for value in ordered_ids]
@@ -206,6 +214,7 @@ class TemplateWorkspaceService:
         return [case_question_dict(row, rounds=round_repo.list_for_question(self.db, case_id, row.id)) for row in question_repo.list_case(self.db, case_id)]
 
     def save_to_library(self, case_id: str, question_id: str, category: str) -> dict:
+        self._assert_case_mutable(case_id)
         row = question_repo.get_case(self.db, case_id, question_id)
         if row.locked:
             raise DomainError("FIXED_QUESTION_LOCKED", "固定模板问题无需保存到常用问题库", 409)
