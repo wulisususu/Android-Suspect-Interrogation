@@ -32,6 +32,8 @@ class SourceAwareAsrCaptureService:
         sample_rate: int = 16_000,
         read_timeout: float = 0.2,
         calibration_resolver_factory: CalibrationResolverFactory | None = None,
+        fragment_sink: Callable[[str, str], None] | None = None,
+        capture_finished_sink: Callable[[str, str], None] | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.device_manager = device_manager
@@ -40,6 +42,8 @@ class SourceAwareAsrCaptureService:
         self.publish_event = publish_event
         self.sample_rate = int(sample_rate)
         self.read_timeout = float(read_timeout)
+        self.fragment_sink = fragment_sink
+        self.capture_finished_sink = capture_finished_sink
         self._lock = threading.RLock()
         self._capture_sources: dict[str, str] = {}
         self._preparation_source: tuple[str, str] | None = None
@@ -61,6 +65,8 @@ class SourceAwareAsrCaptureService:
                 sample_rate=sample_rate,
                 read_timeout=read_timeout,
                 calibration_resolver=resolver,
+                fragment_sink=fragment_sink,
+                capture_finished_sink=capture_finished_sink,
             )
 
         if not self._services:

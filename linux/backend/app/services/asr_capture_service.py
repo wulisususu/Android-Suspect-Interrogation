@@ -32,6 +32,8 @@ from app.services.speaker_policy import SpeakerRole, decide_speaker
 
 logger = logging.getLogger(__name__)
 PublishEvent = Callable[[str, str, dict[str, Any]], None]
+FragmentSink = Callable[[str, str], None]
+CaptureFinishedSink = Callable[[str, str], None]
 CalibrationResolver = Callable[[Any], ResolvedSpeakerCalibration]
 _FLOAT32_BYTES = 4
 
@@ -86,6 +88,8 @@ class AsrCaptureService:
         sample_rate: int = 16_000,
         read_timeout: float = 0.2,
         calibration_resolver: CalibrationResolver | None = None,
+        fragment_sink: FragmentSink | None = None,
+        capture_finished_sink: CaptureFinishedSink | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.device_manager = device_manager
@@ -94,6 +98,8 @@ class AsrCaptureService:
         self.sample_rate = int(sample_rate)
         self.read_timeout = max(0.001, float(read_timeout))
         self.calibration_resolver = calibration_resolver
+        self.fragment_sink = fragment_sink
+        self.capture_finished_sink = capture_finished_sink
         if self.sample_rate <= 0:
             raise ValueError("sample_rate must be positive")
 
@@ -353,6 +359,11 @@ class AsrCaptureService:
             except Exception as exc:
                 if failure is None:
                     failure = exc
+            if self.capture_finished_sink is not None:
+                try:
+                    self.capture_finished_sink(runtime.case_id, runtime.interrogation_session_id)
+                except Exception:
+                    logger.exception("capture finished sink failed for case %s", runtime.case_id)
 
             with self._lock:
                 if self._active.get(runtime.case_id) is runtime:
@@ -519,6 +530,15 @@ class AsrCaptureService:
 
         runtime.ordinal += 1
         self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)
+        if self.fragment_sink is not None:
+            try:
+                self.fragment_sink(runtime.case_id, fragment_id)
+            except Exception:
+                # The ASR row is already committed. Qwen mode recovery scans
+                # persisted unassigned fragments, so never fall back to legacy
+                # projection or block the capture thread here.
+                logger.exception("qa fragment sink failed for fragment %s", fragment_id)
+            return
         try:
             with self.session_factory() as projection_db:
                 InterrogationProjectionService(projection_db).process_fragment(runtime.case_id, fragment_id)

@@ -39,6 +39,7 @@ from app.runtime_settings import RuntimeSettings
 from app.services.audio_capture_service import AudioCaptureService
 from app.services.browser_audio_input import BrowserAudioInput
 from app.services.source_aware_asr_capture_service import SourceAwareAsrCaptureService
+from app.services.qa_routing_coordinator import QARoutingCoordinator
 from app.services.speaker_calibration_runtime import resolve_speaker_calibration
 from app.services.speaker_calibration_service import (
     CurrentMicrophoneIdentity,
@@ -186,6 +187,16 @@ def create_app(
         event_loop["loop"] = asyncio.get_running_loop()
         supervisor = ai_supervisor or _build_supervisor()
         app.state.ai_supervisor = supervisor
+        routing_coordinator = None
+        if settings.formal_routing_mode == "qwen":
+            routing_coordinator = QARoutingCoordinator(
+                session_factory=app.state.session_factory,
+                ai_supervisor=supervisor,
+                publish_event=publish_asr_event,
+                idle_close_seconds=settings.qa_idle_close_seconds,
+            )
+            routing_coordinator.start()
+        app.state.qa_routing_coordinator = routing_coordinator
         capture_service = SourceAwareAsrCaptureService(
             session_factory=app.state.session_factory,
             device_manager=manager,
@@ -193,6 +204,8 @@ def create_app(
             ai_supervisor=supervisor,
             publish_event=publish_asr_event,
             calibration_resolver_factory=runtime_calibration_resolver_factory,
+            fragment_sink=None if routing_coordinator is None else routing_coordinator.enqueue_fragment,
+            capture_finished_sink=None if routing_coordinator is None else routing_coordinator.flush_capture,
         )
         app.state.asr_capture_service = capture_service
         try:
@@ -202,6 +215,8 @@ def create_app(
             yield
         finally:
             capture_service.shutdown()
+            if routing_coordinator is not None:
+                routing_coordinator.shutdown()
             if manager is not None:
                 try:
                     manager.stop_monitor()
@@ -222,6 +237,7 @@ def create_app(
     app.state.hardware_manager = manager
     app.state.hardware_gateway = hardware_gateway
     app.state.asr_capture_service = None
+    app.state.qa_routing_coordinator = None
     app.state.browser_audio_input = browser_audio_input
     app.state.speech_client = speech_client
     app.state.voiceprint_capture = (
