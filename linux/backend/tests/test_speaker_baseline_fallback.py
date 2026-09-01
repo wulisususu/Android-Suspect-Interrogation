@@ -6,15 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from app.ai.speech.calibration import SpeakerCalibration
+from app.ai.speech.calibration import MODEL_BASELINE_THRESHOLD, SpeakerCalibration
 from app.database.session import init_database, make_engine, make_session_factory
 from app.repositories import cases as case_repo
 from app.repositories import sessions as session_repo
 from app.repositories import voiceprints as voiceprint_repo
 from app.services.asr_capture_service import AsrCaptureService
-
-
-MODEL_BASELINE_THRESHOLD = 0.70
 
 
 class SilentDevice:
