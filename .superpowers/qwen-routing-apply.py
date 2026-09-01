@@ -1,4 +1,4 @@
-# commit: feat: add qa review drag and drop
+# commit: feat: connect qwen3 through llamapi
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,322 +12,391 @@ def replace_once(path: str, old: str, new: str) -> None:
     target.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
-def insert_before(path: str, marker: str, content: str) -> None:
+def write_new(path: str, content: str) -> None:
     target = Path(path)
-    text = target.read_text(encoding="utf-8")
-    if marker not in text:
-        raise SystemExit(f"marker missing in {path}: {marker[:120]!r}")
-    target.write_text(text.replace(marker, content + marker, 1), encoding="utf-8")
+    if target.exists():
+        raise SystemExit(f"refusing to overwrite existing file: {path}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
 
 
-# Keep the raw-fragment refresh as a compatibility fallback for the default
-# legacy projection mode. Qwen mode still gets an authoritative post-commit
-# revision refresh, so this fallback cannot be the correctness signal there.
-replace_once(
-    "webapp/src/stores/templateInterrogation.ts",
-    '''  function handleAsrFragment(fragment: TemporaryAsrFragment, scope = currentScope()) {
-    if (!isCurrentScope(scope) || fragment.caseId !== scope.caseId) return
-    upsertDialogue(fragment, scope)
-  }
-''',
-    '''  function handleAsrFragment(fragment: TemporaryAsrFragment, scope = currentScope()) {
-    if (!isCurrentScope(scope) || fragment.caseId !== scope.caseId) return
-    upsertDialogue(fragment, scope)
-    // Legacy projection mode has no committed QA routing revision event.
-    scheduleWorkspaceRefresh(scope)
-  }
-''',
-)
+write_new(
+    "linux/backend/app/ai/engines/llamapi.py",
+    '''from __future__ import annotations
 
-# Shared frontend resolution contract.
-types_path = "webapp/src/types/templateInterrogation.ts"
-replace_once(
-    types_path,
-    "  id: string; caseId: string; sessionId: string | null; status: 'OPEN' | 'CLOSED' | 'ROUTING' | 'ROUTED' | 'APPLIED' | 'NEEDS_REVIEW' | 'IGNORED'\n",
-    "  id: string; caseId: string; sessionId: string | null; status: 'OPEN' | 'CLOSED' | 'ROUTING' | 'APPLIED' | 'NEEDS_REVIEW' | 'IGNORED'\n",
-)
-replace_once(
-    types_path,
-    "export interface RoundReassociateInput { caseQuestionId?: string | null; newQuestionText?: string | null }\n",
-    "export interface RoundReassociateInput { caseQuestionId?: string | null; newQuestionText?: string | null }\nexport type QAUnitResolution =\n  | { action: 'CREATE_LIVE'; formalQuestion?: string | null; formalAnswer?: string | null }\n  | { action: 'LINK_QA'; caseQuestionId: string; formalAnswer?: string | null }\n  | { action: 'LINK_ANSWER'; caseQuestionId: string; formalAnswer?: string | null }\n  | { action: 'IGNORE' }\n",
-)
+import json
+import socket
+from collections.abc import Iterable
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
-# HTTP seam for Task 6's manual resolution endpoint.
-api_path = "webapp/src/api/templateInterrogation.ts"
-replace_once(
-    api_path,
-    "  PendingFormalQuestion,\n  RoundReassociateInput,\n",
-    "  PendingFormalQuestion,\n  QAUnitResolution,\n  RoundReassociateInput,\n",
-)
-insert_before(
-    api_path,
-    "\nexport async function ensureFormalRecord",
-    '''
-export async function resolveQaUnit(caseId: string, qaUnitId: string, resolution: QAUnitResolution): Promise<unknown> {
-  return unwrap(await http.post<BackendEnvelope<unknown>>(
-    `/api/v1/cases/${encodeURIComponent(caseId)}/qa-units/${encodeURIComponent(qaUnitId)}/resolve`,
-    resolution,
-  ))
+from ..errors import BackendUnavailableError
+from ..interfaces import LLMEngine
+from ..registry import ModelSpec
+from ..types import AIStreamChunk, AITextResult, EngineState
+
+
+_ALLOWED_GENERATION_OPTIONS = {
+    "temperature",
+    "top_p",
+    "top_k",
+    "repeat_penalty",
+    "frequency_penalty",
+    "presence_penalty",
+    "max_tokens",
+    "max_completion_tokens",
+    "stop",
+    "enable_thinking",
 }
 
-''',
-)
 
-# Pinia mutation: reload workspace after any manual resolution so drag/drop is
-# immediately reflected even though the manual endpoint itself does not need a WS push.
-store_path = "webapp/src/stores/templateInterrogation.ts"
-replace_once(
-    store_path,
-    "  reorderCaseQuestions as reorderCaseQuestionsApi,\n  saveQuestionToLibrary as saveQuestionToLibraryApi,\n",
-    "  reorderCaseQuestions as reorderCaseQuestionsApi,\n  resolveQaUnit as resolveQaUnitApi,\n  saveQuestionToLibrary as saveQuestionToLibraryApi,\n",
-)
-replace_once(
-    store_path,
-    "  PendingResolution,\n  RoundReassociateInput,\n",
-    "  PendingResolution,\n  QAUnitResolution,\n  RoundReassociateInput,\n",
-)
-replace_once(
-    store_path,
-    "  async function reassociateRound(roundId: string, input: RoundReassociateInput) {\n",
-    "  async function resolveQaUnit(qaUnitId: string, resolution: QAUnitResolution) {\n    await runMutation((scope) => resolveQaUnitApi(scope.caseId, qaUnitId, resolution))\n  }\n\n  async function reassociateRound(roundId: string, input: RoundReassociateInput) {\n",
-)
-replace_once(
-    store_path,
-    "    resolvePendingQuestion,\n    reassociateRound,\n",
-    "    resolvePendingQuestion,\n    resolveQaUnit,\n    reassociateRound,\n",
-)
+class LlamaPiLLMEngine(LLMEngine):
+    """OpenAI-compatible LlamaPi adapter for the local RK3588 Qwen runtime."""
 
-# Workspace -> page event bridge.
-workspace_path = "webapp/src/views/InterrogationWorkspace.vue"
-replace_once(
-    workspace_path,
-    "  PendingResolution,\n  RoundReassociateInput,\n",
-    "  PendingResolution,\n  QAUnitResolution,\n  RoundReassociateInput,\n",
-)
-replace_once(
-    workspace_path,
-    "function resolvePendingQuestion(pendingId: string, resolution: PendingResolution) { return runTemplateAction(() => templateStore.resolvePendingQuestion(pendingId, resolution)) }\n",
-    "function resolvePendingQuestion(pendingId: string, resolution: PendingResolution) { return runTemplateAction(() => templateStore.resolvePendingQuestion(pendingId, resolution)) }\nfunction resolveQaUnit(qaUnitId: string, resolution: QAUnitResolution) { return runTemplateAction(() => templateStore.resolveQaUnit(qaUnitId, resolution)) }\n",
-)
-replace_once(
-    workspace_path,
-    "            @resolve-pending=\"resolvePendingQuestion\"\n            @reassociate-round=\"reassociateFormalRound\"\n",
-    "            @resolve-pending=\"resolvePendingQuestion\"\n            @resolve-qa-unit=\"resolveQaUnit\"\n            @reassociate-round=\"reassociateFormalRound\"\n",
-)
+    def __init__(
+        self,
+        spec: ModelSpec,
+        *,
+        base_url: str = "http://127.0.0.1:9265/v1",
+        model_hint: str = "qwen3:4b",
+        timeout: float = 30.0,
+    ) -> None:
+        self.spec = spec
+        self.model_id = spec.model_id
+        self.base_url = str(base_url or "").strip().rstrip("/")
+        self.model_hint = str(model_hint or "").strip()
+        self.timeout = max(0.05, float(timeout))
+        self.resolved_model_id: str | None = None
+        self._state = EngineState.STOPPED
+        if not self.base_url:
+            raise ValueError("LlamaPi base_url is required")
+        if not self.model_hint:
+            raise ValueError("LlamaPi model_hint is required")
 
-# Page passes persisted QA units to the raw-dialogue review rail and routes both
-# panels' resolution events to the workspace store.
-page_path = "webapp/src/components/TemplateDrivenInterrogationPage.vue"
-replace_once(
-    page_path,
-    "  PendingResolution,\n  RoundReassociateInput,\n",
-    "  PendingResolution,\n  QAUnitResolution,\n  RoundReassociateInput,\n",
-)
-replace_once(
-    page_path,
-    "  resolvePending: [pendingId: string, resolution: PendingResolution]\n  reassociateRound: [roundId: string, input: RoundReassociateInput]\n",
-    "  resolvePending: [pendingId: string, resolution: PendingResolution]\n  resolveQaUnit: [qaUnitId: string, resolution: QAUnitResolution]\n  reassociateRound: [roundId: string, input: RoundReassociateInput]\n",
-)
-replace_once(
-    page_path,
-    "          @insert-pending=\"(pendingId, afterQuestionId) => emit('resolvePending', pendingId, { action: 'ADD', afterQuestionId })\"\n          @update-answer=\"(id, text) => emit('updateAnswer', id, text)\"\n",
-    "          @insert-pending=\"(pendingId, afterQuestionId) => emit('resolvePending', pendingId, { action: 'ADD', afterQuestionId })\"\n          @resolve-qa-unit=\"(qaUnitId, resolution) => emit('resolveQaUnit', qaUnitId, resolution)\"\n          @update-answer=\"(id, text) => emit('updateAnswer', id, text)\"\n",
-)
-replace_once(
-    page_path,
-    "        :pending-questions=\"workspace.pendingQuestions\"\n        :questions=\"workspace.questions\"\n",
-    "        :pending-questions=\"workspace.pendingQuestions\"\n        :qa-units=\"workspace.qaUnits\"\n        :questions=\"workspace.questions\"\n",
-)
-replace_once(
-    page_path,
-    "        @resolve-pending=\"(id, resolution) => emit('resolvePending', id, resolution)\"\n        @correct-fragment=\"(id, speaker, reason) => emit('correctFragment', id, speaker, reason)\"\n",
-    "        @resolve-pending=\"(id, resolution) => emit('resolvePending', id, resolution)\"\n        @resolve-qa-unit=\"(id, resolution) => emit('resolveQaUnit', id, resolution)\"\n        @correct-fragment=\"(id, speaker, reason) => emit('correctFragment', id, speaker, reason)\"\n",
-)
+    def load(self) -> None:
+        self._state = EngineState.LOADING
+        try:
+            payload = self._request_json("GET", "/models")
+            raw_models = payload.get("data")
+            if not isinstance(raw_models, list):
+                raise BackendUnavailableError("LlamaPi /models response is malformed")
 
-# Right-side review rail. It is deliberately separate from dialogue turns so
-# raw ASR text/order remain immutable evidence while review state can change.
-live_path = "webapp/src/components/LiveDialoguePanel.vue"
-replace_once(
-    live_path,
-    "  FormalQuestion,\n  PendingFormalQuestion,\n  PendingResolution,\n",
-    "  FormalQAUnit,\n  FormalQuestion,\n  PendingFormalQuestion,\n  PendingResolution,\n  QAUnitResolution,\n",
-)
-replace_once(
-    live_path,
-    "  pendingQuestions: PendingFormalQuestion[]\n  questions: FormalQuestion[]\n",
-    "  pendingQuestions: PendingFormalQuestion[]\n  qaUnits: FormalQAUnit[]\n  questions: FormalQuestion[]\n",
-)
-replace_once(
-    live_path,
-    "  resolvePending: [pendingId: string, resolution: PendingResolution]\n  correctFragment: [fragmentId: string, speaker: TemporaryAsrSpeaker, reason: string]\n",
-    "  resolvePending: [pendingId: string, resolution: PendingResolution]\n  resolveQaUnit: [qaUnitId: string, resolution: QAUnitResolution]\n  correctFragment: [fragmentId: string, speaker: TemporaryAsrSpeaker, reason: string]\n",
-)
-replace_once(
-    live_path,
-    "const correctionReason = ref<Record<string, string>>({})\n\nconst elapsed = computed(() => {\n",
-    "const correctionReason = ref<Record<string, string>>({})\nconst qaReviewUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'NEEDS_REVIEW'))\nconst qaResolvedUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'APPLIED' || unit.status === 'IGNORED'))\n\nconst elapsed = computed(() => {\n",
-)
-replace_once(
-    live_path,
-    "function correctionRole(item: TemporaryAsrFragment): TemporaryAsrSpeaker {\n",
-    '''function startQaDrag(event: DragEvent, payload: { qaUnitId: string; mode: 'QA' | 'ANSWER' }) {
-  if (!event.dataTransfer) return
-  event.dataTransfer.effectAllowed = 'copy'
-  event.dataTransfer.setData('application/x-formal-qa-unit', JSON.stringify(payload))
-}
+            chat_ids: list[str] = []
+            for item in raw_models:
+                if not isinstance(item, dict):
+                    continue
+                model_id = item.get("id")
+                model_kind = str(item.get("model_kind") or "chat").strip().lower()
+                if isinstance(model_id, str) and model_id.strip() and model_kind == "chat":
+                    chat_ids.append(model_id.strip())
 
-function startWholeQaDrag(event: DragEvent, unit: FormalQAUnit) {
-  startQaDrag(event, { qaUnitId: unit.id, mode: 'QA' })
-}
+            hint = self.model_hint.casefold()
+            exact = [item for item in chat_ids if item.casefold() == hint]
+            if len(exact) == 1:
+                resolved = exact[0]
+            elif len(exact) > 1:
+                raise BackendUnavailableError(
+                    f"LlamaPi model hint {self.model_hint!r} is ambiguous",
+                    details={"matches": exact},
+                )
+            else:
+                variants = [item for item in chat_ids if item.split("@", 1)[0].casefold() == hint]
+                if not variants:
+                    raise BackendUnavailableError(
+                        f"LlamaPi chat model matching {self.model_hint!r} is unavailable",
+                        details={"available_chat_models": chat_ids},
+                    )
+                if len(variants) != 1:
+                    raise BackendUnavailableError(
+                        f"LlamaPi model hint {self.model_hint!r} is ambiguous",
+                        details={"matches": variants},
+                    )
+                resolved = variants[0]
 
-function startAnswerDrag(event: DragEvent, unit: FormalQAUnit) {
-  startQaDrag(event, { qaUnitId: unit.id, mode: 'ANSWER' })
-}
+            self.resolved_model_id = resolved
+            self._state = EngineState.READY
+        except Exception:
+            self.resolved_model_id = None
+            self._state = EngineState.ERROR
+            raise
 
-function resolveQa(unit: FormalQAUnit, resolution: QAUnitResolution) {
-  emit('resolveQaUnit', unit.id, resolution)
-}
+    def health(self) -> EngineState:
+        return self._state
 
-function qaStatusLabel(unit: FormalQAUnit) {
-  if (unit.status === 'IGNORED' || unit.classification === 'IGNORE') return '已忽略·仅原始对话'
-  if (unit.status === 'NEEDS_REVIEW') return '待处理'
-  if (unit.classification === 'MATCH_FIXED') return '已归档·固定模板'
-  if (unit.classification === 'MATCH_EXISTING') return '已归档·已有问题'
-  if (unit.classification === 'CREATE_LIVE_FROM_SPEECH') return '已新增·现场问题'
-  return unit.status
-}
+    def cancel(self) -> None:
+        # LlamaPi's OpenAI-compatible endpoint has no per-request cancellation
+        # handle for this synchronous urllib client. Supervisor cancellation
+        # terminates the worker process, which closes any in-flight socket.
+        return None
 
-function correctionRole(item: TemporaryAsrFragment): TemporaryAsrSpeaker {
-''',
-)
-replace_once(
-    live_path,
-    "    <div ref=\"feed\" class=\"dialogue-feed\" @scroll=\"onFeedScroll\">\n",
-    '''    <div ref="feed" class="dialogue-feed" @scroll="onFeedScroll">
-      <section v-if="qaReviewUnits.length || qaResolvedUnits.length" class="qa-review-rail" aria-label="Qwen 正式笔录路由状态">
-        <article v-for="unit in qaReviewUnits" :key="unit.id" class="qa-review-card">
-          <header><span class="qa-status-chip">待处理</span><small>{{ unit.reasonCode || 'NEEDS_REVIEW' }}</small></header>
-          <p v-if="unit.rawQuestionText"><b>原始问：</b>{{ unit.rawQuestionText }}</p>
-          <p v-if="unit.rawAnswerText"><b>原始答：</b>{{ unit.rawAnswerText }}</p>
-          <p v-if="unit.formalQuestionText" class="qa-suggestion"><b>建议问：</b>{{ unit.formalQuestionText }}</p>
-          <p v-if="unit.formalAnswerText" class="qa-suggestion"><b>建议答：</b>{{ unit.formalAnswerText }}</p>
-          <div class="qa-review-actions">
-            <button draggable="true" @dragstart="startWholeQaDrag($event, unit)">拖动整组问答</button>
-            <button v-if="unit.answerFragmentIds.length" draggable="true" @dragstart="startAnswerDrag($event, unit)">仅拖动答案</button>
-            <button class="qa-ignore" @click="resolveQa(unit, { action: 'IGNORE' })">忽略</button>
-          </div>
-        </article>
-        <div v-for="unit in qaResolvedUnits" :key="`status-${unit.id}`" class="qa-routing-status" :class="{ 'qa-status-muted': unit.status === 'IGNORED' || unit.classification === 'IGNORE' }">
-          <span>{{ qaStatusLabel(unit) }}</span>
-          <small v-if="unit.rawQuestionText">{{ unit.rawQuestionText }}</small>
-        </div>
-      </section>
-''',
-)
-insert_before(
-    live_path,
-    "</style>",
-    '''.qa-review-rail { display: grid; gap: 8px; margin-bottom: 10px; }
-.qa-review-card { border: 1px solid #d5a73f; background: #fff9e8; border-radius: 10px; padding: 10px; }
-.qa-review-card header { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
-.qa-review-card p { margin: 6px 0; line-height: 1.45; }
-.qa-status-chip { display: inline-flex; padding: 2px 8px; border-radius: 999px; background: #f3c760; color: #5b4308; font-weight: 800; }
-.qa-suggestion { color: #536274; }
-.qa-review-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-.qa-review-actions button { cursor: grab; }
-.qa-review-actions .qa-ignore { cursor: pointer; }
-.qa-routing-status { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 8px; background: #edf6ef; color: #2d6040; font-size: 12px; }
-.qa-routing-status small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.qa-status-muted { background: #f2f3f5; color: #7a8088; opacity: .78; }
+    def unload(self) -> None:
+        self.resolved_model_id = None
+        self._state = EngineState.STOPPED
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        session_id: str,
+        options: dict[str, Any] | None = None,
+    ) -> AITextResult:
+        resolved = self._require_ready_model()
+        request_options = dict(options or {})
+        payload: dict[str, Any] = {
+            "model": resolved,
+            "messages": [{"role": "user", "content": str(prompt)}],
+            "stream": False,
+        }
+        for key in _ALLOWED_GENERATION_OPTIONS:
+            if key in request_options:
+                payload[key] = request_options[key]
+        # Formal-record routing must never expose Qwen thinking text. Callers
+        # may explicitly pass false; defaulting false keeps other structured
+        # appliance calls deterministic as well.
+        payload.setdefault("enable_thinking", False)
+
+        response = self._request_json("POST", "/chat/completions", payload)
+        try:
+            choices = response["choices"]
+            message = choices[0]["message"]
+            content = message["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise BackendUnavailableError("LlamaPi chat completion response is malformed") from exc
+        if not isinstance(content, str):
+            raise BackendUnavailableError("LlamaPi chat completion response is malformed")
+
+        returned_model = response.get("model")
+        if isinstance(returned_model, str) and returned_model.strip() and returned_model.strip() != resolved:
+            raise BackendUnavailableError(
+                "LlamaPi returned a different model than requested",
+                details={"requested_model": resolved, "returned_model": returned_model.strip()},
+            )
+        return AITextResult(text=content, model_id=resolved, session_id=session_id, source="llamapi")
+
+    def stream(
+        self,
+        prompt: str,
+        *,
+        session_id: str,
+        options: dict[str, Any] | None = None,
+    ) -> Iterable[AIStreamChunk]:
+        # Formal routing uses generate(). Preserve the LLMEngine streaming
+        # contract without introducing a second SSE parser in v1.
+        result = self.generate(prompt, session_id=session_id, options=options)
+        yield AIStreamChunk(
+            text=result.text,
+            model_id=result.model_id,
+            session_id=result.session_id,
+            final=True,
+            source=result.source,
+        )
+
+    def _require_ready_model(self) -> str:
+        if self._state is not EngineState.READY or not self.resolved_model_id:
+            raise BackendUnavailableError("LlamaPi LLM engine is not loaded")
+        return self.resolved_model_id
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = Request(
+            url,
+            data=body,
+            method=method,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+        )
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                raw = response.read()
+        except HTTPError as exc:
+            raise BackendUnavailableError(
+                f"LlamaPi HTTP {exc.code} for {path}",
+                details={"status": int(exc.code), "path": path},
+            ) from exc
+        except (URLError, socket.timeout, TimeoutError, OSError) as exc:
+            raise BackendUnavailableError(
+                f"LlamaPi request failed for {path}: {exc}",
+                details={"path": path},
+            ) from exc
+        try:
+            decoded = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise BackendUnavailableError(f"LlamaPi returned malformed JSON for {path}") from exc
+        if not isinstance(decoded, dict):
+            raise BackendUnavailableError(f"LlamaPi returned malformed JSON for {path}")
+        return decoded
 ''',
 )
 
-# Left-side drop semantics. Existing pending-question MIME remains fully supported.
-formal_path = "webapp/src/components/FormalTemplatePanel.vue"
+# Runtime settings are resolved in the API process and explicitly forwarded to
+# spawned workers. Child processes do not secretly re-read these values.
+settings_path = "linux/backend/app/ai/settings.py"
 replace_once(
-    formal_path,
-    "import type { CaseQuestionUpdateInput, FormalQuestion, FormalQuestionRound } from '../types/templateInterrogation'\n",
-    "import type { CaseQuestionUpdateInput, FormalQuestion, FormalQuestionRound, QAUnitResolution } from '../types/templateInterrogation'\n",
+    settings_path,
+    "    llm_backend: str | None\n",
+    "    llm_backend: str | None\n    llamapi_base_url: str\n    llamapi_model_hint: str\n",
 )
 replace_once(
-    formal_path,
-    "  insertPending: [pendingId: string, afterQuestionId: string | null]\n  generateAi: []\n",
-    "  insertPending: [pendingId: string, afterQuestionId: string | null]\n  resolveQaUnit: [qaUnitId: string, resolution: QAUnitResolution]\n  generateAi: []\n",
+    settings_path,
+    "            llm_backend=os.getenv(\"LLM_BACKEND\"),\n",
+    "            llm_backend=os.getenv(\"LLM_BACKEND\"),\n            llamapi_base_url=os.getenv(\"LLAMAPI_BASE_URL\", \"http://127.0.0.1:9265/v1\").strip().rstrip(\"/\"),\n            llamapi_model_hint=os.getenv(\"LLAMAPI_MODEL_HINT\", \"qwen3:4b\").strip(),\n",
+)
+
+worker_path = "linux/backend/app/ai/worker.py"
+replace_once(
+    worker_path,
+    "from .engines.mock import MockASR, MockLLM, MockOCR\nfrom .engines.real import RealASREngine, RealLLMEngine, RealOCREngine\n",
+    "from .engines.llamapi import LlamaPiLLMEngine\nfrom .engines.mock import MockASR, MockLLM, MockOCR\nfrom .engines.real import RealASREngine, RealLLMEngine, RealOCREngine\n",
 )
 replace_once(
-    formal_path,
-    "function allowPendingDrop(event: DragEvent, key: string) {\n  if (!props.documentFrozen && event.dataTransfer?.types.includes('application/x-formal-pending-question')) {\n    event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; dragOverKey.value = key\n  }\n}\n",
-    '''const QA_MIME = 'application/x-formal-qa-unit'
-type QaDragPayload = { qaUnitId: string; mode: 'QA' | 'ANSWER' }
+    worker_path,
+    '''def _make_engine(kind: str, mode: str, spec: ModelSpec, model_root: str):
+    if mode == "mock":
+        return {"llm": MockLLM, "asr": MockASR, "ocr": MockOCR}[kind](model_id=spec.model_id)
+    model_dir = str((Path(model_root) / spec.path).resolve())
+    return {"llm": RealLLMEngine, "asr": RealASREngine, "ocr": RealOCREngine}[kind](spec, model_dir)
 
-function qaDragPayload(event: DragEvent): QaDragPayload | null {
-  const raw = event.dataTransfer?.getData(QA_MIME)
-  if (!raw) return null
-  try {
-    const payload = JSON.parse(raw) as Partial<QaDragPayload>
-    if (!payload.qaUnitId || (payload.mode !== 'QA' && payload.mode !== 'ANSWER')) return null
-    return payload as QaDragPayload
-  } catch { return null }
-}
 
-function allowPendingDrop(event: DragEvent, key: string) {
-  const types = event.dataTransfer?.types ?? []
-  if (!props.documentFrozen && (types.includes('application/x-formal-pending-question') || types.includes(QA_MIME))) {
-    event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; dragOverKey.value = key
-  }
-}
+def worker_main(conn: Connection, *, kind: str, mode: str, spec: ModelSpec, model_root: str) -> None:
+''',
+    '''def _make_engine(
+    kind: str,
+    mode: str,
+    spec: ModelSpec,
+    model_root: str,
+    *,
+    llamapi_base_url: str = "http://127.0.0.1:9265/v1",
+    llamapi_model_hint: str = "qwen3:4b",
+    request_timeout: float = 30.0,
+):
+    if mode == "mock":
+        return {"llm": MockLLM, "asr": MockASR, "ocr": MockOCR}[kind](model_id=spec.model_id)
+    if kind == "llm" and spec.backend.strip().lower() == "llamapi":
+        return LlamaPiLLMEngine(
+            spec,
+            base_url=llamapi_base_url,
+            model_hint=llamapi_model_hint,
+            timeout=request_timeout,
+        )
+    model_dir = str((Path(model_root) / spec.path).resolve())
+    return {"llm": RealLLMEngine, "asr": RealASREngine, "ocr": RealOCREngine}[kind](spec, model_dir)
 
-function dropQaCreateLive(event: DragEvent) {
-  event.preventDefault(); dragOverKey.value = ''
-  if (props.documentFrozen) return
-  const payload = qaDragPayload(event)
-  if (payload?.mode === 'QA') emit('resolveQaUnit', payload.qaUnitId, { action: 'CREATE_LIVE' })
-}
 
-function dropQaOnQuestion(event: DragEvent, questionId: string) {
-  event.preventDefault(); dragOverKey.value = ''
-  if (props.documentFrozen) return
-  const payload = qaDragPayload(event)
-  if (payload?.mode === 'QA') emit('resolveQaUnit', payload.qaUnitId, { action: 'LINK_QA', caseQuestionId: questionId })
-}
-
-function dropAnswerOnQuestion(event: DragEvent, questionId: string) {
-  event.preventDefault(); dragOverKey.value = ''
-  if (props.documentFrozen) return
-  const payload = qaDragPayload(event)
-  if (payload?.mode === 'ANSWER') emit('resolveQaUnit', payload.qaUnitId, { action: 'LINK_ANSWER', caseQuestionId: questionId })
-}
-
-function dropGap(event: DragEvent, afterQuestionId: string | null) {
-  if (event.dataTransfer?.types.includes(QA_MIME)) { dropQaCreateLive(event); return }
-  dropPending(event, afterQuestionId)
-}
+def worker_main(
+    conn: Connection,
+    *,
+    kind: str,
+    mode: str,
+    spec: ModelSpec,
+    model_root: str,
+    llamapi_base_url: str = "http://127.0.0.1:9265/v1",
+    llamapi_model_hint: str = "qwen3:4b",
+    request_timeout: float = 30.0,
+) -> None:
 ''',
 )
 replace_once(
-    formal_path,
-    "@dragleave=\"dragOverKey = ''\" @drop=\"dropPending($event, lastOpeningId)\">拖到这里插入为第一条案件问题</div>\n",
-    "@dragleave=\"dragOverKey = ''\" @drop=\"dropGap($event, lastOpeningId)\">拖到这里插入为第一条案件问题 / 整组问答</div>\n",
+    worker_path,
+    "        engine = _make_engine(kind, mode, spec, model_root)\n",
+    "        engine = _make_engine(\n            kind,\n            mode,\n            spec,\n            model_root,\n            llamapi_base_url=llamapi_base_url,\n            llamapi_model_hint=llamapi_model_hint,\n            request_timeout=request_timeout,\n        )\n",
+)
+
+supervisor_path = "linux/backend/app/ai/supervisor.py"
+replace_once(
+    supervisor_path,
+    "    def __init__(self, *, kind: str, spec: ModelSpec, registry: ModelRegistry, mode: str, timeout: float):\n",
+    "    def __init__(self, *, kind: str, spec: ModelSpec, registry: ModelRegistry, mode: str, timeout: float, llamapi_base_url: str = \"http://127.0.0.1:9265/v1\", llamapi_model_hint: str = \"qwen3:4b\"):\n",
 )
 replace_once(
-    formal_path,
-    "          <label class=\"record-question editable-question\"><b>问：</b><textarea v-model=\"questionDrafts[q.id]\" :disabled=\"busy || documentFrozen\" rows=\"1\" @blur=\"saveQuestion(q)\"></textarea></label>\n          <label class=\"record-answer\"><b>答：</b><textarea v-model=\"canonicalAnswerDrafts[q.id]\" :disabled=\"busy || documentFrozen\" rows=\"2\" placeholder=\"等待现场回答\" @blur=\"saveCanonicalAnswer(q)\"></textarea></label>\n",
-    '''          <label class="record-question editable-question qa-question-drop" @dragover="allowPendingDrop($event, `qa-${q.id}`)" @drop.stop="dropQaOnQuestion($event, q.id)"><b>问：</b><textarea v-model="questionDrafts[q.id]" :disabled="busy || documentFrozen" rows="1" @blur="saveQuestion(q)"></textarea><small class="record-no-print">整组 QA 可拖到本题</small></label>
-          <label class="record-answer qa-answer-drop" @dragover="allowPendingDrop($event, `answer-${q.id}`)" @drop.stop="dropAnswerOnQuestion($event, q.id)"><b>答：</b><textarea v-model="canonicalAnswerDrafts[q.id]" :disabled="busy || documentFrozen" rows="2" placeholder="等待现场回答" @blur="saveCanonicalAnswer(q)"></textarea><small class="record-no-print">仅答案可拖到这里</small></label>
+    supervisor_path,
+    "        self.timeout = timeout\n        self.state = EngineState.STOPPED\n",
+    "        self.timeout = timeout\n        self.llamapi_base_url = llamapi_base_url\n        self.llamapi_model_hint = llamapi_model_hint\n        self.state = EngineState.STOPPED\n",
+)
+replace_once(
+    supervisor_path,
+    "            process = ctx.Process(target=worker_main, kwargs={\"conn\": child_conn, \"kind\": self.kind, \"mode\": self.mode, \"spec\": self.spec, \"model_root\": str(self.registry.model_root)}, daemon=True, name=f\"ai-{self.kind}-worker\")\n",
+    "            process = ctx.Process(target=worker_main, kwargs={\"conn\": child_conn, \"kind\": self.kind, \"mode\": self.mode, \"spec\": self.spec, \"model_root\": str(self.registry.model_root), \"llamapi_base_url\": self.llamapi_base_url, \"llamapi_model_hint\": self.llamapi_model_hint, \"request_timeout\": self.timeout}, daemon=True, name=f\"ai-{self.kind}-worker\")\n",
+)
+replace_once(
+    supervisor_path,
+    "    def __init__(self, registry: ModelRegistry, *, mode: str = \"mock\", request_timeout: float = 30.0, idle_unload_seconds: float = 300.0, memory_budget_mb: int = 6144, speech_socket: str | Path = \"/run/suspect-interrogation/speech.sock\", speaker_accept_threshold: float | None = None, speaker_margin: float | None = None, speech_client: Any | None = None):\n",
+    "    def __init__(self, registry: ModelRegistry, *, mode: str = \"mock\", request_timeout: float = 30.0, idle_unload_seconds: float = 300.0, memory_budget_mb: int = 6144, speech_socket: str | Path = \"/run/suspect-interrogation/speech.sock\", speaker_accept_threshold: float | None = None, speaker_margin: float | None = None, speech_client: Any | None = None, llamapi_base_url: str = \"http://127.0.0.1:9265/v1\", llamapi_model_hint: str = \"qwen3:4b\"):\n",
+)
+replace_once(
+    supervisor_path,
+    "        self._workers = {kind: _Worker(kind=kind, spec=registry.default_for(kind), registry=registry, mode=mode, timeout=request_timeout) for kind in (\"asr\", \"ocr\", \"llm\") if self._has_kind(kind)}\n",
+    "        self._workers = {kind: _Worker(kind=kind, spec=registry.default_for(kind), registry=registry, mode=mode, timeout=request_timeout, llamapi_base_url=llamapi_base_url, llamapi_model_hint=llamapi_model_hint) for kind in (\"asr\", \"ocr\", \"llm\") if self._has_kind(kind)}\n",
+)
+
+main_path = "linux/backend/app/main.py"
+replace_once(
+    main_path,
+    "        speaker_accept_threshold=settings.speaker_effective_threshold,\n        speaker_margin=settings.speaker_margin,\n",
+    "        speaker_accept_threshold=settings.speaker_effective_threshold,\n        speaker_margin=settings.speaker_margin,\n        llamapi_base_url=settings.llamapi_base_url,\n        llamapi_model_hint=settings.llamapi_model_hint,\n",
+)
+
+registry_path = "linux/backend/config/model-registry.yaml"
+replace_once(
+    registry_path,
+    '''    "llm.default": {
+      "kind": "llm",
+      "backend": "rkllm",
+      "path": "llm/default",
+      "architecture": "qwen",
+      "required_files": ["model.rkllm"],
+      "device": "npu",
+      "context": 4096,
+      "memory_mb": 4096,
+      "capabilities": ["generate", "stream", "cancel"]
+    },
+''',
+    '''    "llm.default": {
+      "kind": "llm",
+      "backend": "llamapi",
+      "path": "external/llamapi",
+      "architecture": "qwen3",
+      "required_files": [],
+      "device": "npu",
+      "context": 4096,
+      "memory_mb": 4096,
+      "capabilities": ["generate", "stream", "cancel"]
+    },
 ''',
 )
+
+# Add an integration seam assertion to the RED adapter tests: selection must use
+# explicit process parameters rather than environment lookups in the adapter.
+test_path = "linux/backend/tests/test_llamapi_llm_engine.py"
 replace_once(
-    formal_path,
-    "@dragleave=\"dragOverKey = ''\" @drop=\"dropPending($event, q.id)\">拖到这里，插入在本题之后</div>\n",
-    "@dragleave=\"dragOverKey = ''\" @drop=\"dropGap($event, q.id)\">拖到这里，插入在本题之后 / 新建现场问题</div>\n",
+    test_path,
+    "from app.ai.types import EngineState\n",
+    "from app.ai.types import EngineState\nfrom app.ai.worker import _make_engine\n",
 )
-insert_before(
-    formal_path,
-    "</template>\n",
-    '''<style scoped>
-.qa-question-drop, .qa-answer-drop { position: relative; border-radius: 6px; }
-.qa-question-drop:has(textarea:focus), .qa-answer-drop:has(textarea:focus) { outline: none; }
-.qa-question-drop > small, .qa-answer-drop > small { margin-left: 8px; color: #84909d; font-size: 10px; }
-</style>
+replace_once(
+    test_path,
+    "def test_default_runtime_settings_keep_llamapi_on_loopback(monkeypatch):\n",
+    '''def test_worker_factory_selects_llamapi_adapter_with_explicit_settings():
+    engine = _make_engine(
+        "llm",
+        "real",
+        llm_spec(),
+        "/tmp/unused-model-root",
+        llamapi_base_url="http://127.0.0.1:9999/v1",
+        llamapi_model_hint="qwen3:4b",
+        request_timeout=2.5,
+    )
+    assert isinstance(engine, LlamaPiLLMEngine)
+    assert engine.base_url == "http://127.0.0.1:9999/v1"
+    assert engine.model_hint == "qwen3:4b"
+    assert engine.timeout == 2.5
+
+
+def test_default_runtime_settings_keep_llamapi_on_loopback(monkeypatch):
 ''',
 )
