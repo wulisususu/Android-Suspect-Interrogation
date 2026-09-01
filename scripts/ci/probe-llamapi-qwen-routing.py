@@ -256,8 +256,8 @@ def _cases() -> list[dict[str, Any]]:
             "expected_target": None,
             "question": "你离开以后有没有又回来？",
             "answer": "回来过一次，手机落里面了。",
-            "question_fact_groups": (("离开",), ("回来",)),
-            "answer_fact_groups": (("回来",), ("一次", "1次"), ("手机",)),
+            "question_fact_groups": (("离开",), ("回来", "返回")),
+            "answer_fact_groups": (("回来", "返回"), ("一次", "1次"), ("手机",)),
             "previous": [],
         },
         {
