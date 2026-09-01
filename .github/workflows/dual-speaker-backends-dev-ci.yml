@@ -47,4 +47,5 @@ jobs:
             linux/backend/tests/test_xvector_backend.py \
             linux/backend/tests/test_eres2net_large_backend.py \
             linux/backend/tests/test_speech_session.py \
+            tests/release/test_funasr_probe_script.py \
             -q
