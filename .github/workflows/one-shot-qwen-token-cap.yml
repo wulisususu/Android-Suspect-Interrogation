@@ -1,0 +1,46 @@
+name: One-shot Qwen token cap edit
+
+on:
+  push:
+    branches:
+      - feat/qwen-formal-record-routing
+    paths:
+      - .github/workflows/one-shot-qwen-token-cap.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/qwen-formal-record-routing
+          fetch-depth: 0
+      - name: Apply exact token-cap replacements
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          paths = [
+              Path('linux/backend/app/services/formal_record_router.py'),
+              Path('scripts/ci/probe-llamapi-qwen-routing.py'),
+          ]
+          old = '"max_tokens": 512'
+          new = '"max_tokens": 192'
+          for path in paths:
+              text = path.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one old token budget, found {count}')
+              path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add linux/backend/app/services/formal_record_router.py scripts/ci/probe-llamapi-qwen-routing.py
+          git rm .github/workflows/one-shot-qwen-token-cap.yml
+          git commit -m 'perf: cap qwen routing output budget'
+          git push origin HEAD:feat/qwen-formal-record-routing
