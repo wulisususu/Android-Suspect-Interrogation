@@ -15,6 +15,7 @@ on:
       - 'linux/backend/tests/**'
       - 'linux/docs/AI_RUNTIME.md'
       - 'scripts/ci/probe-funasr-runtime.py'
+      - 'scripts/ci/probe-eres2net-large.py'
       - 'scripts/ci/rk3588-speech-calibrate.py'
       - 'scripts/ci/rk3588-speech-smoke.py'
       - 'scripts/ai-worker-start.sh'
@@ -33,6 +34,7 @@ on:
       - 'linux/backend/tests/**'
       - 'linux/docs/AI_RUNTIME.md'
       - 'scripts/ci/probe-funasr-runtime.py'
+      - 'scripts/ci/probe-eres2net-large.py'
       - 'scripts/ci/rk3588-speech-calibrate.py'
       - 'scripts/ci/rk3588-speech-smoke.py'
       - 'scripts/ai-worker-start.sh'
@@ -140,6 +142,7 @@ jobs:
           PYTHONPATH=. python3 -m compileall -q app/ai app/api/ai_runtime.py app/main.py tests
           python3 -m py_compile \
             "$GITHUB_WORKSPACE/scripts/ci/probe-funasr-runtime.py" \
+            "$GITHUB_WORKSPACE/scripts/ci/probe-eres2net-large.py" \
             "$GITHUB_WORKSPACE/scripts/ci/rk3588-speech-calibrate.py" \
             "$GITHUB_WORKSPACE/scripts/ci/rk3588-speech-smoke.py"
 
@@ -172,6 +175,22 @@ jobs:
               -q
           else
             echo 'pytest not preinstalled on runner; standard-library AI smoke already passed without downloads.'
+          fi
+
+      - name: Probe ERes2Net-large package without downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/probe-eres2net-large.py \
+            --search-root /opt/suspect-interrogation/models \
+            --search-root /home/youyeetoo/.cache/modelscope \
+            --allow-missing \
+            --output "$RUNNER_TEMP/eres2net-package-probe.json"
+          cat "$RUNNER_TEMP/eres2net-package-probe.json"
+          ERES2NET_STATUS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$RUNNER_TEMP/eres2net-package-probe.json")
+          if [[ "$ERES2NET_STATUS" = INSTALLED ]]; then
+            ERES2NET_MODEL_DIR=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["model_dir"])' "$RUNNER_TEMP/eres2net-package-probe.json")
+            echo "ERES2NET_MODEL_DIR=$ERES2NET_MODEL_DIR" >> "$GITHUB_ENV"
           fi
 
       - name: Ensure project FunASR runtime dependencies
