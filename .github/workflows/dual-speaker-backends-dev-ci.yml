@@ -6,6 +6,7 @@ on:
       - 'feat/dual-speaker-backends'
     paths:
       - '.github/workflows/dual-speaker-backends-dev-ci.yml'
+      - '.github/workflows/linux-ai-runtime-rk3588.yml'
       - 'linux/backend/**'
       - 'scripts/**'
       - 'tests/release/**'
