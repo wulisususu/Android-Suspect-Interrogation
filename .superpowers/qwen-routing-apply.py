@@ -1,24 +1,37 @@
-# commit: chore: remove python build artifacts
+# commit: feat: build qa units from live speech
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
-ignore_path = Path('.gitignore')
-text = ignore_path.read_text(encoding='utf-8')
-required = ['__pycache__/', '*.py[cod]']
-for entry in required:
-    if entry not in text.splitlines():
-        if text and not text.endswith('\n'):
-            text += '\n'
-        text += entry + '\n'
-ignore_path.write_text(text, encoding='utf-8')
 
-tracked = subprocess.run(
-    ['git', 'ls-files', '-z', '*.pyc', '*.pyo'],
-    check=True,
-    capture_output=True,
-).stdout
-paths = [item.decode('utf-8') for item in tracked.split(b'\0') if item]
-if paths:
-    subprocess.run(['git', 'rm', '-f', '--', *paths], check=True)
+def replace_once(path: str, old: str, new: str) -> None:
+    target = Path(path)
+    text = target.read_text(encoding='utf-8')
+    if old not in text:
+        raise SystemExit(f'expected source block missing in {path}: {old[:120]!r}')
+    target.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+
+def write_new(path: str, content: str) -> None:
+    target = Path(path)
+    if target.exists():
+        raise SystemExit(f'refusing to overwrite existing file: {path}')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding='utf-8')
+
+
+replace_once(
+    'linux/backend/app/repositories/asr_fragments.py',
+    'from app.database.models import ASRCaptureSession, ASRFragment, Message, ProcessedSpeechFragment\n',
+    'from app.database.models import ASRCaptureSession, ASRFragment, Message, ProcessedSpeechFragment, QAUnitFragment\n',
+)
+
+asr_path = Path('linux/backend/app/repositories/asr_fragments.py')
+asr_text = asr_path.read_text(encoding='utf-8')
+asr_text += '''\n\ndef list_unassigned_for_session(\n    db: Session,\n    case_id: str,\n    session_id: str,\n    *,\n    limit: int = 256,\n) -> list[ASRFragment]:\n    assigned = select(QAUnitFragment.fragment_id).where(QAUnitFragment.fragment_id == ASRFragment.id)\n    stmt = (\n        select(ASRFragment)\n        .join(ASRCaptureSession, ASRCaptureSession.id == ASRFragment.capture_session_id)\n        .where(\n            ASRFragment.case_id == case_id,\n            ASRCaptureSession.interrogation_session_id == session_id,\n            ASRFragment.speaker.in_((\"INTERROGATOR\", \"RECORDER\", \"OFFICER_FALLBACK\", \"SUSPECT\")),\n            ~assigned.exists(),\n        )\n        .order_by(ASRFragment.ordinal.asc())\n        .limit(max(1, min(int(limit), 4096)))\n    )\n    return list(db.scalars(stmt))\n'''
+asr_path.write_text(asr_text, encoding='utf-8')
+
+write_new(
+    'linux/backend/app/services/qa_unit_builder.py',
+    '''from __future__ import annotations\n\nfrom datetime import datetime, timedelta, timezone\n\nfrom sqlalchemy import select\nfrom sqlalchemy.orm import Session\n\nfrom app.database.models import ASRFragment, QAUnit, QAUnitFragment\nfrom app.domain.errors import DomainError\nfrom app.repositories import asr_fragments as asr_repo\nfrom app.repositories import qa_units as qa_repo\n\n\nOFFICER_SPEAKERS = {\"INTERROGATOR\", \"RECORDER\", \"OFFICER_FALLBACK\"}\n_ASSIGNABLE_SPEAKERS = OFFICER_SPEAKERS | {\"SUSPECT\"}\n\n\ndef _aware(value: datetime) -> datetime:\n    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)\n\n\nclass QAUnitBuilder:\n    \"\"\"Deterministically group final speaker-attributed ASR fragments into QA units.\n\n    The builder performs no semantic question classification. Natural officer prompts\n    are grouped solely from speaker order so Qwen receives the complete real exchange.\n    \"\"\"\n\n    def __init__(self, db: Session, *, idle_close_seconds: float = 4.0):\n        self.db = db\n        self.idle_close_seconds = max(0.0, float(idle_close_seconds))\n\n    def consume_fragment(self, case_id: str, fragment_id: str) -> list[str]:\n        fragment = asr_repo.get_fragment(self.db, fragment_id)\n        if fragment.case_id != case_id:\n            raise DomainError(\"ASR_FRAGMENT_NOT_FOUND\", \"ASR 临时片段不存在\", 404)\n        if self._assigned(fragment.id):\n            return []\n\n        speaker = str(fragment.speaker or \"UNKNOWN\").upper()\n        text = str(fragment.edited_text or fragment.raw_text or \"\").strip()\n        if speaker not in _ASSIGNABLE_SPEAKERS or not text:\n            return []\n\n        capture = asr_repo.get_capture_session(self.db, fragment.capture_session_id)\n        session_id = capture.interrogation_session_id\n        if not session_id:\n            return []\n\n        active = qa_repo.active_for_session(self.db, case_id, session_id)\n        closed_ids: list[str] = []\n\n        if speaker in OFFICER_SPEAKERS:\n            if active is not None and self._has_answer(active):\n                self._close(active)\n                closed_ids.append(active.id)\n                active = None\n            if active is None:\n                active = qa_repo.create_open(\n                    self.db,\n                    case_id=case_id,\n                    session_id=session_id,\n                    started_at=self._fragment_time(fragment, start=True),\n                )\n            qa_repo.append_fragment(\n                self.db,\n                active,\n                fragment_id=fragment.id,\n                role=\"QUESTION\",\n                position=self._next_position(active),\n            )\n            return closed_ids\n\n        if active is None:\n            orphan = qa_repo.create_open(\n                self.db,\n                case_id=case_id,\n                session_id=session_id,\n                started_at=self._fragment_time(fragment, start=True),\n            )\n            qa_repo.append_fragment(\n                self.db,\n                orphan,\n                fragment_id=fragment.id,\n                role=\"ANSWER\",\n                position=1,\n            )\n            question_text, answer_text = self._texts(orphan)\n            qa_repo.close(\n                self.db,\n                orphan,\n                raw_question_text=question_text,\n                raw_answer_text=answer_text,\n                ended_at=self._fragment_time(fragment),\n            )\n            orphan.classification = \"NEEDS_REVIEW\"\n            orphan.reason_code = \"ORPHAN_ANSWER\"\n            orphan.status = \"NEEDS_REVIEW\"\n            self.db.flush()\n            return [orphan.id]\n\n        qa_repo.append_fragment(\n            self.db,\n            active,\n            fragment_id=fragment.id,\n            role=\"ANSWER\",\n            position=self._next_position(active),\n        )\n        return []\n\n    def close_idle(self, *, now: datetime) -> list[str]:\n        now = _aware(now)\n        open_units = list(self.db.scalars(select(QAUnit).where(QAUnit.status == \"OPEN\")))\n        closed: list[str] = []\n        for unit in open_units:\n            if not self._has_answer(unit):\n                continue\n            last = self._last_fragment(unit)\n            if last is None:\n                continue\n            if now - self._fragment_time(last) < timedelta(seconds=self.idle_close_seconds):\n                continue\n            self._close(unit)\n            closed.append(unit.id)\n        return closed\n\n    def flush_session(self, case_id: str, session_id: str) -> list[str]:\n        active = qa_repo.active_for_session(self.db, case_id, session_id)\n        if active is None:\n            return []\n        self._close(active)\n        return [active.id]\n\n    def _assigned(self, fragment_id: str) -> bool:\n        return self.db.scalar(\n            select(QAUnitFragment.fragment_id).where(QAUnitFragment.fragment_id == fragment_id).limit(1)\n        ) is not None\n\n    def _links(self, unit: QAUnit) -> list[QAUnitFragment]:\n        return list(\n            self.db.scalars(\n                select(QAUnitFragment)\n                .where(QAUnitFragment.qa_unit_id == unit.id)\n                .order_by(QAUnitFragment.position.asc())\n            )\n        )\n\n    def _next_position(self, unit: QAUnit) -> int:\n        links = self._links(unit)\n        return (links[-1].position + 1) if links else 1\n\n    def _has_answer(self, unit: QAUnit) -> bool:\n        return any(link.role == \"ANSWER\" for link in self._links(unit))\n\n    def _last_fragment(self, unit: QAUnit) -> ASRFragment | None:\n        links = self._links(unit)\n        return asr_repo.get_fragment(self.db, links[-1].fragment_id) if links else None\n\n    def _texts(self, unit: QAUnit) -> tuple[str, str]:\n        question: list[str] = []\n        answer: list[str] = []\n        for link in self._links(unit):\n            fragment = asr_repo.get_fragment(self.db, link.fragment_id)\n            text = str(fragment.edited_text or fragment.raw_text or \"\").strip()\n            if not text:\n                continue\n            (question if link.role == \"QUESTION\" else answer).append(text)\n        return \" \".join(question), \" \".join(answer)\n\n    def _close(self, unit: QAUnit) -> None:\n        question_text, answer_text = self._texts(unit)\n        last = self._last_fragment(unit)\n        ended_at = self._fragment_time(last) if last is not None else _aware(unit.started_at)\n        qa_repo.close(\n            self.db,\n            unit,\n            raw_question_text=question_text,\n            raw_answer_text=answer_text,\n            ended_at=ended_at,\n        )\n\n    def _fragment_time(self, fragment: ASRFragment, *, start: bool = False) -> datetime:\n        capture = asr_repo.get_capture_session(self.db, fragment.capture_session_id)\n        base = _aware(capture.started_at)\n        offset_ms = fragment.started_at_ms if start else fragment.ended_at_ms\n        return base + timedelta(milliseconds=int(offset_ms))\n''',
+)
