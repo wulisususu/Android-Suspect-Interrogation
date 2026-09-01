@@ -220,6 +220,10 @@ function clearSignature() {
   prepareCanvas()
 }
 
+function forwardQuestionUpdate(questionId: string, input: CaseQuestionUpdateInput) {
+  emit('updateQuestion', questionId, input)
+}
+
 async function confirmSignature() {
   const role = signatureRole.value
   const canvas = signatureCanvas.value
@@ -285,7 +289,7 @@ async function confirmSignature() {
           :capture-running="capture.running"
           :ai-busy="aiBusy"
           :ai-error="aiError"
-          @update-question="(id, input) => emit('updateQuestion', id, input)"
+          @update-question="forwardQuestionUpdate"
           @reorder="emit('reorderQuestions', $event)"
           @remove-question="(id) => emit('removeQuestion', id)"
           @insert-pending="(pendingId, afterQuestionId) => emit('resolvePending', pendingId, { action: 'ADD', afterQuestionId })"
