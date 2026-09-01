@@ -222,6 +222,34 @@ def _formal_questions() -> list[dict[str, Any]]:
     ]
 
 
+def _canonicalize_existing_target_decision(decision: dict[str, Any]) -> dict[str, Any]:
+    """Mirror the production router's deterministic existing-target policy.
+
+    The raw model response remains evidence. Only the effective decision used
+    for acceptance is canonicalized: persisted target metadata owns whether an
+    existing target is FIXED or CASE/LIVE, and persisted question text owns the
+    formal question string.
+    """
+
+    effective = dict(decision)
+    if decision["classification"] not in {"MATCH_FIXED", "MATCH_EXISTING"}:
+        return effective
+    target_id = decision.get("target_question_id")
+    if not target_id or not str(decision.get("formal_answer") or "").strip():
+        return effective
+    target = next((row for row in _formal_questions() if row["id"] == target_id), None)
+    if target is None:
+        return effective
+    if bool(target.get("locked")):
+        effective["classification"] = "MATCH_FIXED"
+    elif target.get("source") in {"CASE", "LIVE"}:
+        effective["classification"] = "MATCH_EXISTING"
+    else:
+        return effective
+    effective["formal_question"] = None
+    return effective
+
+
 def _cases() -> list[dict[str, Any]]:
     return [
         {
@@ -432,10 +460,12 @@ def main(argv: list[str] | None = None) -> int:
                     "passed": False,
                 }
                 try:
-                    decision, latency_ms = _complete(base_url, model_id, _prompt(case), args.timeout)
+                    raw_decision, latency_ms = _complete(base_url, model_id, _prompt(case), args.timeout)
+                    decision = _canonicalize_existing_target_decision(raw_decision)
                     rounded_latency = round(latency_ms, 3)
                     row["latency_ms"] = rounded_latency
                     latency_values.append(rounded_latency)
+                    row["raw_decision"] = raw_decision
                     row["classification"] = decision["classification"]
                     row["decision"] = decision
                     _validate_case(case, decision)
