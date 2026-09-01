@@ -22,4 +22,12 @@ describe('formal record editor source contract', () => {
     expect(formal).toContain(mime)
     expect(formal).toContain("emit('insertPending'")
   })
+
+  it('keeps answer fields editable before an ASR round exists', () => {
+    expect(formal).toContain('manualAnswerDrafts')
+    expect(formal).toContain('saveManualAnswer')
+    expect(formal).toContain("emit('updateAnswer', question.id, answer)")
+    expect(formal).toContain('v-model="manualAnswerDrafts[q.id]"')
+    expect(formal).not.toContain('class="record-answer blank-answer"><b>答：</b><span></span>')
+  })
 })

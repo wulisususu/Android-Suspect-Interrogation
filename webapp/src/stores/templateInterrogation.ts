@@ -16,6 +16,7 @@ import {
   saveQuestionToLibrary as saveQuestionToLibraryApi,
   updateCaseQuestion as updateCaseQuestionApi,
   updateRoundAnswer as updateRoundAnswerApi,
+  upsertQuestionAnswer as upsertQuestionAnswerApi,
 } from '../api/templateInterrogation'
 import type { TemporaryAsrFragment } from '../types/interrogation'
 import type {
@@ -227,8 +228,13 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     await runMutation((scope) => reassociateRoundApi(scope.caseId, roundId, input))
   }
 
-  async function updateRoundAnswer(roundId: string, answerText: string) {
-    await runMutation((scope) => updateRoundAnswerApi(scope.caseId, roundId, answerText))
+  async function updateRoundAnswer(targetId: string, answerText: string) {
+    await runMutation((scope) => {
+      const isRound = workspace.value.rounds.some((round) => round.id === targetId)
+      return isRound
+        ? updateRoundAnswerApi(scope.caseId, targetId, answerText)
+        : upsertQuestionAnswerApi(scope.caseId, targetId, answerText)
+    })
   }
 
   async function loadQuestionLibrary(category?: string) {

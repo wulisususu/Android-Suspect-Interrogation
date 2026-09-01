@@ -73,6 +73,17 @@ def update_case_question(case_id: str, question_id: str, body: CaseQuestionUpdat
     return envelope(result, "问题已更新")
 
 
+@router.put("/cases/{case_id}/questions/{question_id}/answer")
+def upsert_case_question_answer(case_id: str, question_id: str, body: RoundUpdateRequest, db: Session = Depends(get_db)):
+    result = TemplateWorkspaceService(db).upsert_case_question_answer(
+        case_id,
+        question_id,
+        answer_text=body.answer_text,
+    )
+    db.commit()
+    return envelope(result, "正式回答已保存")
+
+
 @router.post("/cases/{case_id}/questions/reorder")
 def reorder_case_questions(case_id: str, body: QuestionReorderRequest, db: Session = Depends(get_db)):
     result = TemplateWorkspaceService(db).reorder(case_id, body.question_ids)

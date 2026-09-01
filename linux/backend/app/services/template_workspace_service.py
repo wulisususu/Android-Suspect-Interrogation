@@ -8,6 +8,7 @@ from app.domain.errors import DomainError
 from app.repositories import cases as case_repo
 from app.repositories import question_rounds as round_repo
 from app.repositories import template_questions as question_repo
+from app.services.formal_record_answer_service import FormalRecordAnswerService
 from app.services.formal_record_policy import assert_formal_record_mutable, is_formal_record_immutable
 from app.services.serializers import case_question_dict, pending_question_dict, question_round_dict, standard_question_dict
 
@@ -167,6 +168,9 @@ class TemplateWorkspaceService:
             row.regex_patterns_json = json.dumps(_clean_list(regex_patterns), ensure_ascii=False)
         self.db.flush()
         return case_question_dict(row, rounds=round_repo.list_for_question(self.db, case_id, row.id))
+
+    def upsert_case_question_answer(self, case_id: str, question_id: str, *, answer_text: str) -> dict:
+        return FormalRecordAnswerService(self.db).upsert(case_id, question_id, answer_text=answer_text)
 
     def deactivate_case_question(self, case_id: str, question_id: str) -> dict:
         self._assert_case_mutable(case_id)

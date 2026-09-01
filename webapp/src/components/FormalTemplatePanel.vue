@@ -22,7 +22,7 @@ const emit = defineEmits<{
   updateQuestion: [questionId: string, input: CaseQuestionUpdateInput]
   reorder: [questionIds: string[]]
   removeQuestion: [questionId: string]
-  updateAnswer: [roundId: string, answerText: string]
+  updateAnswer: [targetId: string, answerText: string]
   saveLibrary: [questionId: string]
   insertPending: [pendingId: string, afterQuestionId: string | null]
   generateAi: []
@@ -32,6 +32,7 @@ const emit = defineEmits<{
 
 const questionDrafts = reactive<Record<string, string>>({})
 const answerDrafts = reactive<Record<string, string>>({})
+const manualAnswerDrafts = reactive<Record<string, string>>({})
 const draggingBodyId = ref('')
 const dragOverKey = ref('')
 const orderedQuestions = computed(() => [...props.questions].sort((a, b) => a.sortOrder - b.sortOrder))
@@ -41,7 +42,10 @@ const closingQuestions = computed(() => orderedQuestions.value.filter((q) => q.s
 const lastOpeningId = computed(() => openingQuestions.value.at(-1)?.id ?? null)
 
 watch(() => props.questions, (items) => {
-  for (const item of items) questionDrafts[item.id] = item.text
+  for (const item of items) {
+    questionDrafts[item.id] = item.text
+    if (!(item.id in manualAnswerDrafts)) manualAnswerDrafts[item.id] = ''
+  }
 }, { immediate: true, deep: true })
 watch(() => props.rounds, (items) => {
   for (const item of items) if (!(item.id in answerDrafts)) answerDrafts[item.id] = item.answerText
@@ -60,6 +64,11 @@ function saveAnswer(round: FormalQuestionRound) {
   if (props.documentFrozen || props.busy) return
   const answer = (answerDrafts[round.id] || '').trim()
   if (answer !== round.answerText.trim()) emit('updateAnswer', round.id, answer)
+}
+function saveManualAnswer(question: FormalQuestion) {
+  if (props.documentFrozen || props.busy) return
+  const answer = (manualAnswerDrafts[question.id] || '').trim()
+  if (answer) emit('updateAnswer', question.id, answer)
 }
 function signatureFor(role: DocumentSignerRole) { return props.signingState?.signatures.find((s) => s.signerRole === role) }
 function formatSignedAt(value?: number) {
@@ -137,7 +146,7 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
         <div v-for="q in openingQuestions" :key="q.id" class="record-qa fixed-question">
           <p class="record-question"><b>问：</b><span>{{ q.text }}</span></p>
           <label v-if="latestRound(q.id)" class="record-answer"><b>答：</b><textarea v-model="answerDrafts[latestRound(q.id)!.id]" :disabled="busy || documentFrozen" rows="1" @blur="saveAnswer(latestRound(q.id)!)"></textarea></label>
-          <p v-else class="record-answer blank-answer"><b>答：</b><span></span></p>
+          <label v-else class="record-answer"><b>答：</b><textarea v-model="manualAnswerDrafts[q.id]" :disabled="busy || documentFrozen" rows="1" @blur="saveManualAnswer(q)"></textarea></label>
         </div>
       </section>
 
@@ -152,7 +161,7 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
             <label class="record-answer"><b>答：</b><textarea v-model="answerDrafts[latestRound(q.id)!.id]" :disabled="busy || documentFrozen" rows="2" @blur="saveAnswer(latestRound(q.id)!)"></textarea></label>
             <small v-if="latestRound(q.id)?.actualQuestionText && latestRound(q.id)?.actualQuestionText !== q.text" class="actual-question record-no-print">现场原问法：{{ latestRound(q.id)?.actualQuestionText }}</small>
           </template>
-          <p v-else class="record-answer blank-answer"><b>答：</b><span>等待现场回答</span></p>
+          <label v-else class="record-answer"><b>答：</b><textarea v-model="manualAnswerDrafts[q.id]" :disabled="busy || documentFrozen" rows="2" placeholder="等待现场回答" @blur="saveManualAnswer(q)"></textarea></label>
           <div class="record-drop-zone compact record-no-print" :class="{ active: dragOverKey === q.id }" @dragover="allowPendingDrop($event, q.id)" @dragleave="dragOverKey = ''" @drop="dropPending($event, q.id)">拖到这里，插入在本题之后</div>
         </article>
         <div v-if="!bodyQuestions.length" class="record-body-empty record-no-print">案件动态问答区暂为空。将右侧民警提问拖到这里，或从问题准备区加入。</div>
@@ -162,7 +171,7 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
         <div v-for="q in closingQuestions" :key="q.id" class="record-qa fixed-question">
           <p class="record-question"><b>问：</b><span>{{ q.text }}</span></p>
           <label v-if="latestRound(q.id)" class="record-answer"><b>答：</b><textarea v-model="answerDrafts[latestRound(q.id)!.id]" :disabled="busy || documentFrozen" rows="1" @blur="saveAnswer(latestRound(q.id)!)"></textarea></label>
-          <p v-else class="record-answer blank-answer"><b>答：</b><span></span></p>
+          <label v-else class="record-answer"><b>答：</b><textarea v-model="manualAnswerDrafts[q.id]" :disabled="busy || documentFrozen" rows="1" @blur="saveManualAnswer(q)"></textarea></label>
         </div>
       </section>
 

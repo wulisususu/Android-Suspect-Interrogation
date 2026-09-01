@@ -143,6 +143,13 @@ export async function updateRoundAnswer(caseId: string, roundId: string, answerT
   ))
 }
 
+export async function upsertQuestionAnswer(caseId: string, questionId: string, answerText: string): Promise<FormalQuestionRound> {
+  return unwrap(await http.put<BackendEnvelope<FormalQuestionRound>>(
+    `/api/v1/cases/${encodeURIComponent(caseId)}/questions/${encodeURIComponent(questionId)}/answer`,
+    { answerText },
+  ))
+}
+
 export async function saveQuestionToLibrary(caseId: string, questionId: string, category = '通用'): Promise<StandardQuestion> {
   return unwrap(await http.post<BackendEnvelope<StandardQuestion>>(
     `/api/v1/cases/${encodeURIComponent(caseId)}/questions/${encodeURIComponent(questionId)}/save-to-library`,
