@@ -32,7 +32,7 @@ class FakeRuntime:
         return {"text": "测试口供", "confidence": 0.95, "model_id": "paraformer"}
 
     def speaker_embedding(self, pcm: bytes, sample_rate: int) -> dict:
-        return {"embedding": [0.6, 0.8], "model_id": "xvector"}
+        return {"embedding": [0.6, 0.8], "backend_key": "xvector", "model_id": "xvector"}
 
 
 def _pcm(ms: int, sample_rate: int = 16000) -> bytes:
@@ -83,7 +83,7 @@ def test_server_round_trip_uses_unix_socket_and_session_lifecycle(tmp_path: Path
         assert final_events[2].embedding == [0.6, 0.8]
 
         embedding = client.extract_embedding(_pcm(200), sample_rate=16000)
-        assert embedding == {"embedding": [0.6, 0.8], "model_id": "xvector"}
+        assert embedding == {"embedding": [0.6, 0.8], "backend_key": "xvector", "model_id": "xvector"}
 
         client.close_session("case-1")
         assert client.health()["sessions"] == 0
