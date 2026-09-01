@@ -20,8 +20,6 @@ on:
 permissions:
   contents: read
 
-actions:
-
 concurrency:
   group: rk3588-qwen-formal-routing-${{ github.ref }}
   cancel-in-progress: false
