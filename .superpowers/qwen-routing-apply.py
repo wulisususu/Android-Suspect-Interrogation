@@ -62,10 +62,3 @@ replace_once(
     "    with TestClient(app) as client:\n        case_id = create_case(client)\n        first = payload(\n",
     "    with TestClient(app) as client:\n        # This endpoint intentionally remains even after Qwen routing is added:\n        # operators/releases can use it as the explicit legacy/manual fallback.\n        assert \"/api/v1/cases/{case_id}/speech-fragments/{fragment_id}/process\" in app.openapi()[\"paths\"]\n        case_id = create_case(client)\n        first = payload(\n",
 )
-
-ci = ".github/workflows/linux-ci.yml"
-replace_once(
-    ci,
-    "      - name: Hardware and AI mock tests\n        run: |\n          python -m pytest linux/backend/tests/test_hardware.py linux/backend/tests/test_hardware_mock.py -q\n          python -m pytest linux/backend/tests/test_ai_mock.py linux/backend/tests/test_mock_engines.py linux/backend/tests/test_supervisor.py -q\n\n      - name: Setup Node\n",
-    "      - name: Hardware and AI mock tests\n        run: |\n          python -m pytest linux/backend/tests/test_hardware.py linux/backend/tests/test_hardware_mock.py -q\n          python -m pytest linux/backend/tests/test_ai_mock.py linux/backend/tests/test_mock_engines.py linux/backend/tests/test_supervisor.py -q\n\n      - name: Qwen formal routing acceptance\n        run: |\n          python -m pytest \\\n            linux/backend/tests/test_qwen_routing_schema.py \\\n            linux/backend/tests/test_qa_unit_builder.py \\\n            linux/backend/tests/test_formal_record_router.py \\\n            linux/backend/tests/test_formal_record_routing_service.py \\\n            linux/backend/tests/test_qa_routing_coordinator.py \\\n            linux/backend/tests/test_llamapi_llm_engine.py \\\n            linux/backend/tests/test_qwen_formal_routing_e2e.py -q\n\n      - name: Setup Node\n",
-)
