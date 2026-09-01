@@ -1,6 +1,6 @@
 name: Qwen Routing Dev CI
 
-# Performance experiment verification: compact probe protocol remains isolated from production routing.
+# Performance experiment verification: compact CLI and prompt remain isolated from production routing.
 on:
   push:
     branches:
