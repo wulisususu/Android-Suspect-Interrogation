@@ -12,6 +12,7 @@ from app.ai.prompt.formal_record_routing import build_formal_record_routing_prom
 from app.repositories import asr_fragments as asr_repo
 from app.repositories import qa_units as qa_repo
 from app.repositories import template_questions as question_repo
+from app.services.question_matching import is_operational_utterance, is_question_utterance
 
 
 class RouteClass(str, Enum):
@@ -60,6 +61,102 @@ def canonicalize_existing_target_decision(
         confidence=decision.confidence,
         candidate_question_ids=decision.candidate_question_ids,
         reason_code=decision.reason_code,
+        model_id=decision.model_id,
+    )
+
+
+_AMBIGUOUS_REFERENCE_RE = re.compile(r"(?:那个|这个|刚才(?:那个|这个)?)(?:时间|时候|问题|情况|事|事情)")
+_TIME_QUESTION_RE = re.compile(r"(?:什么时候|何时|几点|时间|哪天)")
+
+
+def _unique_targets(target_ids: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    result: list[str] = []
+    for value in target_ids:
+        clean = str(value or "").strip()
+        if clean and clean not in result:
+            result.append(clean)
+    return tuple(result)
+
+
+def precheck_routing_decision(
+    *,
+    raw_question: str | None,
+    recent_target_ids: tuple[str, ...] | list[str],
+) -> FormalRecordRouteDecision | None:
+    """Resolve deterministic E/D cases before an expensive model call.
+
+    Only narrow, high-confidence patterns are handled here. Ordinary
+    non-question evidence is intentionally not discarded.
+    """
+
+    question = str(raw_question or "").strip()
+    if is_operational_utterance(question):
+        return FormalRecordRouteDecision(
+            classification=RouteClass.IGNORE,
+            target_question_id=None,
+            formal_question=None,
+            formal_answer=None,
+            confidence=1.0,
+            candidate_question_ids=(),
+            reason_code="OPERATIONAL_CHATTER_PRECHECK",
+            model_id=None,
+        )
+
+    candidates = _unique_targets(recent_target_ids)
+    if _AMBIGUOUS_REFERENCE_RE.search(question) and len(candidates) > 1:
+        return FormalRecordRouteDecision(
+            classification=RouteClass.NEEDS_REVIEW,
+            target_question_id=None,
+            formal_question=None,
+            formal_answer=None,
+            confidence=None,
+            candidate_question_ids=candidates,
+            reason_code="AMBIGUOUS_REFERENCE_PRECHECK",
+            model_id=None,
+        )
+    return None
+
+
+def repair_existing_target_intent_mismatch(
+    decision: FormalRecordRouteDecision,
+    target: Any | None,
+    *,
+    raw_question: str | None,
+    raw_answer: str | None,
+) -> FormalRecordRouteDecision:
+    """Reject a strong existing-target intent conflict as a real LIVE question.
+
+    The first protected mismatch is deliberately narrow: an existing target is
+    explicitly a time question, while the real officer utterance is a valid
+    substantive question that does not ask for time. In that situation the
+    backend must not attach the answer to the time field. It creates C from the
+    actually spoken Q+A, never from an invented model question.
+    """
+
+    if decision.classification not in {RouteClass.MATCH_FIXED, RouteClass.MATCH_EXISTING}:
+        return decision
+    if target is None:
+        return decision
+
+    question = str(raw_question or "").strip()
+    answer = str(raw_answer or "").strip()
+    target_text = str(getattr(target, "text", "") or "").strip()
+    if not question or not answer or not is_question_utterance(question):
+        return decision
+
+    target_asks_time = bool(_TIME_QUESTION_RE.search(target_text))
+    spoken_asks_time = bool(_TIME_QUESTION_RE.search(question))
+    if not target_asks_time or spoken_asks_time:
+        return decision
+
+    return FormalRecordRouteDecision(
+        classification=RouteClass.CREATE_LIVE_FROM_SPEECH,
+        target_question_id=None,
+        formal_question=question,
+        formal_answer=answer,
+        confidence=decision.confidence,
+        candidate_question_ids=(),
+        reason_code="TARGET_INTENT_MISMATCH_CREATE_LIVE",
         model_id=decision.model_id,
     )
 
@@ -176,12 +273,7 @@ def preserve_existing_answer_facts(
     *,
     raw_answer: str | None,
 ) -> FormalRecordRouteDecision:
-    """Fail safe to raw testimony if Qwen drops explicit time/quantity facts.
-
-    The fallback is deliberately limited to existing-question auto routes. It
-    never invents or normalizes a missing fact; it simply preserves the current
-    raw answer verbatim when model prose loses explicit structured facts.
-    """
+    """Fail safe to raw testimony if Qwen drops explicit time/quantity facts."""
 
     if decision.classification not in {RouteClass.MATCH_FIXED, RouteClass.MATCH_EXISTING}:
         return decision
@@ -246,6 +338,14 @@ class FormalRecordRouter:
 
     def route(self, qa_unit_id: str) -> FormalRecordRouteDecision:
         unit = qa_repo.get(self.db, qa_unit_id)
+        recent = [row for row in qa_repo.list_recent_closed(self.db, unit.case_id, limit=3) if row.id != unit.id]
+        prechecked = precheck_routing_decision(
+            raw_question=unit.raw_question_text,
+            recent_target_ids=tuple(row.target_question_id for row in recent if row.target_question_id),
+        )
+        if prechecked is not None:
+            return prechecked
+
         prompt = build_formal_record_routing_prompt(context=self._context(unit))
         result = None
         try:
@@ -262,6 +362,12 @@ class FormalRecordRouter:
             decision = self._decision_from_payload(_parse_payload(result.text), model_id=result.model_id)
             target = self._case_question(unit.case_id, decision.target_question_id)
             decision = canonicalize_existing_target_decision(decision, target)
+            decision = repair_existing_target_intent_mismatch(
+                decision,
+                target,
+                raw_question=unit.raw_question_text,
+                raw_answer=unit.raw_answer_text,
+            )
             decision = preserve_existing_answer_facts(decision, raw_answer=unit.raw_answer_text)
             if not self._policy_valid(unit, decision):
                 return self._invalid(result.model_id)
