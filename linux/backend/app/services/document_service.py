@@ -118,33 +118,45 @@ class DocumentService:
             if round_row.case_question_id in rounds_by_question:
                 rounds_by_question[round_row.case_question_id].append(round_row)
 
+        def entry_for(question, round_row) -> dict:
+            serialized = question_round_dict(round_row)
+            return {
+                "roundId": round_row.id,
+                "questionId": round_row.case_question_id,
+                "questionText": question.text,
+                "sectionType": question.section_type or "BODY",
+                "templateKey": question.template_key,
+                "templateItemKey": question.template_item_key,
+                "caseQuestionId": round_row.case_question_id,
+                "roundNo": round_row.round_no,
+                "formalQuestionText": question.text,
+                "actualQuestionText": round_row.actual_question_text,
+                "answerText": round_row.answer_text,
+                "officerFragmentId": round_row.officer_fragment_id,
+                "answerFragmentIds": serialized["answerFragmentIds"],
+                "status": round_row.status,
+                "startedAt": serialized["startedAt"],
+                "endedAt": serialized["endedAt"],
+            }
+
+        # Versioned formal records freeze in paper/editor order. Pre-existing
+        # template workspaces have no template_key and retain their historical
+        # real-time chronology contract for backward compatibility.
+        is_formal_record = any(row.template_key for row in case_questions)
         entries = []
-        for question in case_questions:
-            for round_row in rounds_by_question.get(question.id, []):
-                serialized = question_round_dict(round_row)
-                entries.append(
-                    {
-                        "roundId": round_row.id,
-                        "questionId": round_row.case_question_id,
-                        "questionText": question.text,
-                        "sectionType": question.section_type or "BODY",
-                        "templateKey": question.template_key,
-                        "templateItemKey": question.template_item_key,
-                        "caseQuestionId": round_row.case_question_id,
-                        "roundNo": round_row.round_no,
-                        "formalQuestionText": question.text,
-                        "actualQuestionText": round_row.actual_question_text,
-                        "answerText": round_row.answer_text,
-                        "officerFragmentId": round_row.officer_fragment_id,
-                        "answerFragmentIds": serialized["answerFragmentIds"],
-                        "status": round_row.status,
-                        "startedAt": serialized["startedAt"],
-                        "endedAt": serialized["endedAt"],
-                    }
-                )
+        if is_formal_record:
+            for question in case_questions:
+                for round_row in rounds_by_question.get(question.id, []):
+                    entries.append(entry_for(question, round_row))
+        else:
+            for round_row in rounds:
+                question = questions_by_id.get(round_row.case_question_id)
+                if question is not None:
+                    entries.append(entry_for(question, round_row))
 
         return {
             "source": "TEMPLATE_ROUNDS",
+            "templateKey": next((row.template_key for row in case_questions if row.template_key), None),
             "questions": [
                 case_question_dict(row, rounds=rounds_by_question[row.id])
                 for row in case_questions
