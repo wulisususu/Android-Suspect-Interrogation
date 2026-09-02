@@ -90,11 +90,12 @@ def test_rk3588_ai_pytest_is_focused_and_uses_isolated_mutable_paths():
     assert "PYTHONPATH=. python3 -m pytest -q" not in workflow
 
 
-def test_rk3588_ai_runtime_heals_pinned_modelscope_for_legacy_xvector():
+def test_rk3588_ai_runtime_requires_pinned_dependencies_without_mutating_production():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "MODELSCOPE_PACKAGE_VERSION: '1.39.1'" in workflow
-    assert '"modelscope==${MODELSCOPE_PACKAGE_VERSION}"' in workflow
     assert "import funasr, torch, torchaudio, modelscope" in workflow
+    assert 'sudo -n "$PROJECT_FUNASR_PYTHON" -m pip install' not in workflow
+    assert "Project FunASR runtime dependency check failed" in workflow
 
 
 def test_eres2net_probe_is_read_only_and_does_not_guess_required_files():
