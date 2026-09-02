@@ -9,6 +9,7 @@ on:
       - .superpowers/task10-ui-settings-green.py
       - .superpowers/task10-ui-calibration-green.py
       - .superpowers/task10-ui-preparation-green.py
+      - .superpowers/task10-ui-compat-green.py
       - .github/workflows/task10-speaker-ui-green.yml
   workflow_dispatch:
 
@@ -37,6 +38,7 @@ jobs:
           python .superpowers/task10-ui-settings-green.py
           python .superpowers/task10-ui-calibration-green.py
           python .superpowers/task10-ui-preparation-green.py
+          python .superpowers/task10-ui-compat-green.py
       - name: Task 10 Vue contract
         working-directory: webapp
         run: npm test -- --run src/components/SpeakerBackendControls.test.ts
