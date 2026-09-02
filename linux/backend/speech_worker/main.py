@@ -217,8 +217,15 @@ class SpeechWorkerServer:
         if op == "extract_embedding":
             pcm = self._decode_pcm(request)
             sample_rate = int(request.get("sample_rate") or 16000)
+            backend_key = request.get("backend_key")
             with self._runtime_lock:
-                return self.runtime.speaker_embedding(pcm, sample_rate)
+                if backend_key is None:
+                    return self.runtime.speaker_embedding(pcm, sample_rate)
+                return self.runtime.speaker_embedding(
+                    pcm,
+                    sample_rate,
+                    backend_key=str(backend_key),
+                )
 
         raise AIError(f"unknown speech operation: {op}", details={"op": op})
 
