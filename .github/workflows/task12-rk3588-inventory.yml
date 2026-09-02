@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m py_compile scripts/ci/probe-eres2net-large.py
-          ! grep -Eq 'systemctl restart|:8000|snapshot_download|pip install' .github/workflows/task12-rk3588-inventory.yml
+          ! grep -Eq 'snapshot_download|pip install|unlink\(|rmtree\(' scripts/ci/probe-eres2net-large.py
 
   board-inventory:
     needs: hosted-contract
