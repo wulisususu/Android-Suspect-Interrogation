@@ -157,3 +157,12 @@ def test_task12_workflow_records_independent_calibration_identity_and_thresholds
         "TASK12_DUAL_SPEAKER_PROBE_COMPLETE",
     ):
         assert token in text
+
+
+def test_task12_workflow_can_stage_eres_model_in_runner_temp_when_not_preinstalled():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "--allow-missing" in text
+    assert "snapshot_download" in text
+    assert "$RUNNER_TEMP/task12-modelscope-cache" in text
+    assert "ERES_MODEL_SOURCE=runner_temp" in text
+    assert "iic/speech_eres2net_large_200k_sv_zh-cn_16k-common" in text
