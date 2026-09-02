@@ -88,41 +88,22 @@ jobs:
           uname -a
           python3 --version
 
-      - name: Robust sparse checkout
+      - name: Checkout exact revision with bounded codeload download
         shell: bash
-        env:
-          GIT_TERMINAL_PROMPT: '0'
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-          find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-          git init .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git config --local gc.auto 0
-          git config --local http.version HTTP/1.1
-          git config --local http.lowSpeedLimit 1024
-          git config --local http.lowSpeedTime 15
-          git sparse-checkout init --cone
-          git sparse-checkout set .github linux docs scripts systemd tests
-
-          fetched=0
-          for attempt in 1 2 3 4 5; do
-            echo "fetch attempt ${attempt}/5"
-            if timeout 120s git -c protocol.version=2 fetch \
-              --filter=blob:none \
-              --no-tags \
-              --prune \
-              --no-recurse-submodules \
-              --depth=1 \
-              origin "+${GITHUB_SHA}:refs/remotes/origin/__ai_runtime_target"; then
-              fetched=1
-              break
-            fi
-            sleep $((attempt * 3))
-          done
-          test "$fetched" -eq 1
-          git checkout --force --detach "$GITHUB_SHA"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          ARCHIVE="$RUNNER_TEMP/ai-runtime-${GITHUB_SHA}.tar.gz"
+          ROOT="$RUNNER_TEMP/ai-runtime-${GITHUB_SHA}"
+          rm -rf "$ROOT" "$ARCHIVE"
+          mkdir -p "$ROOT"
+          timeout 300s curl --fail --location --retry 4 --retry-all-errors \
+            --connect-timeout 30 --max-time 240 \
+            "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
+            -o "$ARCHIVE"
+          tar -xzf "$ARCHIVE" -C "$ROOT" --strip-components=1
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          cp -a "$ROOT"/. "$GITHUB_WORKSPACE"/
+          test -f "$GITHUB_WORKSPACE/linux/backend/app/main.py"
 
       - name: Verify no model weights are committed
         shell: bash
