@@ -2,7 +2,6 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FEATURE = ROOT / ".github" / "workflows" / "rk3588-feature-deploy.yml"
 BOOTSTRAP = ROOT / ".github" / "workflows" / "rk3588-service-bootstrap.yml"
 
 
@@ -24,15 +23,6 @@ def _assert_read_only_model_mount_is_rerunnable(source: str) -> None:
     assert target_install not in source[:marker_index]
 
 
-def test_feature_deploy_does_not_stop_working_api_before_model_probe():
-    source = FEATURE.read_text(encoding="utf-8")
-    preflight = _before_runtime_probe(source, "Prepare read-only FunASR models and isolated runtime")
-    assert "systemctl stop interrogation-api.service" not in preflight
-    assert "systemctl is-active --quiet interrogation-api.service" in preflight
-    assert "existing project API on TCP/18080 is preserved during speech preflight" in source
-    assert "sudo -n ss -ltnp 'sport = :8000'" in source
-
-
 def test_production_bootstrap_does_not_stop_working_api_before_model_probe():
     source = BOOTSTRAP.read_text(encoding="utf-8")
     preflight = _before_runtime_probe(source, "Prepare stable offline FunASR model and runtime layout")
@@ -42,17 +32,12 @@ def test_production_bootstrap_does_not_stop_working_api_before_model_probe():
     assert "Existing TCP/8000 owner is preserved" in source
 
 
-def test_feature_deploy_does_not_chown_existing_read_only_model_mount():
-    _assert_read_only_model_mount_is_rerunnable(FEATURE.read_text(encoding="utf-8"))
-
-
 def test_production_bootstrap_does_not_chown_existing_read_only_model_mount():
     _assert_read_only_model_mount_is_rerunnable(BOOTSTRAP.read_text(encoding="utf-8"))
 
 
-def test_feature_and_bootstrap_use_preinstalled_modelscope_without_version_contract():
-    for workflow in (FEATURE, BOOTSTRAP):
-        source = workflow.read_text(encoding="utf-8")
-        assert "MODELSCOPE_PACKAGE_VERSION" not in source
-        assert '"modelscope==${MODELSCOPE_PACKAGE_VERSION}"' not in source
-        assert 'import funasr' in source
+def test_bootstrap_uses_preinstalled_modelscope_without_version_contract():
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+    assert "MODELSCOPE_PACKAGE_VERSION" not in source
+    assert '"modelscope==${MODELSCOPE_PACKAGE_VERSION}"' not in source
+    assert 'import funasr' in source
