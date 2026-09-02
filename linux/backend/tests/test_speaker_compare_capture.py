@@ -62,7 +62,7 @@ def _seed(tmp_path):
             db,
             capture_session_id=capture.id,
             interrogation_session_id=interrogation.id,
-            calibration_id="CAL-X",
+            calibration_id=None,
             threshold=0.80,
             margin=None,
             threshold_source="DEVICE_CALIBRATED",
@@ -189,7 +189,7 @@ def test_secondary_disagreement_is_persisted_but_cannot_mutate_authoritative_fra
         assert rows[1].role == "OFFICER_FALLBACK"
         assert rows[1].score == 0.0
         assert rows[1].latency_ms == 21.0
-        assert '"role":"SUSPECT"' in rows[1].candidate_scores_json
+        assert '\"role\":\"SUSPECT\"' in rows[1].candidate_scores_json
 
     engine.dispose()
 
