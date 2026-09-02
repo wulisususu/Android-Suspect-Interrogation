@@ -117,11 +117,26 @@ async function evaluate(client, expression) {
 }
 
 async function waitForSelector(client, selector, timeoutMs = 30_000) {
-  return waitFor(
-    async () => evaluate(client, `Boolean(document.querySelector(${JSON.stringify(selector)}))`),
-    selector,
-    timeoutMs,
-  )
+  try {
+    return await waitFor(
+      async () => evaluate(client, `Boolean(document.querySelector(${JSON.stringify(selector)}))`),
+      selector,
+      timeoutMs,
+    )
+  } catch (error) {
+    const diagnostic = await evaluate(client, `(() => ({
+      url: location.href,
+      title: document.title,
+      readyState: document.readyState,
+      appHtml: (document.querySelector('#app')?.innerHTML || '').slice(0, 4000),
+      bodyText: (document.body?.innerText || '').slice(0, 4000),
+      maintenance: Boolean(document.querySelector('.maintenance-shell')),
+      caseRoot: Boolean(document.querySelector('.case-root-shell')),
+      caseList: Boolean(document.querySelector('.case-list-page')),
+    }))()`)
+    console.error(`selector-timeout-diagnostic=${JSON.stringify(diagnostic)}`)
+    throw error
+  }
 }
 
 async function clickButtonContaining(client, text) {
