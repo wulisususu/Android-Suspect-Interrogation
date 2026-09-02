@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import socket
 import struct
 import threading
 from pathlib import Path
@@ -8,10 +7,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
-from app.ai.registry import ModelRegistry
 from app.ai.speech.client import SpeechWorkerClient
 from app.ai.speech.types import SpeechEventType
-from app.ai.supervisor import AISupervisor
 from app.database.models import Case, InterrogationSession, OfficerVoiceprint, SessionVoiceAssignment
 from app.database.session import init_database, make_engine, make_session_factory
 from app.database.voiceprint_models import SessionOfficerVoiceSnapshot
@@ -43,7 +40,7 @@ def _db(tmp_path: Path):
                 id="SESSION-1",
                 case_id="CASE-1",
                 status=SessionStatus.RUNNING.value,
-                stage=InterrogationStage.INTERROGATION.value,
+                stage=InterrogationStage.STATEMENT.value,
             )
         )
         db.commit()
