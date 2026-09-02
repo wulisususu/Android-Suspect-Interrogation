@@ -34,6 +34,7 @@ RESTART_COMMAND = "systemctl restart ai-worker.service"
 SUSPECT_ONLY = "SUSPECT_ONLY"
 SUSPECT_PLUS_INTERROGATOR = "SUSPECT_PLUS_INTERROGATOR"
 FULL = "FULL"
+SUPPORTED_SPEAKER_BACKENDS = ("xvector", "eres2net_large")
 
 
 def _normalize(values: Iterable[float]) -> list[float]:
@@ -88,18 +89,38 @@ def _vad_positive_pcm(client: SpeechWorkerClient, pcm: bytes) -> bytes:
     return speech
 
 
-def _embedding(client: SpeechWorkerClient, pcm: bytes) -> list[float]:
+def _normalize_speaker_backend(value: str) -> str:
+    backend = str(value or "").strip().lower()
+    if backend not in SUPPORTED_SPEAKER_BACKENDS:
+        raise ValueError("speaker backend must be xvector or eres2net_large")
+    return backend
+
+
+def _embedding(client: SpeechWorkerClient, pcm: bytes, speaker_backend: str) -> list[float]:
+    backend = _normalize_speaker_backend(speaker_backend)
     speech = _vad_positive_pcm(client, pcm)
-    payload = client.extract_embedding(speech, sample_rate=SAMPLE_RATE)
+    payload = client.extract_embedding(speech, sample_rate=SAMPLE_RATE, backend=backend)
     values = payload.get("embedding")
     if not isinstance(values, list):
-        raise RuntimeError("xvector did not return an embedding array")
+        raise RuntimeError(f"{backend} did not return an embedding array")
+    returned_backend = str(payload.get("backend_key") or backend).strip().lower()
+    if returned_backend != backend:
+        raise RuntimeError("speech worker returned an embedding from the wrong speaker backend")
     return _normalize(values)
 
 
-def _stream_smoke(client: SpeechWorkerClient, pcm: bytes) -> dict[str, object]:
+def _stream_smoke(
+    client: SpeechWorkerClient,
+    pcm: bytes,
+    speaker_backend: str,
+) -> dict[str, object]:
+    speaker_backend = _normalize_speaker_backend(speaker_backend)
     session_id = f"rk3588-smoke-{uuid.uuid4().hex}"
-    client.open_session(session_id, sample_rate=SAMPLE_RATE)
+    client.open_session(
+        session_id,
+        sample_rate=SAMPLE_RATE,
+        speaker_backend=speaker_backend,
+    )
     events = []
     chunk_bytes = SAMPLE_RATE * SAMPLE_WIDTH * CHUNK_SIZE_MS // 1000
     try:
@@ -278,8 +299,9 @@ def _restart_worker(socket_path: Path, timeout_seconds: float = 90.0) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the real RK3588 FSMN-VAD + Paraformer + XVector speech smoke.")
+    parser = argparse.ArgumentParser(description="Run a real RK3588 FSMN-VAD + Paraformer + selected speaker-backend smoke.")
     parser.add_argument("--socket", default=DEFAULT_SOCKET)
+    parser.add_argument("--speaker-backend", choices=SUPPORTED_SPEAKER_BACKENDS, default="xvector")
     parser.add_argument("--model-root", default=DEFAULT_MODEL_ROOT)
     parser.add_argument("--api-base", default="http://127.0.0.1:18080")
     parser.add_argument("--env-file", default="/etc/suspect-interrogation/ai-worker.env")
@@ -291,7 +313,9 @@ def main() -> int:
     parser.add_argument("--skip-systemd", action="store_true")
     parser.add_argument("--skip-api", action="store_true")
     parser.add_argument("--skip-mount", action="store_true")
+    parser.add_argument("--no-restart", action="store_true", help="Never restart ai-worker.service after the smoke")
     args = parser.parse_args()
+    speaker_backend = _normalize_speaker_backend(args.speaker_backend)
 
     socket_path = Path(args.socket)
     model_root = Path(args.model_root)
@@ -314,21 +338,28 @@ def main() -> int:
     client = SpeechWorkerClient(socket_path, timeout=45.0)
     health = client.health()
     models = health.get("models") if isinstance(health, dict) else None
-    if not isinstance(models, dict) or not all(models.get(name) for name in ("asr", "vad", "speaker")):
-        raise RuntimeError("speech worker health does not report paraformer/fsmn-vad/xvector ready")
+    if not isinstance(models, dict) or not all(models.get(name) for name in ("asr", "vad")):
+        raise RuntimeError("speech worker health does not report paraformer/fsmn-vad ready")
+    backend_health = health.get("speaker_backends") if isinstance(health, dict) else None
+    if isinstance(backend_health, dict):
+        selected_health = backend_health.get(speaker_backend)
+        if isinstance(selected_health, dict) and selected_health.get("ready") is not True:
+            raise RuntimeError(f"speech worker speaker backend is not ready: {speaker_backend}")
+    elif speaker_backend == "xvector" and not models.get("speaker"):
+        raise RuntimeError("speech worker XVector model is not ready")
 
     pcm_by_role = {
         SpeakerRole.SUSPECT: _read_pcm16_wav(Path(args.suspect_wav)),
         SpeakerRole.INTERROGATOR: _read_pcm16_wav(Path(args.interrogator_wav)),
         SpeakerRole.RECORDER: _read_pcm16_wav(Path(args.recorder_wav)),
     }
-    refs = {role: _embedding(client, pcm) for role, pcm in pcm_by_role.items()}
-    stream = _stream_smoke(client, pcm_by_role[SpeakerRole.SUSPECT])
+    refs = {role: _embedding(client, pcm, speaker_backend) for role, pcm in pcm_by_role.items()}
+    stream = _stream_smoke(client, pcm_by_role[SpeakerRole.SUSPECT], speaker_backend)
     policy = _assert_policy_modes(refs=refs, threshold=threshold, margin=margin)
     api_states = {} if args.skip_api else _check_api_capabilities(args.api_base)
 
     restart_verified = False
-    if not args.skip_systemd:
+    if not args.skip_systemd and not args.no_restart:
         _restart_worker(socket_path)
         restarted = SpeechWorkerClient(socket_path, timeout=45.0).health()
         restarted_models = restarted.get("models") if isinstance(restarted, dict) else None
@@ -340,7 +371,12 @@ def main() -> int:
         "status": "ok",
         "sample_rate": SAMPLE_RATE,
         "chunk_size_ms": CHUNK_SIZE_MS,
-        "models": {"paraformer": bool(models.get("asr")), "fsmn-vad": bool(models.get("vad")), "xvector": bool(models.get("speaker"))},
+        "speaker_backend": speaker_backend,
+        "models": {
+            "paraformer": bool(models.get("asr")),
+            "fsmn-vad": bool(models.get("vad")),
+            "speaker": True,
+        },
         "stream": stream,
         "policy_modes": policy,
         "capabilities": api_states,
