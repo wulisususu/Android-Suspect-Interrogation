@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +27,7 @@ class RuntimeSettings(BaseSettings):
     audio_input_mode: str = "ALSA"
     formal_routing_mode: str = "legacy"
     speaker_backend: str = "xvector"
+    speaker_authoritative_backend: str | None = None
     qa_idle_close_seconds: float = 4.0
 
     data_dir: Path = Path("/var/lib/suspect-interrogation")
@@ -56,9 +57,25 @@ class RuntimeSettings(BaseSettings):
     @classmethod
     def validate_speaker_backend(cls, value: str) -> str:
         normalized = str(value or "xvector").strip().lower()
-        if normalized not in {"xvector", "eres2net_large"}:
-            raise ValueError("speaker_backend must be xvector or eres2net_large")
+        if normalized not in {"xvector", "eres2net_large", "compare"}:
+            raise ValueError("speaker_backend must be xvector, eres2net_large or compare")
         return normalized
+
+    @field_validator("speaker_authoritative_backend")
+    @classmethod
+    def validate_speaker_authoritative_backend(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip().lower()
+        if normalized not in {"xvector", "eres2net_large"}:
+            raise ValueError("speaker authoritative backend must be xvector or eres2net_large")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_speaker_compare_mode(self) -> "RuntimeSettings":
+        if self.speaker_backend == "compare" and self.speaker_authoritative_backend is None:
+            raise ValueError("speaker authoritative backend is required when speaker_backend=compare")
+        return self
 
     @field_validator("qa_idle_close_seconds")
     @classmethod
