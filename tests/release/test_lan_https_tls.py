@@ -99,6 +99,8 @@ def test_release_control_prepares_tls_and_verifies_https_with_ca():
     assert "install_tls_trust" in control
     assert "curl_tls" in control
     assert "https://127.0.0.1" in control
+    assert 'SUSPECT_HEALTH_RETRIES:-30' in control
+    assert 'for attempt in $(seq 1 "$retries")' in control
     assert "curl -k" not in control
     assert "curl --insecure" not in control
 

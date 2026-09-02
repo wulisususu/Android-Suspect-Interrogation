@@ -107,11 +107,17 @@ install_runtime() {
 
 health_check() {
   local base="${SUSPECT_HEALTH_BASE_URL:-https://127.0.0.1:${SUSPECT_API_PORT:-18080}}"
-  curl_tls --max-time 3 "$base/health/live" >/dev/null
-  local ready
-  ready="$(curl_tls --max-time 3 "$base/health/ready")"
-  grep -Eq '"status"[[:space:]]*:[[:space:]]*"ready"' <<<"$ready"
-  printf '%s\n' "$ready"
+  local retries="${SUSPECT_HEALTH_RETRIES:-30}" ready attempt
+  for attempt in $(seq 1 "$retries"); do
+    if curl_tls --max-time 3 "$base/health/live" >/dev/null && \
+       ready="$(curl_tls --max-time 3 "$base/health/ready")" && \
+       grep -Eq '"status"[[:space:]]*:[[:space:]]*"ready"' <<<"$ready"; then
+      printf '%s\n' "$ready"
+      return 0
+    fi
+    if [[ "$attempt" -lt "$retries" ]]; then sleep 1; fi
+  done
+  return 1
 }
 
 restart_runtime() {
