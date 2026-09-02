@@ -1,0 +1,41 @@
+name: Task 12 ERes Registry GREEN
+
+on:
+  push:
+    branches:
+      - feat/dual-speaker-backends
+    paths:
+      - 'linux/backend/config/model-registry.yaml'
+      - 'tests/release/test_eres2net_registry_manifest.py'
+      - '.github/workflows/task12-eres-registry-green.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  green:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: linux/backend
+      HARDWARE_MODE: mock
+      DEVICE_SIMULATOR: '1'
+      AI_MODE: mock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: linux/backend/requirements.txt
+      - name: Install test dependencies
+        run: python -m pip install -r linux/backend/requirements.txt pytest
+      - name: Real-package registry contract
+        run: python -m pytest -q tests/release/test_eres2net_registry_manifest.py
+      - name: Speaker registry and ERes adapter regression
+        run: |
+          python -m pytest -q \
+            linux/backend/tests/test_speaker_backend_registry.py \
+            linux/backend/tests/test_eres2net_large_backend.py
+      - name: Full release regression
+        run: python -m pytest -q tests/release
