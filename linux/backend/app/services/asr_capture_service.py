@@ -133,6 +133,8 @@ class AsrCaptureService:
             if voiceprint_repo.get_suspect(
                 db, case_id, model_key=self.speaker_model_key
             ) is None:
+                if self.speaker_model_key == "xvector":
+                    raise DomainError("SUSPECT_VOICEPRINT_REQUIRED", "请先完成嫌疑人声纹注册", 409)
                 raise DomainError(
                     "SUSPECT_VOICEPRINT_BACKEND_REQUIRED",
                     f"请先完成 {self.speaker_model_key} 嫌疑人声纹注册",
@@ -180,11 +182,17 @@ class AsrCaptureService:
         speech_open = False
         audio_started = False
         try:
-            self.ai_supervisor.open_speech_session(
-                runtime.speech_session_id,
-                sample_rate=self.sample_rate,
-                speaker_backend=self.speaker_model_key,
-            )
+            if self.speaker_model_key == "xvector":
+                self.ai_supervisor.open_speech_session(
+                    runtime.speech_session_id,
+                    sample_rate=self.sample_rate,
+                )
+            else:
+                self.ai_supervisor.open_speech_session(
+                    runtime.speech_session_id,
+                    sample_rate=self.sample_rate,
+                    speaker_backend=self.speaker_model_key,
+                )
             speech_open = True
             self.device_manager.start_record()
             audio_started = True

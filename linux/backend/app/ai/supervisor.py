@@ -324,13 +324,24 @@ class AISupervisor:
         session_id: str,
         *,
         sample_rate: int = 16000,
-        speaker_backend: str = "xvector",
+        speaker_backend: str | None = None,
     ) -> dict[str, Any]:
-        result = self._speech_client.open_session(
-            session_id,
-            sample_rate=sample_rate,
-            speaker_backend=speaker_backend,
-        )
+        explicit_backend = speaker_backend is not None
+        if explicit_backend:
+            result = self._speech_client.open_session(
+                session_id,
+                sample_rate=sample_rate,
+                speaker_backend=speaker_backend,
+            )
+        else:
+            result = self._speech_client.open_session(
+                session_id,
+                sample_rate=sample_rate,
+            )
+            # In-process mock historically returned no backend discriminator.
+            # Normalize the omitted-backend call even if an internal client adds it.
+            result = dict(result)
+            result.pop("speaker_backend", None)
         self._speech_sessions.add(session_id)
         return result
 
