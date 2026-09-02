@@ -6,6 +6,7 @@ on:
       - 'feat/dual-speaker-backends'
     paths:
       - '.superpowers/dual-speaker-task6-apply.py'
+      - '.superpowers/dual-speaker-task6-compat-apply.py'
       - '.github/workflows/dual-speaker-task6-apply.yml'
   workflow_dispatch:
 
@@ -49,9 +50,6 @@ jobs:
           text = path.read_text(encoding='utf-8')
           old = '''        try:\n            self.ai_supervisor.open_speech_session(runtime.speech_session_id, sample_rate=self.sample_rate)\n            speech_open = True\n            self.device_manager.start_record()\n'''
           new = '''        try:\n            self.ai_supervisor.open_speech_session(\n                runtime.speech_session_id,\n                sample_rate=self.sample_rate,\n            )\n            speech_open = True\n            self.device_manager.start_record()\n'''
-          # The formal capture block and question-prep block share the one-line call.
-          # Rewrite only the second occurrence (question-prep) as a semantic no-op so
-          # the deterministic Task 6 script can require a unique formal-capture anchor.
           first = text.find(old)
           second = text.find(old, first + 1) if first >= 0 else -1
           third = text.find(old, second + 1) if second >= 0 else -1
@@ -62,6 +60,8 @@ jobs:
           PY
       - name: Apply deterministic Task 6 edits
         run: python .superpowers/dual-speaker-task6-apply.py
+      - name: Apply backward-compatible response contract
+        run: python .superpowers/dual-speaker-task6-compat-apply.py
       - name: Compile backend
         run: python -m compileall -q linux/backend
       - name: Task 4-6 specialist gate
@@ -86,6 +86,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add \
             linux/backend/app/ai/supervisor.py \
+            linux/backend/app/ai/speech/client.py \
             linux/backend/app/services/voiceprint_service.py \
             linux/backend/app/services/asr_capture_service.py \
             linux/backend/app/services/source_aware_asr_capture_service.py \
