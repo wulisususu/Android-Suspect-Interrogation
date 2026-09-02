@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Verify read-only diagnostic contract
+      - name: Verify runner-temp-only diagnostic contract
         shell: bash
         run: |
           set -euo pipefail
@@ -25,35 +25,50 @@ jobs:
           from pathlib import Path
           text=Path('.github/workflows/task12-xvector-legacy-diagnostic.yml').read_text(encoding='utf-8')
           board=text.split('\n  board-diagnostic:\n',1)[1]
-          forbidden=['pip install','apt install','systemctl ','snapshot_download','rm -rf /opt','SUSPECT_SPEAKER_BACKEND=']
+          forbidden=['apt install','systemctl ','snapshot_download','rm -rf /opt','SUSPECT_SPEAKER_BACKEND=','--user','--prefix /opt']
           for token in forbidden:
               if token in board:
                   raise SystemExit(f'forbidden mutation token: {token}')
-          print('TASK12_XVECTOR_LEGACY_DIAGNOSTIC_SAFE')
+          required=[
+              'LEGACY_TARGET="$RUNNER_TEMP/task12-funasr-085"',
+              '--no-deps --target "$LEGACY_TARGET" "funasr==0.8.5"',
+              'rm -rf "$LEGACY_TARGET"',
+          ]
+          for token in required:
+              if token not in board:
+                  raise SystemExit(f'missing runner-temp isolation token: {token}')
+          print('TASK12_XVECTOR_LEGACY_TEMP_DIAGNOSTIC_SAFE')
           PY
 
   board-diagnostic:
     needs: hosted-safety
     runs-on: [self-hosted, rk3588]
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - name: Inspect candidate legacy Python runtimes read-only
+      - name: Stage pinned FunASR 0.8.5 only in runner temp
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
+          LEGACY_TARGET="$RUNNER_TEMP/task12-funasr-085"
+          test -x "$PY"
+          rm -rf "$LEGACY_TARGET"
+          mkdir -p "$LEGACY_TARGET"
+          "$PY" -m pip install --disable-pip-version-check --no-deps --target "$LEGACY_TARGET" "funasr==0.8.5"
+          test -f "$LEGACY_TARGET/funasr/bin/sv_infer.py"
+          echo "LEGACY_TARGET=$LEGACY_TARGET" >> "$GITHUB_ENV"
+          echo "LEGACY_PYTHON=$PY" >> "$GITHUB_ENV"
+
+      - name: Load existing XVector checkpoint with pinned legacy runtime
         shell: bash
         run: |
           set -euo pipefail
           MODEL_ROOT=/home/youyeetoo/funasr-models/xvector
           test -f "$MODEL_ROOT/sv.yaml"
           test -f "$MODEL_ROOT/sv.pth"
-          for candidate in \
-            /opt/suspect-interrogation/runtime/funasr-env/bin/python \
-            /home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python; do
-            echo "=== candidate=$candidate ==="
-            if [[ ! -x "$candidate" ]]; then
-              echo 'status=missing'
-              continue
-            fi
-            "$candidate" - "$MODEL_ROOT" <<'PY'
-          import json, sys, time
+          PYTHONPATH="$LEGACY_TARGET" PYTHONNOUSERSITE=1 MODELSCOPE_OFFLINE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+            "$LEGACY_PYTHON" - "$MODEL_ROOT" <<'PY'
+          import json, math, sys, time
           root=sys.argv[1]
           report={'python': sys.executable}
           try:
@@ -71,13 +86,35 @@ jobs:
               report['legacy_import_ok']=True
               report['legacy_load_ok']=True
               report['load_seconds']=round(time.perf_counter()-started,6)
-              del runtime
+
+              import numpy as np
+              sample_rate=16000
+              seconds=2
+              t=np.arange(sample_rate * seconds, dtype=np.float32) / sample_rate
+              audio=(0.08*np.sin(2*np.pi*220.0*t) + 0.03*np.sin(2*np.pi*440.0*t)).astype(np.float32)
+              infer_started=time.perf_counter()
+              embedding=runtime.calculate_embedding(audio).squeeze(0).detach().cpu().numpy().reshape(-1)
+              report['embedding_ok']=True
+              report['embedding_dim']=int(embedding.size)
+              report['embedding_norm']=round(float(np.linalg.norm(embedding)),6)
+              report['embedding_latency_ms']=round((time.perf_counter()-infer_started)*1000.0,3)
+              if embedding.size <= 0 or not np.all(np.isfinite(embedding)) or not math.isfinite(report['embedding_norm']):
+                  raise RuntimeError('legacy XVector produced invalid embedding')
           except Exception as exc:
-              report['legacy_import_ok']=False
-              report['legacy_load_ok']=False
+              report.setdefault('legacy_import_ok', False)
+              report.setdefault('legacy_load_ok', False)
+              report.setdefault('embedding_ok', False)
               report['error_type']=type(exc).__name__
-              report['error']=str(exc)[:500]
+              report['error']=str(exc)[:1000]
           print(json.dumps(report,ensure_ascii=False,sort_keys=True))
+          if not report.get('legacy_load_ok') or not report.get('embedding_ok'):
+              raise SystemExit(1)
+          print('TASK12_XVECTOR_FUNASR_085_RUNTIME_OK')
           PY
-          done
-          echo 'TASK12_XVECTOR_LEGACY_DIAGNOSTIC_COMPLETE'
+
+      - name: Cleanup runner-temp legacy package
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          rm -rf "$LEGACY_TARGET"
