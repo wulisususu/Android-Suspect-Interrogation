@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.ai.errors import BackendUnavailableError, ModelNotInstalledError, WorkerCrashedError
-from speech_worker.speaker.base import SpeakerBackendKey
+from speech_worker.speaker.base import SpeakerBackendKey, SpeakerEmbeddingBackend
+from speech_worker.speaker.eres2net_large import ERes2NetLargeBackend, ModelFactory as ERes2NetModelFactory
 from speech_worker.speaker.xvector import LegacySpeakerFactory, XVectorBackend
 
 
@@ -17,7 +18,7 @@ ModelFactory = Callable[..., Any]
 
 
 class FunASRSpeechRuntime:
-    """Own local FunASR ASR/VAD and delegate speaker embeddings to a backend."""
+    """Own local FunASR ASR/VAD and model-isolated speaker embedding backends."""
 
     def __init__(
         self,
@@ -25,14 +26,24 @@ class FunASRSpeechRuntime:
         model_root: str | Path = DEFAULT_MODEL_ROOT,
         model_factory: ModelFactory | None = None,
         legacy_speaker_factory: LegacySpeakerFactory | None = None,
+        eres2net_model_dir: str | Path | None = None,
+        eres2net_model_factory: ERes2NetModelFactory | None = None,
     ) -> None:
         self.model_root = Path(model_root)
         self._model_factory = model_factory
         self._legacy_speaker_factory = legacy_speaker_factory
+        self._eres2net_model_factory = eres2net_model_factory
+        configured_eres_dir = eres2net_model_dir
+        if configured_eres_dir is None:
+            configured_eres_dir = os.environ.get("SUSPECT_ERES2NET_MODEL_DIR") or None
+        self.eres2net_model_dir = (
+            Path(configured_eres_dir).expanduser() if configured_eres_dir is not None else None
+        )
         self.asr_model: Any | None = None
         self.vad_model: Any | None = None
         self.speaker_model: Any | None = None
         self._speaker_embedding_backend: XVectorBackend | None = None
+        self._speaker_backends: dict[SpeakerBackendKey, SpeakerEmbeddingBackend] = {}
         self.speaker_backend: str | None = None
         self.speaker_backend_key = SpeakerBackendKey.XVECTOR
         self.speaker_model_id = self.speaker_backend_key.value
@@ -42,7 +53,9 @@ class FunASRSpeechRuntime:
 
     @property
     def loaded(self) -> bool:
-        return self.core_loaded and self._speaker_embedding_backend is not None
+        # Historical speech sessions are XVector-backed until Task 6 makes the
+        # formal capture session itself backend-aware.
+        return self.core_loaded and SpeakerBackendKey.XVECTOR in self._speaker_backends
 
     @property
     def core_loaded(self) -> bool:
@@ -50,6 +63,7 @@ class FunASRSpeechRuntime:
 
     def load(self) -> None:
         self._clear_models()
+        self._speaker_backends = {}
         self.model_errors = {}
         model_dirs = {name: self.model_root / name for name in _MODEL_NAMES}
 
@@ -81,10 +95,12 @@ class FunASRSpeechRuntime:
 
         self.asr_model = loaded["paraformer"]
         self.vad_model = loaded["fsmn-vad"]
+        self._load_xvector(factory, model_dirs["xvector"])
+        self._load_eres2net()
 
-        speaker_path = model_dirs["xvector"]
+    def _load_xvector(self, factory: ModelFactory, speaker_path: Path) -> None:
         if not speaker_path.is_dir():
-            self.model_errors["xvector"] = {
+            self.model_errors[SpeakerBackendKey.XVECTOR.value] = {
                 "code": "MODEL_NOT_INSTALLED",
                 "error_type": "MissingModelDirectory",
             }
@@ -99,17 +115,18 @@ class FunASRSpeechRuntime:
         try:
             backend.load()
         except Exception as exc:
-            self.model_errors["xvector"] = {
+            self.model_errors[SpeakerBackendKey.XVECTOR.value] = {
                 "code": getattr(exc, "code", "BACKEND_UNAVAILABLE"),
                 "error_type": type(exc).__name__,
             }
             details = getattr(exc, "details", None)
             if isinstance(details, dict) and details.get("primary_error_type"):
-                self.model_errors["xvector"]["primary_error_type"] = str(
+                self.model_errors[SpeakerBackendKey.XVECTOR.value]["primary_error_type"] = str(
                     details["primary_error_type"]
                 )
             return
 
+        self._speaker_backends[SpeakerBackendKey.XVECTOR] = backend
         self._speaker_embedding_backend = backend
         self.speaker_model = backend.model
         self.speaker_backend = backend.implementation
@@ -122,6 +139,35 @@ class FunASRSpeechRuntime:
                 "code": "FINGERPRINT_FAILED",
                 "error_type": backend.fingerprint_error_type,
             }
+
+    def _load_eres2net(self) -> None:
+        key = SpeakerBackendKey.ERES2NET_LARGE
+        model_path = self.eres2net_model_dir
+        if model_path is None:
+            self.model_errors[key.value] = {
+                "code": "MODEL_NOT_CONFIGURED",
+                "error_type": "MissingModelConfiguration",
+            }
+            return
+        if not model_path.is_dir():
+            self.model_errors[key.value] = {
+                "code": "MODEL_NOT_INSTALLED",
+                "error_type": "MissingModelDirectory",
+            }
+            return
+        backend = ERes2NetLargeBackend(
+            model_path=model_path,
+            model_factory=self._eres2net_model_factory,
+        )
+        try:
+            backend.load()
+        except Exception as exc:
+            self.model_errors[key.value] = {
+                "code": getattr(exc, "code", "BACKEND_UNAVAILABLE"),
+                "error_type": type(exc).__name__,
+            }
+            return
+        self._speaker_backends[key] = backend
 
     @staticmethod
     def _load_model(factory: ModelFactory, model_path: Path) -> Any:
@@ -139,6 +185,17 @@ class FunASRSpeechRuntime:
             status = "degraded"
         else:
             status = "not_loaded"
+        backend_health: dict[str, dict[str, Any]] = {}
+        for key in (SpeakerBackendKey.XVECTOR, SpeakerBackendKey.ERES2NET_LARGE):
+            backend = self._speaker_backends.get(key)
+            error = self.model_errors.get(key.value)
+            backend_health[key.value] = {
+                "ready": backend is not None,
+                "model_id": getattr(backend, "model_id", None),
+                "model_version": getattr(backend, "model_version", None),
+                "model_fingerprint": getattr(backend, "model_fingerprint", None),
+                "error": dict(error) if isinstance(error, dict) else None,
+            }
         return {
             "status": status,
             "model_root": str(self.model_root),
@@ -152,6 +209,7 @@ class FunASRSpeechRuntime:
             "speaker_model_id": self.speaker_model_id,
             "speaker_model_version": self.speaker_model_version,
             "speaker_model_fingerprint": self.speaker_model_fingerprint,
+            "speaker_backends": backend_health,
             "errors": dict(self.model_errors),
         }
 
@@ -194,12 +252,26 @@ class FunASRSpeechRuntime:
         confidence = None if confidence_value is None else float(confidence_value)
         return {"text": text, "confidence": confidence}
 
-    def speaker_embedding(self, pcm: bytes, sample_rate: int) -> dict[str, Any]:
-        backend = self._speaker_embedding_backend
-        if backend is None:
+    def speaker_embedding(
+        self,
+        pcm: bytes,
+        sample_rate: int,
+        *,
+        backend_key: str | SpeakerBackendKey | None = None,
+    ) -> dict[str, Any]:
+        try:
+            key = SpeakerBackendKey(backend_key or SpeakerBackendKey.XVECTOR)
+        except ValueError as exc:
             raise BackendUnavailableError(
-                "speaker embedding backend is not loaded",
-                details={"backend_key": self.speaker_backend_key.value},
+                "requested speaker embedding backend is unknown",
+                details={"backend_key": str(backend_key)},
+            ) from exc
+        backend = self._speaker_backends.get(key)
+        if backend is None:
+            error = self.model_errors.get(key.value) or {}
+            raise BackendUnavailableError(
+                f"speaker embedding backend {key.value} is not loaded",
+                details={"backend_key": key.value, **error},
             )
         result = backend.extract_embedding(pcm, int(sample_rate))
         return {
@@ -263,13 +335,17 @@ class FunASRSpeechRuntime:
         self.vad_model = None
         self.speaker_model = None
         self._speaker_embedding_backend = None
+        self._speaker_backends = {}
         self.speaker_backend = None
+        self.speaker_backend_key = SpeakerBackendKey.XVECTOR
+        self.speaker_model_id = self.speaker_backend_key.value
+        self.speaker_model_version = os.environ.get("SUSPECT_XVECTOR_MODEL_VERSION", "local")
         self.speaker_model_fingerprint = None
 
 
 def _first_record(result: Any) -> dict[str, Any]:
     if isinstance(result, dict):
         return result
-    if isinstance(result, list) and result and isinstance(result[0], dict):
+    if isinstance(result, (list, tuple)) and result and isinstance(result[0], dict):
         return result[0]
     return {}
