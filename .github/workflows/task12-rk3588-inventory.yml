@@ -1,0 +1,115 @@
+name: Task 12 RK3588 Read-only Inventory
+
+on:
+  push:
+    branches:
+      - feat/dual-speaker-backends
+    paths:
+      - '.github/workflows/task12-rk3588-inventory.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task12-rk3588-read-only-inventory
+  cancel-in-progress: false
+
+jobs:
+  hosted-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify probe syntax and non-destructive contract
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/ci/probe-eres2net-large.py
+          ! grep -Eq 'systemctl restart|:8000|snapshot_download|pip install' .github/workflows/task12-rk3588-inventory.yml
+
+  board-inventory:
+    needs: hosted-contract
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONPATH: ${{ github.workspace }}/linux/backend
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          clean: true
+
+      - name: Read-only ERes2Net package inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/task12-inventory"
+          mkdir -p "$OUT"
+          python3 scripts/ci/probe-eres2net-large.py \
+            --search-root /opt/suspect-interrogation/models \
+            --search-root /home/youyeetoo/.cache/modelscope \
+            --search-root /home/youyeetoo/funasr-models \
+            --allow-missing \
+            --output "$OUT/eres2net-package.json"
+          cat "$OUT/eres2net-package.json"
+
+      - name: Read-only speech runtime health
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOCKET=/run/suspect-interrogation/speech.sock
+          if [[ ! -S "$SOCKET" ]]; then
+            echo 'speech_socket=missing'
+            exit 0
+          fi
+          PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
+          RELEASE="$(readlink -f /opt/suspect-interrogation/current)"
+          PYTHONPATH="$RELEASE/linux/backend" "$PY" - <<'PY'
+          import json
+          from app.ai.speech.client import SpeechWorkerClient
+          health=SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=30).health()
+          safe={
+              'models': health.get('models'),
+              'speaker_backends': health.get('speaker_backends'),
+              'degraded': health.get('degraded'),
+          }
+          print(json.dumps(safe, ensure_ascii=False, sort_keys=True, indent=2))
+          PY
+
+      - name: Count existing calibration WAV corpus without reading audio
+        shell: bash
+        run: |
+          set -euo pipefail
+          for root in \
+            /var/lib/suspect-interrogation/calibration \
+            /var/lib/suspect-interrogation/speaker-calibration \
+            /opt/suspect-interrogation/calibration \
+            /home/youyeetoo/suspect-speaker-calibration; do
+            if [[ -d "$root" ]]; then
+              count="$(find "$root" -type f \( -iname '*.wav' -o -iname '*.wave' \) -printf '.' 2>/dev/null | wc -c)"
+              echo "corpus_root=$root wav_count=$count"
+              find "$root" -mindepth 1 -maxdepth 1 -type d -printf 'corpus_group=%f\n' 2>/dev/null | sort || true
+            else
+              echo "corpus_root=$root status=missing"
+            fi
+          done
+          for envfile in /etc/suspect-interrogation/runtime.env /etc/suspect-interrogation/ai-worker.env; do
+            if sudo -n test -f "$envfile"; then
+              sudo -n awk -F= '/CALIBRATION.*(DIR|CORPUS|WAV)|VOICEPRINT.*(DIR|CORPUS)/ {print "configured_key=" $1}' "$envfile" || true
+            fi
+          done
+          echo TASK12_READ_ONLY_INVENTORY_COMPLETE
+
+      - name: Upload non-audio package manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: task12-rk3588-inventory-${{ github.run_id }}
+          path: ${{ runner.temp }}/task12-inventory/eres2net-package.json
+          if-no-files-found: error
+          retention-days: 7
