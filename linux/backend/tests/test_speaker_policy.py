@@ -30,6 +30,11 @@ def decide(candidates, enabled_roles, *, duration=1800, overlap=False, threshold
     )
 
 
+def test_legacy_xvector_provenance_value_remains_readable():
+    assert SpeakerSource("X_VECTOR") is SpeakerSource.X_VECTOR
+    assert SpeakerSource.X_VECTOR.value == "X_VECTOR"
+
+
 def test_suspect_only_model_baseline_rejects_high_impostor_score_below_vendor_threshold():
     result = decide_speaker(
         candidates=[candidate(SpeakerRole.SUSPECT, 0.90, "suspect-1", "张某")],
@@ -57,7 +62,7 @@ def test_suspect_only_model_baseline_accepts_score_above_vendor_threshold():
     )
 
     assert result.role is SpeakerRole.SUSPECT
-    assert result.source is SpeakerSource.X_VECTOR
+    assert result.source is SpeakerSource.SPEAKER_EMBEDDING
     assert result.voiceprint_verified is True
 
 
@@ -67,7 +72,7 @@ def test_suspect_only_accepts_verified_suspect():
         {SpeakerRole.SUSPECT},
     )
     assert result.role is SpeakerRole.SUSPECT
-    assert result.source is SpeakerSource.X_VECTOR
+    assert result.source is SpeakerSource.SPEAKER_EMBEDDING
     assert result.voiceprint_verified is True
     assert result.score == pytest.approx(0.84)
     assert result.second_best_score is None
@@ -99,7 +104,7 @@ def test_partial_mode_accepts_registered_officer_when_threshold_and_margin_pass(
         {SpeakerRole.SUSPECT, SpeakerRole.INTERROGATOR},
     )
     assert result.role is SpeakerRole.INTERROGATOR
-    assert result.source is SpeakerSource.X_VECTOR
+    assert result.source is SpeakerSource.SPEAKER_EMBEDDING
     assert result.voiceprint_verified is True
     assert result.score == pytest.approx(0.88)
     assert result.second_best_score == pytest.approx(0.35)
@@ -146,7 +151,7 @@ def test_full_mode_accepts_best_candidate_only_when_threshold_and_margin_pass():
         {SpeakerRole.SUSPECT, SpeakerRole.INTERROGATOR, SpeakerRole.RECORDER},
     )
     assert result.role is SpeakerRole.INTERROGATOR
-    assert result.source is SpeakerSource.X_VECTOR
+    assert result.source is SpeakerSource.SPEAKER_EMBEDDING
     assert result.voiceprint_verified is True
     assert result.score == pytest.approx(0.82)
     assert result.second_best_score == pytest.approx(0.59)
