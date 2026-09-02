@@ -33,6 +33,7 @@ jobs:
               'LEGACY_ROOT="$RUNNER_TEMP/task12-funasr-legacy"',
               '--no-deps --target "$LEGACY_TARGET" "funasr==$version"',
               '--no-deps --target "$LEGACY_TARGET" "humanfriendly==10.0"',
+              'LEGACY_DEPENDENCY_INVENTORY=',
               'for version in 0.8.4 0.8.6; do',
               'rm -rf "$LEGACY_ROOT"',
           ]
@@ -71,6 +72,18 @@ jobs:
               continue
             fi
             "$PY" -m pip install --disable-pip-version-check --no-deps --target "$LEGACY_TARGET" "humanfriendly==10.0"
+            PYTHONPATH="$LEGACY_TARGET" PYTHONNOUSERSITE=1 "$PY" - <<'PY'
+          import importlib.util, json
+          modules = [
+              'humanfriendly', 'scipy', 'librosa', 'jamo', 'yaml', 'soundfile',
+              'kaldiio', 'torch_complex', 'sentencepiece', 'jieba', 'pytorch_wpe',
+              'editdistance', 'oss2', 'tqdm', 'umap', 'jaconv', 'hydra',
+              'tensorboardX', 'requests', 'numpy', 'torch', 'torchaudio', 'modelscope',
+          ]
+          availability = {name: importlib.util.find_spec(name) is not None for name in modules}
+          missing = sorted(name for name, present in availability.items() if not present)
+          print('LEGACY_DEPENDENCY_INVENTORY=' + json.dumps({'missing': missing, 'availability': availability}, sort_keys=True))
+          PY
             if [[ ! -f "$LEGACY_TARGET/funasr/bin/sv_infer.py" ]]; then
               echo "candidate=$version sv_infer_present=false"
               continue
