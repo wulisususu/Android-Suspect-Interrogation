@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from app.ai.errors import WorkerCrashedError
+from app.ai.errors import BackendUnavailableError, WorkerCrashedError
 from app.ai.speech.types import SpeechEventType
 from speech_worker.session import SpeechSession
 
@@ -53,6 +53,26 @@ class MissingSpeakerMetadataRuntime(FakeRuntime):
     def speaker_embedding(self, pcm: bytes, sample_rate: int) -> dict:
         self.speaker_calls.append((pcm, sample_rate))
         return {"embedding": [0.6, 0.8]}
+
+
+@dataclass
+class CompareRuntime(FakeRuntime):
+    compare_speaker_calls: list[tuple[bytes, int, str]] = field(default_factory=list)
+    failing_backends: set[str] = field(default_factory=set)
+
+    def speaker_embedding(self, pcm: bytes, sample_rate: int, *, backend_key: str | None = None) -> dict:
+        key = str(backend_key or "xvector")
+        self.compare_speaker_calls.append((pcm, sample_rate, key))
+        if key in self.failing_backends:
+            raise BackendUnavailableError(f"{key} unavailable")
+        return {
+            "embedding": [0.6, 0.8] if key == "xvector" else [0.8, 0.6],
+            "backend_key": key,
+            "model_id": f"model-{key}",
+            "model_version": "v1",
+            "model_fingerprint": ("a" if key == "xvector" else "b") * 64,
+            "latency_ms": 9.0 if key == "xvector" else 21.0,
+        }
 
 
 def _pcm(ms: int, sample_rate: int = 16000, value: int = 1) -> bytes:
@@ -186,3 +206,76 @@ def test_finalize_flushes_vad_and_closes_active_utterance_without_duplicate_deco
     assert session.finalize() == []
     assert len(runtime.transcribe_calls) == 1
     assert len(runtime.speaker_calls) == 1
+
+
+def test_compare_mode_runs_both_backends_on_identical_utterance_pcm_and_emits_one_business_result():
+    runtime = CompareRuntime(vad_outputs=[[[0, 100]]])
+    session = SpeechSession(
+        "session-compare",
+        16000,
+        runtime,
+        speaker_backend_key="compare",
+        authoritative_speaker_backend_key="xvector",
+        chunk_size_ms=200,
+    )
+
+    events = session.push_pcm(_pcm(200, value=5))
+    expected_pcm = _pcm(100, value=5)
+
+    assert runtime.compare_speaker_calls == [
+        (expected_pcm, 16000, "xvector"),
+        (expected_pcm, 16000, "eres2net_large"),
+    ]
+    assert sum(event.type is SpeechEventType.SPEAKER_RESULT for event in events) == 1
+    assert sum(event.type is SpeechEventType.SPEAKER_COMPARE_RESULT for event in events) == 1
+
+    authoritative = next(event for event in events if event.type is SpeechEventType.SPEAKER_RESULT)
+    secondary = next(event for event in events if event.type is SpeechEventType.SPEAKER_COMPARE_RESULT)
+    assert authoritative.details["backend_key"] == "xvector"
+    assert authoritative.embedding == [0.6, 0.8]
+    assert secondary.details["backend_key"] == "eres2net_large"
+    assert secondary.details["diagnostic_only"] is True
+    assert secondary.embedding == [0.8, 0.6]
+
+
+def test_compare_secondary_failure_keeps_authoritative_speaker_result():
+    runtime = CompareRuntime(
+        vad_outputs=[[[0, 100]]],
+        failing_backends={"eres2net_large"},
+    )
+    session = SpeechSession(
+        "session-compare-secondary-fail",
+        16000,
+        runtime,
+        speaker_backend_key="compare",
+        authoritative_speaker_backend_key="xvector",
+    )
+
+    events = session.push_pcm(_pcm(200, value=6))
+    assert sum(event.type is SpeechEventType.SPEAKER_RESULT for event in events) == 1
+    diagnostic = next(event for event in events if event.type is SpeechEventType.SPEAKER_COMPARE_RESULT)
+    assert diagnostic.embedding is None
+    assert diagnostic.details["backend_key"] == "eres2net_large"
+    assert diagnostic.details["speaker_unavailable"] is True
+    assert diagnostic.details["speaker_error_code"] == "BACKEND_UNAVAILABLE"
+
+
+def test_compare_authoritative_failure_does_not_promote_secondary_to_speaker_result():
+    runtime = CompareRuntime(
+        vad_outputs=[[[0, 100]]],
+        failing_backends={"xvector"},
+    )
+    session = SpeechSession(
+        "session-compare-authoritative-fail",
+        16000,
+        runtime,
+        speaker_backend_key="compare",
+        authoritative_speaker_backend_key="xvector",
+    )
+
+    events = session.push_pcm(_pcm(200, value=7))
+    assert sum(event.type is SpeechEventType.SPEAKER_RESULT for event in events) == 0
+    diagnostic = next(event for event in events if event.type is SpeechEventType.SPEAKER_COMPARE_RESULT)
+    assert diagnostic.details["backend_key"] == "eres2net_large"
+    assert diagnostic.details["diagnostic_only"] is True
+    assert diagnostic.embedding == [0.8, 0.6]
