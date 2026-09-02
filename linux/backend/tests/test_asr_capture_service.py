@@ -99,6 +99,11 @@ class FakeSpeechSupervisor:
                     end_ms=1200,
                     embedding=[1.0, 0.0, 0.0, 0.0],
                     model_id="test-xvector",
+                    details={
+                        "backend_key": "xvector",
+                        "model_version": "speaker-v1",
+                        "model_fingerprint": "sha256:test-xvector",
+                    },
                 ),
             ]
         return []
@@ -204,7 +209,7 @@ def test_capture_pushes_each_pcm_chunk_once_persists_verified_fragment_and_broad
         assert fragment.edited_text == "我是嫌疑人"
         assert fragment.state == "PENDING"
         assert fragment.speaker == "SUSPECT"
-        assert fragment.speaker_source == "X_VECTOR"
+        assert fragment.speaker_source == "SPEAKER_EMBEDDING"
         assert fragment.voiceprint_verified is True
         assert fragment.low_confidence is False
         assert fragment.speaker_score == 1.0
@@ -220,7 +225,7 @@ def test_capture_pushes_each_pcm_chunk_once_persists_verified_fragment_and_broad
     assert event_name == "ASR_FRAGMENT"
     assert payload["rawText"] == "我是嫌疑人"
     assert payload["speaker"] == "SUSPECT"
-    assert payload["speakerSource"] == "X_VECTOR"
+    assert payload["speakerSource"] == "SPEAKER_EMBEDDING"
     assert payload["thresholdSource"] == "DEVICE_CALIBRATED"
     assert payload["voiceprintVerified"] is True
     engine.dispose()
