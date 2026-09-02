@@ -1,13 +1,24 @@
 import json
 import os
+import struct
 import subprocess
 import sys
+import wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "ci" / "probe-funasr-runtime.py"
 ERES2NET_SCRIPT = ROOT / "scripts" / "ci" / "probe-eres2net-large.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "linux-ai-runtime-rk3588.yml"
+
+
+def _write_pcm16_wav(path: Path, *, frames: int = 1600) -> None:
+    pcm = struct.pack(f"<{frames}h", *([900] * frames))
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16_000)
+        handle.writeframes(pcm)
 
 
 def test_probe_exists_and_is_offline_and_non_destructive():
@@ -21,6 +32,16 @@ def test_probe_exists_and_is_offline_and_non_destructive():
     assert "_ModelScopeLegacyXVectorAdapter" not in text
     assert "unlink(" not in text
     assert "rmtree(" not in text
+
+
+def test_probe_routes_xvector_through_project_backend_contract():
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "from speech_worker.speaker.xvector import XVectorBackend" in text
+    assert "XVectorBackend(" in text
+    assert "--legacy-xvector-python" in text
+    assert "embedding_dim" in text
+    assert "implementation" in text
+    assert "model.generate(input=str(speaker_wav), embedding=True)" not in text
 
 
 def test_probe_output_is_restricted_to_actions_runtime_roots():
@@ -48,6 +69,14 @@ def test_rk3588_probe_inventories_models_and_fails_closed_without_runtime():
     following = workflow[missing_runtime:missing_runtime + 300]
     assert "exit 1" in following
     assert "real-model probe skipped" not in following
+
+
+def test_rk3588_probe_discovers_legacy_xvector_runtime_and_passes_it_explicitly():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "XVECTOR_LEGACY_PYTHON" in workflow
+    assert "from funasr.bin.sv_infer import Speech2Xvector" in workflow
+    assert '--legacy-xvector-python "$XVECTOR_LEGACY_PYTHON"' in workflow
+    assert "XVector-compatible legacy Python not found" in workflow
 
 
 def test_rk3588_ai_pytest_is_focused_and_uses_isolated_mutable_paths():
@@ -171,7 +200,7 @@ def test_probe_preserves_successful_load_evidence_when_optional_inference_fails(
     )
     (stubs / "torch.py").write_text("__version__ = 'test'\n", encoding="utf-8")
     speaker_wav = tmp_path / "speaker.wav"
-    speaker_wav.write_bytes(b"RIFF-test")
+    _write_pcm16_wav(speaker_wav)
     output = tmp_path / "report.json"
     env = os.environ.copy()
     env.update(
