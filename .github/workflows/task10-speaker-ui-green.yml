@@ -1,0 +1,65 @@
+name: Task 10 Speaker UI GREEN
+
+on:
+  push:
+    branches:
+      - feat/dual-speaker-backends
+    paths:
+      - .superpowers/task10-ui-api-green.py
+      - .superpowers/task10-ui-settings-green.py
+      - .superpowers/task10-ui-calibration-green.py
+      - .superpowers/task10-ui-preparation-green.py
+      - .github/workflows/task10-speaker-ui-green.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  task10-ui-green:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/dual-speaker-backends
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - name: Install web dependencies
+        working-directory: webapp
+        run: npm ci
+      - name: Apply Task 10 UI production changes
+        run: |
+          python .superpowers/task10-ui-api-green.py
+          python .superpowers/task10-ui-settings-green.py
+          python .superpowers/task10-ui-calibration-green.py
+          python .superpowers/task10-ui-preparation-green.py
+      - name: Task 10 Vue contract
+        working-directory: webapp
+        run: npm test -- --run src/components/SpeakerBackendControls.test.ts
+      - name: Full Vue regression
+        working-directory: webapp
+        run: npm test
+      - name: Vue typecheck
+        working-directory: webapp
+        run: npm run typecheck
+      - name: Production build
+        working-directory: webapp
+        run: npm run build
+      - name: Commit UI production changes only after GREEN
+        run: |
+          git status --short
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            webapp/src/api/speakerCalibration.ts \
+            webapp/src/types/interrogation.ts \
+            webapp/src/views/SystemSettingsView.vue \
+            webapp/src/components/SpeakerCalibrationCenter.vue \
+            webapp/src/components/VoiceprintPreparationPanel.vue
+          git diff --cached --check
+          git commit -m "feat: expose dual speaker controls in system settings"
+          git push origin HEAD:feat/dual-speaker-backends
