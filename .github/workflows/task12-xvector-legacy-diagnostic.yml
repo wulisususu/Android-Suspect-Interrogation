@@ -33,7 +33,7 @@ jobs:
               'LEGACY_ROOT="$RUNNER_TEMP/task12-funasr-legacy"',
               '--no-deps --target "$LEGACY_TARGET" "funasr==$version"',
               '--no-deps --target "$LEGACY_TARGET" "humanfriendly==10.0"',
-              '--no-deps --target "$LEGACY_TARGET" editdistance pytorch_wpe',
+              '--no-deps --target "$LEGACY_TARGET" editdistance pytorch_wpe rotary_embedding_torch',
               'LEGACY_DEPENDENCY_INVENTORY=',
               'for version in 0.8.4 0.8.6; do',
               'rm -rf "$LEGACY_ROOT"',
@@ -73,13 +73,13 @@ jobs:
               continue
             fi
             "$PY" -m pip install --disable-pip-version-check --no-deps --target "$LEGACY_TARGET" "humanfriendly==10.0"
-            "$PY" -m pip install --disable-pip-version-check --no-deps --target "$LEGACY_TARGET" editdistance pytorch_wpe
+            "$PY" -m pip install --disable-pip-version-check --no-deps --target "$LEGACY_TARGET" editdistance pytorch_wpe rotary_embedding_torch
             PYTHONPATH="$LEGACY_TARGET" PYTHONNOUSERSITE=1 "$PY" - <<'PY'
           import importlib.util, json
           modules = [
               'humanfriendly', 'scipy', 'librosa', 'jamo', 'yaml', 'soundfile',
               'kaldiio', 'torch_complex', 'sentencepiece', 'jieba', 'pytorch_wpe',
-              'editdistance', 'oss2', 'tqdm', 'umap', 'jaconv', 'hydra',
+              'editdistance', 'rotary_embedding_torch', 'oss2', 'tqdm', 'umap', 'jaconv', 'hydra',
               'tensorboardX', 'requests', 'numpy', 'torch', 'torchaudio', 'modelscope',
           ]
           availability = {name: importlib.util.find_spec(name) is not None for name in modules}
