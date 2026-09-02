@@ -32,6 +32,7 @@ jobs:
           from pathlib import Path
 
           text = Path('.github/workflows/task12-rk3588-inventory.yml').read_text(encoding='utf-8')
+          board = text.split('\n  board-inventory:\n', 1)[1]
           forbidden = [
               'systemctl ' + 'restart',
               'systemctl ' + 'stop',
@@ -42,9 +43,9 @@ jobs:
               ':80' + '00',
           ]
           for token in forbidden:
-              if token in text:
+              if token in board:
                   raise SystemExit(f'forbidden board mutation token: {token}')
-          if 'open(' in text or '.read_bytes(' in text or '.read_text(' in text[text.find('board-inventory'):]:
+          if 'open(' in board or '.read_bytes(' in board or '.read_text(' in board:
               raise SystemExit('board inventory must not open/read candidate audio content')
           print('TASK12_AUDIO_INVENTORY_HOSTED_CONTRACT_OK')
           PY
