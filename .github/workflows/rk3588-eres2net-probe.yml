@@ -142,7 +142,7 @@ jobs:
           import json, math, sys
           report = json.load(open(sys.argv[1], encoding='utf-8'))
           assert report['embedding_dim'] == 512, report
-          assert math.isclose(float(report['embedding_norm']), 1.0, abs_tol=1e-5), report
+          assert math.isclose(float(report['embedding_l2_norm']), 1.0, abs_tol=1e-5), report
           assert report['runtime_backend_key'] == 'eres2net_large', report
           PY
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 import wave
@@ -131,6 +132,8 @@ def _runtime_embedding_smoke(socket_path: str, wav_path: Path) -> dict[str, obje
     values = payload.get("embedding")
     if not isinstance(values, list) or not values:
         raise ValueError("ERes2Net-large runtime returned no embedding values")
+    if not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in values):
+        raise ValueError("ERes2Net-large runtime returned a non-finite embedding value")
     if str(payload.get("backend_key") or "").strip().lower() != "eres2net_large":
         raise ValueError("ERes2Net-large runtime returned the wrong backend identity")
     fingerprint = payload.get("model_fingerprint")
@@ -139,7 +142,9 @@ def _runtime_embedding_smoke(socket_path: str, wav_path: Path) -> dict[str, obje
     latency = payload.get("latency_ms")
     return {
         "embedding_dim": len(values),
+        "embedding_l2_norm": math.sqrt(sum(float(value) * float(value) for value in values)),
         "embedding_latency_ms": None if latency is None else float(latency),
+        "runtime_backend_key": payload.get("backend_key"),
         "runtime_model_id": payload.get("model_id"),
         "runtime_model_version": payload.get("model_version"),
         "runtime_model_fingerprint": fingerprint,

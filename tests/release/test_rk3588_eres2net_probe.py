@@ -27,5 +27,5 @@ def test_eres2net_probe_requires_a_local_checkpoint_and_validates_runtime_contra
     assert "ERes2Net model is not installed; download is intentionally forbidden" in text
     assert "set(backends) == {'eres2net_large'}" in text
     assert "embedding_dim'] == 512" in text
-    assert "embedding_norm" in text
+    assert "embedding_l2_norm" in text
     assert "runtime_backend_key'] == 'eres2net_large'" in text
