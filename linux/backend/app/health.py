@@ -59,7 +59,7 @@ def _database_check(settings: RuntimeSettings) -> dict[str, Any]:
         if integrity != "ok":
             return _result("ERROR", required=True, detail="sqlite quick_check failed")
         return _result("READY", required=True, detail="sqlite quick_check=ok")
-    except sqlite3.Error as exc:
+    except (OSError, sqlite3.Error) as exc:
         return _result("ERROR", required=True, detail=f"database check failed: {exc.__class__.__name__}")
 
 

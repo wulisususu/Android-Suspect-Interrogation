@@ -82,8 +82,9 @@ class NoopSpeechClient:
 
 def test_runtime_settings_validate_selected_speaker_backend():
     assert RuntimeSettings(speaker_backend=ERES2NET).speaker_backend == ERES2NET
-    assert RuntimeSettings(speaker_backend="XVECTOR").speaker_backend == XVECTOR
-    with pytest.raises(ValueError, match="speaker_backend"):
+    with pytest.raises(ValueError, match="eres2net_large"):
+        RuntimeSettings(speaker_backend="XVECTOR")
+    with pytest.raises(ValueError, match="eres2net_large"):
         RuntimeSettings(speaker_backend="unknown-space")
 
 
