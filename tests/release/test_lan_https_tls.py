@@ -118,6 +118,8 @@ def test_production_workflow_uses_https_and_verifies_certificate_identity():
 def test_service_bootstrap_allows_eres2net_cold_start_before_requiring_socket():
     workflow = read(".github/workflows/rk3588-service-bootstrap.yml")
     assert "for _ in $(seq 1 240); do" in workflow
+    assert "sudo -n test -S /run/suspect-interrogation/speech.sock" in workflow
+    assert "sudo -n -u suspect-interrogation env" in workflow
     assert "SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=30).health()" in workflow
 
 

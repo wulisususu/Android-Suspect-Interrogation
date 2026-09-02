@@ -273,12 +273,13 @@ jobs:
           sudo -n systemctl enable --now ai-worker.service
           for _ in $(seq 1 240); do
             systemctl is-active --quiet ai-worker.service || true
-            [[ -S /run/suspect-interrogation/speech.sock ]] && break
+            sudo -n test -S /run/suspect-interrogation/speech.sock && break
             sleep 1
           done
           systemctl is-active --quiet ai-worker.service
-          test -S /run/suspect-interrogation/speech.sock
-          PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \
+          sudo -n test -S /run/suspect-interrogation/speech.sock
+          sudo -n -u suspect-interrogation env \
+            PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \
             /opt/suspect-interrogation/runtime/funasr-env/bin/python - <<'PY'
           from app.ai.speech.client import SpeechWorkerClient
           health = SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=30).health()
@@ -359,7 +360,7 @@ jobs:
           systemctl is-active --quiet interrogation-api.service
           systemctl is-enabled --quiet ai-worker.service
           systemctl is-active --quiet ai-worker.service
-          test -S /run/suspect-interrogation/speech.sock
+          sudo -n test -S /run/suspect-interrogation/speech.sock
 
           for attempt in $(seq 1 30); do
             if curl --cacert /etc/suspect-interrogation/tls/ca.crt -fsS "https://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" >/tmp/suspect-ready.json; then
