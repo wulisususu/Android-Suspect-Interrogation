@@ -23,7 +23,13 @@ class SpeechRuntime(Protocol):
 
     def transcribe(self, pcm: bytes, sample_rate: int) -> dict[str, Any]: ...
 
-    def speaker_embedding(self, pcm: bytes, sample_rate: int) -> dict[str, Any]: ...
+    def speaker_embedding(
+        self,
+        pcm: bytes,
+        sample_rate: int,
+        *,
+        backend_key: str | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class SpeechSession:
@@ -41,6 +47,7 @@ class SpeechSession:
         sample_rate: int,
         runtime: SpeechRuntime,
         *,
+        speaker_backend_key: str = "xvector",
         chunk_size_ms: int = 200,
         pre_roll_ms: int = 1200,
     ) -> None:
@@ -52,10 +59,14 @@ class SpeechSession:
             raise ValueError("chunk_size_ms must be positive")
         if int(pre_roll_ms) < 0:
             raise ValueError("pre_roll_ms cannot be negative")
+        backend_key = str(speaker_backend_key or "xvector").strip().lower()
+        if not backend_key:
+            raise ValueError("speaker_backend_key is required")
 
         self.session_id = session_id
         self.sample_rate = int(sample_rate)
         self.runtime = runtime
+        self.speaker_backend_key = backend_key
         self.chunk_size_ms = int(chunk_size_ms)
         self.pre_roll_ms = int(pre_roll_ms)
 
@@ -200,10 +211,7 @@ class SpeechSession:
             )
 
         captured_duration_ms = max(0, end_ms - capture_start_ms)
-        utterance_bytes = min(
-            len(self.current_utterance_pcm),
-            self._ms_to_bytes(captured_duration_ms),
-        )
+        utterance_bytes = min(len(self.current_utterance_pcm), self._ms_to_bytes(captured_duration_ms))
         utterance_pcm = bytes(self.current_utterance_pcm[:utterance_bytes])
         trailing_pcm = bytes(self.current_utterance_pcm[utterance_bytes:])
 
@@ -221,14 +229,21 @@ class SpeechSession:
                 )
             ]
 
-        # ASR is authoritative for text. Its failure must propagate so callers
-        # never fabricate a transcript. Speaker attribution is independent and
-        # may degrade to UNKNOWN when the configured speaker backend is unavailable.
         asr = self.runtime.transcribe(utterance_pcm, self.sample_rate)
         common_details: dict[str, Any] = {"forced_final": True} if forced_final else {}
         speaker: dict[str, Any] | None = None
         try:
-            speaker = self.runtime.speaker_embedding(utterance_pcm, self.sample_rate)
+            if self.speaker_backend_key == "xvector":
+                # Preserve compatibility with legacy XVector runtimes/fakes that
+                # predate the backend-key keyword while still validating the
+                # returned model space below.
+                speaker = self.runtime.speaker_embedding(utterance_pcm, self.sample_rate)
+            else:
+                speaker = self.runtime.speaker_embedding(
+                    utterance_pcm,
+                    self.sample_rate,
+                    backend_key=self.speaker_backend_key,
+                )
         except AIError as exc:
             common_details = {
                 **common_details,
@@ -259,14 +274,19 @@ class SpeechSession:
             ),
         ]
         if speaker is not None:
-            backend_key = str(speaker.get("backend_key") or "").strip()
+            backend_key = str(speaker.get("backend_key") or "").strip().lower()
             model_id = str(speaker.get("model_id") or "").strip()
             if not backend_key or not model_id:
                 raise WorkerCrashedError(
                     "speaker result did not contain required model metadata",
+                    details={"has_backend_key": bool(backend_key), "has_model_id": bool(model_id)},
+                )
+            if backend_key != self.speaker_backend_key:
+                raise WorkerCrashedError(
+                    "speaker result backend does not match the session backend",
                     details={
-                        "has_backend_key": bool(backend_key),
-                        "has_model_id": bool(model_id),
+                        "expected_backend_key": self.speaker_backend_key,
+                        "actual_backend_key": backend_key,
                     },
                 )
 
