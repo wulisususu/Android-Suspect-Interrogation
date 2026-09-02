@@ -10,12 +10,15 @@ def main() -> None:
     text = TARGET.read_text(encoding="utf-8")
     malformed = "    </article>\n  </section>\n<style scoped>"
     fixed = "    </article>\n  </section>\n</template>\n\n<style scoped>"
+    trailing = "</style>\n</template>"
     if text.count(malformed) != 1:
         raise SystemExit(f"expected one malformed template/style boundary, found {text.count(malformed)}")
-    if not text.endswith("</style>\n</template>"):
-        raise SystemExit("expected trailing </style> followed by misplaced </template>")
+    if text.count(trailing) != 1:
+        raise SystemExit(f"expected one trailing misplaced template close, found {text.count(trailing)}")
+    if text.find(trailing) < text.find("<style scoped>"):
+        raise SystemExit("misplaced template close must follow scoped style")
     text = text.replace(malformed, fixed, 1)
-    text = text.removesuffix("</style>\n</template>") + "</style>\n"
+    text = text.replace(trailing, "</style>", 1)
     TARGET.write_text(text, encoding="utf-8")
 
 
