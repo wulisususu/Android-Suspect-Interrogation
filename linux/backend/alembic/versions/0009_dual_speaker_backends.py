@@ -41,9 +41,17 @@ def _backup_and_clear_dependencies() -> dict[str, tuple[str, ...]]:
     inspector = sa.inspect(bind)
     columns_by_table: dict[str, tuple[str, ...]] = {}
     for table in _DEPENDENT_TABLES:
-        columns = tuple(str(column["name"]) for column in inspector.get_columns(table))
-        columns_by_table[table] = columns
         backup = f"__0009_backup_{table}"
+        if backup in inspector.get_table_names():
+            pending_rows = bind.execute(sa.text(f"SELECT COUNT(*) FROM {_quoted(table)}")).scalar_one()
+            if int(pending_rows) != 0:
+                raise RuntimeError(
+                    f"0009 cannot resume while {table} has rows beside its interrupted backup"
+                )
+            columns_by_table[table] = tuple(str(column["name"]) for column in inspector.get_columns(backup))
+            continue
+
+        columns_by_table[table] = tuple(str(column["name"]) for column in inspector.get_columns(table))
         bind.execute(sa.text(f"CREATE TABLE {_quoted(backup)} AS SELECT * FROM {_quoted(table)}"))
         bind.execute(sa.text(f"DELETE FROM {_quoted(table)}"))
     return columns_by_table

@@ -167,6 +167,20 @@ def test_0009_migrates_preexisting_rows_to_xvector_without_changing_embedding_by
     finally:
         engine.dispose()
 
+    engine = create_engine(f"sqlite:///{db_file}")
+    try:
+        with engine.begin() as connection:
+            for table in (
+                "officer_voice_samples",
+                "session_officer_voice_snapshots",
+                "session_voice_assignments",
+            ):
+                backup = f"__0009_backup_{table}"
+                connection.execute(text(f'CREATE TABLE "{backup}" AS SELECT * FROM "{table}"'))
+                connection.execute(text(f'DELETE FROM "{table}"'))
+    finally:
+        engine.dispose()
+
     result = _upgrade_existing(db_file, env, "head")
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -223,5 +237,7 @@ def test_0009_migrates_preexisting_rows_to_xvector_without_changing_embedding_by
             "model_id": "xvector",
             "model_version": "legacy-v1",
         }
+        tables = set(inspect(engine).get_table_names())
+        assert not {"__0009_backup_officer_voice_samples", "__0009_backup_session_officer_voice_snapshots", "__0009_backup_session_voice_assignments"} & tables
     finally:
         engine.dispose()
