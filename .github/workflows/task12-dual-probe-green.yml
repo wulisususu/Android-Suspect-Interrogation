@@ -54,7 +54,7 @@ jobs:
         run: python -m pytest -q tests/release/test_rk3588_speech_scripts.py
       - name: Full release regression
         run: python -m pytest -q tests/release
-      - name: Commit Task 12 production changes only after GREEN
+      - name: Commit validated Task 12 scripts
         run: |
           set -euo pipefail
           git status --short
@@ -63,8 +63,7 @@ jobs:
           git add \
             scripts/ci/probe-eres2net-large.py \
             scripts/ci/rk3588-speech-calibrate.py \
-            scripts/ci/rk3588-speech-smoke.py \
-            .github/workflows/rk3588-dual-speaker-probe.yml
+            scripts/ci/rk3588-speech-smoke.py
           git diff --cached --check
-          git commit -m 'test: add rk3588 dual speaker backend probes'
+          git commit -m 'test: parameterize rk3588 speaker probe scripts'
           git push origin HEAD:feat/dual-speaker-backends
