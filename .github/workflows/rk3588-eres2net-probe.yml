@@ -54,11 +54,22 @@ jobs:
       HF_HUB_OFFLINE: '1'
       TRANSFORMERS_OFFLINE: '1'
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          clean: true
+      - name: Checkout exact revision with bounded codeload download
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="$RUNNER_TEMP/eres2net-${GITHUB_SHA}.tar.gz"
+          ROOT="$RUNNER_TEMP/eres2net-${GITHUB_SHA}"
+          rm -rf "$ROOT" "$ARCHIVE"
+          mkdir -p "$ROOT"
+          timeout 300s curl --fail --location --retry 4 --retry-all-errors \
+            --connect-timeout 30 --max-time 240 \
+            "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}" \
+            -o "$ARCHIVE"
+          tar -xzf "$ARCHIVE" -C "$ROOT" --strip-components=1
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          cp -a "$ROOT"/. "$GITHUB_WORKSPACE"/
+          test -f "$GITHUB_WORKSPACE/scripts/ci/probe-eres2net-large.py"
 
       - name: Resolve installed offline runtime and ERes2Net model
         shell: bash
