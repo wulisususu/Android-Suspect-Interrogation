@@ -17,9 +17,6 @@ class RuntimeSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="SUSPECT_",
         case_sensitive=False,
-        # Pydantic 2.x reserves the ``model_`` prefix by default. ``model_path``
-        # is an intentional runtime setting, not a BaseModel method, so narrow
-        # the protected namespace to one this settings class does not use.
         protected_namespaces=("settings_",),
     )
 
@@ -29,6 +26,7 @@ class RuntimeSettings(BaseSettings):
     cors_origins: str = ""
     audio_input_mode: str = "ALSA"
     formal_routing_mode: str = "legacy"
+    speaker_backend: str = "xvector"
     qa_idle_close_seconds: float = 4.0
 
     data_dir: Path = Path("/var/lib/suspect-interrogation")
@@ -52,6 +50,14 @@ class RuntimeSettings(BaseSettings):
         normalized = str(value or "legacy").strip().lower()
         if normalized not in {"legacy", "qwen"}:
             raise ValueError("formal_routing_mode must be legacy or qwen")
+        return normalized
+
+    @field_validator("speaker_backend")
+    @classmethod
+    def validate_speaker_backend(cls, value: str) -> str:
+        normalized = str(value or "xvector").strip().lower()
+        if normalized not in {"xvector", "eres2net_large"}:
+            raise ValueError("speaker_backend must be xvector or eres2net_large")
         return normalized
 
     @field_validator("qa_idle_close_seconds")
