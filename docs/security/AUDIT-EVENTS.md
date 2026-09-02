@@ -28,9 +28,11 @@ The following action names are current application-level `AuditLog` events and a
 | `ASR_FRAGMENT_CONFIRM` | Reviewed temporary fragment entered the official transcript | fragment/message IDs and selected effective text/speaker metadata |
 | `ASR_FRAGMENT_DISCARD` | Temporary fragment was discarded before confirmation | fragment ID and state transition |
 
+New voiceprint-verified decisions use backend-neutral `speaker_source=SPEAKER_EMBEDDING`. The exact speaker backend/model is separate evidence metadata (`backend_key`, model ID/version/fingerprint where available). Historical persisted or audit values of `speaker_source=X_VECTOR` remain valid and readable; the append-only contract forbids rewriting those historical rows merely to adopt the generic provenance value.
+
 `ASR_SPEAKER_FALLBACK` does **not** assert a voiceprint-verified officer identity. `OFFICER_FALLBACK` means the utterance was classified by the approved suspect-exclusion rule when officer identity was not voiceprint verified.
 
-`ASR_SPEAKER_LOW_CONFIDENCE` is the fail-safe path. If XVector is unavailable but Paraformer produced a valid ASR result, the text may still be retained as a temporary fragment with `speaker=UNKNOWN`, `speaker_source=UNASSIGNED`, `voiceprint_verified=false`, and `low_confidence=true` for human confirmation. The audit event may record a typed speaker error code, but never the embedding or audio that caused it.
+`ASR_SPEAKER_LOW_CONFIDENCE` is the fail-safe path. If the selected speaker-embedding backend is unavailable but Paraformer produced a valid ASR result, the text may still be retained as a temporary fragment with `speaker=UNKNOWN`, `speaker_source=UNASSIGNED`, `voiceprint_verified=false`, and `low_confidence=true` for human confirmation. The audit event may record a typed speaker error code and non-sensitive backend/model identifiers, but never the embedding or audio that caused it.
 
 ## Operational speech failures
 
@@ -39,16 +41,17 @@ Not every runtime failure has a case-scoped business `AuditLog` row. The followi
 - speech worker startup/socket/model-load failure;
 - FSMN-VAD inference/protocol failure;
 - Paraformer ASR inference failure;
-- XVector load/inference failure;
+- selected speaker-backend load/inference failure;
 - ALSA/audio-capture failure.
 
 The operational rules are fail-safe:
 
 - VAD failure does not invent utterance boundaries; capture cleanup still runs.
 - ASR failure creates no fabricated transcript text.
-- XVector failure does not discard a successful ASR result; speaker attribution degrades to `UNKNOWN` unless an already-approved deterministic fallback rule applies.
-- Missing or invalid speaker calibration keeps speaker verification `NOT_CONFIGURED` and blocks formal calibrated capture rather than using an undocumented threshold.
-- Missing suspect voiceprint blocks formal voice-enabled capture/start.
+- Selected speaker-backend failure does not discard a successful ASR result; speaker attribution degrades to `UNKNOWN` unless an already-approved deterministic fallback rule applies.
+- Missing selected-model reference does not permit cross-model fallback or relabeling of another backend's embedding.
+- Missing or invalid speaker calibration keeps speaker verification `NOT_CONFIGURED` and blocks formal calibrated capture rather than using an undocumented operating point.
+- Missing suspect voiceprint for the selected backend blocks formal voice-enabled capture/start.
 
 When an operational speaker error reaches an otherwise valid temporary fragment, its typed error code can be attached to the corresponding `ASR_SPEAKER_LOW_CONFIDENCE` event. Worker/VAD/ASR failures that occur before a fragment exists remain operational telemetry rather than creating a misleading fragment-level audit record.
 
@@ -63,4 +66,4 @@ When an operational speaker error reaches an otherwise valid temporary fragment,
 
 ## Verification requirements
 
-Automated tests must prove that speaker fallback/low-confidence events are appended without raw audio/PCM/embedding data, that manual correction cannot mutate immutable source ASR text/model scores, and that business audit history survives normal database/service lifecycle operations. Real-device calibration and RK3588 acceptance remain separate Task 12 evidence and must not be inferred from hosted CI.
+Automated tests must prove that speaker fallback/low-confidence events are appended without raw audio/PCM/embedding data, that manual correction cannot mutate immutable source ASR text/model scores, that historical `X_VECTOR` provenance remains readable without rewriting existing rows, and that business audit history survives normal database/service lifecycle operations. Real-device calibration and RK3588 acceptance remain separate Task 12 evidence and must not be inferred from hosted CI.
