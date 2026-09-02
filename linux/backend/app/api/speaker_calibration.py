@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -17,29 +19,62 @@ from hardware.base import DeviceInfo
 
 
 router = APIRouter(prefix="/speaker-calibration", tags=["speaker-calibration"])
+SpeakerBackendKey = Literal["xvector", "eres2net_large"]
 
 
 class RecomputeBody(BaseModel):
     actor_id: str | None = None
 
 
-def _model_provider(request: Request):
+def _model_provider(request: Request, backend: SpeakerBackendKey | None = None):
     injected = getattr(request.app.state, "speaker_calibration_model_provider", None)
     if callable(injected):
-        return injected
+        if backend is None:
+            return injected
+
+        def injected_provider() -> CurrentSpeakerModelIdentity:
+            try:
+                identity = injected(backend)
+            except TypeError:
+                identity = injected()
+            actual = str(getattr(identity, "backend_key", "xvector") or "xvector").strip().lower()
+            if actual != backend:
+                raise DomainError(
+                    "SPEAKER_MODEL_BACKEND_MISMATCH",
+                    "校准模型提供器返回了错误的声纹后端",
+                    503,
+                    data={"requestedBackend": backend, "actualBackend": actual},
+                )
+            return identity
+
+        return injected_provider
+
+    selected = str(backend or "xvector").strip().lower()
 
     def provide() -> CurrentSpeakerModelIdentity:
         client = getattr(request.app.state, "speech_client", None)
         if client is None:
-            raise DomainError("SPEAKER_MODEL_UNAVAILABLE", "XVector运行时未配置", 503)
+            raise DomainError("SPEAKER_MODEL_UNAVAILABLE", "声纹运行时未配置", 503)
         health = client.health()
-        fingerprint = health.get("speaker_model_fingerprint") if isinstance(health, dict) else None
+        backends = health.get("speaker_backends") if isinstance(health, dict) else None
+        backend_health = backends.get(selected) if isinstance(backends, dict) else None
+        if not isinstance(backend_health, dict) and selected == "xvector":
+            backend_health = health if isinstance(health, dict) else {}
+        backend_health = backend_health or {}
+        fingerprint = backend_health.get("model_fingerprint") or backend_health.get("speaker_model_fingerprint")
         if not fingerprint:
-            raise DomainError("SPEAKER_MODEL_FINGERPRINT_UNAVAILABLE", "当前XVector模型指纹不可用", 503)
+            raise DomainError(
+                "SPEAKER_MODEL_FINGERPRINT_UNAVAILABLE",
+                f"当前 {selected} 模型指纹不可用",
+                503,
+            )
         return CurrentSpeakerModelIdentity(
-            str(health.get("speaker_model_id") or "xvector"),
-            None if health.get("speaker_model_version") is None else str(health.get("speaker_model_version")),
+            str(backend_health.get("model_id") or backend_health.get("speaker_model_id") or selected),
+            None
+            if backend_health.get("model_version", backend_health.get("speaker_model_version")) is None
+            else str(backend_health.get("model_version", backend_health.get("speaker_model_version"))),
             str(fingerprint),
+            backend_key=selected,
         )
 
     return provide
@@ -70,35 +105,45 @@ def _microphone_provider(request: Request):
     return provide
 
 
-def _service(request: Request, db: Session) -> SpeakerCalibrationService:
+def _service(
+    request: Request,
+    db: Session,
+    backend: SpeakerBackendKey | None = None,
+) -> SpeakerCalibrationService:
     return SpeakerCalibrationService(
         db,
-        model_provider=_model_provider(request),
+        model_provider=_model_provider(request, backend),
         microphone_provider=_microphone_provider(request),
     )
 
 
 @router.get("/status")
-def calibration_status(request: Request, db: Session = Depends(get_db)):
-    return envelope(_service(request, db).status())
+def calibration_status(
+    request: Request,
+    backend: SpeakerBackendKey | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    return envelope(_service(request, db, backend).status())
 
 
 @router.get("/history")
 def calibration_history(
     request: Request,
     limit: int = Query(50, ge=1, le=200),
+    backend: SpeakerBackendKey | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    return envelope(_service(request, db).history(limit=limit))
+    return envelope(_service(request, db, backend).history(limit=limit))
 
 
 @router.post("/recompute")
 def recompute_calibration(
     request: Request,
     body: RecomputeBody | None = None,
+    backend: SpeakerBackendKey | None = Query(None),
     db: Session = Depends(get_db),
 ):
     return envelope(
-        _service(request, db).recompute(actor_id=body.actor_id if body else None),
+        _service(request, db, backend).recompute(actor_id=body.actor_id if body else None),
         "设备声纹校准已重新计算",
     )

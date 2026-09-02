@@ -28,6 +28,7 @@ from app.api.interrogation import router as interrogation_router
 from app.api.responses import envelope
 from app.api.signature import router as signature_router
 from app.api.speaker_calibration import router as speaker_calibration_router
+from app.api.speaker_runtime import router as speaker_runtime_router
 from app.api.template_workspace import router as template_workspace_router
 from app.api.tls import router as tls_router
 from app.api.voiceprints import router as voiceprints_router
@@ -316,6 +317,7 @@ def create_app(
     app.include_router(asr_router, prefix="/api/v1")
     app.include_router(voiceprints_router, prefix="/api/v1")
     app.include_router(speaker_calibration_router, prefix="/api/v1")
+    app.include_router(speaker_runtime_router, prefix="/api/v1")
     app.include_router(client_context_router, prefix="/api/v1")
     app.include_router(compat_router)
     app.include_router(websocket_router)

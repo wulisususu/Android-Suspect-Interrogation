@@ -38,42 +38,67 @@ class VoiceprintService:
         *,
         speech_client: Any,
         speaker_model_key: str = _XVECTOR,
+        speaker_authoritative_backend: str | None = None,
     ):
         self.db = db
         self.speech_client = speech_client
         self.speaker_model_key = str(speaker_model_key or _XVECTOR).strip().lower()
-        if self.speaker_model_key not in _ENROLLMENT_BACKENDS:
-            raise ValueError("speaker_model_key must be xvector or eres2net_large")
+        configured_authority = (
+            None
+            if speaker_authoritative_backend is None
+            else str(speaker_authoritative_backend).strip().lower()
+        )
+        if self.speaker_model_key not in {*_ENROLLMENT_BACKENDS, "compare"}:
+            raise ValueError("speaker_model_key must be xvector, eres2net_large or compare")
+        if self.speaker_model_key == "compare":
+            if configured_authority not in _ENROLLMENT_BACKENDS:
+                raise ValueError("speaker_authoritative_backend is required for compare mode")
+            self.authoritative_speaker_backend = configured_authority
+        else:
+            if configured_authority not in {None, self.speaker_model_key}:
+                raise ValueError("speaker_authoritative_backend must match the single backend")
+            self.authoritative_speaker_backend = self.speaker_model_key
 
     def readiness(self, case_id: str) -> dict:
         case_repo.get(self.db, case_id)
-        suspect = voiceprint_repo.get_suspect(
-            self.db, case_id, model_key=self.speaker_model_key
-        )
-        interrogator_ready = False
-        recorder_ready = False
-
         session = session_repo.active_for_case(self.db, case_id)
+        assignment = None
         if session is not None:
             assignment = self.db.scalar(
                 select(SessionVoiceAssignment).where(SessionVoiceAssignment.session_id == session.id)
             )
+
+        backend_states: dict[str, dict[str, Any]] = {}
+        for backend in _ENROLLMENT_BACKENDS:
+            suspect = voiceprint_repo.get_suspect(self.db, case_id, model_key=backend)
+            interrogator_ready = False
+            recorder_ready = False
             if assignment is not None:
                 interrogator_ready = self._officer_active(
-                    assignment.interrogator_officer_id, self.speaker_model_key
+                    assignment.interrogator_officer_id, backend
                 )
                 recorder_ready = self._officer_active(
-                    assignment.recorder_officer_id, self.speaker_model_key
+                    assignment.recorder_officer_id, backend
                 )
+            backend_states[backend] = {
+                "suspectReady": suspect is not None,
+                "interrogatorReady": interrogator_ready,
+                "recorderReady": recorder_ready,
+                "recognitionMode": self._recognition_mode(interrogator_ready, recorder_ready),
+                "canStart": suspect is not None,
+            }
 
-        result = {
-            "suspectReady": suspect is not None,
-            "interrogatorReady": interrogator_ready,
-            "recorderReady": recorder_ready,
-            "recognitionMode": self._recognition_mode(interrogator_ready, recorder_ready),
-            "canStart": suspect is not None,
-        }
-        if self.speaker_model_key != _XVECTOR:
+        authoritative = backend_states[self.authoritative_speaker_backend]
+        result = dict(authoritative)
+        if self.speaker_model_key == "compare":
+            result.update(
+                {
+                    "selectedSpeakerBackend": "compare",
+                    "authoritativeSpeakerBackend": self.authoritative_speaker_backend,
+                    "backends": backend_states,
+                }
+            )
+        elif self.speaker_model_key != _XVECTOR:
             result["selectedSpeakerBackend"] = self.speaker_model_key
         return result
 
@@ -318,15 +343,16 @@ class VoiceprintService:
         session = session_repo.active_for_case(self.db, case_id)
         if session is None:
             raise DomainError("SESSION_NOT_ACTIVE", "请先开始审讯再绑定民警声纹角色", 409)
+        binding_backend = self.authoritative_speaker_backend
         suspect = voiceprint_repo.get_suspect(
-            self.db, case_id, model_key=self.speaker_model_key
+            self.db, case_id, model_key=binding_backend
         )
         if suspect is None:
             raise DomainError(
                 "SUSPECT_VOICEPRINT_BACKEND_REQUIRED",
-                f"请先完成 {self.speaker_model_key} 嫌疑人声纹注册",
+                f"请先完成 {binding_backend} 嫌疑人声纹注册",
                 409,
-                data={"speaker_backend": self.speaker_model_key},
+                data={"speaker_backend": binding_backend},
             )
 
         assignment = voiceprint_repo.assign_session_roles(
@@ -335,7 +361,7 @@ class VoiceprintService:
             suspect_voiceprint_id=suspect.id,
             interrogator_officer_id=self._optional_id(interrogator_officer_id),
             recorder_officer_id=self._optional_id(recorder_officer_id),
-            model_key=self.speaker_model_key,
+            model_key=binding_backend,
         )
         audit_repo.add(
             self.db,
@@ -356,6 +382,7 @@ class VoiceprintService:
             "sessionId": session.id,
             "assignmentId": assignment.id,
             "selectedSpeakerBackend": self.speaker_model_key,
+            "authoritativeSpeakerBackend": binding_backend,
             "suspectReady": True,
             "interrogatorReady": assignment.interrogator_voiceprint_id is not None,
             "recorderReady": assignment.recorder_voiceprint_id is not None,

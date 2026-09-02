@@ -48,6 +48,8 @@ class SourceAwareAsrCaptureService:
         self.read_timeout = float(read_timeout)
         self.fragment_sink = fragment_sink
         self.capture_finished_sink = capture_finished_sink
+        self.calibration_resolver_factory = calibration_resolver_factory
+        self.backend_calibration_resolver_factory = backend_calibration_resolver_factory
         self.speaker_model_key = str(speaker_model_key or "xvector").strip().lower()
         self.speaker_authoritative_backend = (
             None
@@ -59,46 +61,124 @@ class SourceAwareAsrCaptureService:
         self._preparation_source: tuple[str, str] | None = None
         self._services: dict[str, AsrCaptureService] = {}
 
-        inputs = {
+        self._inputs = {
             "ALSA": device_manager,
             "BROWSER": browser_audio_input,
         }
-        for source, audio_input in inputs.items():
+        for source, audio_input in self._inputs.items():
             if audio_input is None:
                 continue
-            resolver = calibration_resolver_factory(source) if calibration_resolver_factory is not None else None
-            secondary_resolver = None
-            if backend_calibration_resolver_factory is not None:
-                primary_backend = (
-                    self.speaker_authoritative_backend
-                    if self.speaker_model_key == "compare"
-                    else self.speaker_model_key
-                )
-                if primary_backend is not None:
-                    resolver = backend_calibration_resolver_factory(source, primary_backend)
-                if self.speaker_model_key == "compare" and primary_backend is not None:
-                    secondary_backend = (
-                        "eres2net_large" if primary_backend == "xvector" else "xvector"
-                    )
-                    secondary_resolver = backend_calibration_resolver_factory(source, secondary_backend)
-            self._services[source] = AsrCaptureService(
-                session_factory=session_factory,
-                device_manager=audio_input,
-                ai_supervisor=ai_supervisor,
-                publish_event=publish_event,
-                sample_rate=sample_rate,
-                read_timeout=read_timeout,
-                calibration_resolver=resolver,
-                secondary_calibration_resolver=secondary_resolver,
-                fragment_sink=fragment_sink,
-                capture_finished_sink=capture_finished_sink,
-                speaker_model_key=self.speaker_model_key,
-                speaker_authoritative_backend=self.speaker_authoritative_backend,
+            self._services[source] = self._build_service(
+                source,
+                audio_input,
+                self.speaker_model_key,
+                self.speaker_authoritative_backend,
             )
 
         if not self._services:
             raise ValueError("at least one ASR audio input must be configured")
         self._default_service = self._services.get("ALSA") or next(iter(self._services.values()))
+
+    def _build_service(
+        self,
+        source: str,
+        audio_input: Any,
+        mode: str,
+        authoritative_backend: str | None,
+    ) -> AsrCaptureService:
+        resolver = (
+            self.calibration_resolver_factory(source)
+            if self.calibration_resolver_factory is not None
+            else None
+        )
+        secondary_resolver = None
+        primary_backend = authoritative_backend if mode == "compare" else mode
+        if self.backend_calibration_resolver_factory is not None:
+            resolver = self.backend_calibration_resolver_factory(source, primary_backend)
+            if mode == "compare":
+                secondary_backend = "eres2net_large" if primary_backend == "xvector" else "xvector"
+                secondary_resolver = self.backend_calibration_resolver_factory(source, secondary_backend)
+        return AsrCaptureService(
+            session_factory=self.session_factory,
+            device_manager=audio_input,
+            ai_supervisor=self.ai_supervisor,
+            publish_event=self.publish_event,
+            sample_rate=self.sample_rate,
+            read_timeout=self.read_timeout,
+            calibration_resolver=resolver,
+            secondary_calibration_resolver=secondary_resolver,
+            fragment_sink=self.fragment_sink,
+            capture_finished_sink=self.capture_finished_sink,
+            speaker_model_key=mode,
+            speaker_authoritative_backend=authoritative_backend,
+        )
+
+    def configure_speaker_backend(
+        self,
+        mode: str,
+        authoritative_backend: str | None = None,
+    ) -> dict[str, str]:
+        normalized_mode = str(mode or "xvector").strip().lower()
+        normalized_authority = (
+            None
+            if authoritative_backend is None
+            else str(authoritative_backend).strip().lower()
+        )
+        concrete = {"xvector", "eres2net_large"}
+        if normalized_mode not in {*concrete, "compare"}:
+            raise DomainError("SPEAKER_BACKEND_SELECTION_INVALID", "声纹运行模式无效", 422)
+        if normalized_mode == "compare":
+            if normalized_authority not in concrete:
+                raise DomainError(
+                    "SPEAKER_BACKEND_SELECTION_INVALID",
+                    "Compare 模式必须指定业务 authoritative backend",
+                    422,
+                )
+        else:
+            if normalized_authority not in {None, normalized_mode}:
+                raise DomainError(
+                    "SPEAKER_BACKEND_SELECTION_INVALID",
+                    "单后端模式的 authoritative backend 必须与所选后端一致",
+                    422,
+                )
+            normalized_authority = None
+
+        with self._lock:
+            for active_case in list(self._capture_sources):
+                self._prune_capture_if_stopped(active_case)
+            if self._capture_sources or self._preparation_source is not None:
+                raise DomainError(
+                    "SPEAKER_BACKEND_SELECTION_BUSY",
+                    "当前存在活动语音会话，不能切换声纹 embedding space",
+                    409,
+                )
+            replacement: dict[str, AsrCaptureService] = {}
+            for source, audio_input in self._inputs.items():
+                if audio_input is None:
+                    continue
+                replacement[source] = self._build_service(
+                    source,
+                    audio_input,
+                    normalized_mode,
+                    normalized_authority,
+                )
+            old_services = self._services
+            self._services = replacement
+            self._default_service = self._services.get("ALSA") or next(iter(self._services.values()))
+            self.speaker_model_key = normalized_mode
+            self.speaker_authoritative_backend = normalized_authority
+
+        for service in old_services.values():
+            try:
+                service.shutdown()
+            except Exception:
+                pass
+        return {
+            "mode": normalized_mode,
+            "authoritativeBackend": (
+                normalized_authority if normalized_mode == "compare" else normalized_mode
+            ),
+        }
 
     def _source(self, source: str | None = None) -> str:
         selected = normalize_audio_source(source) or current_request_audio_source("ALSA")

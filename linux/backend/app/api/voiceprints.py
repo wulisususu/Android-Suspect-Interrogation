@@ -65,10 +65,12 @@ def _capture_service(request: Request):
 def _service(request: Request, db: Session) -> VoiceprintService:
     settings = getattr(request.app.state, "runtime_settings", None)
     speaker_model_key = getattr(settings, "speaker_backend", "xvector")
+    speaker_authoritative_backend = getattr(settings, "speaker_authoritative_backend", None)
     return VoiceprintService(
         db,
         speech_client=_speech_client(request),
         speaker_model_key=speaker_model_key,
+        speaker_authoritative_backend=speaker_authoritative_backend,
     )
 
 
