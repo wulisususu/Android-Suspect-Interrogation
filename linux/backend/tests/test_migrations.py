@@ -25,6 +25,7 @@ CALIBRATION_TABLES = {
 }
 RECOGNITION_EVIDENCE_TABLES = {
     "asr_recognition_evidence", "asr_recognition_revisions",
+    "speaker_backend_comparison_evidence",
 }
 QWEN_ROUTING_TABLES = {
     "qa_units", "qa_unit_fragments",
@@ -33,7 +34,7 @@ REQUIRED_TABLES = (
     CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES | OFFICER_LIBRARY_TABLES |
     CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES | QWEN_ROUTING_TABLES
 )
-ALEMBIC_HEAD = "0010_backend_scoped_speaker_calibration"
+ALEMBIC_HEAD = "0011_speaker_backend_comparison_evidence"
 
 
 def _run_alembic(tmp_path, target: str):
@@ -128,6 +129,15 @@ def test_alembic_upgrade_head_builds_required_schema(tmp_path):
             "fragment_id", "revision_no", "before_speaker", "after_speaker", "before_text",
             "after_text", "actor_id", "reason",
         } <= revision_columns
+        compare_columns = {item["name"] for item in inspector.get_columns("speaker_backend_comparison_evidence")}
+        assert {
+            "fragment_id", "capture_session_id", "case_id", "backend_key", "authoritative",
+            "available", "role", "speaker_source", "voiceprint_verified", "score",
+            "second_best_score", "threshold", "margin", "calibration_id", "calibration_status",
+            "model_id", "model_version", "model_fingerprint", "latency_ms", "error_code",
+            "candidate_scores_json",
+        } <= compare_columns
+        assert {"embedding", "pcm", "audio"}.isdisjoint(compare_columns)
         calibration_columns = {item["name"] for item in inspector.get_columns("speaker_device_calibrations")}
         snapshot_columns = {item["name"] for item in inspector.get_columns("session_speaker_calibration_snapshots")}
         assert "speaker_backend_key" in calibration_columns
