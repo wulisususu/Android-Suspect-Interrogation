@@ -390,9 +390,21 @@ class VoiceprintService:
             "canStart": True,
         }
 
-    def _build_reference(self, pcm: bytes) -> dict[str, Any]:
+    def build_reference_for_backend(self, pcm: bytes, backend: str) -> dict[str, Any]:
+        """Build one model-specific reference from source PCM using enrollment semantics."""
+        backend_key = str(backend or "").strip().lower()
+        if backend_key not in _ENROLLMENT_BACKENDS:
+            raise DomainError(
+                "VOICEPRINT_BACKEND_UNSUPPORTED",
+                "声纹 reference 只能使用已支持的具体 embedding backend",
+                400,
+                data={"backend_key": backend_key},
+            )
         prepared = self._prepare_reference_audio(pcm)
-        return self._build_reference_for_backend(prepared, _XVECTOR)
+        return self._build_reference_for_backend(prepared, backend_key)
+
+    def _build_reference(self, pcm: bytes) -> dict[str, Any]:
+        return self.build_reference_for_backend(pcm, _XVECTOR)
 
     def _build_dual_references(
         self,

@@ -34,6 +34,15 @@ New voiceprint-verified decisions use backend-neutral `speaker_source=SPEAKER_EM
 
 `ASR_SPEAKER_LOW_CONFIDENCE` is the fail-safe path. If the selected speaker-embedding backend is unavailable but Paraformer produced a valid ASR result, the text may still be retained as a temporary fragment with `speaker=UNKNOWN`, `speaker_source=UNASSIGNED`, `voiceprint_verified=false`, and `low_confidence=true` for human confirmation. The audit event may record a typed speaker error code and non-sensitive backend/model identifiers, but never the embedding or audio that caused it.
 
+### Model-specific reference rebuild
+
+| Action | Meaning | Allowed audit metadata |
+| --- | --- | --- |
+| `SPEAKER_REFERENCE_REBUILD` | Operator explicitly rebuilt a model-specific suspect/officer reference from retained source WAV/PCM | identity type/ID, target voiceprint record ID, target backend/model/version/fingerprint, target dimension, usable duration/segment count, replace flag, source **PCM SHA-256 digest**, and coarse source class (`EXPLICIT_WAV_FILE` or `EXPLICIT_PCM16_FILE`) |
+
+`SPEAKER_REFERENCE_REBUILD` is a maintenance provenance event, not evidence that one embedding space can be converted into another. The rebuild path reruns VAD/chunking and the requested embedding backend from explicit source audio. It must never place the source path, raw WAV/PCM bytes, or any source/target embedding vector in `AuditLog`. A missing retained source file produces `NEEDS_REENROLL`; it does not synthesize an ERes2Net-large reference from the historical XVector vector.
+
+
 ## Operational speech failures
 
 Not every runtime failure has a case-scoped business `AuditLog` row. The following are operational health/service failures and must be observable through capability/status responses and service logs without fabricating business evidence:

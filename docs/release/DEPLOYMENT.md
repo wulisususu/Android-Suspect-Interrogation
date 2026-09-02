@@ -84,6 +84,27 @@ Restore verifies archive checksums and `PRAGMA integrity_check` before replacing
 
 Stop/coordinate active business writes before a production restore. The script validates snapshot consistency but does not attempt distributed transaction coordination with future backend workers.
 
+## Rebuilding an ERes2Net-large reference from retained enrollment audio
+
+Historical XVector rows are not automatically backfilled into ERes2Net-large. If the original enrollment WAV/PCM has been retained outside the application database, an operator may explicitly rebuild the target reference from that audio:
+
+```bash
+cd /opt/suspect-interrogation/current
+export SUSPECT_DB_PATH=/var/lib/suspect-interrogation/interrogation.db
+python3 scripts/ci/rebuild-speaker-reference.py \
+  --identity-type suspect \
+  --identity-id CASE-ID \
+  --audio /approved/operator/input/enrollment.wav \
+  --target-backend eres2net_large
+```
+
+For raw 16 kHz mono PCM16, add `--audio-format pcm16`. Officer identities use `--identity-type officer` and the officer ID. The first release accepts `eres2net_large` only. If the target reference already exists, the command fails closed; use `--replace` only after explicitly deciding to replace that model-specific reference.
+
+The input file is read for this operation only and is **not copied into application storage**. The audit event records a SHA-256 digest of normalized source PCM plus a coarse path class, target model metadata and result record ID; it does not record the full source path, raw audio, or embeddings. If the explicit source path is unavailable, the command returns `NEEDS_REENROLL`; the operator must perform a new enrollment capture rather than deriving an ERes2Net-large vector from an XVector vector.
+
+Run this maintenance tool only while the configured local speech worker is available. It does not change `SUSPECT_SPEAKER_BACKEND`, does not switch the production authoritative backend, and does not restart unrelated services.
+
+
 ## Kiosk boot
 
 ```text
