@@ -51,6 +51,7 @@ jobs:
             linux/backend/tests/test_dual_speaker_voiceprint_persistence.py \
             linux/backend/tests/test_dual_speaker_voiceprint_migration.py \
             linux/backend/tests/test_dual_voiceprint_enrollment.py \
+            linux/backend/tests/test_backend_aware_speaker_sessions.py \
             linux/backend/tests/test_voiceprint_repositories.py \
             linux/backend/tests/test_voiceprint_service.py \
             linux/backend/tests/test_voiceprint_api.py \
