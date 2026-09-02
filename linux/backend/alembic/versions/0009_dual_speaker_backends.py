@@ -22,6 +22,7 @@ _DEPENDENT_TABLES = (
     "session_officer_voice_snapshots",
     "session_voice_assignments",
 )
+_SQLITE_NAMING_CONVENTION = {"uq": "uq_%(table_name)s_%(column_0_name)s"}
 
 
 def _quoted(identifier: str) -> str:
@@ -87,7 +88,9 @@ def _restore_dependencies(columns_by_table: dict[str, tuple[str, ...]]) -> None:
 def upgrade() -> None:
     dependent_columns = _backup_and_clear_dependencies()
 
-    with op.batch_alter_table("suspect_voiceprints", recreate="always") as batch:
+    with op.batch_alter_table(
+        "suspect_voiceprints", recreate="always", naming_convention=_SQLITE_NAMING_CONVENTION
+    ) as batch:
         batch.add_column(sa.Column("model_key", sa.String(length=64), nullable=False, server_default=_XVECTOR))
         batch.drop_constraint("uq_suspect_voiceprints_case_id", type_="unique")
         batch.create_unique_constraint("uq_suspect_voiceprint_case_model", ["case_id", "model_key"])
