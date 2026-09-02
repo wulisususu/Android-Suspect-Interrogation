@@ -64,6 +64,7 @@ class CdpClient {
     this.socket = null
     this.nextId = 1
     this.pending = new Map()
+    this.events = []
   }
 
   async connect() {
@@ -80,7 +81,14 @@ class CdpClient {
       }, { once: true })
       this.socket.addEventListener('message', (event) => {
         const message = JSON.parse(String(event.data))
-        if (!message.id) return
+        if (!message.id) {
+          if (['Runtime.exceptionThrown', 'Runtime.consoleAPICalled', 'Log.entryAdded'].includes(message.method)) {
+            this.events.push(message)
+            if (this.events.length > 50) this.events.shift()
+            console.error(`browser-event=${JSON.stringify(message)}`)
+          }
+          return
+        }
         const pending = this.pending.get(message.id)
         if (!pending) return
         this.pending.delete(message.id)
@@ -133,8 +141,10 @@ async function waitForSelector(client, selector, timeoutMs = 30_000) {
       maintenance: Boolean(document.querySelector('.maintenance-shell')),
       caseRoot: Boolean(document.querySelector('.case-root-shell')),
       caseList: Boolean(document.querySelector('.case-list-page')),
+      resources: performance.getEntriesByType('resource').map((entry) => entry.name).slice(-40),
     }))()`)
     console.error(`selector-timeout-diagnostic=${JSON.stringify(diagnostic)}`)
+    console.error(`browser-events-snapshot=${JSON.stringify(client.events.slice(-20))}`)
     throw error
   }
 }
@@ -217,6 +227,7 @@ try {
   await client.connect()
   await client.send('Page.enable')
   await client.send('Runtime.enable')
+  await client.send('Log.enable')
 
   await navigate(client, `${baseUrl}/`, '.case-list-page')
   await screenshot(client, 'case-list', 1920, 1080)
