@@ -157,6 +157,7 @@ class SpeechWorkerServer:
             session_id = self._required_session_id(request)
             sample_rate = int(request.get("sample_rate") or 16000)
             speaker_backend = str(request.get("speaker_backend") or "xvector").strip().lower()
+            authoritative_backend = request.get("authoritative_backend")
             if not speaker_backend:
                 raise AIError("speaker_backend is required")
             with self._sessions_lock:
@@ -168,14 +169,22 @@ class SpeechWorkerServer:
                         sample_rate,
                         self.runtime,
                         speaker_backend_key=speaker_backend,
+                        authoritative_speaker_backend_key=(
+                            None
+                            if authoritative_backend is None
+                            else str(authoritative_backend)
+                        ),
                     ),
                     threading.RLock(),
                 )
-            return {
+            result = {
                 "session_id": session_id,
                 "sample_rate": sample_rate,
                 "speaker_backend": speaker_backend,
             }
+            if authoritative_backend is not None:
+                result["authoritative_backend"] = str(authoritative_backend).strip().lower()
+            return result
 
         if op == "push_pcm":
             session_id = self._required_session_id(request)

@@ -9,6 +9,7 @@ from app.services.asr_capture_service import AsrCaptureService
 
 
 CalibrationResolverFactory = Callable[[str], Callable[[Any], Any] | None]
+BackendCalibrationResolverFactory = Callable[[str, str], Callable[[Any], Any] | None]
 
 
 class SourceAwareAsrCaptureService:
@@ -32,9 +33,11 @@ class SourceAwareAsrCaptureService:
         sample_rate: int = 16_000,
         read_timeout: float = 0.2,
         calibration_resolver_factory: CalibrationResolverFactory | None = None,
+        backend_calibration_resolver_factory: BackendCalibrationResolverFactory | None = None,
         fragment_sink: Callable[[str, str], None] | None = None,
         capture_finished_sink: Callable[[str, str], None] | None = None,
         speaker_model_key: str = "xvector",
+        speaker_authoritative_backend: str | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.device_manager = device_manager
@@ -46,6 +49,11 @@ class SourceAwareAsrCaptureService:
         self.fragment_sink = fragment_sink
         self.capture_finished_sink = capture_finished_sink
         self.speaker_model_key = str(speaker_model_key or "xvector").strip().lower()
+        self.speaker_authoritative_backend = (
+            None
+            if speaker_authoritative_backend is None
+            else str(speaker_authoritative_backend).strip().lower()
+        )
         self._lock = threading.RLock()
         self._capture_sources: dict[str, str] = {}
         self._preparation_source: tuple[str, str] | None = None
@@ -59,6 +67,20 @@ class SourceAwareAsrCaptureService:
             if audio_input is None:
                 continue
             resolver = calibration_resolver_factory(source) if calibration_resolver_factory is not None else None
+            secondary_resolver = None
+            if backend_calibration_resolver_factory is not None:
+                primary_backend = (
+                    self.speaker_authoritative_backend
+                    if self.speaker_model_key == "compare"
+                    else self.speaker_model_key
+                )
+                if primary_backend is not None:
+                    resolver = backend_calibration_resolver_factory(source, primary_backend)
+                if self.speaker_model_key == "compare" and primary_backend is not None:
+                    secondary_backend = (
+                        "eres2net_large" if primary_backend == "xvector" else "xvector"
+                    )
+                    secondary_resolver = backend_calibration_resolver_factory(source, secondary_backend)
             self._services[source] = AsrCaptureService(
                 session_factory=session_factory,
                 device_manager=audio_input,
@@ -67,9 +89,11 @@ class SourceAwareAsrCaptureService:
                 sample_rate=sample_rate,
                 read_timeout=read_timeout,
                 calibration_resolver=resolver,
+                secondary_calibration_resolver=secondary_resolver,
                 fragment_sink=fragment_sink,
                 capture_finished_sink=capture_finished_sink,
                 speaker_model_key=self.speaker_model_key,
+                speaker_authoritative_backend=self.speaker_authoritative_backend,
             )
 
         if not self._services:

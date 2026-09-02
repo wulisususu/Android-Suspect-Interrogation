@@ -38,27 +38,43 @@ class _InProcessSpeechClient:
         session_id: str,
         sample_rate: int = 16000,
         speaker_backend: str = "xvector",
+        authoritative_backend: str | None = None,
     ) -> dict[str, Any]:
         session_id = str(session_id).strip()
         sample_rate = int(sample_rate)
         speaker_backend = str(speaker_backend or "xvector").strip().lower()
+        authority_key = (
+            None
+            if authoritative_backend is None
+            else str(authoritative_backend).strip().lower()
+        )
+        concrete = {"xvector", "eres2net_large"}
         if not session_id:
             raise AIError("session_id is required")
         if sample_rate <= 0:
             raise AIError("sample_rate must be positive")
-        if speaker_backend not in {"xvector", "eres2net_large"}:
+        if speaker_backend not in {*concrete, "compare"}:
             raise AIError("unsupported speaker backend", details={"speaker_backend": speaker_backend})
+        if speaker_backend == "compare":
+            if authority_key not in concrete:
+                raise AIError("authoritative speaker backend is required in compare mode")
+        elif authority_key is not None and authority_key != speaker_backend:
+            raise AIError("authoritative speaker backend must match single backend")
         with self._lock:
             self._sessions[session_id] = {
                 "sample_rate": sample_rate,
                 "bytes_received": 0,
                 "speaker_backend": speaker_backend,
+                "authoritative_backend": authority_key or speaker_backend,
             }
-        return {
+        result = {
             "session_id": session_id,
             "sample_rate": sample_rate,
             "speaker_backend": speaker_backend,
         }
+        if authority_key is not None:
+            result["authoritative_backend"] = authority_key
+        return result
 
     def push_pcm(self, session_id: str, pcm: bytes) -> list[SpeechEvent]:
         with self._lock:
@@ -325,15 +341,20 @@ class AISupervisor:
         *,
         sample_rate: int = 16000,
         speaker_backend: str | None = None,
+        authoritative_backend: str | None = None,
     ) -> dict[str, Any]:
         explicit_backend = speaker_backend is not None
         if explicit_backend:
-            result = self._speech_client.open_session(
-                session_id,
-                sample_rate=sample_rate,
-                speaker_backend=speaker_backend,
-            )
+            kwargs: dict[str, Any] = {
+                "sample_rate": sample_rate,
+                "speaker_backend": speaker_backend,
+            }
+            if authoritative_backend is not None:
+                kwargs["authoritative_backend"] = authoritative_backend
+            result = self._speech_client.open_session(session_id, **kwargs)
         else:
+            if authoritative_backend is not None:
+                raise ValueError("authoritative_backend requires an explicit speaker_backend")
             result = self._speech_client.open_session(
                 session_id,
                 sample_rate=sample_rate,
@@ -342,6 +363,7 @@ class AISupervisor:
             # Normalize the omitted-backend call even if an internal client adds it.
             result = dict(result)
             result.pop("speaker_backend", None)
+            result.pop("authoritative_backend", None)
         self._speech_sessions.add(session_id)
         return result
 

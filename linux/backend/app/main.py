@@ -134,8 +134,14 @@ def create_app(
         timeout=ai_settings.request_timeout,
     )
 
-    def current_model_identity() -> CurrentSpeakerModelIdentity:
-        backend_key = str(settings.speaker_backend or "xvector").strip().lower()
+    def current_model_identity(backend_override: str | None = None) -> CurrentSpeakerModelIdentity:
+        configured_backend = str(settings.speaker_backend or "xvector").strip().lower()
+        default_backend = (
+            settings.speaker_authoritative_backend
+            if configured_backend == "compare"
+            else configured_backend
+        )
+        backend_key = str(backend_override or default_backend or "xvector").strip().lower()
         try:
             health = speech_client.health()
         except Exception:
@@ -184,18 +190,31 @@ def create_app(
         fp = fingerprint_microphone(info)
         return CurrentMicrophoneIdentity("ALSA", fp.device_id, fp.device_name, fp.fingerprint, fp.certainty)
 
-    def runtime_calibration_resolver_factory(source: str):
+    def runtime_backend_calibration_resolver_factory(source: str, backend_key: str):
         normalized_source = str(source or "ALSA").upper()
+        normalized_backend = str(backend_key or "xvector").strip().lower()
 
         def runtime_calibration_resolver(db):
             lifecycle = SpeakerCalibrationService(
                 db,
-                model_provider=current_model_identity,
+                model_provider=lambda: current_model_identity(normalized_backend),
                 microphone_provider=lambda: current_microphone_identity(normalized_source),
             )
             return resolve_speaker_calibration(lifecycle, SpeakerCalibration.from_env())
 
         return runtime_calibration_resolver
+
+    def runtime_calibration_resolver_factory(source: str):
+        configured_backend = str(settings.speaker_backend or "xvector").strip().lower()
+        primary_backend = (
+            settings.speaker_authoritative_backend
+            if configured_backend == "compare"
+            else configured_backend
+        )
+        return runtime_backend_calibration_resolver_factory(
+            source,
+            str(primary_backend or "xvector"),
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -219,9 +238,11 @@ def create_app(
             ai_supervisor=supervisor,
             publish_event=publish_asr_event,
             calibration_resolver_factory=runtime_calibration_resolver_factory,
+            backend_calibration_resolver_factory=runtime_backend_calibration_resolver_factory,
             fragment_sink=None if routing_coordinator is None else routing_coordinator.enqueue_fragment,
             capture_finished_sink=None if routing_coordinator is None else routing_coordinator.flush_capture,
             speaker_model_key=settings.speaker_backend,
+            speaker_authoritative_backend=settings.speaker_authoritative_backend,
         )
         app.state.asr_capture_service = capture_service
         try:

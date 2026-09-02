@@ -51,21 +51,35 @@ class SpeechWorkerClient:
         sample_rate: int = 16000,
         *,
         speaker_backend: str | None = None,
+        authoritative_backend: str | None = None,
     ) -> dict[str, Any]:
         explicit_backend = speaker_backend is not None
         backend_key = str(speaker_backend or "xvector").strip().lower()
         if not backend_key:
             raise ValueError("speaker_backend must not be empty")
-        result = self._require_dict(
-            self._request(
-                "open_session",
-                session_id=session_id,
-                sample_rate=int(sample_rate),
-                speaker_backend=backend_key,
-            )
+        authority_key = (
+            None
+            if authoritative_backend is None
+            else str(authoritative_backend).strip().lower()
         )
+        concrete = {"xvector", "eres2net_large"}
+        if backend_key == "compare":
+            if authority_key not in concrete:
+                raise ValueError("authoritative_backend is required for compare mode")
+        elif authority_key is not None and authority_key != backend_key:
+            raise ValueError("authoritative_backend must match the single speaker backend")
+
+        payload: dict[str, Any] = {
+            "session_id": session_id,
+            "sample_rate": int(sample_rate),
+            "speaker_backend": backend_key,
+        }
+        if authority_key is not None:
+            payload["authoritative_backend"] = authority_key
+        result = self._require_dict(self._request("open_session", **payload))
         if not explicit_backend:
             result.pop("speaker_backend", None)
+            result.pop("authoritative_backend", None)
         return result
 
     def push_pcm(self, session_id: str, pcm: bytes) -> list[SpeechEvent]:
