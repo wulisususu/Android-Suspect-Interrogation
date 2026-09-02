@@ -45,9 +45,23 @@ class SpeechWorkerClient:
     def health(self) -> dict[str, Any]:
         return self._require_dict(self._request("health"))
 
-    def open_session(self, session_id: str, sample_rate: int = 16000) -> dict[str, Any]:
+    def open_session(
+        self,
+        session_id: str,
+        sample_rate: int = 16000,
+        *,
+        speaker_backend: str = "xvector",
+    ) -> dict[str, Any]:
+        backend_key = str(speaker_backend or "xvector").strip().lower()
+        if not backend_key:
+            raise ValueError("speaker_backend must not be empty")
         return self._require_dict(
-            self._request("open_session", session_id=session_id, sample_rate=int(sample_rate))
+            self._request(
+                "open_session",
+                session_id=session_id,
+                sample_rate=int(sample_rate),
+                speaker_backend=backend_key,
+            )
         )
 
     def push_pcm(self, session_id: str, pcm: bytes) -> list[SpeechEvent]:
