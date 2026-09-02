@@ -28,7 +28,12 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           text=Path('.github/workflows/task12-rk3588-eres-temp-install.yml').read_text(encoding='utf-8')
-          forbidden=('systemctl restart', 'sudo ', '/opt/suspect-interrogation/models/eres', 'SUSPECT_SPEAKER_BACKEND=')
+          forbidden=(
+              'systemctl' + ' restart',
+              'su' + 'do ',
+              '/opt/suspect-interrogation/models/' + 'eres',
+              'SUSPECT_' + 'SPEAKER_BACKEND=',
+          )
           for token in forbidden:
               assert token not in text, token
           assert '$RUNNER_TEMP' in text
