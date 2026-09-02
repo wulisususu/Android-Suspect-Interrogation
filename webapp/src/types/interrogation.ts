@@ -170,6 +170,7 @@ export type TemporaryAsrSpeaker =
 export type AsrSpeakerSource =
   | 'UNASSIGNED'
   | 'X_VECTOR'
+  | 'SPEAKER_EMBEDDING'
   | 'SUSPECT_EXCLUSION'
   | 'MANUAL'
 
@@ -273,12 +274,21 @@ export type VoiceRecognitionMode =
   | 'SUSPECT_PLUS_RECORDER'
   | 'FULL'
 
-export interface VoiceprintReadiness {
+export type SpeakerBackendKey = 'xvector' | 'eres2net_large'
+export type SpeakerRuntimeMode = SpeakerBackendKey | 'compare'
+
+export interface VoiceprintBackendReadiness {
   suspectReady: boolean
   interrogatorReady: boolean
   recorderReady: boolean
   recognitionMode: VoiceRecognitionMode
   canStart: boolean
+}
+
+export interface VoiceprintReadiness extends VoiceprintBackendReadiness {
+  selectedSpeakerBackend?: SpeakerRuntimeMode
+  authoritativeSpeakerBackend?: SpeakerBackendKey
+  backends?: Record<SpeakerBackendKey, VoiceprintBackendReadiness>
   simulated?: boolean
 }
 

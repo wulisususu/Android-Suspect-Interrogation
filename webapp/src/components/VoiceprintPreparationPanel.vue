@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { TemporaryAsrSpeaker, VoiceprintReadiness as VoiceprintReadinessModel, VoiceRecognitionMode } from '../types/interrogation'
+import type { SpeakerBackendKey, TemporaryAsrSpeaker, VoiceprintReadiness as VoiceprintReadinessModel, VoiceRecognitionMode } from '../types/interrogation'
 
 export function voiceprintEnrollmentProgress(value: {
   capturedDurationMs?: number | null
@@ -34,6 +34,10 @@ export function voiceprintModeLabel(mode: VoiceRecognitionMode) {
     FULL: '嫌疑人 + 主审民警 + 记录民警',
   }
   return labels[mode]
+}
+
+export function speakerBackendLabel(backend: SpeakerBackendKey): string {
+  return backend === 'xvector' ? 'XVector' : 'ERes2Net-large'
 }
 
 export function temporarySpeakerPresentation(speaker: TemporaryAsrSpeaker, speakerName?: string | null) {
@@ -75,6 +79,8 @@ const finalUsableSeconds = computed(() => Math.floor((props.enrollmentState.usab
 const enrollmentProgress = computed(() => voiceprintEnrollmentProgress(props.enrollmentState))
 const sessionActive = computed(() => ['RUNNING', 'PAUSED'].includes(props.sessionStatus))
 const showSuspectProgress = computed(() => props.enrollmentState.phase !== 'IDLE' && props.enrollmentState.kind !== 'OFFICER')
+const authoritativeBackend = computed<SpeakerBackendKey>(() => props.readiness.authoritativeSpeakerBackend
+  || (props.readiness.selectedSpeakerBackend === 'eres2net_large' ? 'eres2net_large' : 'xvector'))
 
 function normalizedSelect(event: Event) {
   const value = (event.target as HTMLSelectElement).value.trim()
@@ -91,10 +97,23 @@ function normalizedSelect(event: Event) {
 
     <div v-if="readiness.simulated" class="voiceprint-warning">当前为浏览器开发模拟；模拟结果不能解锁正式声纹审讯。</div>
 
+    <div v-if="readiness.backends" class="dual-backend-readiness">
+      <div>
+        <strong>一次录制 · 双后端 reference</strong>
+        <span>业务 authoritative：{{ speakerBackendLabel(authoritativeBackend) }}；secondary 仅用于 Compare 诊断。</span>
+      </div>
+      <article v-for="backend in (['xvector', 'eres2net_large'] as const)" :key="backend">
+        <strong>{{ speakerBackendLabel(backend) }}</strong>
+        <span :class="{ ok: readiness.backends[backend].suspectReady }">{{ readiness.backends[backend].suspectReady ? '嫌疑人 reference READY' : '嫌疑人 reference NOT READY' }}</span>
+        <small>{{ readiness.backends[backend].recognitionMode }}</small>
+      </article>
+    </div>
+    <p v-else class="dual-backend-hint">嫌疑人声纹采用一次录制，同时尝试生成 XVector 与 ERes2Net-large 两套独立 reference；当前业务 authoritative={{ speakerBackendLabel(authoritativeBackend) }}。</p>
+
     <div class="voiceprint-preparation-grid">
       <article class="voiceprint-person-row required">
         <div class="voiceprint-person-main"><strong>嫌疑人 · {{ suspectName || '待录入姓名' }}</strong><span>必须</span></div>
-        <div class="voiceprint-status" :class="{ ok: readiness.suspectReady }">{{ readiness.suspectReady ? '已注册' : '未注册' }}</div>
+        <div class="voiceprint-status" :class="{ ok: readiness.suspectReady }">{{ readiness.suspectReady ? 'authoritative 已注册' : 'authoritative 未注册' }}</div>
         <button v-if="!suspectRecording" class="voiceprint-action primary" :disabled="busy || sessionActive" @click="$emit('suspectStart')">{{ readiness.suspectReady ? '重新录制' : '开始录制' }}</button>
         <button v-else class="voiceprint-action danger" :disabled="busy" @click="$emit('suspectStop')">提前停止并尝试注册</button>
       </article>
@@ -129,13 +148,13 @@ function normalizedSelect(event: Event) {
         </div>
         <small>有效语音 {{ enrollmentProgress.usableSeconds }} / {{ enrollmentProgress.targetSeconds }} 秒</small>
       </template>
-      <span v-else-if="enrollmentState.phase === 'PROCESSING'">有效语音已达标，正在进行最终 VAD 复核与 XVector 声纹聚合…</span>
+      <span v-else-if="enrollmentState.phase === 'PROCESSING'">有效语音已达标，正在进行最终 VAD 复核与双后端声纹 reference 聚合…</span>
       <span v-else>{{ enrollmentState.message }}</span>
       <small v-if="finalUsableSeconds && enrollmentState.phase !== 'RECORDING'">有效语音 {{ finalUsableSeconds }} 秒</small>
     </div>
 
     <footer class="voiceprint-preparation-footer">
-      <div><strong>{{ guard.disabled ? '尚未满足开始条件' : '可以开始正式审讯' }}</strong><span>{{ guard.reason || '嫌疑人声纹已就绪；民警声纹为可选项，绑定后冻结本次审讯使用的 reference 版本' }}</span></div>
+      <div><strong>{{ guard.disabled ? '尚未满足开始条件' : '可以开始正式审讯' }}</strong><span>{{ guard.reason || 'authoritative 嫌疑人声纹已就绪；secondary 不会改变业务角色，角色绑定后冻结本次审讯使用的 reference 版本' }}</span></div>
       <button v-if="sessionStatus === 'READY'" :disabled="busy || guard.disabled" @click="$emit('bindRoles')">保存本次角色选择</button>
     </footer>
   </section>
@@ -149,6 +168,11 @@ function normalizedSelect(event: Event) {
 .voiceprint-mode-chip,.voiceprint-status { border:1px solid #b7c8d7; border-radius:999px; padding:5px 10px; background:#fff; color:#566b7e; font-size:12px; font-weight:700; }
 .voiceprint-mode-chip.ready,.voiceprint-status.ok { border-color:#8fc6a6; background:#edf8f1; color:#267647; }
 .voiceprint-warning { margin-top:10px; padding:9px 12px; border:1px solid #e5b763; border-radius:7px; background:#fff8e8; color:#8b5c0a; font-weight:700; }
+.dual-backend-readiness { display:grid; grid-template-columns:minmax(240px,1.3fr) repeat(2,minmax(180px,1fr)); gap:8px; margin-top:10px; }
+.dual-backend-readiness > div,.dual-backend-readiness article { display:grid; gap:4px; padding:10px 12px; border:1px solid #c6d6e2; border-radius:8px; background:#fff; }
+.dual-backend-readiness span,.dual-backend-readiness small,.dual-backend-hint { color:#607588; font-size:12px; }
+.dual-backend-readiness span.ok { color:#267647; font-weight:700; }
+.dual-backend-hint { margin:10px 0 0; padding:9px 12px; border:1px solid #d2dee8; border-radius:7px; background:#fff; }
 .voiceprint-preparation-grid { display:grid; gap:8px; margin-top:12px; }
 .voiceprint-person-row { display:grid; grid-template-columns:minmax(190px,1fr) minmax(220px,1.4fr) auto; align-items:center; gap:12px; min-height:50px; padding:9px 12px; border:1px solid #d0dde8; border-radius:8px; background:rgba(255,255,255,.9); }
 .voiceprint-person-row.required { border-left:4px solid #2d78bb; }
@@ -169,5 +193,5 @@ button:disabled,select:disabled { opacity:.5; }
 .voiceprint-preparation-footer { margin-top:11px; padding-top:10px; border-top:1px solid #d2dee8; }
 .voiceprint-preparation-footer > div { display:grid; gap:3px; }
 .voiceprint-preparation-footer span { color:#657a8c; font-size:12px; }
-@media (max-width:980px) { .voiceprint-person-row { grid-template-columns:1fr; } .voiceprint-preparation-footer,.voiceprint-preparation-header { align-items:flex-start; flex-direction:column; } }
+@media (max-width:980px) { .voiceprint-person-row,.dual-backend-readiness { grid-template-columns:1fr; } .voiceprint-preparation-footer,.voiceprint-preparation-header { align-items:flex-start; flex-direction:column; } }
 </style>
