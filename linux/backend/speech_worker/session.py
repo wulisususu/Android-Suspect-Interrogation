@@ -8,6 +8,7 @@ from app.ai.speech.types import SpeechEvent, SpeechEventType
 
 
 PCM_SAMPLE_WIDTH_BYTES = 2
+_CONCRETE_SPEAKER_BACKENDS = ("xvector", "eres2net_large")
 
 
 class SpeechRuntime(Protocol):
@@ -48,6 +49,7 @@ class SpeechSession:
         runtime: SpeechRuntime,
         *,
         speaker_backend_key: str = "xvector",
+        authoritative_speaker_backend_key: str | None = None,
         chunk_size_ms: int = 200,
         pre_roll_ms: int = 1200,
     ) -> None:
@@ -60,13 +62,24 @@ class SpeechSession:
         if int(pre_roll_ms) < 0:
             raise ValueError("pre_roll_ms cannot be negative")
         backend_key = str(speaker_backend_key or "xvector").strip().lower()
-        if not backend_key:
-            raise ValueError("speaker_backend_key is required")
+        if backend_key not in {*_CONCRETE_SPEAKER_BACKENDS, "compare"}:
+            raise ValueError("speaker_backend_key must be xvector, eres2net_large or compare")
+        authoritative_key = (
+            None
+            if authoritative_speaker_backend_key is None
+            else str(authoritative_speaker_backend_key).strip().lower()
+        )
+        if backend_key == "compare":
+            if authoritative_key not in _CONCRETE_SPEAKER_BACKENDS:
+                raise ValueError("authoritative speaker backend is required in compare mode")
+        elif authoritative_key is not None and authoritative_key != backend_key:
+            raise ValueError("authoritative speaker backend must match the single session backend")
 
         self.session_id = session_id
         self.sample_rate = int(sample_rate)
         self.runtime = runtime
         self.speaker_backend_key = backend_key
+        self.authoritative_speaker_backend_key = authoritative_key or backend_key
         self.chunk_size_ms = int(chunk_size_ms)
         self.pre_roll_ms = int(pre_roll_ms)
 
@@ -231,25 +244,40 @@ class SpeechSession:
 
         asr = self.runtime.transcribe(utterance_pcm, self.sample_rate)
         common_details: dict[str, Any] = {"forced_final": True} if forced_final else {}
-        speaker: dict[str, Any] | None = None
-        try:
-            if self.speaker_backend_key == "xvector":
-                # Preserve compatibility with legacy XVector runtimes/fakes that
-                # predate the backend-key keyword while still validating the
-                # returned model space below.
-                speaker = self.runtime.speaker_embedding(utterance_pcm, self.sample_rate)
-            else:
-                speaker = self.runtime.speaker_embedding(
+        authoritative_speaker: dict[str, Any] | None = None
+        secondary_speaker: dict[str, Any] | None = None
+        secondary_error: AIError | None = None
+
+        if self.speaker_backend_key == "compare":
+            authoritative_key = self.authoritative_speaker_backend_key
+            secondary_key = (
+                "eres2net_large" if authoritative_key == "xvector" else "xvector"
+            )
+            try:
+                authoritative_speaker = self._extract_speaker(utterance_pcm, authoritative_key)
+            except AIError as exc:
+                common_details = {
+                    **common_details,
+                    "speaker_unavailable": True,
+                    "speaker_error_code": exc.code,
+                    "speaker_backend_key": authoritative_key,
+                }
+            try:
+                secondary_speaker = self._extract_speaker(utterance_pcm, secondary_key)
+            except AIError as exc:
+                secondary_error = exc
+        else:
+            try:
+                authoritative_speaker = self._extract_speaker(
                     utterance_pcm,
-                    self.sample_rate,
-                    backend_key=self.speaker_backend_key,
+                    self.authoritative_speaker_backend_key,
                 )
-        except AIError as exc:
-            common_details = {
-                **common_details,
-                "speaker_unavailable": True,
-                "speaker_error_code": exc.code,
-            }
+            except AIError as exc:
+                common_details = {
+                    **common_details,
+                    "speaker_unavailable": True,
+                    "speaker_error_code": exc.code,
+                }
 
         events = [
             SpeechEvent(
@@ -273,45 +301,120 @@ class SpeechSession:
                 },
             ),
         ]
-        if speaker is not None:
-            backend_key = str(speaker.get("backend_key") or "").strip().lower()
-            model_id = str(speaker.get("model_id") or "").strip()
-            if not backend_key or not model_id:
-                raise WorkerCrashedError(
-                    "speaker result did not contain required model metadata",
-                    details={"has_backend_key": bool(backend_key), "has_model_id": bool(model_id)},
-                )
-            if backend_key != self.speaker_backend_key:
-                raise WorkerCrashedError(
-                    "speaker result backend does not match the session backend",
-                    details={
-                        "expected_backend_key": self.speaker_backend_key,
-                        "actual_backend_key": backend_key,
-                    },
-                )
-
-            speaker_details: dict[str, Any] = {
-                "backend_key": backend_key,
-                **({"forced_final": True} if forced_final else {}),
-            }
-            if speaker.get("model_version") is not None:
-                speaker_details["model_version"] = str(speaker["model_version"])
-            if speaker.get("model_fingerprint") is not None:
-                speaker_details["model_fingerprint"] = str(speaker["model_fingerprint"])
-            if speaker.get("latency_ms") is not None:
-                speaker_details["latency_ms"] = float(speaker["latency_ms"])
+        if authoritative_speaker is not None:
             events.append(
-                SpeechEvent(
-                    type=SpeechEventType.SPEAKER_RESULT,
-                    session_id=self.session_id,
+                self._speaker_event(
+                    authoritative_speaker,
+                    expected_backend=self.authoritative_speaker_backend_key,
                     start_ms=start_ms,
                     end_ms=end_ms,
-                    embedding=[float(value) for value in speaker.get("embedding", [])],
-                    model_id=model_id,
-                    details=speaker_details,
+                    forced_final=forced_final,
+                    event_type=SpeechEventType.SPEAKER_RESULT,
+                    diagnostic_only=False,
                 )
             )
+
+        if self.speaker_backend_key == "compare":
+            secondary_key = (
+                "eres2net_large"
+                if self.authoritative_speaker_backend_key == "xvector"
+                else "xvector"
+            )
+            if secondary_speaker is not None:
+                events.append(
+                    self._speaker_event(
+                        secondary_speaker,
+                        expected_backend=secondary_key,
+                        start_ms=start_ms,
+                        end_ms=end_ms,
+                        forced_final=forced_final,
+                        event_type=SpeechEventType.SPEAKER_COMPARE_RESULT,
+                        diagnostic_only=True,
+                    )
+                )
+            else:
+                details: dict[str, Any] = {
+                    "backend_key": secondary_key,
+                    "diagnostic_only": True,
+                    "speaker_unavailable": True,
+                    "speaker_error_code": (
+                        secondary_error.code if secondary_error is not None else "BACKEND_UNAVAILABLE"
+                    ),
+                }
+                if forced_final:
+                    details["forced_final"] = True
+                events.append(
+                    SpeechEvent(
+                        type=SpeechEventType.SPEAKER_COMPARE_RESULT,
+                        session_id=self.session_id,
+                        start_ms=start_ms,
+                        end_ms=end_ms,
+                        embedding=None,
+                        model_id=None,
+                        details=details,
+                    )
+                )
         return events
+
+    def _extract_speaker(self, utterance_pcm: bytes, backend_key: str) -> dict[str, Any]:
+        if backend_key == "xvector":
+            # Preserve compatibility with legacy XVector runtimes/fakes that
+            # predate the backend-key keyword while still validating the
+            # returned model space in _speaker_event.
+            return self.runtime.speaker_embedding(utterance_pcm, self.sample_rate)
+        return self.runtime.speaker_embedding(
+            utterance_pcm,
+            self.sample_rate,
+            backend_key=backend_key,
+        )
+
+    def _speaker_event(
+        self,
+        speaker: dict[str, Any],
+        *,
+        expected_backend: str,
+        start_ms: int,
+        end_ms: int,
+        forced_final: bool,
+        event_type: SpeechEventType,
+        diagnostic_only: bool,
+    ) -> SpeechEvent:
+        backend_key = str(speaker.get("backend_key") or "").strip().lower()
+        model_id = str(speaker.get("model_id") or "").strip()
+        if not backend_key or not model_id:
+            raise WorkerCrashedError(
+                "speaker result did not contain required model metadata",
+                details={"has_backend_key": bool(backend_key), "has_model_id": bool(model_id)},
+            )
+        if backend_key != expected_backend:
+            raise WorkerCrashedError(
+                "speaker result backend does not match the session backend",
+                details={
+                    "expected_backend_key": expected_backend,
+                    "actual_backend_key": backend_key,
+                },
+            )
+
+        speaker_details: dict[str, Any] = {"backend_key": backend_key}
+        if diagnostic_only:
+            speaker_details["diagnostic_only"] = True
+        if forced_final:
+            speaker_details["forced_final"] = True
+        if speaker.get("model_version") is not None:
+            speaker_details["model_version"] = str(speaker["model_version"])
+        if speaker.get("model_fingerprint") is not None:
+            speaker_details["model_fingerprint"] = str(speaker["model_fingerprint"])
+        if speaker.get("latency_ms") is not None:
+            speaker_details["latency_ms"] = float(speaker["latency_ms"])
+        return SpeechEvent(
+            type=event_type,
+            session_id=self.session_id,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            embedding=[float(value) for value in speaker.get("embedding", [])],
+            model_id=model_id,
+            details=speaker_details,
+        )
 
     def _append_pre_roll(self, pcm: bytes, end_ms: int) -> None:
         max_bytes = self._ms_to_bytes(self.pre_roll_ms)
