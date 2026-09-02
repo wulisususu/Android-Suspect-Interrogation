@@ -1,0 +1,153 @@
+name: RK3588 ERes2Net Production Probe
+
+on:
+  push:
+    branches:
+      - linux-adaptation
+      - feat/dual-speaker-backends
+    paths:
+      - 'scripts/ci/probe-eres2net-large.py'
+      - 'scripts/ci/rk3588-speech-smoke.py'
+      - 'linux/backend/speech_worker/**'
+      - 'linux/backend/app/ai/**'
+      - '.github/workflows/rk3588-eres2net-probe.yml'
+  pull_request:
+    branches:
+      - linux-adaptation
+    paths:
+      - 'scripts/ci/probe-eres2net-large.py'
+      - 'scripts/ci/rk3588-speech-smoke.py'
+      - 'linux/backend/speech_worker/**'
+      - 'linux/backend/app/ai/**'
+      - '.github/workflows/rk3588-eres2net-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rk3588-eres2net-probe-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hosted-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check offline probe contracts
+        run: |
+          python -m py_compile scripts/ci/probe-eres2net-large.py scripts/ci/rk3588-speech-smoke.py
+          python -m pip install -r linux/backend/requirements.txt pytest
+          python -m pytest -q tests/release/test_rk3588_speech_scripts.py
+
+  rk3588-eres2net:
+    needs: hosted-contract
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 25
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      MODELSCOPE_OFFLINE: '1'
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          clean: true
+
+      - name: Resolve installed offline runtime and ERes2Net model
+        shell: bash
+        run: |
+          set -euo pipefail
+          FUNASR_PYTHON=/opt/suspect-interrogation/runtime/funasr-env/bin/python
+          test -x "$FUNASR_PYTHON"
+          FUNASR_MODEL_ROOT=/opt/suspect-interrogation/models/funasr
+          test -d "$FUNASR_MODEL_ROOT/paraformer"
+          test -d "$FUNASR_MODEL_ROOT/fsmn-vad"
+          for candidate in \
+            /opt/suspect-interrogation/models/funasr/eres2net-large \
+            /opt/suspect-interrogation/staging-models/funasr/eres2net-large; do
+            if [[ -d "$candidate" ]]; then ERES_MODEL_DIR="$candidate"; break; fi
+          done
+          : "${ERES_MODEL_DIR:?ERes2Net model is not installed; download is intentionally forbidden}"
+          test -f "$ERES_MODEL_DIR/configuration.json"
+          test -s "$ERES_MODEL_DIR/pretrained_eres2net.pt"
+          OUT="$RUNNER_TEMP/eres2net-probe"
+          mkdir -p "$OUT"
+          python3 scripts/ci/probe-eres2net-large.py --model-dir "$ERES_MODEL_DIR" --output "$OUT/package.json"
+          echo "FUNASR_PYTHON=$FUNASR_PYTHON" >> "$GITHUB_ENV"
+          echo "FUNASR_MODEL_ROOT=$FUNASR_MODEL_ROOT" >> "$GITHUB_ENV"
+          echo "ERES_MODEL_DIR=$ERES_MODEL_DIR" >> "$GITHUB_ENV"
+          echo "ERES_OUT=$OUT" >> "$GITHUB_ENV"
+
+      - name: Start exact-revision isolated ERes2Net worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOCKET="$RUNNER_TEMP/eres2net-probe.sock"
+          LOG="$RUNNER_TEMP/eres2net-probe-worker.log"
+          rm -f "$SOCKET"
+          env PYTHONPATH="$GITHUB_WORKSPACE/linux/backend" \
+            SUSPECT_SPEECH_SOCKET="$SOCKET" \
+            SUSPECT_FUNASR_MODEL_ROOT="$FUNASR_MODEL_ROOT" \
+            SUSPECT_ERES2NET_MODEL_DIR="$ERES_MODEL_DIR" \
+            MODELSCOPE_OFFLINE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+            "$FUNASR_PYTHON" -m speech_worker.main >"$LOG" 2>&1 &
+          echo $! > "$RUNNER_TEMP/eres2net-probe.pid"
+          for _ in $(seq 1 120); do
+            [[ -S "$SOCKET" ]] && break
+            sleep 0.5
+          done
+          test -S "$SOCKET" || { cat "$LOG" >&2; exit 1; }
+          PYTHONPATH="$GITHUB_WORKSPACE/linux/backend" "$FUNASR_PYTHON" - "$SOCKET" <<'PY'
+          import sys
+          from app.ai.speech.client import SpeechWorkerClient
+          health = SpeechWorkerClient(sys.argv[1], timeout=60).health()
+          assert health.get('models', {}).get('asr') is True, health
+          assert health.get('models', {}).get('vad') is True, health
+          assert health.get('models', {}).get('speaker') is True, health
+          backends = health.get('speaker_backends') or {}
+          assert set(backends) == {'eres2net_large'}, health
+          assert backends['eres2net_large'].get('ready') is True, health
+          print('eres2net_worker_health=ok')
+          PY
+          echo "ERES_SOCKET=$SOCKET" >> "$GITHUB_ENV"
+
+      - name: Extract real 512-dimension normalized embedding without a download
+        shell: bash
+        run: |
+          set -euo pipefail
+          WAV="$(find "$ERES_MODEL_DIR" -type f -iname '*.wav' -print -quit)"
+          : "${WAV:?ERes2Net package has no local WAV fixture for the probe}"
+          python3 scripts/ci/probe-eres2net-large.py \
+            --model-dir "$ERES_MODEL_DIR" --socket "$ERES_SOCKET" --embedding-wav "$WAV" \
+            --output "$ERES_OUT/runtime.json"
+          python3 - "$ERES_OUT/runtime.json" <<'PY'
+          import json, math, sys
+          report = json.load(open(sys.argv[1], encoding='utf-8'))
+          assert report['embedding_dim'] == 512, report
+          assert math.isclose(float(report['embedding_norm']), 1.0, abs_tol=1e-5), report
+          assert report['runtime_backend_key'] == 'eres2net_large', report
+          PY
+
+      - name: Cleanup isolated worker
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          [[ -f "$RUNNER_TEMP/eres2net-probe.pid" ]] && kill "$(cat "$RUNNER_TEMP/eres2net-probe.pid")"
+          rm -f "$RUNNER_TEMP/eres2net-probe.sock"
+
+      - name: Upload non-sensitive probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rk3588-eres2net-${{ github.run_id }}
+          path: ${{ runner.temp }}/eres2net-probe/*.json
+          if-no-files-found: warn
+          retention-days: 14

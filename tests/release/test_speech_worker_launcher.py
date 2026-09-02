@@ -13,8 +13,11 @@ STABLE_PYTHONPATH = "/opt/suspect-interrogation/current/linux/backend"
 
 def _base_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     model_root = tmp_path / "funasr-models"
-    for name in ("paraformer", "fsmn-vad", "xvector"):
+    for name in ("paraformer", "fsmn-vad"):
         (model_root / name).mkdir(parents=True)
+    eres_model_dir = tmp_path / "eres2net-large"
+    eres_model_dir.mkdir()
+    (eres_model_dir / "pretrained_eres2net.pt").write_bytes(b"test-checkpoint")
     socket_path = tmp_path / "run" / "speech.sock"
     socket_path.parent.mkdir()
 
@@ -32,8 +35,8 @@ def _base_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     env.update(
         {
             "SUSPECT_FUNASR_PYTHON": os.fspath(fake_python),
-            "SUSPECT_XVECTOR_LEGACY_PYTHON": os.fspath(fake_python),
             "SUSPECT_FUNASR_MODEL_ROOT": os.fspath(model_root),
+            "SUSPECT_ERES2NET_MODEL_DIR": os.fspath(eres_model_dir),
             "SUSPECT_SPEECH_SOCKET": os.fspath(socket_path),
             "CAPTURE_FILE": os.fspath(capture),
         }
@@ -67,7 +70,7 @@ def test_launcher_fails_closed_when_required_runtime_inputs_are_missing(tmp_path
     for missing in (
         "SUSPECT_FUNASR_PYTHON",
         "SUSPECT_FUNASR_MODEL_ROOT",
-        "SUSPECT_XVECTOR_LEGACY_PYTHON",
+        "SUSPECT_ERES2NET_MODEL_DIR",
         "SUSPECT_SPEECH_SOCKET",
     ):
         candidate = dict(env)
@@ -113,7 +116,20 @@ def test_launcher_rejects_invalid_python_and_incomplete_model_root(tmp_path: Pat
         check=False,
     )
     assert result.returncode != 0
-    assert "paraformer" in result.stderr or "fsmn-vad" in result.stderr or "xvector" in result.stderr
+    assert "paraformer" in result.stderr or "fsmn-vad" in result.stderr
+
+    missing_eres = dict(env)
+    missing_eres.pop("SUSPECT_ERES2NET_MODEL_DIR")
+    result = subprocess.run(
+        ["bash", os.fspath(LAUNCHER)],
+        cwd=ROOT,
+        env=missing_eres,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "SUSPECT_ERES2NET_MODEL_DIR" in result.stderr
 
 
 def test_systemd_delegates_stale_socket_safety_to_worker_server():

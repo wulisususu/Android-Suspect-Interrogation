@@ -11,16 +11,11 @@ require_env() {
 
 require_env SUSPECT_FUNASR_PYTHON
 require_env SUSPECT_FUNASR_MODEL_ROOT
-require_env SUSPECT_XVECTOR_LEGACY_PYTHON
+require_env SUSPECT_ERES2NET_MODEL_DIR
 require_env SUSPECT_SPEECH_SOCKET
 
 if [[ ! -x "$SUSPECT_FUNASR_PYTHON" ]]; then
   echo "SUSPECT_FUNASR_PYTHON is not executable: $SUSPECT_FUNASR_PYTHON" >&2
-  exit 78
-fi
-
-if [[ ! -x "$SUSPECT_XVECTOR_LEGACY_PYTHON" ]]; then
-  echo "SUSPECT_XVECTOR_LEGACY_PYTHON is not executable: $SUSPECT_XVECTOR_LEGACY_PYTHON" >&2
   exit 78
 fi
 
@@ -29,12 +24,22 @@ if [[ ! -d "$SUSPECT_FUNASR_MODEL_ROOT" ]]; then
   exit 78
 fi
 
-for model_dir in paraformer fsmn-vad xvector; do
+for model_dir in paraformer fsmn-vad; do
   if [[ ! -d "$SUSPECT_FUNASR_MODEL_ROOT/$model_dir" ]]; then
     echo "required FunASR model directory is missing: $SUSPECT_FUNASR_MODEL_ROOT/$model_dir" >&2
     exit 78
   fi
 done
+
+if [[ ! -d "$SUSPECT_ERES2NET_MODEL_DIR" ]]; then
+  echo "SUSPECT_ERES2NET_MODEL_DIR is not a directory: $SUSPECT_ERES2NET_MODEL_DIR" >&2
+  exit 78
+fi
+
+if [[ ! -f "$SUSPECT_ERES2NET_MODEL_DIR/pretrained_eres2net.pt" ]]; then
+  echo "ERes2Net-large checkpoint is missing: $SUSPECT_ERES2NET_MODEL_DIR/pretrained_eres2net.pt" >&2
+  exit 78
+fi
 
 export PYTHONPATH=/opt/suspect-interrogation/current/linux/backend
 exec "$SUSPECT_FUNASR_PYTHON" -m speech_worker.main

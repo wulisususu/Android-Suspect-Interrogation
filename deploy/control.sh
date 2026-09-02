@@ -32,6 +32,12 @@ upsert_runtime_env() {
   fi
 }
 
+remove_runtime_env() {
+  local key="$1" runtime_env="$SUSPECT_ETC_DIR/runtime.env"
+  [[ -f "$runtime_env" ]] || die "runtime env does not exist: $runtime_env"
+  sed -i -E "/^${key}=/d" "$runtime_env"
+}
+
 configure_rk3588_audio() {
   command -v amixer >/dev/null 2>&1 || return 0
   amixer -c 1 sget "ALC Capture Function" >/dev/null 2>&1 || return 0
@@ -78,9 +84,14 @@ install_runtime() {
     upsert_runtime_env "SUSPECT_TLS_KEY_FILE" "$SUSPECT_TLS_KEY_FILE"
     upsert_runtime_env "SUSPECT_FUNASR_MODEL_ROOT" "/opt/suspect-interrogation/models/funasr"
     upsert_runtime_env "SUSPECT_FUNASR_PYTHON" "/opt/suspect-interrogation/runtime/funasr-env/bin/python"
-    upsert_runtime_env "SUSPECT_XVECTOR_LEGACY_PYTHON" "/opt/suspect-interrogation/runtime/xvector-legacy-env/bin/python"
+    upsert_runtime_env "SUSPECT_ERES2NET_MODEL_DIR" "/opt/suspect-interrogation/models/funasr/eres2net-large"
+    upsert_runtime_env "SUSPECT_SPEAKER_BACKEND" "eres2net_large"
+    remove_runtime_env "SUSPECT_XVECTOR_LEGACY_PYTHON"
     upsert_runtime_env "SUSPECT_SPEECH_SOCKET" "/run/suspect-interrogation/speech.sock"
     upsert_runtime_env "AI_MODE" "real"
+    upsert_runtime_env "MODELSCOPE_OFFLINE" "1"
+    upsert_runtime_env "HF_HUB_OFFLINE" "1"
+    upsert_runtime_env "TRANSFORMERS_OFFLINE" "1"
     upsert_runtime_env "ALSA_DEVICE" "plughw:1,0"
     configure_rk3588_audio
     chown root:"$SUSPECT_SERVICE_GROUP" "$SUSPECT_ETC_DIR/runtime.env"

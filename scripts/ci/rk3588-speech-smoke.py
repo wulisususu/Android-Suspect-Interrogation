@@ -34,7 +34,7 @@ RESTART_COMMAND = "systemctl restart ai-worker.service"
 SUSPECT_ONLY = "SUSPECT_ONLY"
 SUSPECT_PLUS_INTERROGATOR = "SUSPECT_PLUS_INTERROGATOR"
 FULL = "FULL"
-SUPPORTED_SPEAKER_BACKENDS = ("xvector", "eres2net_large")
+SUPPORTED_SPEAKER_BACKENDS = ("eres2net_large",)
 
 
 def _normalize(values: Iterable[float]) -> list[float]:
@@ -92,7 +92,7 @@ def _vad_positive_pcm(client: SpeechWorkerClient, pcm: bytes) -> bytes:
 def _normalize_speaker_backend(value: str) -> str:
     backend = str(value or "").strip().lower()
     if backend not in SUPPORTED_SPEAKER_BACKENDS:
-        raise ValueError("speaker backend must be xvector or eres2net_large")
+        raise ValueError("speaker backend must be eres2net_large")
     return backend
 
 
@@ -301,7 +301,7 @@ def _restart_worker(socket_path: Path, timeout_seconds: float = 90.0) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a real RK3588 FSMN-VAD + Paraformer + selected speaker-backend smoke.")
     parser.add_argument("--socket", default=DEFAULT_SOCKET)
-    parser.add_argument("--speaker-backend", choices=SUPPORTED_SPEAKER_BACKENDS, default="xvector")
+    parser.add_argument("--speaker-backend", choices=SUPPORTED_SPEAKER_BACKENDS, default="eres2net_large")
     parser.add_argument("--model-root", default=DEFAULT_MODEL_ROOT)
     parser.add_argument("--api-base", default="http://127.0.0.1:18080")
     parser.add_argument("--env-file", default="/etc/suspect-interrogation/ai-worker.env")
@@ -345,8 +345,8 @@ def main() -> int:
         selected_health = backend_health.get(speaker_backend)
         if isinstance(selected_health, dict) and selected_health.get("ready") is not True:
             raise RuntimeError(f"speech worker speaker backend is not ready: {speaker_backend}")
-    elif speaker_backend == "xvector" and not models.get("speaker"):
-        raise RuntimeError("speech worker XVector model is not ready")
+    elif not models.get("speaker"):
+        raise RuntimeError("speech worker ERes2Net-large model is not ready")
 
     pcm_by_role = {
         SpeakerRole.SUSPECT: _read_pcm16_wav(Path(args.suspect_wav)),
