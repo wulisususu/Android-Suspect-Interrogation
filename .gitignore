@@ -9,3 +9,5 @@ linux/backend/**/*.db
 output/
 webapp/.playwright-cli/
 *.wav
+__pycache__/
+*.py[cod]

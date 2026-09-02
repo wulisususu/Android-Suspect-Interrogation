@@ -20,6 +20,7 @@ import type {
   CaseQuestionCreateInput,
   CaseQuestionUpdateInput,
   PendingResolution,
+  QAUnitResolution,
   RoundReassociateInput,
 } from '../types/templateInterrogation'
 
@@ -152,6 +153,7 @@ function createFormalQuestion(input: CaseQuestionCreateInput) { return runTempla
 function updateFormalQuestion(questionId: string, input: CaseQuestionUpdateInput) { return runTemplateAction(() => templateStore.updateCaseQuestion(questionId, input)) }
 function reorderFormalQuestions(questionIds: string[]) { return runTemplateAction(() => templateStore.reorderCaseQuestions(questionIds)) }
 function resolvePendingQuestion(pendingId: string, resolution: PendingResolution) { return runTemplateAction(() => templateStore.resolvePendingQuestion(pendingId, resolution)) }
+function resolveQaUnit(qaUnitId: string, resolution: QAUnitResolution) { return runTemplateAction(() => templateStore.resolveQaUnit(qaUnitId, resolution)) }
 function reassociateFormalRound(roundId: string, input: RoundReassociateInput) { return runTemplateAction(() => templateStore.reassociateRound(roundId, input)) }
 function updateFormalAnswer(roundId: string, answerText: string) { return runTemplateAction(() => templateStore.updateRoundAnswer(roundId, answerText)) }
 function saveFormalQuestionToLibrary(questionId: string) { return runTemplateAction(() => templateStore.saveQuestionToLibrary(questionId)) }
@@ -290,6 +292,7 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
             @update-question="updateFormalQuestion"
             @reorder-questions="reorderFormalQuestions"
             @resolve-pending="resolvePendingQuestion"
+            @resolve-qa-unit="resolveQaUnit"
             @reassociate-round="reassociateFormalRound"
             @update-answer="updateFormalAnswer"
             @save-library="saveFormalQuestionToLibrary"

@@ -45,10 +45,31 @@ class SpeechWorkerClient:
     def health(self) -> dict[str, Any]:
         return self._require_dict(self._request("health"))
 
-    def open_session(self, session_id: str, sample_rate: int = 16000) -> dict[str, Any]:
-        return self._require_dict(
-            self._request("open_session", session_id=session_id, sample_rate=int(sample_rate))
+    def open_session(
+        self,
+        session_id: str,
+        sample_rate: int = 16000,
+        *,
+        speaker_backend: str | None = None,
+        authoritative_backend: str | None = None,
+    ) -> dict[str, Any]:
+        backend_key = str(speaker_backend or "eres2net_large").strip().lower()
+        if backend_key != "eres2net_large":
+            raise ValueError("speaker_backend must be eres2net_large")
+        authority_key = (
+            None
+            if authoritative_backend is None
+            else str(authoritative_backend).strip().lower()
         )
+        if authority_key is not None and authority_key != backend_key:
+            raise ValueError("authoritative_backend must match the single speaker backend")
+
+        payload: dict[str, Any] = {
+            "session_id": session_id,
+            "sample_rate": int(sample_rate),
+            "speaker_backend": backend_key,
+        }
+        return self._require_dict(self._request("open_session", **payload))
 
     def push_pcm(self, session_id: str, pcm: bytes) -> list[SpeechEvent]:
         result = self._request(
@@ -109,14 +130,22 @@ class SpeechWorkerClient:
             normalized.append([start_ms, end_ms])
         return normalized
 
-    def extract_embedding(self, pcm: bytes, sample_rate: int = 16000) -> dict[str, Any]:
-        return self._require_dict(
-            self._request(
-                "extract_embedding",
-                sample_rate=int(sample_rate),
-                pcm_b64=base64.b64encode(pcm).decode("ascii"),
-            )
-        )
+    def extract_embedding(
+        self,
+        pcm: bytes,
+        sample_rate: int = 16000,
+        *,
+        backend: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "sample_rate": int(sample_rate),
+            "pcm_b64": base64.b64encode(pcm).decode("ascii"),
+        }
+        backend_key = str(backend or "eres2net_large").strip().lower()
+        if backend_key != "eres2net_large":
+            raise ValueError("speaker embedding backend must be eres2net_large")
+        payload["backend_key"] = backend_key
+        return self._require_dict(self._request("extract_embedding", **payload))
 
     def _request(self, op: str, **payload: Any) -> Any:
         request_id = uuid.uuid4().hex

@@ -1,5 +1,11 @@
 import { http } from './http'
 
+export type SpeakerBackendKey = 'eres2net_large'
+
+export function speakerBackendLabel(_backend: SpeakerBackendKey = 'eres2net_large'): string {
+  return 'ERes2Net-large'
+}
+
 export type SpeakerCalibrationStatus =
   | 'NOT_CALIBRATED'
   | 'VALID'
@@ -25,6 +31,7 @@ export interface SpeakerCalibrationRecord {
   sampleCount: number
   corpusDigest: string
   algorithmVersion: string
+  speakerBackendKey: SpeakerBackendKey
   speakerModelId: string
   speakerModelVersion?: string | null
   speakerModelFingerprint: string
@@ -45,7 +52,12 @@ export interface SpeakerCalibrationState {
   minimumOfficers: number
   minimumSamplesPerOfficer: number
   currentCorpus: { officerCount: number; sampleCount: number; digest: string; ready: boolean }
-  currentModel: { modelId: string; modelVersion?: string | null; fingerprint: string }
+  currentModel: {
+    backendKey: SpeakerBackendKey
+    modelId: string
+    modelVersion?: string | null
+    fingerprint: string
+  }
   currentMicrophone: {
     audioSource: string
     deviceId: string
@@ -59,7 +71,7 @@ export interface SpeakerCalibrationState {
 function unwrap<T>(payload: unknown): T {
   if (payload && typeof payload === 'object' && 'ok' in payload && 'data' in payload) {
     const envelope = payload as { ok: boolean; data: T; code?: string; message?: string }
-    if (!envelope.ok) throw new Error(envelope.message || envelope.code || '设备校准接口返回错误')
+    if (!envelope.ok) throw new Error(envelope.message || envelope.code || '声纹系统接口返回错误')
     return envelope.data
   }
   return payload as T
@@ -76,6 +88,9 @@ export async function fetchSpeakerCalibrationHistory(limit = 50): Promise<Speake
 }
 
 export async function recomputeSpeakerCalibration(actorId?: string): Promise<SpeakerCalibrationState> {
-  const response = await http.post('/api/v1/speaker-calibration/recompute', actorId ? { actor_id: actorId } : {})
+  const response = await http.post(
+    '/api/v1/speaker-calibration/recompute',
+    actorId ? { actor_id: actorId } : {},
+  )
   return unwrap<SpeakerCalibrationState>(response.data)
 }

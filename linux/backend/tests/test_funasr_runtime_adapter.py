@@ -41,6 +41,15 @@ class FakeLegacySpeaker:
         return [{"spk_embedding": [[3.0, 4.0]]}]
 
 
+class FakeEResModel:
+    def __init__(self) -> None:
+        self.waveforms: list[list[float]] = []
+
+    def extract_embedding(self, waveform):
+        self.waveforms.append(list(waveform))
+        return [3.0, 4.0]
+
+
 @pytest.fixture(autouse=True)
 def reset_fake_model():
     FakeAutoModel.calls = []
@@ -54,9 +63,17 @@ def reset_fake_model():
 
 def _loaded_runtime(tmp_path: Path) -> FunASRSpeechRuntime:
     root = tmp_path / "funasr"
-    for name in ("paraformer", "fsmn-vad", "xvector"):
+    for name in ("paraformer", "fsmn-vad"):
         (root / name).mkdir(parents=True, exist_ok=True)
-    runtime = FunASRSpeechRuntime(model_root=root, model_factory=FakeAutoModel)
+    eres_dir = tmp_path / "eres2net-large"
+    eres_dir.mkdir()
+    (eres_dir / "local-checkpoint.bin").write_bytes(b"local-only")
+    runtime = FunASRSpeechRuntime(
+        model_root=root,
+        model_factory=FakeAutoModel,
+        eres2net_model_dir=eres_dir,
+        eres2net_model_factory=lambda path: FakeEResModel(),
+    )
     runtime.load()
     return runtime
 
@@ -70,7 +87,6 @@ def test_default_model_paths_are_stable_opt_layout(monkeypatch):
     assert [call["model"] for call in FakeAutoModel.calls] == [
         "/opt/suspect-interrogation/models/funasr/paraformer",
         "/opt/suspect-interrogation/models/funasr/fsmn-vad",
-        "/opt/suspect-interrogation/models/funasr/xvector",
     ]
     for call in FakeAutoModel.calls:
         assert call["device"] == "cpu"
@@ -113,13 +129,58 @@ def test_speaker_embedding_is_flat_normalized_float_list(tmp_path: Path):
     result = runtime.speaker_embedding(b"\x00\x00" * 1600, 16000)
 
     embedding = result["embedding"]
-    assert result["model_id"] == "xvector"
+    assert result["backend_key"] == "eres2net_large"
+    assert result["model_id"] == "iic/speech_eres2net_large_200k_sv_zh-cn_16k-common"
     assert embedding == pytest.approx([0.6, 0.8], abs=1e-6)
     assert all(isinstance(value, float) for value in embedding)
     assert math.sqrt(sum(value * value for value in embedding)) == pytest.approx(1.0, abs=1e-6)
 
 
-def test_legacy_xvector_falls_back_without_downgrading_asr_vad_runtime(tmp_path: Path):
+def test_explicit_eres_backend_uses_configured_local_model(tmp_path: Path):
+    root = tmp_path / "funasr"
+    for name in ("paraformer", "fsmn-vad"):
+        (root / name).mkdir(parents=True, exist_ok=True)
+    eres_dir = tmp_path / "eres2net-large"
+    eres_dir.mkdir()
+    (eres_dir / "local-checkpoint.bin").write_bytes(b"local-only")
+    fake_eres = FakeEResModel()
+
+    runtime = FunASRSpeechRuntime(
+        model_root=root,
+        model_factory=FakeAutoModel,
+        eres2net_model_dir=eres_dir,
+        eres2net_model_factory=lambda path: fake_eres,
+    )
+    runtime.load()
+    result = runtime.speaker_embedding(
+        b"\x00\x40" * 1600,
+        16000,
+        backend_key="eres2net_large",
+    )
+
+    assert result["backend_key"] == "eres2net_large"
+    assert result["model_id"] == "iic/speech_eres2net_large_200k_sv_zh-cn_16k-common"
+    assert result["embedding"] == pytest.approx([0.6, 0.8], abs=1e-6)
+    assert runtime.health()["speaker_backends"]["eres2net_large"]["ready"] is True
+    assert fake_eres.waveforms
+
+
+def test_missing_eres_backend_is_explicit_and_never_falls_back_to_xvector(tmp_path: Path):
+    root = tmp_path / "funasr"
+    for name in ("paraformer", "fsmn-vad"):
+        (root / name).mkdir(parents=True, exist_ok=True)
+    runtime = FunASRSpeechRuntime(model_root=root, model_factory=FakeAutoModel)
+    runtime.load()
+    pcm = b"\x00\x00" * 1600
+
+    with pytest.raises(BackendUnavailableError) as missing:
+        runtime.speaker_embedding(pcm, 16000, backend_key="eres2net_large")
+    assert missing.value.details["backend_key"] == "eres2net_large"
+    with pytest.raises(BackendUnavailableError):
+        runtime.speaker_embedding(pcm, 16000, backend_key="xvector")
+
+
+def test_legacy_xvector_assets_are_not_loaded_by_the_eres_runtime(tmp_path: Path):
     root = tmp_path / "funasr"
     for name in ("paraformer", "fsmn-vad", "xvector"):
         (root / name).mkdir(parents=True, exist_ok=True)
@@ -140,19 +201,17 @@ def test_legacy_xvector_falls_back_without_downgrading_asr_vad_runtime(tmp_path:
     )
     runtime.load()
 
-    assert runtime.health()["status"] == "ready"
-    assert runtime.health()["models"] == {"asr": True, "vad": True, "speaker": True}
-    assert calls == [root / "xvector"]
-    assert runtime.speaker_backend == "legacy-subprocess-xvector"
-    assert runtime.speaker_embedding(b"\x00\x00" * 1600, 16000)["embedding"] == pytest.approx([0.6, 0.8])
-    assert legacy.generate_calls[-1]["fs"] == 16000
-
-
-def test_speaker_embedding_rejects_missing_contract(tmp_path: Path):
-    runtime = _loaded_runtime(tmp_path)
-    runtime.speaker_model.outputs_override = [{"text": "wrong contract"}]
-    with pytest.raises(WorkerCrashedError, match="spk_embedding"):
+    assert runtime.health()["status"] == "degraded"
+    assert runtime.health()["models"] == {"asr": True, "vad": True, "speaker": False}
+    assert calls == []
+    with pytest.raises(BackendUnavailableError):
         runtime.speaker_embedding(b"\x00\x00" * 1600, 16000)
+
+
+def test_speaker_embedding_rejects_the_retired_backend(tmp_path: Path):
+    runtime = _loaded_runtime(tmp_path)
+    with pytest.raises(BackendUnavailableError, match="only enabled"):
+        runtime.speaker_embedding(b"\x00\x00" * 1600, 16000, backend_key="xvector")
 
 
 def test_missing_model_directory_is_typed_not_installed(tmp_path: Path):

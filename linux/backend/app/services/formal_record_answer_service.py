@@ -17,6 +17,8 @@ class FormalRecordAnswerService:
     def upsert(self, case_id: str, question_id: str, *, answer_text: str) -> dict:
         assert_formal_record_mutable(self.db, case_id)
         question = question_repo.get_case(self.db, case_id, question_id)
+        clean_answer = str(answer_text or "").strip()
+        question_repo.set_canonical_answer(self.db, question, answer_text=clean_answer)
         round_row = round_repo.latest_for_question(self.db, case_id, question_id)
         if round_row is None:
             round_row = round_repo.create_round(
@@ -26,11 +28,11 @@ class FormalRecordAnswerService:
                 case_question_id=question_id,
                 actual_question_text=question.text,
                 officer_fragment_id=None,
-                answer_text=answer_text,
+                answer_text=clean_answer,
                 answer_fragment_ids=[],
                 status="CLOSED",
             )
         else:
-            round_row.answer_text = str(answer_text or "").strip()
+            round_row.answer_text = clean_answer
             self.db.flush()
         return question_round_dict(round_row)

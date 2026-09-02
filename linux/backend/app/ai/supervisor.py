@@ -33,16 +33,44 @@ class _InProcessSpeechClient:
         with self._lock:
             return {"status": "ok", "sessions": len(self._sessions)}
 
-    def open_session(self, session_id: str, sample_rate: int = 16000) -> dict[str, Any]:
+    def open_session(
+        self,
+        session_id: str,
+        sample_rate: int = 16000,
+        speaker_backend: str = "eres2net_large",
+        authoritative_backend: str | None = None,
+    ) -> dict[str, Any]:
         session_id = str(session_id).strip()
         sample_rate = int(sample_rate)
+        speaker_backend = str(speaker_backend or "eres2net_large").strip().lower()
+        authority_key = (
+            None
+            if authoritative_backend is None
+            else str(authoritative_backend).strip().lower()
+        )
         if not session_id:
             raise AIError("session_id is required")
         if sample_rate <= 0:
             raise AIError("sample_rate must be positive")
+        if speaker_backend != "eres2net_large":
+            raise AIError("speaker backend must be eres2net_large", details={"speaker_backend": speaker_backend})
+        if authority_key is not None and authority_key != speaker_backend:
+            raise AIError("authoritative speaker backend must match single backend")
         with self._lock:
-            self._sessions[session_id] = {"sample_rate": sample_rate, "bytes_received": 0}
-        return {"session_id": session_id, "sample_rate": sample_rate}
+            self._sessions[session_id] = {
+                "sample_rate": sample_rate,
+                "bytes_received": 0,
+                "speaker_backend": speaker_backend,
+                "authoritative_backend": speaker_backend,
+            }
+        result = {
+            "session_id": session_id,
+            "sample_rate": sample_rate,
+            "speaker_backend": speaker_backend,
+        }
+        if authority_key is not None:
+            result["authoritative_backend"] = authority_key
+        return result
 
     def push_pcm(self, session_id: str, pcm: bytes) -> list[SpeechEvent]:
         with self._lock:
@@ -117,12 +145,14 @@ class _InProcessSpeechClient:
 
 
 class _Worker:
-    def __init__(self, *, kind: str, spec: ModelSpec, registry: ModelRegistry, mode: str, timeout: float):
+    def __init__(self, *, kind: str, spec: ModelSpec, registry: ModelRegistry, mode: str, timeout: float, llamapi_base_url: str = "http://127.0.0.1:9265/v1", llamapi_model_hint: str = "qwen3:4b"):
         self.kind = kind
         self.spec = spec
         self.registry = registry
         self.mode = mode
         self.timeout = timeout
+        self.llamapi_base_url = llamapi_base_url
+        self.llamapi_model_hint = llamapi_model_hint
         self.state = EngineState.STOPPED
         self.pid: int | None = None
         self.restart_count = 0
@@ -155,7 +185,7 @@ class _Worker:
             self.state = EngineState.LOADING
             ctx = mp.get_context("spawn")
             parent_conn, child_conn = ctx.Pipe(duplex=True)
-            process = ctx.Process(target=worker_main, kwargs={"conn": child_conn, "kind": self.kind, "mode": self.mode, "spec": self.spec, "model_root": str(self.registry.model_root)}, daemon=True, name=f"ai-{self.kind}-worker")
+            process = ctx.Process(target=worker_main, kwargs={"conn": child_conn, "kind": self.kind, "mode": self.mode, "spec": self.spec, "model_root": str(self.registry.model_root), "llamapi_base_url": self.llamapi_base_url, "llamapi_model_hint": self.llamapi_model_hint, "request_timeout": self.timeout}, daemon=True, name=f"ai-{self.kind}-worker")
             process.start(); child_conn.close()
             self._process = process; self._conn = parent_conn; self.pid = process.pid
             deadline = time.monotonic() + 5.0
@@ -252,13 +282,13 @@ class _Worker:
 
 
 class AISupervisor:
-    def __init__(self, registry: ModelRegistry, *, mode: str = "mock", request_timeout: float = 30.0, idle_unload_seconds: float = 300.0, memory_budget_mb: int = 6144, speech_socket: str | Path = "/run/suspect-interrogation/speech.sock", speaker_accept_threshold: float | None = None, speaker_margin: float | None = None, speech_client: Any | None = None):
+    def __init__(self, registry: ModelRegistry, *, mode: str = "mock", request_timeout: float = 30.0, idle_unload_seconds: float = 300.0, memory_budget_mb: int = 6144, speech_socket: str | Path = "/run/suspect-interrogation/speech.sock", speaker_accept_threshold: float | None = None, speaker_margin: float | None = None, speech_client: Any | None = None, llamapi_base_url: str = "http://127.0.0.1:9265/v1", llamapi_model_hint: str = "qwen3:4b"):
         if mode not in {"mock", "real"}: raise ValueError("mode must be mock or real")
         self.registry = registry; self.mode = mode; self.request_timeout = request_timeout; self.idle_unload_seconds = idle_unload_seconds; self.memory_budget_mb = memory_budget_mb
         self.speaker_accept_threshold = speaker_accept_threshold
         self.speaker_margin = speaker_margin
         self._resource_lock = threading.RLock()
-        self._workers = {kind: _Worker(kind=kind, spec=registry.default_for(kind), registry=registry, mode=mode, timeout=request_timeout) for kind in ("asr", "ocr", "llm") if self._has_kind(kind)}
+        self._workers = {kind: _Worker(kind=kind, spec=registry.default_for(kind), registry=registry, mode=mode, timeout=request_timeout, llamapi_base_url=llamapi_base_url, llamapi_model_hint=llamapi_model_hint) for kind in ("asr", "ocr", "llm") if self._has_kind(kind)}
         if speech_client is not None:
             self._speech_client = speech_client
             self._speech_backend = "injected"
@@ -301,8 +331,35 @@ class AISupervisor:
     def recognize(self, image: bytes, *, capability: str, session_id: str, options: dict[str, Any] | None = None) -> OCRResult:
         return self._prepare("ocr").request("ocr", {"image": image, "capability": capability, "session_id": session_id, "options": options or {}})
 
-    def open_speech_session(self, session_id: str, *, sample_rate: int = 16000) -> dict[str, Any]:
-        result = self._speech_client.open_session(session_id, sample_rate=sample_rate)
+    def open_speech_session(
+        self,
+        session_id: str,
+        *,
+        sample_rate: int = 16000,
+        speaker_backend: str | None = None,
+        authoritative_backend: str | None = None,
+    ) -> dict[str, Any]:
+        explicit_backend = speaker_backend is not None
+        if explicit_backend:
+            kwargs: dict[str, Any] = {
+                "sample_rate": sample_rate,
+                "speaker_backend": speaker_backend,
+            }
+            if authoritative_backend is not None:
+                kwargs["authoritative_backend"] = authoritative_backend
+            result = self._speech_client.open_session(session_id, **kwargs)
+        else:
+            if authoritative_backend is not None:
+                raise ValueError("authoritative_backend requires an explicit speaker_backend")
+            result = self._speech_client.open_session(
+                session_id,
+                sample_rate=sample_rate,
+            )
+            # In-process mock historically returned no backend discriminator.
+            # Normalize the omitted-backend call even if an internal client adds it.
+            result = dict(result)
+            result.pop("speaker_backend", None)
+            result.pop("authoritative_backend", None)
         self._speech_sessions.add(session_id)
         return result
 

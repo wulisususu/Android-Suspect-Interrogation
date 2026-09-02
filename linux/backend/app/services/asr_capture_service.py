@@ -24,14 +24,21 @@ from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
 from app.repositories import sessions as session_repo
 from app.repositories import speaker_calibrations as calibration_repo
+from app.repositories import speaker_compare_evidence as compare_evidence_repo
 from app.repositories import voiceprints as voiceprint_repo
 from app.services.interrogation_projection_service import InterrogationProjectionService
+from app.services.speaker_backend_compare import (
+    SpeakerBackendCompareCoordinator,
+    SpeakerBackendDiagnostic,
+)
 from app.services.speaker_calibration_runtime import ResolvedSpeakerCalibration
-from app.services.speaker_policy import SpeakerRole, decide_speaker
+from app.services.speaker_policy import SpeakerRole, SpeakerSource, decide_speaker
 
 
 logger = logging.getLogger(__name__)
 PublishEvent = Callable[[str, str, dict[str, Any]], None]
+FragmentSink = Callable[[str, str], None]
+CaptureFinishedSink = Callable[[str, str], None]
 CalibrationResolver = Callable[[Any], ResolvedSpeakerCalibration]
 _FLOAT32_BYTES = 4
 
@@ -49,6 +56,9 @@ class _CaptureRuntime:
     calibration_status: str
     speaker_model_fingerprint: str | None
     microphone_fingerprint: str | None
+    authoritative_speaker_backend: str | None = None
+    secondary_speaker_backend: str | None = None
+    secondary_calibration: ResolvedSpeakerCalibration | None = None
     stop_event: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     ordinal: int = 0
@@ -86,6 +96,11 @@ class AsrCaptureService:
         sample_rate: int = 16_000,
         read_timeout: float = 0.2,
         calibration_resolver: CalibrationResolver | None = None,
+        secondary_calibration_resolver: CalibrationResolver | None = None,
+        fragment_sink: FragmentSink | None = None,
+        capture_finished_sink: CaptureFinishedSink | None = None,
+        speaker_model_key: str = "eres2net_large",
+        speaker_authoritative_backend: str | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.device_manager = device_manager
@@ -94,6 +109,22 @@ class AsrCaptureService:
         self.sample_rate = int(sample_rate)
         self.read_timeout = max(0.001, float(read_timeout))
         self.calibration_resolver = calibration_resolver
+        self.secondary_calibration_resolver = secondary_calibration_resolver
+        self.fragment_sink = fragment_sink
+        self.capture_finished_sink = capture_finished_sink
+        self.speaker_model_key = str(speaker_model_key or "eres2net_large").strip().lower()
+        if self.speaker_model_key != "eres2net_large":
+            raise ValueError("speaker_model_key must be eres2net_large")
+        configured_authority = (
+            None
+            if speaker_authoritative_backend is None
+            else str(speaker_authoritative_backend).strip().lower()
+        )
+        if configured_authority is not None and configured_authority != self.speaker_model_key:
+            raise ValueError("speaker_authoritative_backend must match the single backend")
+        self.compare_coordinator = None
+        self.authoritative_speaker_backend = self.speaker_model_key
+        self.secondary_speaker_backend = None
         if self.sample_rate <= 0:
             raise ValueError("sample_rate must be positive")
 
@@ -120,9 +151,19 @@ class AsrCaptureService:
             interrogation_session = session_repo.active_for_case(db, case_id)
             if interrogation_session is None:
                 raise DomainError("SESSION_NOT_ACTIVE", "请先开始审讯再启动语音采集", 409)
-            if voiceprint_repo.get_suspect(db, case_id) is None:
-                raise DomainError("SUSPECT_VOICEPRINT_REQUIRED", "请先完成嫌疑人声纹注册", 409)
+            if voiceprint_repo.get_suspect(
+                db, case_id, model_key=self.authoritative_speaker_backend
+            ) is None:
+                if self.speaker_model_key == "xvector":
+                    raise DomainError("SUSPECT_VOICEPRINT_REQUIRED", "请先完成嫌疑人声纹注册", 409)
+                raise DomainError(
+                    "SUSPECT_VOICEPRINT_BACKEND_REQUIRED",
+                    f"请先完成 {self.authoritative_speaker_backend} 嫌疑人声纹注册",
+                    409,
+                    data={"speaker_backend": self.authoritative_speaker_backend},
+                )
             resolved = self._resolve_calibration(db)
+            secondary_calibration = None
             capture = asr_repo.create_capture_session(
                 db,
                 case_id=case_id,
@@ -139,6 +180,7 @@ class AsrCaptureService:
                 margin=resolved.margin,
                 threshold_source=resolved.source,
                 calibration_status=resolved.status,
+                speaker_backend_key=resolved.speaker_backend_key or self.authoritative_speaker_backend,
                 speaker_model_fingerprint=resolved.speaker_model_fingerprint,
                 microphone_fingerprint=resolved.microphone_fingerprint,
             )
@@ -158,12 +200,19 @@ class AsrCaptureService:
             calibration_status=str(resolved.status),
             speaker_model_fingerprint=resolved.speaker_model_fingerprint,
             microphone_fingerprint=resolved.microphone_fingerprint,
+            authoritative_speaker_backend=self.authoritative_speaker_backend,
+            secondary_speaker_backend=self.secondary_speaker_backend,
+            secondary_calibration=secondary_calibration,
         )
 
         speech_open = False
         audio_started = False
         try:
-            self.ai_supervisor.open_speech_session(runtime.speech_session_id, sample_rate=self.sample_rate)
+            self.ai_supervisor.open_speech_session(
+                runtime.speech_session_id,
+                sample_rate=self.sample_rate,
+                speaker_backend="eres2net_large",
+            )
             speech_open = True
             self.device_manager.start_record()
             audio_started = True
@@ -260,7 +309,10 @@ class AsrCaptureService:
         speech_open = False
         audio_started = False
         try:
-            self.ai_supervisor.open_speech_session(runtime.speech_session_id, sample_rate=self.sample_rate)
+            self.ai_supervisor.open_speech_session(
+                runtime.speech_session_id,
+                sample_rate=self.sample_rate,
+            )
             speech_open = True
             self.device_manager.start_record()
             audio_started = True
@@ -353,6 +405,11 @@ class AsrCaptureService:
             except Exception as exc:
                 if failure is None:
                     failure = exc
+            if self.capture_finished_sink is not None:
+                try:
+                    self.capture_finished_sink(runtime.case_id, runtime.interrogation_session_id)
+                except Exception:
+                    logger.exception("capture finished sink failed for case %s", runtime.case_id)
 
             with self._lock:
                 if self._active.get(runtime.case_id) is runtime:
@@ -420,6 +477,7 @@ class AsrCaptureService:
             return
         asr_by_range: dict[tuple[int, int], SpeechEvent] = {}
         speaker_by_range: dict[tuple[int, int], SpeechEvent] = {}
+        compare_by_range: dict[tuple[int, int], SpeechEvent] = {}
         for event in events:
             if event.start_ms is None or event.end_ms is None:
                 continue
@@ -428,11 +486,19 @@ class AsrCaptureService:
                 asr_by_range[key] = event
             elif event.type is SpeechEventType.SPEAKER_RESULT:
                 speaker_by_range[key] = event
+            elif event.type is SpeechEventType.SPEAKER_COMPARE_RESULT:
+                compare_by_range[key] = event
 
         for key, asr_event in asr_by_range.items():
             if key in runtime.seen_utterances:
                 continue
-            self._persist_fragment(runtime, key, asr_event, speaker_by_range.get(key))
+            self._persist_fragment(
+                runtime,
+                key,
+                asr_event,
+                speaker_by_range.get(key),
+                compare_by_range.get(key),
+            )
             runtime.seen_utterances.add(key)
 
     def _persist_fragment(
@@ -441,6 +507,7 @@ class AsrCaptureService:
         bounds: tuple[int, int],
         asr_event: SpeechEvent,
         speaker_event: SpeechEvent | None,
+        compare_event: SpeechEvent | None = None,
     ) -> None:
         start_ms, end_ms = bounds
         with self.session_factory() as db:
@@ -450,6 +517,7 @@ class AsrCaptureService:
                 case=case,
                 interrogation_session_id=runtime.interrogation_session_id,
                 speaker_event=speaker_event,
+                backend_key=(runtime.authoritative_speaker_backend or self.authoritative_speaker_backend),
             )
 
             threshold = float(runtime.speaker_threshold)
@@ -499,6 +567,20 @@ class AsrCaptureService:
                 low_confidence=decision.low_confidence,
                 model_id=str(asr_event.model_id or "paraformer"),
                 model_version=self._optional_text((asr_event.details or {}).get("model_version")),
+                speaker_threshold_source=threshold_source,
+                speaker_model_id=(None if speaker_event is None else self._optional_text(speaker_event.model_id)),
+                speaker_model_version=(
+                    None
+                    if speaker_event is None
+                    else self._optional_text((speaker_event.details or {}).get("model_version"))
+                ),
+                speaker_model_fingerprint=(
+                    runtime.speaker_model_fingerprint
+                    if speaker_event is None
+                    else self._optional_text((speaker_event.details or {}).get("model_fingerprint"))
+                    or runtime.speaker_model_fingerprint
+                ),
+                microphone_fingerprint=runtime.microphone_fingerprint,
             )
             self._audit_speaker_decision(
                 db,
@@ -510,6 +592,17 @@ class AsrCaptureService:
                 usable_duration_ms=max(0, end_ms - start_ms),
                 asr_event=asr_event,
             )
+            self._persist_compare_evidence(
+                db,
+                runtime=runtime,
+                fragment_id=fragment.id,
+                bounds=bounds,
+                asr_event=asr_event,
+                authoritative_event=speaker_event,
+                secondary_event=compare_event,
+                authoritative_decision=decision,
+                authoritative_candidates=candidates,
+            )
             db.commit()
             fragment_id = fragment.id
             payload = self._fragment_payload(fragment)
@@ -519,12 +612,216 @@ class AsrCaptureService:
 
         runtime.ordinal += 1
         self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)
+        if self.fragment_sink is not None:
+            try:
+                self.fragment_sink(runtime.case_id, fragment_id)
+            except Exception:
+                # The ASR row is already committed. Qwen mode recovery scans
+                # persisted unassigned fragments, so never fall back to legacy
+                # projection or block the capture thread here.
+                logger.exception("qa fragment sink failed for fragment %s", fragment_id)
+            return
         try:
             with self.session_factory() as projection_db:
                 InterrogationProjectionService(projection_db).process_fragment(runtime.case_id, fragment_id)
                 projection_db.commit()
         except Exception:
             logger.exception("formal interrogation projection failed for fragment %s", fragment_id)
+
+    def _persist_compare_evidence(
+        self,
+        db,
+        *,
+        runtime: _CaptureRuntime,
+        fragment_id: str,
+        bounds: tuple[int, int],
+        asr_event: SpeechEvent,
+        authoritative_event: SpeechEvent | None,
+        secondary_event: SpeechEvent | None,
+        authoritative_decision,
+        authoritative_candidates: list[dict[str, Any]],
+    ) -> None:
+        coordinator = self.compare_coordinator
+        if coordinator is None:
+            return
+
+        authoritative_key = runtime.authoritative_speaker_backend or coordinator.authoritative_backend
+        secondary_key = runtime.secondary_speaker_backend or coordinator.secondary_backend
+        primary_details = authoritative_event.details if authoritative_event is not None else (asr_event.details or {})
+        primary_error = None
+        if authoritative_event is None and bool((asr_event.details or {}).get("speaker_unavailable")):
+            primary_error = str((asr_event.details or {}).get("speaker_error_code") or "BACKEND_UNAVAILABLE")
+
+        primary = SpeakerBackendDiagnostic(
+            backend_key=authoritative_key,
+            role=authoritative_decision.role.value,
+            speaker_source=authoritative_decision.source.value,
+            voiceprint_verified=authoritative_decision.voiceprint_verified,
+            score=authoritative_decision.score,
+            second_best_score=authoritative_decision.second_best_score,
+            threshold=authoritative_decision.threshold,
+            margin=runtime.speaker_margin,
+            calibration_id=runtime.calibration_id,
+            calibration_status=runtime.calibration_status,
+            model_id=None if authoritative_event is None else self._optional_text(authoritative_event.model_id),
+            model_version=self._optional_text(primary_details.get("model_version")),
+            model_fingerprint=(
+                self._optional_text(primary_details.get("model_fingerprint"))
+                or runtime.speaker_model_fingerprint
+            ),
+            latency_ms=self._optional_float(primary_details.get("latency_ms")),
+            error_code=primary_error,
+        )
+
+        secondary_candidates: list[dict[str, Any]] = []
+        secondary_calibration = runtime.secondary_calibration
+        secondary_error = None
+        if secondary_event is None:
+            secondary_error = "BACKEND_UNAVAILABLE"
+        else:
+            secondary_details = secondary_event.details or {}
+            if bool(secondary_details.get("speaker_unavailable")):
+                secondary_error = str(secondary_details.get("speaker_error_code") or "BACKEND_UNAVAILABLE")
+        if voiceprint_repo.get_suspect(db, runtime.case_id, model_key=secondary_key) is None:
+            secondary_error = secondary_error or "SUSPECT_VOICEPRINT_BACKEND_REQUIRED"
+        if secondary_calibration is None:
+            secondary_error = secondary_error or "CALIBRATION_UNAVAILABLE"
+
+        secondary_decision = None
+        if secondary_error is None and secondary_event is not None and secondary_calibration is not None:
+            case = case_repo.get(db, runtime.case_id)
+            secondary_candidates, secondary_roles = self._speaker_candidates(
+                db,
+                case=case,
+                interrogation_session_id=runtime.interrogation_session_id,
+                speaker_event=secondary_event,
+                backend_key=secondary_key,
+            )
+            secondary_decision = self._decide_with_operating_point(
+                candidates=secondary_candidates,
+                enabled_roles=secondary_roles,
+                threshold=secondary_calibration.threshold,
+                margin=secondary_calibration.margin,
+                usable_duration_ms=max(0, bounds[1] - bounds[0]),
+                overlap=bool(
+                    (asr_event.details or {}).get("overlap")
+                    or (secondary_event.details or {}).get("overlap")
+                ),
+            )
+
+        if secondary_decision is None:
+            threshold = (
+                float(secondary_calibration.threshold)
+                if secondary_calibration is not None
+                else float(runtime.speaker_threshold)
+            )
+            margin = (
+                secondary_calibration.margin
+                if secondary_calibration is not None
+                else None
+            )
+            secondary_decision = decide_speaker(
+                candidates=[],
+                enabled_roles={SpeakerRole.SUSPECT},
+                threshold=threshold,
+                margin=0.0 if margin is None else float(margin),
+                usable_duration_ms=max(0, bounds[1] - bounds[0]),
+                overlap=False,
+            )
+
+        secondary_details = secondary_event.details if secondary_event is not None else {}
+        secondary = SpeakerBackendDiagnostic(
+            backend_key=secondary_key,
+            role=secondary_decision.role.value,
+            speaker_source=secondary_decision.source.value,
+            voiceprint_verified=secondary_decision.voiceprint_verified,
+            score=secondary_decision.score,
+            second_best_score=secondary_decision.second_best_score,
+            threshold=secondary_decision.threshold,
+            margin=(None if secondary_calibration is None else secondary_calibration.margin),
+            calibration_id=(None if secondary_calibration is None else secondary_calibration.calibration_id),
+            calibration_status=(None if secondary_calibration is None else secondary_calibration.status),
+            model_id=None if secondary_event is None else self._optional_text(secondary_event.model_id),
+            model_version=self._optional_text(secondary_details.get("model_version")),
+            model_fingerprint=(
+                self._optional_text(secondary_details.get("model_fingerprint"))
+                or (None if secondary_calibration is None else secondary_calibration.speaker_model_fingerprint)
+            ),
+            latency_ms=self._optional_float(secondary_details.get("latency_ms")),
+            error_code=secondary_error,
+        )
+
+        diagnostics = {primary.backend_key: primary, secondary.backend_key: secondary}
+        evidence = coordinator.build_evidence(
+            xvector=diagnostics["xvector"],
+            eres2net_large=diagnostics["eres2net_large"],
+        )
+        candidate_by_backend = {
+            authoritative_key: authoritative_candidates,
+            secondary_key: secondary_candidates,
+        }
+        for item in evidence["results"]:
+            key = str(item["backendKey"])
+            compare_evidence_repo.create_evidence(
+                db,
+                fragment_id=fragment_id,
+                capture_session_id=runtime.capture_session_id,
+                case_id=runtime.case_id,
+                backend_key=key,
+                authoritative=bool(item["authoritative"]),
+                available=bool(item["available"]),
+                role=str(item["role"]),
+                speaker_source=str(item["speakerSource"]),
+                voiceprint_verified=bool(item["voiceprintVerified"]),
+                score=item["score"],
+                second_best_score=item["secondBestScore"],
+                threshold=item["threshold"],
+                margin=item["margin"],
+                calibration_id=item["calibrationId"],
+                calibration_status=item["calibrationStatus"],
+                model_id=item["modelId"],
+                model_version=item["modelVersion"],
+                model_fingerprint=item["modelFingerprint"],
+                latency_ms=item["latencyMs"],
+                error_code=item["errorCode"],
+                candidate_scores=[
+                    {
+                        "role": (
+                            candidate["role"].value
+                            if isinstance(candidate.get("role"), SpeakerRole)
+                            else str(candidate.get("role"))
+                        ),
+                        "score": candidate.get("score"),
+                    }
+                    for candidate in candidate_by_backend.get(key, [])
+                ],
+            )
+
+    @staticmethod
+    def _decide_with_operating_point(
+        *,
+        candidates: list[dict[str, Any]],
+        enabled_roles: set[SpeakerRole],
+        threshold: float,
+        margin: float | None,
+        usable_duration_ms: int,
+        overlap: bool,
+    ):
+        decision_roles = enabled_roles
+        decision_candidates = candidates
+        if margin is None:
+            decision_roles = {SpeakerRole.SUSPECT}
+            decision_candidates = [
+                item for item in candidates if item.get("role") is SpeakerRole.SUSPECT
+            ]
+        return decide_speaker(
+            candidates=decision_candidates,
+            enabled_roles=decision_roles,
+            threshold=float(threshold),
+            margin=0.0 if margin is None else float(margin),
+            usable_duration_ms=int(usable_duration_ms),
+            overlap=bool(overlap),
+        )
 
     @staticmethod
     def _audit_speaker_decision(
@@ -583,11 +880,20 @@ class AsrCaptureService:
         case,
         interrogation_session_id: str,
         speaker_event: SpeechEvent | None,
+        backend_key: str | None = None,
     ) -> tuple[list[dict[str, Any]], set[SpeakerRole]]:
         embedding = self._normalize_vector(speaker_event.embedding if speaker_event is not None else None)
-        suspect = voiceprint_repo.get_suspect(db, case.id)
+        selected_backend = str(backend_key or self.authoritative_speaker_backend).strip().lower()
+        suspect = voiceprint_repo.get_suspect(
+            db, case.id, model_key=selected_backend
+        )
         if suspect is None:
-            raise DomainError("SUSPECT_VOICEPRINT_REQUIRED", "嫌疑人声纹不可用", 409)
+            raise DomainError(
+                "SUSPECT_VOICEPRINT_BACKEND_REQUIRED",
+                f"{selected_backend} 嫌疑人声纹不可用",
+                409,
+                data={"speaker_backend": selected_backend},
+            )
 
         enabled: set[SpeakerRole] = {SpeakerRole.SUSPECT}
         references: list[tuple[SpeakerRole, Any, str | None, str | None]] = [
@@ -599,20 +905,38 @@ class AsrCaptureService:
             )
         )
         if assignment is not None:
-            self._append_officer_reference(
-                db,
-                references,
-                enabled,
-                SpeakerRole.INTERROGATOR,
-                assignment.interrogator_voiceprint_id,
-            )
-            self._append_officer_reference(
-                db,
-                references,
-                enabled,
-                SpeakerRole.RECORDER,
-                assignment.recorder_voiceprint_id,
-            )
+            if selected_backend == self.authoritative_speaker_backend:
+                self._append_officer_reference(
+                    db,
+                    references,
+                    enabled,
+                    SpeakerRole.INTERROGATOR,
+                    assignment.interrogator_voiceprint_id,
+                )
+                self._append_officer_reference(
+                    db,
+                    references,
+                    enabled,
+                    SpeakerRole.RECORDER,
+                    assignment.recorder_voiceprint_id,
+                )
+            else:
+                self._append_officer_model_reference(
+                    db,
+                    references,
+                    enabled,
+                    SpeakerRole.INTERROGATOR,
+                    assignment.interrogator_officer_id,
+                    selected_backend,
+                )
+                self._append_officer_model_reference(
+                    db,
+                    references,
+                    enabled,
+                    SpeakerRole.RECORDER,
+                    assignment.recorder_officer_id,
+                    selected_backend,
+                )
 
         candidates: list[dict[str, Any]] = []
         if embedding is None:
@@ -631,6 +955,27 @@ class AsrCaptureService:
                 }
             )
         return candidates, enabled
+
+    @staticmethod
+    def _append_officer_model_reference(
+        db,
+        references: list[tuple[SpeakerRole, Any, str | None, str | None]],
+        enabled: set[SpeakerRole],
+        role: SpeakerRole,
+        officer_id: str | None,
+        model_key: str,
+    ) -> None:
+        if not officer_id:
+            return
+        officer = voiceprint_repo.get_officer(
+            db,
+            str(officer_id),
+            model_key=model_key,
+        )
+        if officer is None:
+            return
+        enabled.add(role)
+        references.append((role, officer, officer.officer_id, officer.officer_name))
 
     @staticmethod
     def _append_officer_reference(
@@ -669,6 +1014,33 @@ class AsrCaptureService:
             status="NOT_CALIBRATED",
             speaker_model_fingerprint=None,
             microphone_fingerprint=None,
+            speaker_backend_key=self.authoritative_speaker_backend,
+        )
+
+    def _resolve_secondary_calibration(self, db) -> ResolvedSpeakerCalibration:
+        if self.secondary_speaker_backend is None:
+            raise ValueError("secondary calibration requested outside compare mode")
+        if self.secondary_calibration_resolver is not None:
+            return self.secondary_calibration_resolver(db)
+        configured_threshold = getattr(self.ai_supervisor, "speaker_accept_threshold", None)
+        threshold = MODEL_BASELINE_THRESHOLD if configured_threshold is None else float(configured_threshold)
+        margin = getattr(self.ai_supervisor, "speaker_margin", None)
+        source = str(
+            getattr(
+                self.ai_supervisor,
+                "speaker_threshold_source",
+                "MODEL_BASELINE" if configured_threshold is None else "DEVICE_CALIBRATED",
+            )
+        )
+        return ResolvedSpeakerCalibration(
+            calibration_id=None,
+            threshold=threshold,
+            margin=None if margin is None else float(margin),
+            source=source,
+            status="NOT_CALIBRATED",
+            speaker_model_fingerprint=None,
+            microphone_fingerprint=None,
+            speaker_backend_key=self.secondary_speaker_backend,
         )
 
     def _finish_capture_row(self, capture_session_id: str) -> None:
@@ -746,6 +1118,16 @@ class AsrCaptureService:
         return max(-1.0, min(1.0, float(score)))
 
     @staticmethod
+    def _optional_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return None
+        return result if math.isfinite(result) else None
+
+    @staticmethod
     def _optional_text(value: Any) -> str | None:
         if value is None:
             return None
@@ -793,6 +1175,9 @@ class AsrCaptureService:
             "interrogationSessionId": runtime.interrogation_session_id,
             "status": "CAPTURING" if active else "STOPPED",
             "sampleRate": self.sample_rate,
+            "speakerModelKey": self.speaker_model_key,
+            "speakerAuthoritativeBackend": runtime.authoritative_speaker_backend,
+            "speakerSecondaryBackend": runtime.secondary_speaker_backend,
             "speakerThreshold": runtime.speaker_threshold,
             "thresholdSource": runtime.threshold_source,
             "speakerMarginConfigured": runtime.speaker_margin is not None,

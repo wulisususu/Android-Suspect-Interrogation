@@ -5,6 +5,8 @@ import path from 'node:path'
 const root = path.resolve(__dirname)
 const formal = fs.readFileSync(path.join(root, 'FormalTemplatePanel.vue'), 'utf8')
 const live = fs.readFileSync(path.join(root, 'LiveDialoguePanel.vue'), 'utf8')
+const interrogationStore = fs.readFileSync(path.join(root, '../stores/interrogation.ts'), 'utf8')
+const templateStore = fs.readFileSync(path.join(root, '../stores/templateInterrogation.ts'), 'utf8')
 
 describe('formal record editor source contract', () => {
   it('renders paper-style fixed/body/closing sections and top-right signing controls', () => {
@@ -16,18 +18,51 @@ describe('formal record editor source contract', () => {
     expect(formal).toContain('结束并冻结笔录')
   })
 
-  it('shares one stable drag MIME between live dialogue and the formal BODY', () => {
-    const mime = 'application/x-formal-pending-question'
-    expect(live).toContain(mime)
-    expect(formal).toContain(mime)
-    expect(formal).toContain("emit('insertPending'")
+  it('keeps legacy pending drag compatibility and adds the qa-unit drag MIME', () => {
+    expect(live).toContain('application/x-formal-pending-question')
+    expect(formal).toContain('application/x-formal-pending-question')
+    const qaMime = 'application/x-formal-qa-unit'
+    expect(live).toContain(qaMime)
+    expect(formal).toContain(qaMime)
+    expect(formal).toContain("emit('resolveQaUnit'")
   })
 
-  it('keeps answer fields editable before an ASR round exists', () => {
-    expect(formal).toContain('manualAnswerDrafts')
-    expect(formal).toContain('saveManualAnswer')
+  it('accepts whole QA on BODY gaps/questions and answer-only on answer areas', () => {
+    expect(formal).toContain('dropQaCreateLive')
+    expect(formal).toContain("action: 'CREATE_LIVE'")
+    expect(formal).toContain('dropQaOnQuestion')
+    expect(formal).toContain("action: 'LINK_QA'")
+    expect(formal).toContain('dropAnswerOnQuestion')
+    expect(formal).toContain("action: 'LINK_ANSWER'")
+  })
+
+  it('renders the canonical case-question answer while retaining round provenance', () => {
+    expect(formal).toContain('formalAnswerText')
+    expect(formal).toContain('canonicalAnswerDrafts')
     expect(formal).toContain("emit('updateAnswer', question.id, answer)")
-    expect(formal).toContain('v-model="manualAnswerDrafts[q.id]"')
-    expect(formal).not.toContain('class="record-answer blank-answer"><b>答：</b><span></span>')
+    expect(formal).toContain('latestRound(q.id)?.actualQuestionText')
+    expect(formal).not.toContain('answerDrafts[latestRound(q.id)!.id]')
+    expect(formal).not.toContain('manualAnswerDrafts')
+  })
+
+  it('uses committed routing events as the formal-workspace correctness signal', () => {
+    expect(interrogationStore).toContain('formalRecordRevision')
+    expect(interrogationStore).toContain("event.event === 'QA_UNIT_UPDATED'")
+    expect(interrogationStore).toContain("event.event === 'FORMAL_RECORD_UPDATED'")
+    expect(interrogationStore).toContain('formalRecordRevision.value += 1')
+    expect(templateStore).toContain('interrogation.formalRecordRevision')
+    expect(templateStore).toContain('watch(')
+  })
+
+  // legacy routing emits ASR_FRAGMENT but no committed Qwen routing revision event.
+  it('retains raw-fragment workspace refresh as legacy-mode compatibility only', () => {
+    const start = templateStore.indexOf('function handleAsrFragment')
+    const end = templateStore.indexOf('function attachCaptureBridge', start)
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(end).toBeGreaterThan(start)
+    const handler = templateStore.slice(start, end)
+    expect(handler).toContain('upsertDialogue(fragment, scope)')
+    expect(handler).toContain('scheduleWorkspaceRefresh(scope)')
+    expect(handler.indexOf('scheduleWorkspaceRefresh(scope)')).toBeGreaterThan(handler.indexOf('upsertDialogue(fragment, scope)'))
   })
 })

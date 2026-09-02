@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base, TimestampMixin, utc_now
@@ -10,9 +10,11 @@ from app.database.base import Base, TimestampMixin, utc_now
 
 class OfficerVoiceProfile(TimestampMixin, Base):
     __tablename__ = "officer_voice_profiles"
+    __table_args__ = (UniqueConstraint("officer_id", "model_key", name="uq_officer_voice_profile_officer_model"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    officer_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    officer_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    model_key: Mapped[str] = mapped_column(String(64), default="eres2net_large", nullable=False, index=True)
     officer_name: Mapped[str] = mapped_column(String(128), nullable=False)
     aggregate_embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -31,6 +33,7 @@ class OfficerVoiceSample(TimestampMixin, Base):
     profile_id: Mapped[str] = mapped_column(
         ForeignKey("officer_voice_profiles.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    model_key: Mapped[str] = mapped_column(String(64), default="eres2net_large", nullable=False, index=True)
     embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
     model_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -68,6 +71,7 @@ class SessionOfficerVoiceSnapshot(Base):
     voiceprint_snapshot_id: Mapped[str] = mapped_column(
         ForeignKey("officer_voiceprints.id", ondelete="RESTRICT"), nullable=False
     )
+    model_key: Mapped[str] = mapped_column(String(64), default="eres2net_large", nullable=False, index=True)
     model_id: Mapped[str] = mapped_column(String(128), nullable=False)
     model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
@@ -77,6 +81,15 @@ class SpeakerDeviceCalibration(Base):
     """Immutable device-specific speaker calibration history row."""
 
     __tablename__ = "speaker_device_calibrations"
+    __table_args__ = (
+        Index(
+            "ix_speaker_device_calibration_scope",
+            "speaker_backend_key",
+            "speaker_model_fingerprint",
+            "microphone_fingerprint",
+            "created_at",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     status_at_creation: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
@@ -94,6 +107,7 @@ class SpeakerDeviceCalibration(Base):
     sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
     corpus_digest: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     algorithm_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    speaker_backend_key: Mapped[str] = mapped_column(String(64), default="eres2net_large", nullable=False, index=True)
     speaker_model_id: Mapped[str] = mapped_column(String(128), nullable=False)
     speaker_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     speaker_model_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -125,6 +139,7 @@ class SessionSpeakerCalibrationSnapshot(Base):
     margin: Mapped[float | None] = mapped_column(Float, nullable=True)
     threshold_source: Mapped[str] = mapped_column(String(32), nullable=False)
     calibration_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    speaker_backend_key: Mapped[str] = mapped_column(String(64), default="eres2net_large", nullable=False, index=True)
     speaker_model_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     microphone_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)

@@ -6,11 +6,12 @@ from sqlalchemy.orm import Session
 
 from app.domain.errors import DomainError
 from app.repositories import cases as case_repo
+from app.repositories import qa_units as qa_repo
 from app.repositories import question_rounds as round_repo
 from app.repositories import template_questions as question_repo
 from app.services.formal_record_answer_service import FormalRecordAnswerService
 from app.services.formal_record_policy import assert_formal_record_mutable, is_formal_record_immutable
-from app.services.serializers import case_question_dict, pending_question_dict, question_round_dict, standard_question_dict
+from app.services.serializers import case_question_dict, pending_question_dict, qa_unit_dict, question_round_dict, standard_question_dict
 
 _ALLOWED_SOURCES = {"STANDARD", "CASE", "LIVE"}
 
@@ -80,6 +81,7 @@ class TemplateWorkspaceService:
             "questions": [case_question_dict(row, rounds=rounds_by_question.get(row.id, [])) for row in rows],
             "rounds": [question_round_dict(row) for row in rounds],
             "pendingQuestions": [pending_question_dict(row) for row in round_repo.list_pending_for_case(self.db, case_id)],
+            "qaUnits": [qa_unit_dict(row) for row in qa_repo.list_for_case(self.db, case_id)],
         }
 
     def ensure_formal_record(self, case_id: str, *, template_key: str = "SUSPECT_INQUIRY_V1") -> dict:
@@ -208,6 +210,30 @@ class TemplateWorkspaceService:
             by_id = {row.id: row for row in rows}
             self._apply_order([by_id[row_id] for row_id in supplied])
         return [case_question_dict(row, rounds=round_repo.list_for_question(self.db, case_id, row.id)) for row in question_repo.list_case(self.db, case_id)]
+
+    def apply_actual_body_order(self, case_id: str) -> list[dict]:
+        self._assert_case_mutable(case_id)
+        rows = question_repo.list_case(self.db, case_id)
+        body = [row for row in rows if row.section_type == "BODY"]
+        asked = sorted(
+            [row for row in body if row.first_asked_at is not None],
+            key=lambda row: (row.first_asked_at, row.sort_order),
+        )
+        unasked = sorted(
+            [row for row in body if row.first_asked_at is None],
+            key=lambda row: row.sort_order,
+        )
+        body_order = asked + unasked
+        template_key = next((row.template_key for row in rows if row.template_key), None)
+        if template_key:
+            self._apply_section_order(rows, template_key=template_key, body_order=body_order)
+        else:
+            non_body = [row for row in rows if row.section_type != "BODY"]
+            self._apply_order(non_body + body_order)
+        return [
+            case_question_dict(row, rounds=round_repo.list_for_question(self.db, case_id, row.id))
+            for row in question_repo.list_case(self.db, case_id)
+        ]
 
     def save_to_library(self, case_id: str, question_id: str, category: str) -> dict:
         self._assert_case_mutable(case_id)

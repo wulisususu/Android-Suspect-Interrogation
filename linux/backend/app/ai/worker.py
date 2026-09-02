@@ -7,6 +7,7 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
+from .engines.llamapi import LlamaPiLLMEngine
 from .engines.mock import MockASR, MockLLM, MockOCR
 from .engines.real import RealASREngine, RealLLMEngine, RealOCREngine
 from .errors import AIError
@@ -14,19 +15,53 @@ from .registry import ModelSpec
 from .types import EngineState
 
 
-def _make_engine(kind: str, mode: str, spec: ModelSpec, model_root: str):
+def _make_engine(
+    kind: str,
+    mode: str,
+    spec: ModelSpec,
+    model_root: str,
+    *,
+    llamapi_base_url: str = "http://127.0.0.1:9265/v1",
+    llamapi_model_hint: str = "qwen3:4b",
+    request_timeout: float = 30.0,
+):
     if mode == "mock":
         return {"llm": MockLLM, "asr": MockASR, "ocr": MockOCR}[kind](model_id=spec.model_id)
+    if kind == "llm" and spec.backend.strip().lower() == "llamapi":
+        return LlamaPiLLMEngine(
+            spec,
+            base_url=llamapi_base_url,
+            model_hint=llamapi_model_hint,
+            timeout=request_timeout,
+        )
     model_dir = str((Path(model_root) / spec.path).resolve())
     return {"llm": RealLLMEngine, "asr": RealASREngine, "ocr": RealOCREngine}[kind](spec, model_dir)
 
 
-def worker_main(conn: Connection, *, kind: str, mode: str, spec: ModelSpec, model_root: str) -> None:
+def worker_main(
+    conn: Connection,
+    *,
+    kind: str,
+    mode: str,
+    spec: ModelSpec,
+    model_root: str,
+    llamapi_base_url: str = "http://127.0.0.1:9265/v1",
+    llamapi_model_hint: str = "qwen3:4b",
+    request_timeout: float = 30.0,
+) -> None:
     engine = None
     startup_complete = False
     try:
         conn.send({"type": "startup", "state": EngineState.LOADING.value, "pid": os.getpid()})
-        engine = _make_engine(kind, mode, spec, model_root)
+        engine = _make_engine(
+            kind,
+            mode,
+            spec,
+            model_root,
+            llamapi_base_url=llamapi_base_url,
+            llamapi_model_hint=llamapi_model_hint,
+            request_timeout=request_timeout,
+        )
         engine.load()
         conn.send({"type": "startup", "state": EngineState.READY.value, "pid": os.getpid()})
         startup_complete = True

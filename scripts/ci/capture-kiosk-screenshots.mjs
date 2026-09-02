@@ -64,6 +64,7 @@ class CdpClient {
     this.socket = null
     this.nextId = 1
     this.pending = new Map()
+    this.events = []
   }
 
   async connect() {
@@ -80,7 +81,14 @@ class CdpClient {
       }, { once: true })
       this.socket.addEventListener('message', (event) => {
         const message = JSON.parse(String(event.data))
-        if (!message.id) return
+        if (!message.id) {
+          if (['Runtime.exceptionThrown', 'Runtime.consoleAPICalled', 'Log.entryAdded'].includes(message.method)) {
+            this.events.push(message)
+            if (this.events.length > 50) this.events.shift()
+            console.error(`browser-event=${JSON.stringify(message)}`)
+          }
+          return
+        }
         const pending = this.pending.get(message.id)
         if (!pending) return
         this.pending.delete(message.id)
@@ -116,12 +124,70 @@ async function evaluate(client, expression) {
   return result.result?.value
 }
 
+async function inspectVisualFixture(client) {
+  return evaluate(client, `(() => {
+    const fixture = ${JSON.stringify(visualFixture)}
+    const questionValues = Array.from(document.querySelectorAll('.body-question .editable-question textarea'))
+      .map((item) => item.value || '')
+    const answerValues = Array.from(document.querySelectorAll('.body-question .record-answer textarea'))
+      .map((item) => item.value || '')
+    const rawTurns = Array.from(document.querySelectorAll('.dialogue-bubble'))
+      .map((item) => item.textContent || '')
+    const pendingTexts = Array.from(document.querySelectorAll('.pending-resolution-card'))
+      .map((item) => item.textContent || '')
+    const questionVisible = questionValues.some((value) => value.includes(fixture.formalQuestion))
+    const answerVisible = answerValues.some((value) => value.includes(fixture.formalAnswer))
+    const rawText = rawTurns.join('\\n')
+    const rawVisible = [
+      fixture.rawOfficerMatched,
+      fixture.rawOfficerUnmatched,
+      fixture.rawSuspectMatched,
+      fixture.rawSuspectUnmatched,
+    ].every((text) => rawText.includes(text))
+    const pendingCard = pendingTexts.some((text) => text.includes(fixture.pendingTitle)
+      && text.includes('加入本案笔录')
+      && text.includes('忽略'))
+    return {
+      complete: questionVisible && answerVisible && rawVisible && pendingCard,
+      questionVisible,
+      answerVisible,
+      rawVisible,
+      pendingCard,
+      questionValues,
+      answerValues,
+      rawTurns,
+      pendingTexts,
+      bodyQuestionCount: questionValues.length,
+      dialogueCount: rawTurns.length,
+      pendingCount: pendingTexts.length,
+      url: location.href,
+    }
+  })()`)
+}
+
 async function waitForSelector(client, selector, timeoutMs = 30_000) {
-  return waitFor(
-    async () => evaluate(client, `Boolean(document.querySelector(${JSON.stringify(selector)}))`),
-    selector,
-    timeoutMs,
-  )
+  try {
+    return await waitFor(
+      async () => evaluate(client, `Boolean(document.querySelector(${JSON.stringify(selector)}))`),
+      selector,
+      timeoutMs,
+    )
+  } catch (error) {
+    const diagnostic = await evaluate(client, `(() => ({
+      url: location.href,
+      title: document.title,
+      readyState: document.readyState,
+      appHtml: (document.querySelector('#app')?.innerHTML || '').slice(0, 4000),
+      bodyText: (document.body?.innerText || '').slice(0, 4000),
+      maintenance: Boolean(document.querySelector('.maintenance-shell')),
+      caseRoot: Boolean(document.querySelector('.case-root-shell')),
+      caseList: Boolean(document.querySelector('.case-list-page')),
+      resources: performance.getEntriesByType('resource').map((entry) => entry.name).slice(-40),
+    }))()`)
+    console.error(`selector-timeout-diagnostic=${JSON.stringify(diagnostic)}`)
+    console.error(`browser-events-snapshot=${JSON.stringify(client.events.slice(-20))}`)
+    throw error
+  }
 }
 
 async function clickButtonContaining(client, text) {
@@ -202,6 +268,7 @@ try {
   await client.connect()
   await client.send('Page.enable')
   await client.send('Runtime.enable')
+  await client.send('Log.enable')
 
   await navigate(client, `${baseUrl}/`, '.case-list-page')
   await screenshot(client, 'case-list', 1920, 1080)
@@ -217,27 +284,20 @@ try {
   await waitForSelector(client, '.formal-record-shell')
   await waitForSelector(client, '.live-dialogue-panel')
   await sleep(700)
-  const fixturePresent = await waitFor(() => evaluate(client, `(() => {
-    const fixture = ${JSON.stringify(visualFixture)}
-    const questionVisible = Array.from(document.querySelectorAll('.body-question .editable-question textarea'))
-      .some((item) => item.value.includes(fixture.formalQuestion))
-    const answerVisible = Array.from(document.querySelectorAll('.body-question .record-answer textarea'))
-      .some((item) => item.value.includes(fixture.formalAnswer))
-    const rawText = Array.from(document.querySelectorAll('.dialogue-bubble'))
-      .map((item) => item.textContent || '').join('\\n')
-    const rawVisible = [
-      fixture.rawOfficerMatched,
-      fixture.rawOfficerUnmatched,
-      fixture.rawSuspectMatched,
-      fixture.rawSuspectUnmatched,
-    ].every((text) => rawText.includes(text))
-    const pendingCard = Array.from(document.querySelectorAll('.pending-resolution-card'))
-      .some((item) => (item.textContent || '').includes(fixture.pendingTitle)
-        && (item.textContent || '').includes('加入本案笔录')
-        && (item.textContent || '').includes('忽略'))
-    return questionVisible && answerVisible && rawVisible && pendingCard
-  })()`), 'populated formal template, raw ASR dialogue, and unmatched-question action card')
-  if (!fixturePresent) throw new Error('Kiosk visual QA fixture is incomplete')
+
+  let fixtureSnapshot
+  try {
+    fixtureSnapshot = await waitFor(async () => {
+      const snapshot = await inspectVisualFixture(client)
+      return snapshot.complete ? snapshot : null
+    }, 'populated formal template, raw ASR dialogue, and unmatched-question action card')
+  } catch (error) {
+    const diagnostic = await inspectVisualFixture(client)
+    console.error(`kiosk-fixture-timeout-diagnostic=${JSON.stringify(diagnostic)}`)
+    console.error(`browser-events-snapshot=${JSON.stringify(client.events.slice(-20))}`)
+    throw error
+  }
+  console.log(`kiosk-fixture-ready=${JSON.stringify(fixtureSnapshot)}`)
   await screenshot(client, 'interrogation', 1920, 1080)
   await screenshot(client, 'interrogation', 1920, 900)
 } finally {

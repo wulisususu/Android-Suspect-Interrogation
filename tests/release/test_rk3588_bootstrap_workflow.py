@@ -49,7 +49,8 @@ def test_bootstrap_prepares_read_only_funasr_model_and_self_healing_runtime_layo
     assert 'findmnt -no OPTIONS "$FUNASR_MODEL_ROOT"' in workflow
     assert 'test -d "$FUNASR_MODEL_ROOT/paraformer"' in workflow
     assert 'test -d "$FUNASR_MODEL_ROOT/fsmn-vad"' in workflow
-    assert 'test -d "$FUNASR_MODEL_ROOT/xvector"' in workflow
+    assert 'test -d "$FUNASR_MODEL_ROOT/eres2net-large"' in workflow
+    assert 'test -s "$FUNASR_MODEL_ROOT/eres2net-large/pretrained_eres2net.pt"' in workflow
     assert "/etc/fstab" in workflow
     assert "x-systemd.before=ai-worker.service" in workflow
     assert "runtime_core_ok=0" in workflow
@@ -72,6 +73,9 @@ def test_install_upserts_funasr_runtime_env_for_existing_installations():
 
     assert 'upsert_runtime_env "SUSPECT_FUNASR_MODEL_ROOT" "/opt/suspect-interrogation/models/funasr"' in control
     assert 'upsert_runtime_env "SUSPECT_FUNASR_PYTHON" "/opt/suspect-interrogation/runtime/funasr-env/bin/python"' in control
+    assert 'upsert_runtime_env "SUSPECT_ERES2NET_MODEL_DIR" "/opt/suspect-interrogation/models/funasr/eres2net-large"' in control
+    assert 'upsert_runtime_env "SUSPECT_SPEAKER_BACKEND" "eres2net_large"' in control
+    assert 'remove_runtime_env "SUSPECT_XVECTOR_LEGACY_PYTHON"' in control
     assert 'upsert_runtime_env "SUSPECT_SPEECH_SOCKET" "/run/suspect-interrogation/speech.sock"' in control
     assert 'upsert_runtime_env "AI_MODE" "real"' in control
     assert 'upsert_runtime_env "ALSA_DEVICE" "plughw:1,0"' in control

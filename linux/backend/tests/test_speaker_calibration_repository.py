@@ -8,14 +8,7 @@ from app.repositories import cases as case_repo
 from app.repositories import sessions as session_repo
 
 
-def test_calibration_history_is_append_only_and_snapshot_is_immutable(tmp_path):
-    from app.repositories import speaker_calibrations as repo
-
-    engine = make_engine(f"sqlite:///{tmp_path / 'calibration-repo.db'}")
-    init_database(engine)
-    factory = make_session_factory(engine)
-    now = datetime.now(timezone.utc)
-
+def _payload(now: datetime, **overrides):
     payload = dict(
         status_at_creation="VALID",
         threshold=0.73,
@@ -32,6 +25,7 @@ def test_calibration_history_is_append_only_and_snapshot_is_immutable(tmp_path):
         sample_count=12,
         corpus_digest="a" * 64,
         algorithm_version="speaker-calibration-v1",
+        speaker_backend_key="xvector",
         speaker_model_id="xvector",
         speaker_model_version="legacy",
         speaker_model_fingerprint="b" * 64,
@@ -43,6 +37,18 @@ def test_calibration_history_is_append_only_and_snapshot_is_immutable(tmp_path):
         created_by="admin",
         created_at=now,
     )
+    payload.update(overrides)
+    return payload
+
+
+def test_calibration_history_is_append_only_and_snapshot_is_immutable(tmp_path):
+    from app.repositories import speaker_calibrations as repo
+
+    engine = make_engine(f"sqlite:///{tmp_path / 'calibration-repo.db'}")
+    init_database(engine)
+    factory = make_session_factory(engine)
+    now = datetime.now(timezone.utc)
+    payload = _payload(now)
 
     with factory() as db:
         first = repo.create_calibration(db, **payload)
@@ -84,6 +90,7 @@ def test_calibration_history_is_append_only_and_snapshot_is_immutable(tmp_path):
             margin=0.08,
             threshold_source="DEVICE_CALIBRATED",
             calibration_status="VALID",
+            speaker_backend_key="xvector",
             speaker_model_fingerprint="b" * 64,
             microphone_fingerprint="c" * 64,
         )
@@ -97,5 +104,59 @@ def test_calibration_history_is_append_only_and_snapshot_is_immutable(tmp_path):
         assert loaded.margin == 0.08
         assert loaded.threshold_source == "DEVICE_CALIBRATED"
         assert loaded.calibration_status == "VALID"
+        assert loaded.speaker_backend_key == "xvector"
+
+    engine.dispose()
+
+
+def test_latest_calibration_can_be_scoped_by_backend_model_and_microphone(tmp_path):
+    from app.repositories import speaker_calibrations as repo
+
+    engine = make_engine(f"sqlite:///{tmp_path / 'calibration-scope.db'}")
+    init_database(engine)
+    factory = make_session_factory(engine)
+    now = datetime.now(timezone.utc)
+    mic_fp = "c" * 64
+    x_fp = "b" * 64
+    e_fp = "e" * 64
+
+    with factory() as db:
+        xvector = repo.create_calibration(
+            db,
+            **_payload(
+                now,
+                speaker_backend_key="xvector",
+                speaker_model_id="xvector",
+                speaker_model_fingerprint=x_fp,
+                microphone_fingerprint=mic_fp,
+                threshold=0.71,
+            ),
+        )
+        eres = repo.create_calibration(
+            db,
+            **_payload(
+                now + timedelta(seconds=1),
+                speaker_backend_key="eres2net_large",
+                speaker_model_id="eres2net-large",
+                speaker_model_fingerprint=e_fp,
+                microphone_fingerprint=mic_fp,
+                threshold=0.83,
+            ),
+        )
+        db.commit()
+
+        assert repo.latest_calibration(
+            db,
+            speaker_backend_key="xvector",
+            speaker_model_fingerprint=x_fp,
+            microphone_fingerprint=mic_fp,
+        ).id == xvector.id
+        assert repo.latest_calibration(
+            db,
+            speaker_backend_key="eres2net_large",
+            speaker_model_fingerprint=e_fp,
+            microphone_fingerprint=mic_fp,
+        ).id == eres.id
+        assert repo.latest_calibration(db).id == eres.id
 
     engine.dispose()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import math
 import statistics
 import struct
@@ -8,6 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.ai.errors import AIError, BackendUnavailableError
 from app.database.models import OfficerVoiceprint, SessionVoiceAssignment
 from app.domain.errors import DomainError
 from app.repositories import audit as audit_repo
@@ -24,29 +26,47 @@ _MIN_EMBEDDING_SEGMENTS = 3
 _FLOAT32_BYTES = 4
 _CLIP_LEVEL = 32760
 _MAX_CLIPPED_SAMPLE_RATIO = 0.01
+_ERES2NET_LARGE = "eres2net_large"
 
 
 class VoiceprintService:
-    def __init__(self, db: Session, *, speech_client: Any):
+    def __init__(
+        self,
+        db: Session,
+        *,
+        speech_client: Any,
+        speaker_model_key: str = _ERES2NET_LARGE,
+        speaker_authoritative_backend: str | None = None,
+    ):
         self.db = db
         self.speech_client = speech_client
+        self.speaker_model_key = str(speaker_model_key or _ERES2NET_LARGE).strip().lower()
+        configured_authority = (
+            None
+            if speaker_authoritative_backend is None
+            else str(speaker_authoritative_backend).strip().lower()
+        )
+        if self.speaker_model_key != _ERES2NET_LARGE:
+            raise ValueError("speaker_model_key must be eres2net_large")
+        if configured_authority not in {None, _ERES2NET_LARGE}:
+            raise ValueError("speaker_authoritative_backend must be eres2net_large")
+        self.authoritative_speaker_backend = _ERES2NET_LARGE
 
     def readiness(self, case_id: str) -> dict:
         case_repo.get(self.db, case_id)
-        suspect = voiceprint_repo.get_suspect(self.db, case_id)
-        interrogator_ready = False
-        recorder_ready = False
-
         session = session_repo.active_for_case(self.db, case_id)
+        assignment = None
         if session is not None:
             assignment = self.db.scalar(
                 select(SessionVoiceAssignment).where(SessionVoiceAssignment.session_id == session.id)
             )
-            if assignment is not None:
-                interrogator_ready = self._officer_active(assignment.interrogator_officer_id)
-                recorder_ready = self._officer_active(assignment.recorder_officer_id)
 
+        suspect = voiceprint_repo.get_suspect(self.db, case_id, model_key=_ERES2NET_LARGE)
+        interrogator_ready = bool(assignment is not None and self._officer_active(assignment.interrogator_officer_id, _ERES2NET_LARGE))
+        recorder_ready = bool(assignment is not None and self._officer_active(assignment.recorder_officer_id, _ERES2NET_LARGE))
         return {
+            "selectedSpeakerBackend": _ERES2NET_LARGE,
+            "authoritativeSpeakerBackend": _ERES2NET_LARGE,
             "suspectReady": suspect is not None,
             "interrogatorReady": interrogator_ready,
             "recorderReady": recorder_ready,
@@ -56,12 +76,57 @@ class VoiceprintService:
 
     def enroll_suspect(self, case_id: str, pcm: bytes, actor_id: str | None = None) -> dict:
         case_repo.get(self.db, case_id)
-        reference = self._build_reference(pcm)
-        existing = voiceprint_repo.get_suspect(self.db, case_id, active_only=False)
+        primary_reference = self._build_reference(pcm)
+        primary_row, primary_action = self._upsert_suspect_reference(
+            case_id=case_id,
+            reference=primary_reference,
+        )
+        audit_repo.add(
+            self.db,
+            case_id=case_id,
+            actor_id=actor_id,
+            action=primary_action,
+            target_type="SUSPECT_VOICEPRINT",
+            target_id=primary_row.id,
+            detail=self._audit_reference_detail(
+                primary_row,
+                primary_reference["segment_count"],
+                reference=primary_reference,
+            ),
+        )
+        self.db.commit()
+
+        return {
+            "caseId": case_id,
+            "voiceprintId": primary_row.id,
+            "ready": True,
+            "usableDurationMs": primary_row.usable_duration_ms,
+            "embeddingDim": primary_row.embedding_dim,
+            "modelKey": primary_row.model_key,
+            "modelId": primary_row.model_id,
+            "modelVersion": primary_row.model_version,
+            "modelFingerprint": primary_reference.get("model_fingerprint"),
+            "quality": primary_row.enrollment_quality,
+        }
+
+    def _upsert_suspect_reference(
+        self,
+        *,
+        case_id: str,
+        reference: dict[str, Any],
+    ) -> tuple[Any, str]:
+        model_key = str(reference["model_key"])
+        existing = voiceprint_repo.get_suspect(
+            self.db,
+            case_id,
+            model_key=model_key,
+            active_only=False,
+        )
         if existing is None:
             row = voiceprint_repo.enroll_suspect(
                 self.db,
                 case_id=case_id,
+                model_key=model_key,
                 embedding=reference["bytes"],
                 embedding_dim=reference["dimension"],
                 model_id=reference["model_id"],
@@ -74,6 +139,7 @@ class VoiceprintService:
             row = voiceprint_repo.replace_suspect(
                 self.db,
                 case_id=case_id,
+                model_key=model_key,
                 embedding=reference["bytes"],
                 embedding_dim=reference["dimension"],
                 model_id=reference["model_id"],
@@ -82,27 +148,7 @@ class VoiceprintService:
                 usable_duration_ms=reference["usable_duration_ms"],
             )
             action = "SUSPECT_VOICEPRINT_REENROLL"
-
-        audit_repo.add(
-            self.db,
-            case_id=case_id,
-            actor_id=actor_id,
-            action=action,
-            target_type="SUSPECT_VOICEPRINT",
-            target_id=row.id,
-            detail=self._audit_reference_detail(row, reference["segment_count"]),
-        )
-        self.db.commit()
-        return {
-            "caseId": case_id,
-            "voiceprintId": row.id,
-            "ready": True,
-            "usableDurationMs": row.usable_duration_ms,
-            "embeddingDim": row.embedding_dim,
-            "modelId": row.model_id,
-            "modelVersion": row.model_version,
-            "quality": row.enrollment_quality,
-        }
+        return row, action
 
     def enroll_officer(
         self,
@@ -120,6 +166,7 @@ class VoiceprintService:
             self.db,
             officer_id=officer_id,
             officer_name=officer_name,
+            model_key=reference["model_key"],
             embedding=reference["bytes"],
             embedding_dim=reference["dimension"],
             model_id=reference["model_id"],
@@ -137,14 +184,20 @@ class VoiceprintService:
             detail={
                 "officer_id": row.officer_id,
                 "officer_name": row.officer_name,
-                **self._audit_reference_detail(row, reference["segment_count"]),
+                **self._audit_reference_detail(
+                    row,
+                    reference["segment_count"],
+                    reference=reference,
+                ),
             },
         )
         self.db.commit()
         return self._officer_dict(row)
 
     def update_officer(self, officer_id: str, pcm: bytes, actor_id: str | None = None) -> dict:
-        existing = voiceprint_repo.get_officer(self.db, officer_id, active_only=False)
+        existing = voiceprint_repo.get_officer(
+            self.db, officer_id, model_key=_ERES2NET_LARGE, active_only=False
+        )
         if existing is None:
             raise DomainError("OFFICER_VOICEPRINT_NOT_FOUND", "民警声纹档案不存在", 404)
         reference = self._build_reference(pcm)
@@ -152,6 +205,7 @@ class VoiceprintService:
             self.db,
             officer_id=existing.officer_id,
             officer_name=existing.officer_name,
+            model_key=reference["model_key"],
             embedding=reference["bytes"],
             embedding_dim=reference["dimension"],
             model_id=reference["model_id"],
@@ -169,14 +223,20 @@ class VoiceprintService:
             detail={
                 "officer_id": row.officer_id,
                 "officer_name": row.officer_name,
-                **self._audit_reference_detail(row, reference["segment_count"]),
+                **self._audit_reference_detail(
+                    row,
+                    reference["segment_count"],
+                    reference=reference,
+                ),
             },
         )
         self.db.commit()
         return self._officer_dict(row)
 
     def revoke_officer(self, officer_id: str, actor_id: str | None = None) -> dict:
-        row = voiceprint_repo.revoke_officer(self.db, officer_id=officer_id)
+        row = voiceprint_repo.revoke_officer(
+            self.db, officer_id=officer_id, model_key=_ERES2NET_LARGE
+        )
         audit_repo.add(
             self.db,
             case_id=None,
@@ -190,7 +250,9 @@ class VoiceprintService:
         return self._officer_dict(row)
 
     def list_officers(self, active_only: bool = True) -> list[dict]:
-        stmt = select(OfficerVoiceprint)
+        # Legacy API remains XVector-centric through Task 5. Task 6 selects a
+        # backend explicitly for session binding/readiness.
+        stmt = select(OfficerVoiceprint).where(OfficerVoiceprint.model_key == _ERES2NET_LARGE)
         if active_only:
             stmt = stmt.where(OfficerVoiceprint.active.is_(True), OfficerVoiceprint.revoked_at.is_(None))
         stmt = stmt.order_by(OfficerVoiceprint.officer_id.asc())
@@ -207,9 +269,17 @@ class VoiceprintService:
         session = session_repo.active_for_case(self.db, case_id)
         if session is None:
             raise DomainError("SESSION_NOT_ACTIVE", "请先开始审讯再绑定民警声纹角色", 409)
-        suspect = voiceprint_repo.get_suspect(self.db, case_id)
+        binding_backend = self.authoritative_speaker_backend
+        suspect = voiceprint_repo.get_suspect(
+            self.db, case_id, model_key=binding_backend
+        )
         if suspect is None:
-            raise DomainError("SUSPECT_VOICEPRINT_REQUIRED", "请先完成嫌疑人声纹注册", 409)
+            raise DomainError(
+                "SUSPECT_VOICEPRINT_BACKEND_REQUIRED",
+                f"请先完成 {binding_backend} 嫌疑人声纹注册",
+                409,
+                data={"speaker_backend": binding_backend},
+            )
 
         assignment = voiceprint_repo.assign_session_roles(
             self.db,
@@ -217,6 +287,7 @@ class VoiceprintService:
             suspect_voiceprint_id=suspect.id,
             interrogator_officer_id=self._optional_id(interrogator_officer_id),
             recorder_officer_id=self._optional_id(recorder_officer_id),
+            model_key=binding_backend,
         )
         audit_repo.add(
             self.db,
@@ -236,6 +307,8 @@ class VoiceprintService:
         return {
             "sessionId": session.id,
             "assignmentId": assignment.id,
+            "selectedSpeakerBackend": self.speaker_model_key,
+            "authoritativeSpeakerBackend": binding_backend,
             "suspectReady": True,
             "interrogatorReady": assignment.interrogator_voiceprint_id is not None,
             "recorderReady": assignment.recorder_voiceprint_id is not None,
@@ -243,7 +316,23 @@ class VoiceprintService:
             "canStart": True,
         }
 
+    def build_reference_for_backend(self, pcm: bytes, backend: str) -> dict[str, Any]:
+        """Build one model-specific reference from source PCM using enrollment semantics."""
+        backend_key = str(backend or "").strip().lower()
+        if backend_key != _ERES2NET_LARGE:
+            raise DomainError(
+                "VOICEPRINT_BACKEND_UNSUPPORTED",
+                "声纹 reference 只能使用 ERes2Net-large",
+                400,
+                data={"backend_key": backend_key},
+            )
+        prepared = self._prepare_reference_audio(pcm)
+        return self._build_reference_for_backend(prepared, backend_key)
+
     def _build_reference(self, pcm: bytes) -> dict[str, Any]:
+        return self.build_reference_for_backend(pcm, _ERES2NET_LARGE)
+
+    def _prepare_reference_audio(self, pcm: bytes) -> dict[str, Any]:
         audio = self._validate_pcm16(pcm)
         segments = self.speech_client.speech_segments(audio, sample_rate=_SAMPLE_RATE)
         usable_duration_ms = sum(max(0, int(end) - int(start)) for start, end in segments)
@@ -254,42 +343,106 @@ class VoiceprintService:
                 400,
             )
 
-        chunks = self._embedding_chunks(segments, total_ms=self._pcm_duration_ms(audio))
-        if len(chunks) < _MIN_EMBEDDING_SEGMENTS:
+        chunk_ranges = self._embedding_chunks(segments, total_ms=self._pcm_duration_ms(audio))
+        if len(chunk_ranges) < _MIN_EMBEDDING_SEGMENTS:
             raise DomainError(
                 "VOICEPRINT_INSUFFICIENT_SEGMENTS",
                 "有效语音片段不足，请重新录制声纹",
                 400,
             )
+        chunks = [self._slice_pcm(audio, start_ms, end_ms) for start_ms, end_ms in chunk_ranges]
+        return {
+            "audio": audio,
+            "chunks": chunks,
+            "usable_duration_ms": usable_duration_ms,
+        }
 
+    def _build_reference_for_backend(
+        self,
+        prepared: dict[str, Any],
+        backend: str,
+    ) -> dict[str, Any]:
         vectors: list[list[float]] = []
         model_id: str | None = None
         model_version: str | None = None
-        for start_ms, end_ms in chunks:
-            result = self.speech_client.extract_embedding(
-                self._slice_pcm(audio, start_ms, end_ms),
-                sample_rate=_SAMPLE_RATE,
-            )
+        model_fingerprint: str | None = None
+        for pcm_chunk in prepared["chunks"]:
+            result = self._extract_embedding_for_backend(pcm_chunk, backend)
+            result_backend = result.get("backend_key")
+            if result_backend is not None and str(result_backend).strip().lower() != backend:
+                raise DomainError(
+                    "VOICEPRINT_BACKEND_MISMATCH",
+                    "声纹运行时返回了错误的模型空间",
+                    500,
+                )
             vector = self._normalize_embedding(result.get("embedding"))
+            current_model_id = str(result.get("model_id") or backend)
+            version_value = result.get("model_version")
+            current_version = None if version_value is None else str(version_value)
+            fingerprint_value = result.get("model_fingerprint")
+            current_fingerprint = None if fingerprint_value is None else str(fingerprint_value)
             if model_id is None:
-                model_id = str(result.get("model_id") or "xvector")
-                version = result.get("model_version")
-                model_version = None if version is None else str(version)
+                model_id = current_model_id
+                model_version = current_version
+                model_fingerprint = current_fingerprint
+            else:
+                if current_model_id != model_id:
+                    raise DomainError(
+                        "VOICEPRINT_MODEL_MISMATCH",
+                        "同一次声纹登记返回了不一致的模型标识",
+                        500,
+                    )
+                if model_version and current_version and current_version != model_version:
+                    raise DomainError(
+                        "VOICEPRINT_MODEL_MISMATCH",
+                        "同一次声纹登记返回了不一致的模型版本",
+                        500,
+                    )
+                if model_fingerprint and current_fingerprint and current_fingerprint != model_fingerprint:
+                    raise DomainError(
+                        "VOICEPRINT_MODEL_MISMATCH",
+                        "同一次声纹登记返回了不一致的模型指纹",
+                        500,
+                    )
             vectors.append(vector)
 
         reference = self._aggregate_embeddings(vectors)
         return {
             "bytes": struct.pack(f"<{len(reference)}f", *reference),
             "dimension": len(reference),
-            "model_id": model_id or "xvector",
+            "model_key": backend,
+            "model_id": model_id or backend,
             "model_version": model_version,
+            "model_fingerprint": model_fingerprint,
             "quality": "GOOD",
-            "usable_duration_ms": usable_duration_ms,
+            "usable_duration_ms": int(prepared["usable_duration_ms"]),
             "segment_count": len(vectors),
         }
 
-    def _officer_active(self, officer_id: str | None) -> bool:
-        return bool(officer_id and voiceprint_repo.get_officer(self.db, officer_id) is not None)
+    def _extract_embedding_for_backend(self, pcm: bytes, backend: str) -> dict[str, Any]:
+        method = self.speech_client.extract_embedding
+        supports_backend = True
+        try:
+            parameters = inspect.signature(method).parameters.values()
+            supports_backend = any(
+                parameter.name == "backend" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            pass
+        if supports_backend:
+            return method(pcm, sample_rate=_SAMPLE_RATE, backend=backend)
+        return method(pcm, sample_rate=_SAMPLE_RATE)
+
+    def _officer_active(self, officer_id: str | None, model_key: str | None = None) -> bool:
+        return bool(
+            officer_id
+            and voiceprint_repo.get_officer(
+                self.db,
+                officer_id,
+                model_key=model_key or self.speaker_model_key,
+            ) is not None
+        )
 
     @staticmethod
     def _recognition_mode(interrogator_ready: bool, recorder_ready: bool) -> str:
@@ -318,20 +471,61 @@ class VoiceprintService:
             "revokedAt": row.revoked_at.isoformat() if row.revoked_at is not None else None,
             "usableDurationMs": row.usable_duration_ms,
             "embeddingDim": row.embedding_dim,
+            "modelKey": row.model_key,
             "modelId": row.model_id,
             "modelVersion": row.model_version,
             "quality": row.enrollment_quality,
         }
 
     @staticmethod
-    def _audit_reference_detail(row: Any, segment_count: int) -> dict:
+    def _audit_reference_detail(
+        row: Any,
+        segment_count: int,
+        *,
+        reference: dict[str, Any] | None = None,
+    ) -> dict:
         return {
             "dimension": row.embedding_dim,
+            "model_key": getattr(row, "model_key", _ERES2NET_LARGE),
             "model_id": row.model_id,
             "model_version": row.model_version,
+            "model_fingerprint": reference.get("model_fingerprint") if reference else None,
             "usable_duration_ms": row.usable_duration_ms,
             "quality": row.enrollment_quality,
             "segment_count": int(segment_count),
+        }
+
+    @staticmethod
+    def _ready_backend_result(row: Any, reference: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ready": True,
+            "status": "READY",
+            "voiceprintId": row.id,
+            "modelKey": row.model_key,
+            "modelId": row.model_id,
+            "modelVersion": row.model_version,
+            "modelFingerprint": reference.get("model_fingerprint"),
+            "embeddingDim": row.embedding_dim,
+            "usableDurationMs": row.usable_duration_ms,
+            "quality": row.enrollment_quality,
+        }
+
+    @staticmethod
+    def _not_ready_backend_result(exc: Exception) -> dict[str, Any]:
+        if isinstance(exc, AIError):
+            code = exc.code
+            message = exc.message
+        elif isinstance(exc, DomainError):
+            code = exc.code
+            message = exc.message
+        else:
+            code = "BACKEND_UNAVAILABLE"
+            message = str(exc)
+        return {
+            "ready": False,
+            "status": "NOT_READY",
+            "errorCode": code,
+            "message": message,
         }
 
     @staticmethod

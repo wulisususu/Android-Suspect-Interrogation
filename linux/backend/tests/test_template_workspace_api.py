@@ -31,10 +31,11 @@ def test_template_workspace_question_crud_library_and_validation(tmp_path):
         case_id = create_case(client)
 
         workspace = payload(client.get(f"/api/v1/cases/{case_id}/template-workspace"))
-        assert set(workspace) >= {"caseId", "questions", "rounds", "pendingQuestions"}
+        assert set(workspace) >= {"caseId", "questions", "rounds", "pendingQuestions", "qaUnits"}
         assert workspace["questions"] == []
         assert workspace["rounds"] == []
         assert workspace["pendingQuestions"] == []
+        assert workspace["qaUnits"] == []
 
         first = payload(
             client.post(
@@ -99,6 +100,9 @@ def test_fragment_processing_pending_actions_round_edit_and_reassociation(tmp_pa
         hardware_gateway=MockHardwareGateway(simulated=True),
     )
     with TestClient(app) as client:
+        # This endpoint intentionally remains even after Qwen routing is added:
+        # operators/releases can use it as the explicit legacy/manual fallback.
+        assert "/api/v1/cases/{case_id}/speech-fragments/{fragment_id}/process" in app.openapi()["paths"]
         case_id = create_case(client)
         first = payload(
             client.post(
@@ -204,6 +208,7 @@ def test_fragment_processing_pending_actions_round_edit_and_reassociation(tmp_pa
 
         workspace = payload(client.get(f"/api/v1/cases/{case_id}/template-workspace"))
         assert [item["id"] for item in workspace["pendingQuestions"]] == [unmatched_id]
+        assert "qaUnits" in workspace
 
         added = payload(
             client.post(

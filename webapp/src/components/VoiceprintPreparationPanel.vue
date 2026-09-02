@@ -37,9 +37,9 @@ export function voiceprintModeLabel(mode: VoiceRecognitionMode) {
 }
 
 export function temporarySpeakerPresentation(speaker: TemporaryAsrSpeaker, speakerName?: string | null) {
-  if (speaker === 'SUSPECT') return { label: `嫌疑人 · ${speakerName || '未命名'}`, detail: 'XVector 声纹匹配', needsConfirmation: false }
-  if (speaker === 'INTERROGATOR') return { label: `主审民警 · ${speakerName || '未命名'}`, detail: 'XVector 声纹匹配', needsConfirmation: false }
-  if (speaker === 'RECORDER') return { label: `记录民警 · ${speakerName || '未命名'}`, detail: 'XVector 声纹匹配', needsConfirmation: false }
+  if (speaker === 'SUSPECT') return { label: `嫌疑人 · ${speakerName || '未命名'}`, detail: 'ERes2Net-large 声纹匹配', needsConfirmation: false }
+  if (speaker === 'INTERROGATOR') return { label: `主审民警 · ${speakerName || '未命名'}`, detail: 'ERes2Net-large 声纹匹配', needsConfirmation: false }
+  if (speaker === 'RECORDER') return { label: `记录民警 · ${speakerName || '未命名'}`, detail: 'ERes2Net-large 声纹匹配', needsConfirmation: false }
   if (speaker === 'OFFICER_FALLBACK') return { label: '民警', detail: '未启用/未匹配民警声纹，按非嫌疑人规则归类', needsConfirmation: false }
   return { label: '待确认', detail: '声纹结果不足以可靠归属，请人工确认', needsConfirmation: true }
 }
@@ -75,7 +75,6 @@ const finalUsableSeconds = computed(() => Math.floor((props.enrollmentState.usab
 const enrollmentProgress = computed(() => voiceprintEnrollmentProgress(props.enrollmentState))
 const sessionActive = computed(() => ['RUNNING', 'PAUSED'].includes(props.sessionStatus))
 const showSuspectProgress = computed(() => props.enrollmentState.phase !== 'IDLE' && props.enrollmentState.kind !== 'OFFICER')
-
 function normalizedSelect(event: Event) {
   const value = (event.target as HTMLSelectElement).value.trim()
   return value || null
@@ -91,10 +90,12 @@ function normalizedSelect(event: Event) {
 
     <div v-if="readiness.simulated" class="voiceprint-warning">当前为浏览器开发模拟；模拟结果不能解锁正式声纹审讯。</div>
 
+    <p class="eres-backend-hint">嫌疑人和民警声纹统一使用 ERes2Net-large；旧声纹记录会保留，但需要重新录入后才能用于正式审讯。</p>
+
     <div class="voiceprint-preparation-grid">
       <article class="voiceprint-person-row required">
         <div class="voiceprint-person-main"><strong>嫌疑人 · {{ suspectName || '待录入姓名' }}</strong><span>必须</span></div>
-        <div class="voiceprint-status" :class="{ ok: readiness.suspectReady }">{{ readiness.suspectReady ? '已注册' : '未注册' }}</div>
+        <div class="voiceprint-status" :class="{ ok: readiness.suspectReady }">{{ readiness.suspectReady ? 'ERes2Net-large 已注册' : 'ERes2Net-large 未注册' }}</div>
         <button v-if="!suspectRecording" class="voiceprint-action primary" :disabled="busy || sessionActive" @click="$emit('suspectStart')">{{ readiness.suspectReady ? '重新录制' : '开始录制' }}</button>
         <button v-else class="voiceprint-action danger" :disabled="busy" @click="$emit('suspectStop')">提前停止并尝试注册</button>
       </article>
@@ -129,13 +130,13 @@ function normalizedSelect(event: Event) {
         </div>
         <small>有效语音 {{ enrollmentProgress.usableSeconds }} / {{ enrollmentProgress.targetSeconds }} 秒</small>
       </template>
-      <span v-else-if="enrollmentState.phase === 'PROCESSING'">有效语音已达标，正在进行最终 VAD 复核与 XVector 声纹聚合…</span>
+      <span v-else-if="enrollmentState.phase === 'PROCESSING'">有效语音已达标，正在进行最终 VAD 复核与 ERes2Net-large 声纹聚合…</span>
       <span v-else>{{ enrollmentState.message }}</span>
       <small v-if="finalUsableSeconds && enrollmentState.phase !== 'RECORDING'">有效语音 {{ finalUsableSeconds }} 秒</small>
     </div>
 
     <footer class="voiceprint-preparation-footer">
-      <div><strong>{{ guard.disabled ? '尚未满足开始条件' : '可以开始正式审讯' }}</strong><span>{{ guard.reason || '嫌疑人声纹已就绪；民警声纹为可选项，绑定后冻结本次审讯使用的 reference 版本' }}</span></div>
+      <div><strong>{{ guard.disabled ? '尚未满足开始条件' : '可以开始正式审讯' }}</strong><span>{{ guard.reason || 'ERes2Net-large 嫌疑人声纹已就绪；角色绑定后冻结本次审讯使用的 reference 版本' }}</span></div>
       <button v-if="sessionStatus === 'READY'" :disabled="busy || guard.disabled" @click="$emit('bindRoles')">保存本次角色选择</button>
     </footer>
   </section>
@@ -149,6 +150,7 @@ function normalizedSelect(event: Event) {
 .voiceprint-mode-chip,.voiceprint-status { border:1px solid #b7c8d7; border-radius:999px; padding:5px 10px; background:#fff; color:#566b7e; font-size:12px; font-weight:700; }
 .voiceprint-mode-chip.ready,.voiceprint-status.ok { border-color:#8fc6a6; background:#edf8f1; color:#267647; }
 .voiceprint-warning { margin-top:10px; padding:9px 12px; border:1px solid #e5b763; border-radius:7px; background:#fff8e8; color:#8b5c0a; font-weight:700; }
+.eres-backend-hint { margin:10px 0 0; padding:9px 12px; border:1px solid #d2dee8; border-radius:7px; background:#fff; color:#607588; font-size:12px; }
 .voiceprint-preparation-grid { display:grid; gap:8px; margin-top:12px; }
 .voiceprint-person-row { display:grid; grid-template-columns:minmax(190px,1fr) minmax(220px,1.4fr) auto; align-items:center; gap:12px; min-height:50px; padding:9px 12px; border:1px solid #d0dde8; border-radius:8px; background:rgba(255,255,255,.9); }
 .voiceprint-person-row.required { border-left:4px solid #2d78bb; }

@@ -58,7 +58,7 @@ def test_real_device_smoke_contract_covers_speech_stack_and_policy_modes():
         "findmnt",
         "paraformer",
         "fsmn-vad",
-        "xvector",
+        "eres2net_large",
         "voiceprintCalibration",
         "audioCapture",
         "SUSPECT_ONLY",
@@ -69,6 +69,8 @@ def test_real_device_smoke_contract_covers_speech_stack_and_policy_modes():
         "systemctl restart ai-worker.service",
     ):
         assert required in source
+    assert 'SUPPORTED_SPEAKER_BACKENDS = ("eres2net_large",)' in source
+    assert 'default="eres2net_large"' in source
 
 
 def test_ai_runtime_workflow_has_explicit_local_calibration_inputs_and_never_uploads_wavs():

@@ -29,11 +29,12 @@ def test_alembic_head_contains_device_calibration_history_and_sample_fingerprint
         assert "session_speaker_calibration_snapshots" in tables
         assert "asr_recognition_evidence" in tables
         assert "asr_recognition_revisions" in tables
+        assert "speaker_backend_comparison_evidence" in tables
 
         calibration_columns = {item["name"] for item in inspector.get_columns("speaker_device_calibrations")}
         assert {
             "threshold", "margin", "far", "frr", "eer", "eer_threshold", "eer_far", "eer_frr",
-            "speaker_model_fingerprint", "microphone_fingerprint", "corpus_digest",
+            "speaker_backend_key", "speaker_model_fingerprint", "microphone_fingerprint", "corpus_digest",
         } <= calibration_columns
 
         sample_columns = {item["name"] for item in inspector.get_columns("officer_voice_samples")}
@@ -41,6 +42,6 @@ def test_alembic_head_contains_device_calibration_history_and_sample_fingerprint
 
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert revision == "0007_formal_record_sections"
+        assert revision == "0012_mark_xvector_voiceprints_for_reenrollment"
     finally:
         engine.dispose()

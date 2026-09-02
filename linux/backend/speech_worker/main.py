@@ -47,7 +47,6 @@ class SpeechWorkerServer:
             return
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
         self._prepare_socket_path()
-
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             server.bind(os.fspath(self.socket_path))
@@ -157,11 +156,28 @@ class SpeechWorkerServer:
         if op == "open_session":
             session_id = self._required_session_id(request)
             sample_rate = int(request.get("sample_rate") or 16000)
+            speaker_backend = str(request.get("speaker_backend") or "eres2net_large").strip().lower()
+            if speaker_backend != "eres2net_large":
+                raise AIError("speaker_backend must be eres2net_large")
             with self._sessions_lock:
                 if session_id in self._sessions:
                     raise ResourceBusyError("speech session is already open", details={"session_id": session_id})
-                self._sessions[session_id] = _SessionEntry(SpeechSession(session_id, sample_rate, self.runtime), threading.RLock())
-            return {"session_id": session_id, "sample_rate": sample_rate}
+                self._sessions[session_id] = _SessionEntry(
+                    SpeechSession(
+                        session_id,
+                        sample_rate,
+                        self.runtime,
+                        speaker_backend_key=speaker_backend,
+                        authoritative_speaker_backend_key="eres2net_large",
+                    ),
+                    threading.RLock(),
+                )
+            result = {
+                "session_id": session_id,
+                "sample_rate": sample_rate,
+                "speaker_backend": speaker_backend,
+            }
+            return result
 
         if op == "push_pcm":
             session_id = self._required_session_id(request)
@@ -217,8 +233,11 @@ class SpeechWorkerServer:
         if op == "extract_embedding":
             pcm = self._decode_pcm(request)
             sample_rate = int(request.get("sample_rate") or 16000)
+            backend_key = request.get("backend_key")
             with self._runtime_lock:
-                return self.runtime.speaker_embedding(pcm, sample_rate)
+                if backend_key is None:
+                    return self.runtime.speaker_embedding(pcm, sample_rate)
+                return self.runtime.speaker_embedding(pcm, sample_rate, backend_key=str(backend_key))
 
         raise AIError(f"unknown speech operation: {op}", details={"op": op})
 

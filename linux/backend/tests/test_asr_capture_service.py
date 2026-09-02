@@ -56,7 +56,7 @@ class FakeSpeechSupervisor:
         self.finalized: list[str] = []
         self.closed: list[str] = []
 
-    def open_speech_session(self, session_id: str, *, sample_rate: int = 16000):
+    def open_speech_session(self, session_id: str, *, sample_rate: int = 16000, speaker_backend: str | None = None):
         self.opened.append((session_id, sample_rate))
         return {"session_id": session_id, "sample_rate": sample_rate}
 
@@ -99,6 +99,11 @@ class FakeSpeechSupervisor:
                     end_ms=1200,
                     embedding=[1.0, 0.0, 0.0, 0.0],
                     model_id="test-xvector",
+                    details={
+                        "backend_key": "xvector",
+                        "model_version": "speaker-v1",
+                        "model_fingerprint": "sha256:test-xvector",
+                    },
                 ),
             ]
         return []
@@ -204,7 +209,7 @@ def test_capture_pushes_each_pcm_chunk_once_persists_verified_fragment_and_broad
         assert fragment.edited_text == "我是嫌疑人"
         assert fragment.state == "PENDING"
         assert fragment.speaker == "SUSPECT"
-        assert fragment.speaker_source == "X_VECTOR"
+        assert fragment.speaker_source == "SPEAKER_EMBEDDING"
         assert fragment.voiceprint_verified is True
         assert fragment.low_confidence is False
         assert fragment.speaker_score == 1.0
@@ -220,7 +225,7 @@ def test_capture_pushes_each_pcm_chunk_once_persists_verified_fragment_and_broad
     assert event_name == "ASR_FRAGMENT"
     assert payload["rawText"] == "我是嫌疑人"
     assert payload["speaker"] == "SUSPECT"
-    assert payload["speakerSource"] == "X_VECTOR"
+    assert payload["speakerSource"] == "SPEAKER_EMBEDDING"
     assert payload["thresholdSource"] == "DEVICE_CALIBRATED"
     assert payload["voiceprintVerified"] is True
     engine.dispose()
@@ -359,3 +364,44 @@ def test_projection_failure_keeps_raw_fragment_and_capture_loop_healthy(tmp_path
 
     assert ExplodingProjection.calls == 1
     assert stopped["lastError"] is None
+
+
+def test_fragment_sink_bypasses_legacy_projection_and_capture_finished_sink_flushes(tmp_path: Path, monkeypatch):
+    engine, factory, case_id, session_id = _seed_database(tmp_path)
+    device = FakeDeviceManager([b"\x01\x00" * 1600, b"\x02\x00" * 1600])
+    speech = FakeSpeechSupervisor()
+    events = EventCollector()
+    fragments: list[tuple[str, str]] = []
+    finished: list[tuple[str, str]] = []
+
+    class ForbiddenProjection:
+        calls = 0
+
+        def __init__(self, _db):
+            pass
+
+        def process_fragment(self, _case_id: str, _fragment_id: str):
+            type(self).calls += 1
+            raise AssertionError("legacy projection must not run in qwen sink mode")
+
+    monkeypatch.setattr(capture_module, "InterrogationProjectionService", ForbiddenProjection, raising=False)
+    service = AsrCaptureService(
+        session_factory=factory,
+        device_manager=device,
+        ai_supervisor=speech,
+        publish_event=events,
+        fragment_sink=lambda case, fragment: fragments.append((case, fragment)),
+        capture_finished_sink=lambda case, session: finished.append((case, session)),
+        sample_rate=16_000,
+        read_timeout=0.01,
+    )
+
+    service.start(case_id)
+    _wait_until(lambda: bool(fragments))
+    service.stop(case_id)
+
+    assert ForbiddenProjection.calls == 0
+    assert len(fragments) == 1
+    assert fragments[0][0] == case_id
+    assert finished == [(case_id, session_id)]
+    engine.dispose()

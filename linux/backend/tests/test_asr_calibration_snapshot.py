@@ -24,7 +24,7 @@ class IdleSupervisor:
     speaker_accept_threshold = 0.70
     speaker_margin = None
     speaker_threshold_source = "MODEL_BASELINE"
-    def open_speech_session(self, session_id, sample_rate=16000): return {}
+    def open_speech_session(self, session_id, sample_rate=16000, speaker_backend=None): return {}
     def push_speech_pcm(self, session_id, pcm): return []
     def finalize_speech_session(self, session_id): return []
     def close_speech_session(self, session_id): return None
@@ -39,7 +39,7 @@ def test_formal_capture_snapshots_resolved_calibration_once(tmp_path):
         session = session_repo.create(db, case.id)
         suspect = voiceprint_repo.enroll_suspect(
             db, case_id=case.id, embedding=struct.pack("<3f", 1.0, 0.0, 0.0), embedding_dim=3,
-            model_id="xvector", model_version="v1", enrollment_quality="GOOD", usable_duration_ms=20_000,
+            model_id="eres2net", model_version="v1", enrollment_quality="GOOD", usable_duration_ms=20_000,
         )
         voiceprint_repo.assign_session_roles(
             db, session_id=session.id, suspect_voiceprint_id=suspect.id,
@@ -62,7 +62,7 @@ def test_formal_capture_snapshots_resolved_calibration_once(tmp_path):
             sample_count=9,
             corpus_digest="c" * 64,
             algorithm_version="speaker-calibration-v1",
-            speaker_model_id="xvector",
+            speaker_model_id="eres2net",
             speaker_model_version="v1",
             speaker_model_fingerprint="a" * 64,
             audio_source="ALSA",

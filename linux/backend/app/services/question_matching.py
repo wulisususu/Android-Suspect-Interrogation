@@ -56,11 +56,16 @@ def normalize_question_text(text: str) -> str:
     return value
 
 
+def is_operational_utterance(text: str) -> bool:
+    normalized = normalize_question_text(text)
+    return bool(normalized and any(pattern.fullmatch(normalized) for pattern in _OPERATIONAL_UTTERANCES))
+
+
 def is_question_utterance(text: str) -> bool:
     normalized = normalize_question_text(text)
     if not normalized:
         return False
-    if any(pattern.fullmatch(normalized) for pattern in _OPERATIONAL_UTTERANCES):
+    if is_operational_utterance(normalized):
         return False
     if any(normalized.startswith(prefix) and not normalized.endswith("?") for prefix in _DECLARATIVE_PREFIXES):
         return False

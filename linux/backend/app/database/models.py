@@ -178,9 +178,11 @@ class SignatureRecord(Base):
 
 class SuspectVoiceprint(TimestampMixin, Base):
     __tablename__ = "suspect_voiceprints"
+    __table_args__ = (UniqueConstraint("case_id", "model_key", name="uq_suspect_voiceprint_case_model"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, unique=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    model_key: Mapped[str] = mapped_column(String(64), default="eres2net_large", nullable=False, index=True)
     embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
     model_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -192,9 +194,11 @@ class SuspectVoiceprint(TimestampMixin, Base):
 
 class OfficerVoiceprint(TimestampMixin, Base):
     __tablename__ = "officer_voiceprints"
+    __table_args__ = (UniqueConstraint("officer_id", "model_key", name="uq_officer_voiceprint_officer_model"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    officer_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    officer_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    model_key: Mapped[str] = mapped_column(String(64), default="eres2net_large", nullable=False, index=True)
     officer_name: Mapped[str] = mapped_column(String(128), nullable=False)
     embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -304,6 +308,8 @@ class CaseQuestion(TimestampMixin, Base):
     template_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     template_item_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    formal_answer_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    first_asked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -361,3 +367,50 @@ class ProcessedSpeechFragment(Base):
     action: Mapped[str] = mapped_column(String(32), nullable=False)
     target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class QAUnit(TimestampMixin, Base):
+    __tablename__ = "qa_units"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("interrogation_sessions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="OPEN", nullable=False, index=True)
+    raw_question_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    raw_answer_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    classification: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    target_question_id: Mapped[str | None] = mapped_column(
+        ForeignKey("case_questions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    formal_question_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    formal_answer_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    candidate_question_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+    fragments = relationship(
+        "QAUnitFragment",
+        back_populates="unit",
+        cascade="all, delete-orphan",
+        order_by="QAUnitFragment.position",
+    )
+
+
+class QAUnitFragment(Base):
+    __tablename__ = "qa_unit_fragments"
+    __table_args__ = (
+        UniqueConstraint("fragment_id", name="uq_qa_unit_fragments_fragment_id"),
+        UniqueConstraint("qa_unit_id", "position", name="uq_qa_unit_fragments_position"),
+    )
+
+    qa_unit_id: Mapped[str] = mapped_column(ForeignKey("qa_units.id", ondelete="CASCADE"), primary_key=True)
+    fragment_id: Mapped[str] = mapped_column(ForeignKey("asr_fragments.id", ondelete="CASCADE"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    unit = relationship("QAUnit", back_populates="fragments")

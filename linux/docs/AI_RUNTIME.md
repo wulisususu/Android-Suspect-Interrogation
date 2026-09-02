@@ -15,7 +15,8 @@ ALSA microphone
   -> AF_UNIX /run/suspect-interrogation/speech.sock
   -> FSMN-VAD streaming state
   -> utterance boundary
-  -> Paraformer ASR + XVector speaker embedding
+  -> Paraformer ASR + selected speaker embedding backend
+     (XVector or ERes2Net-large)
   -> FastAPI speaker policy
   -> temporary ASR fragment
   -> operator review/correction
@@ -35,20 +36,21 @@ Speech model/runtime assets are intentionally outside Git releases:
 - isolated FunASR Python runtime: `/opt/suspect-interrogation/runtime/funasr-env`
 - speech socket: `/run/suspect-interrogation/speech.sock`
 
-The RK3588 bootstrap exposes the preinstalled model directory at the stable model root as a read-only bind mount and reuses a validated isolated runtime. Model weights are never downloaded by ordinary hosted CI and are not committed to Git.
+The RK3588 bootstrap exposes preinstalled model directories through stable read-only paths and reuses validated isolated runtimes. Model weights are never downloaded by ordinary hosted CI and are not committed to Git. ERes2Net-large package layout is locked from the actual board package probe rather than guessed from documentation.
 
 The currently approved `.pt`/`.pth` FunASR baseline is PyTorch **CPU** execution on RK3588. Do not describe this path as RKNN/NPU-accelerated unless a separately converted and measured runtime is introduced and verified later.
 
 ## Model isolation and degradation
 
-Paraformer ASR, FSMN-VAD, and XVector are reported independently. A live worker process alone is not sufficient to claim every speech capability is available.
+Paraformer ASR, FSMN-VAD, and the selected speaker embedding backend are reported independently. A live worker process alone is not sufficient to claim every speech capability is available.
 
 - Paraformer load/inference failure makes ASR unavailable; no transcript text is fabricated.
 - FSMN-VAD failure makes VAD unavailable; no utterance boundaries are invented.
-- XVector load failure does not clear already loaded Paraformer/FSMN-VAD models.
-- XVector inference failure does not discard a successful ASR result. The temporary fragment is retained and speaker attribution degrades to a fail-safe state.
-- A missing/revoked optional officer template is skipped; if the suspect reference remains valid, policy can degrade to suspect-only mode.
-- A missing suspect voiceprint blocks formal voice-enabled capture/start.
+- A speaker-backend load failure does not clear already loaded Paraformer/FSMN-VAD models.
+- A speaker-backend inference failure does not discard a successful ASR result. The temporary fragment is retained and speaker attribution degrades to a fail-safe state.
+- A missing selected-model voiceprint reference is an explicit readiness failure; the runtime does not cross model spaces or silently fall back to another backend reference.
+- A missing/revoked optional officer template is skipped; if the suspect reference for the selected backend remains valid, policy can degrade to suspect-only mode.
+- A missing suspect voiceprint for the selected backend blocks formal voice-enabled capture/start.
 - overlap, insufficient voiced duration, threshold failure, or insufficient best-vs-second margin resolves to `UNKNOWN` rather than guessing a person.
 
 Business roles are:
@@ -64,11 +66,14 @@ UNKNOWN
 Business provenance sources are:
 
 ```text
-X_VECTOR
+SPEAKER_EMBEDDING
+X_VECTOR          # historical persisted value; read-compatible only for new code
 SUSPECT_EXCLUSION
 MANUAL
 UNASSIGNED
 ```
+
+New voiceprint-verified model decisions use `SPEAKER_EMBEDDING`, regardless of whether the selected backend is XVector or ERes2Net-large. Existing persisted/audit values of `X_VECTOR` remain readable and are not rewritten. The exact inference identity is carried separately in speaker evidence/runtime metadata such as `backend_key`, model ID/version and model fingerprint, so provenance does not imply a particular embedding implementation.
 
 `OFFICER_FALLBACK` is intentionally unverified. In suspect-only mode it means the utterance passed the approved suspect-exclusion rule; it does not claim the identity of a particular officer.
 
@@ -103,7 +108,7 @@ voiceprintCalibration
 audioCapture
 ```
 
-`GET /api/v1/ai/health` and `GET /api/v1/ai/capabilities` expose the lower-level supervisor/worker state. Speaker is `AVAILABLE` only when the speech worker reports XVector available **and** both calibrated values are valid.
+`GET /api/v1/ai/health` and `GET /api/v1/ai/capabilities` expose the lower-level supervisor/worker state. Speaker readiness is evaluated against the selected speaker backend and its compatible reference/calibration state; availability of another backend is not a silent substitute.
 
 The core API may remain operational when an optional AI/hardware capability is degraded. This is deliberate: optional model failure must not crash the evidence/case service.
 
@@ -144,4 +149,4 @@ An unrelated pre-existing service may own TCP **8000** on the RK3588. Deployment
 
 Hosted CI verifies protocol, policy, persistence, fail-safe behavior, systemd contracts, frontend build/visual QA, and release/E2E behavior without downloading production model weights.
 
-Real RK3588 evidence is separate. A queued/cancelled/skipped self-hosted job is **not** proof that Paraformer, FSMN-VAD, XVector, microphone capture, or calibrated speaker recognition works on the board. Task 12 must provide target-device calibration and real-device smoke evidence before real voice interrogation is considered accepted.
+Real RK3588 evidence is separate. A queued/cancelled/skipped self-hosted job is **not** proof that Paraformer, FSMN-VAD, XVector, ERes2Net-large, microphone capture, or calibrated speaker recognition works on the board. Task 12 must provide target-device per-backend calibration and real-device smoke evidence before real voice interrogation is considered accepted.

@@ -119,8 +119,11 @@ def test_suspect_fragment_appends_to_active_round_once(db, projection_context):
     second = service.process_fragment(case.id, suspect.id)
     db.commit()
     db.refresh(round_row)
+    workspace = TemplateWorkspaceService(db).workspace(case.id)
+    projected_question = next(item for item in workspace["questions"] if item["id"] == question["id"])
 
     assert round_row.answer_text == "我八点到的。"
+    assert projected_question["formalAnswerText"] == "我八点到的。"
     assert json.loads(round_row.answer_fragment_ids_json) == [suspect.id]
     assert first == second
 

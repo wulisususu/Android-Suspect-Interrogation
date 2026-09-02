@@ -23,6 +23,8 @@ class AISettings:
     asr_backend: str | None
     ocr_backend: str | None
     llm_backend: str | None
+    llamapi_base_url: str
+    llamapi_model_hint: str
 
     @classmethod
     def from_env(cls) -> "AISettings":
@@ -48,4 +50,6 @@ class AISettings:
             asr_backend=os.getenv("ASR_BACKEND"),
             ocr_backend=os.getenv("OCR_BACKEND"),
             llm_backend=os.getenv("LLM_BACKEND"),
+            llamapi_base_url=os.getenv("LLAMAPI_BASE_URL", "http://127.0.0.1:9265/v1").strip().rstrip("/"),
+            llamapi_model_hint=os.getenv("LLAMAPI_MODEL_HINT", "qwen3:4b").strip(),
         )

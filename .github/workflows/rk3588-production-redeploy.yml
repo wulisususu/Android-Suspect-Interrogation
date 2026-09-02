@@ -47,7 +47,8 @@ jobs:
           test -x "$FUNASR_RUNTIME/bin/python"
           test -d "$FUNASR_MODEL_ROOT/paraformer"
           test -d "$FUNASR_MODEL_ROOT/fsmn-vad"
-          test -d "$FUNASR_MODEL_ROOT/xvector"
+          test -d "$FUNASR_MODEL_ROOT/eres2net-large"
+          test -f "$FUNASR_MODEL_ROOT/eres2net-large/pretrained_eres2net.pt"
           echo '--- preserve TCP/8000 ---'
           tcp8000_before="$(sudo -n ss -H -ltnp 'sport = :8000' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' || true)"
           printf '%s\n' "$tcp8000_before" | tee "$RUNNER_TEMP/tcp8000-before.txt"
@@ -144,6 +145,13 @@ jobs:
           upsert SUSPECT_TLS_CA_FILE "$SUSPECT_TLS_CA_FILE"
           upsert SUSPECT_TLS_CERT_FILE "$SUSPECT_TLS_CERT_FILE"
           upsert SUSPECT_TLS_KEY_FILE "$SUSPECT_TLS_KEY_FILE"
+          upsert SUSPECT_FUNASR_MODEL_ROOT "$FUNASR_MODEL_ROOT"
+          upsert SUSPECT_FUNASR_PYTHON "$FUNASR_RUNTIME/bin/python"
+          upsert SUSPECT_ERES2NET_MODEL_DIR "$FUNASR_MODEL_ROOT/eres2net-large"
+          upsert SUSPECT_SPEAKER_BACKEND eres2net_large
+          upsert MODELSCOPE_OFFLINE 1
+          upsert HF_HUB_OFFLINE 1
+          upsert TRANSFORMERS_OFFLINE 1
           upsert AI_MODE real
           printf '%s\n' \
             "SUSPECT_KIOSK_READY_URL=https://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" \
@@ -246,6 +254,9 @@ jobs:
           assert models.get('asr') is True, health
           assert models.get('vad') is True, health
           assert models.get('speaker') is True, health
+          backends = health.get('speaker_backends') or {}
+          assert set(backends) == {'eres2net_large'}, health
+          assert backends['eres2net_large'].get('ready') is True, health
           print('speech_worker_health=ok', health)
 
           wav_path = '/opt/suspect-interrogation/models/funasr/paraformer/example/asr_example.wav'

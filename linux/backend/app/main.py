@@ -39,6 +39,7 @@ from app.runtime_settings import RuntimeSettings
 from app.services.audio_capture_service import AudioCaptureService
 from app.services.browser_audio_input import BrowserAudioInput
 from app.services.source_aware_asr_capture_service import SourceAwareAsrCaptureService
+from app.services.qa_routing_coordinator import QARoutingCoordinator
 from app.services.speaker_calibration_runtime import resolve_speaker_calibration
 from app.services.speaker_calibration_service import (
     CurrentMicrophoneIdentity,
@@ -66,6 +67,8 @@ def _build_supervisor() -> AISupervisor:
         speech_socket=settings.speech_socket,
         speaker_accept_threshold=settings.speaker_effective_threshold,
         speaker_margin=settings.speaker_margin,
+        llamapi_base_url=settings.llamapi_base_url,
+        llamapi_model_hint=settings.llamapi_model_hint,
     )
     supervisor.speaker_threshold_source = settings.speaker_threshold_source
     return supervisor
@@ -131,16 +134,31 @@ def create_app(
         timeout=ai_settings.request_timeout,
     )
 
-    def current_model_identity() -> CurrentSpeakerModelIdentity:
+    def current_model_identity(backend_override: str | None = None) -> CurrentSpeakerModelIdentity:
+        configured_backend = "eres2net_large"
+        default_backend = configured_backend
+        backend_key = str(backend_override or default_backend or "eres2net_large").strip().lower()
+        if backend_key != "eres2net_large":
+            backend_key = "eres2net_large"
         try:
             health = speech_client.health()
         except Exception:
             health = {}
-        fingerprint = str(health.get("speaker_model_fingerprint") or "UNAVAILABLE")
+        backend_health = None
+        all_backends = health.get("speaker_backends") if isinstance(health, dict) else None
+        if isinstance(all_backends, dict):
+            candidate = all_backends.get(backend_key)
+            if isinstance(candidate, dict):
+                backend_health = candidate
+        backend_health = backend_health or {}
+        fingerprint = str(backend_health.get("model_fingerprint") or backend_health.get("speaker_model_fingerprint") or "UNAVAILABLE")
+        model_id = str(backend_health.get("model_id") or backend_health.get("speaker_model_id") or backend_key)
+        model_version_value = backend_health.get("model_version", backend_health.get("speaker_model_version"))
         return CurrentSpeakerModelIdentity(
-            str(health.get("speaker_model_id") or "xvector"),
-            None if health.get("speaker_model_version") is None else str(health.get("speaker_model_version")),
+            model_id,
+            None if model_version_value is None else str(model_version_value),
             fingerprint,
+            backend_key=backend_key,
         )
 
     def current_microphone_identity(source: str = "ALSA") -> CurrentMicrophoneIdentity:
@@ -168,24 +186,43 @@ def create_app(
         fp = fingerprint_microphone(info)
         return CurrentMicrophoneIdentity("ALSA", fp.device_id, fp.device_name, fp.fingerprint, fp.certainty)
 
-    def runtime_calibration_resolver_factory(source: str):
+    def runtime_backend_calibration_resolver_factory(source: str, backend_key: str):
         normalized_source = str(source or "ALSA").upper()
+        normalized_backend = str(backend_key or "eres2net_large").strip().lower()
 
         def runtime_calibration_resolver(db):
             lifecycle = SpeakerCalibrationService(
                 db,
-                model_provider=current_model_identity,
+                model_provider=lambda: current_model_identity(normalized_backend),
                 microphone_provider=lambda: current_microphone_identity(normalized_source),
             )
             return resolve_speaker_calibration(lifecycle, SpeakerCalibration.from_env())
 
         return runtime_calibration_resolver
 
+    def runtime_calibration_resolver_factory(source: str):
+        configured_backend = "eres2net_large"
+        primary_backend = configured_backend
+        return runtime_backend_calibration_resolver_factory(
+            source,
+            str(primary_backend or "eres2net_large"),
+        )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         event_loop["loop"] = asyncio.get_running_loop()
         supervisor = ai_supervisor or _build_supervisor()
         app.state.ai_supervisor = supervisor
+        routing_coordinator = None
+        if settings.formal_routing_mode == "qwen":
+            routing_coordinator = QARoutingCoordinator(
+                session_factory=app.state.session_factory,
+                ai_supervisor=supervisor,
+                publish_event=publish_asr_event,
+                idle_close_seconds=settings.qa_idle_close_seconds,
+            )
+            routing_coordinator.start()
+        app.state.qa_routing_coordinator = routing_coordinator
         capture_service = SourceAwareAsrCaptureService(
             session_factory=app.state.session_factory,
             device_manager=manager,
@@ -193,6 +230,10 @@ def create_app(
             ai_supervisor=supervisor,
             publish_event=publish_asr_event,
             calibration_resolver_factory=runtime_calibration_resolver_factory,
+            backend_calibration_resolver_factory=runtime_backend_calibration_resolver_factory,
+            fragment_sink=None if routing_coordinator is None else routing_coordinator.enqueue_fragment,
+            capture_finished_sink=None if routing_coordinator is None else routing_coordinator.flush_capture,
+            speaker_model_key="eres2net_large",
         )
         app.state.asr_capture_service = capture_service
         try:
@@ -202,6 +243,8 @@ def create_app(
             yield
         finally:
             capture_service.shutdown()
+            if routing_coordinator is not None:
+                routing_coordinator.shutdown()
             if manager is not None:
                 try:
                     manager.stop_monitor()
@@ -222,8 +265,10 @@ def create_app(
     app.state.hardware_manager = manager
     app.state.hardware_gateway = hardware_gateway
     app.state.asr_capture_service = None
+    app.state.qa_routing_coordinator = None
     app.state.browser_audio_input = browser_audio_input
     app.state.speech_client = speech_client
+    app.state.speaker_calibration_model_provider = current_model_identity
     app.state.voiceprint_capture = (
         AudioCaptureService(
             manager,

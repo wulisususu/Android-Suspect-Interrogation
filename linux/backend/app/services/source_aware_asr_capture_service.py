@@ -9,6 +9,7 @@ from app.services.asr_capture_service import AsrCaptureService
 
 
 CalibrationResolverFactory = Callable[[str], Callable[[Any], Any] | None]
+BackendCalibrationResolverFactory = Callable[[str, str], Callable[[Any], Any] | None]
 
 
 class SourceAwareAsrCaptureService:
@@ -32,6 +33,11 @@ class SourceAwareAsrCaptureService:
         sample_rate: int = 16_000,
         read_timeout: float = 0.2,
         calibration_resolver_factory: CalibrationResolverFactory | None = None,
+        backend_calibration_resolver_factory: BackendCalibrationResolverFactory | None = None,
+        fragment_sink: Callable[[str, str], None] | None = None,
+        capture_finished_sink: Callable[[str, str], None] | None = None,
+        speaker_model_key: str = "eres2net_large",
+        speaker_authoritative_backend: str | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.device_manager = device_manager
@@ -40,32 +46,71 @@ class SourceAwareAsrCaptureService:
         self.publish_event = publish_event
         self.sample_rate = int(sample_rate)
         self.read_timeout = float(read_timeout)
+        self.fragment_sink = fragment_sink
+        self.capture_finished_sink = capture_finished_sink
+        self.calibration_resolver_factory = calibration_resolver_factory
+        self.backend_calibration_resolver_factory = backend_calibration_resolver_factory
+        self.speaker_model_key = str(speaker_model_key or "eres2net_large").strip().lower()
+        if self.speaker_model_key != "eres2net_large":
+            raise ValueError("speaker_model_key must be eres2net_large")
+        self.speaker_authoritative_backend = (
+            None
+            if speaker_authoritative_backend is None
+            else str(speaker_authoritative_backend).strip().lower()
+        )
         self._lock = threading.RLock()
         self._capture_sources: dict[str, str] = {}
         self._preparation_source: tuple[str, str] | None = None
         self._services: dict[str, AsrCaptureService] = {}
 
-        inputs = {
+        self._inputs = {
             "ALSA": device_manager,
             "BROWSER": browser_audio_input,
         }
-        for source, audio_input in inputs.items():
+        for source, audio_input in self._inputs.items():
             if audio_input is None:
                 continue
-            resolver = calibration_resolver_factory(source) if calibration_resolver_factory is not None else None
-            self._services[source] = AsrCaptureService(
-                session_factory=session_factory,
-                device_manager=audio_input,
-                ai_supervisor=ai_supervisor,
-                publish_event=publish_event,
-                sample_rate=sample_rate,
-                read_timeout=read_timeout,
-                calibration_resolver=resolver,
+            self._services[source] = self._build_service(
+                source,
+                audio_input,
+                self.speaker_model_key,
+                self.speaker_authoritative_backend,
             )
 
         if not self._services:
             raise ValueError("at least one ASR audio input must be configured")
         self._default_service = self._services.get("ALSA") or next(iter(self._services.values()))
+
+    def _build_service(
+        self,
+        source: str,
+        audio_input: Any,
+        mode: str,
+        authoritative_backend: str | None,
+    ) -> AsrCaptureService:
+        resolver = (
+            self.calibration_resolver_factory(source)
+            if self.calibration_resolver_factory is not None
+            else None
+        )
+        secondary_resolver = None
+        primary_backend = "eres2net_large"
+        if self.backend_calibration_resolver_factory is not None:
+            resolver = self.backend_calibration_resolver_factory(source, primary_backend)
+        return AsrCaptureService(
+            session_factory=self.session_factory,
+            device_manager=audio_input,
+            ai_supervisor=self.ai_supervisor,
+            publish_event=self.publish_event,
+            sample_rate=self.sample_rate,
+            read_timeout=self.read_timeout,
+            calibration_resolver=resolver,
+            secondary_calibration_resolver=secondary_resolver,
+            fragment_sink=self.fragment_sink,
+            capture_finished_sink=self.capture_finished_sink,
+            speaker_model_key=mode,
+            speaker_authoritative_backend=authoritative_backend,
+        )
 
     def _source(self, source: str | None = None) -> str:
         selected = normalize_audio_source(source) or current_request_audio_source("ALSA")

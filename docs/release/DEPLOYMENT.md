@@ -84,6 +84,27 @@ Restore verifies archive checksums and `PRAGMA integrity_check` before replacing
 
 Stop/coordinate active business writes before a production restore. The script validates snapshot consistency but does not attempt distributed transaction coordination with future backend workers.
 
+## Rebuilding an ERes2Net-large reference from retained enrollment audio
+
+Historical XVector rows are not automatically backfilled into ERes2Net-large. If the original enrollment WAV/PCM has been retained outside the application database, an operator may explicitly rebuild the target reference from that audio:
+
+```bash
+cd /opt/suspect-interrogation/current
+export SUSPECT_DB_PATH=/var/lib/suspect-interrogation/interrogation.db
+python3 scripts/ci/rebuild-speaker-reference.py \
+  --identity-type suspect \
+  --identity-id CASE-ID \
+  --audio /approved/operator/input/enrollment.wav \
+  --target-backend eres2net_large
+```
+
+For raw 16 kHz mono PCM16, add `--audio-format pcm16`. Officer identities use `--identity-type officer` and the officer ID. The first release accepts `eres2net_large` only. If the target reference already exists, the command fails closed; use `--replace` only after explicitly deciding to replace that model-specific reference.
+
+The input file is read for this operation only and is **not copied into application storage**. The audit event records a SHA-256 digest of normalized source PCM plus a coarse path class, target model metadata and result record ID; it does not record the full source path, raw audio, or embeddings. If the explicit source path is unavailable, the command returns `NEEDS_REENROLL`; the operator must perform a new enrollment capture rather than deriving an ERes2Net-large vector from an XVector vector.
+
+Run this maintenance tool only while the configured local speech worker is available. It does not change `SUSPECT_SPEAKER_BACKEND`, does not switch the production authoritative backend, and does not restart unrelated services.
+
+
 ## Kiosk boot
 
 ```text
@@ -96,3 +117,80 @@ system boot
 ```
 
 The launcher performs bounded readiness polling. The Vue application independently rechecks readiness and renders a maintenance state rather than a blank page.
+
+## Qwen3-4B formal-record routing
+
+Semantic formal-record routing is an opt-in production mode. The safe default remains:
+
+```text
+SUSPECT_FORMAL_ROUTING_MODE=legacy
+```
+
+The Qwen path preserves every raw ASR fragment as the evidence/source layer. Qwen only returns a constrained routing decision; deterministic backend policy performs the formal-record mutation. Low-confidence or ambiguous decisions remain `NEEDS_REVIEW` and require operator action. Frozen/signed formal records remain immutable.
+
+### LlamaPi preconditions
+
+The supported local endpoint is loopback-only by default:
+
+```text
+LLAMAPI_BASE_URL=http://127.0.0.1:9265/v1
+LLAMAPI_MODEL_HINT=qwen3:4b
+```
+
+Before enabling Qwen routing, verify the existing LlamaPi service without restarting it:
+
+```bash
+systemctl is-active llamapi-server.service
+curl -fsS http://127.0.0.1:9265/v1/models
+```
+
+The model list must resolve either the exact `qwen3:4b` ID or exactly one platform-specific ID beginning with `qwen3:4b@`. Application code intentionally does not hard-code an RK3588/platform suffix. Zero matches or multiple matches fail closed.
+
+Do not reuse, stop, restart, or reconfigure unrelated services while performing this acceptance. In particular, any existing service on TCP/8000 is outside the LlamaPi routing path and must be left untouched.
+
+### Read-only RK3588 acceptance
+
+Run the dedicated `RK3588 Qwen Formal Routing Acceptance` workflow before a production switch. Its board stage is intentionally non-destructive: it verifies the LlamaPi service/model list, executes the A/B/C/D/E routing probe four times (20 inference requests), records p50/p95/max latency and LlamaPi RSS, observes TCP/8000 without modifying it, and uploads the evidence artifact.
+
+The same probe can be run manually from a checked-out release on the board, provided the output remains under an allowed runtime directory:
+
+```bash
+export GITHUB_WORKSPACE="$PWD"
+python3 scripts/ci/probe-llamapi-qwen-routing.py \
+  --base-url http://127.0.0.1:9265/v1 \
+  --model-hint qwen3:4b \
+  --repetitions 4 \
+  --timeout 120 \
+  --output "$PWD/qwen-routing-probe.json"
+```
+
+Acceptance is successful only when all 20 samples satisfy the expected semantic classes and safety checks. A service/model-discovery failure, malformed/non-JSON response, wrong route, lost fact anchor, ambiguous model ID, or any individual failed sample blocks the production switch.
+
+### Production switch after acceptance
+
+`interrogation-api.service` already loads both `/etc/suspect-interrogation/runtime.env` and the optional `/etc/suspect-interrogation/ai-worker.env`; no systemd unit edit is required for this feature.
+
+Place LlamaPi connection settings in `/etc/suspect-interrogation/ai-worker.env`:
+
+```text
+LLAMAPI_BASE_URL=http://127.0.0.1:9265/v1
+LLAMAPI_MODEL_HINT=qwen3:4b
+```
+
+After a recorded RK3588 acceptance passes, set the routing mode in `/etc/suspect-interrogation/runtime.env`:
+
+```text
+SUSPECT_FORMAL_ROUTING_MODE=qwen
+```
+
+Then restart/redeploy only the project API through the normal deployment procedure and verify `/health/ready` plus a controlled formal-record session. Do not restart `llamapi-server.service` merely to switch the application's routing mode.
+
+### Qwen routing rollback
+
+If semantic routing is unavailable or acceptance/regression checks fail, return only the project routing mode to the deterministic compatibility path:
+
+```text
+SUSPECT_FORMAL_ROUTING_MODE=legacy
+```
+
+Restart/redeploy the project API normally. Raw ASR evidence is retained independently of formal projection, so this rollback does not require rewriting or deleting source fragments. The manual compatibility endpoint for individual speech-fragment processing remains available for controlled recovery.

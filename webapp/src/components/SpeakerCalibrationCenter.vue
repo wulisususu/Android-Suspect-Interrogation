@@ -12,7 +12,7 @@ export function calibrationStatusLabel(status: SpeakerCalibrationStatus): string
   return {
     NOT_CALIBRATED: '尚未校准',
     VALID: '校准有效',
-    STALE_MODEL: 'XVector 已更换',
+    STALE_MODEL: 'ERes2Net-large 已更换',
     STALE_MIC: '麦克风已更换',
     RECOMPUTE_RECOMMENDED: '建议重新计算',
     INSUFFICIENT_DATA: '样本不足',
@@ -20,7 +20,7 @@ export function calibrationStatusLabel(status: SpeakerCalibrationStatus): string
 }
 
 export function formatMetric(value: number | null | undefined): string {
-  return typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : '—'
+  return typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : 'UNKNOWN'
 }
 </script>
 
@@ -39,7 +39,6 @@ const history = ref<SpeakerCalibrationRecord[]>([])
 const loading = ref(true)
 const recomputing = ref(false)
 const error = ref('')
-
 const tone = computed(() => state.value ? calibrationTone(state.value.status) : 'muted')
 
 async function refresh() {
@@ -80,10 +79,10 @@ onMounted(() => void refresh())
     <div class="center-header">
       <div>
         <h2>设备校准中心</h2>
-        <p>利用全局民警声纹库，为当前 XVector 与生产麦克风计算设备级判定参数。</p>
+        <p>ERes2Net-large 的阈值、模型指纹与麦克风兼容语料在此维护。</p>
       </div>
       <button :disabled="loading || recomputing" @click="recompute">
-        {{ recomputing ? '正在计算…' : '重新计算校准' }}
+        {{ recomputing ? '正在计算…' : '重新计算 ERes2Net-large 校准' }}
       </button>
     </div>
 
@@ -91,20 +90,10 @@ onMounted(() => void refresh())
     <p v-if="loading" class="loading">正在读取设备校准状态…</p>
 
     <template v-else-if="state">
-      <div class="status-card" :class="`tone-${tone}`">
-        <strong>{{ calibrationStatusLabel(state.status) }}</strong>
-        <span>{{ state.reason }}</span>
-        <small v-if="state.status === 'STALE_MODEL'">旧设备阈值已停止用于新审讯；当前自动回退模型基线。</small>
-        <small v-if="state.status === 'STALE_MIC'">检测到生产麦克风变化；旧设备阈值已停止用于新审讯。</small>
-        <small v-if="state.status === 'RECOMPUTE_RECOMMENDED'">旧校准仍可使用，仅建议利用新增样本重新计算。</small>
-        <small v-if="state.status === 'INSUFFICIENT_DATA'">
-          完整校准至少需要 {{ state.minimumOfficers }} 名民警，每人至少 {{ state.minimumSamplesPerOfficer }} 个当前模型/麦克风兼容样本。
-        </small>
-      </div>
-
+      <div class="section-heading"><strong>模型状态</strong><span>ERes2Net-large</span></div>
       <div class="identity-grid">
         <article>
-          <span>XVector</span>
+          <span>模型</span>
           <strong>{{ state.currentModel.modelId }} {{ state.currentModel.modelVersion || '' }}</strong>
           <code>{{ state.currentModel.fingerprint.slice(0, 16) }}…</code>
         </article>
@@ -120,6 +109,16 @@ onMounted(() => void refresh())
         </article>
       </div>
 
+      <div class="section-heading"><strong>校准状态</strong><span>仅适用于当前 ERes2Net-large 模型与设备</span></div>
+      <div class="status-card" :class="`tone-${tone}`">
+        <strong>{{ calibrationStatusLabel(state.status) }}</strong>
+        <span>{{ state.reason }}</span>
+        <small v-if="state.status === 'STALE_MODEL'">旧阈值不会用于新模型指纹；需要重新校准。</small>
+        <small v-if="state.status === 'STALE_MIC'">检测到生产麦克风变化；旧设备阈值不会用于新审讯。</small>
+        <small v-if="state.status === 'RECOMPUTE_RECOMMENDED'">旧校准仍可使用，建议利用新增样本重新计算。</small>
+        <small v-if="state.status === 'INSUFFICIENT_DATA'">完整校准至少需要 {{ state.minimumOfficers }} 名民警，每人至少 {{ state.minimumSamplesPerOfficer }} 个兼容样本。</small>
+      </div>
+
       <div v-if="state.calibration" class="metrics">
         <article><span>Threshold</span><strong>{{ state.calibration.threshold.toFixed(4) }}</strong></article>
         <article><span>Margin</span><strong>{{ state.calibration.margin?.toFixed(4) ?? '—' }}</strong></article>
@@ -129,24 +128,14 @@ onMounted(() => void refresh())
         <article><span>校准时间</span><strong>{{ state.calibration.createdAt || '—' }}</strong></article>
       </div>
 
-      <p class="disclaimer">
-        FAR / FRR / EER 为本机当前民警有限样本上的观测估计，只用于设备参数选择，不代表人口级生物识别认证准确率。
-      </p>
+      <p class="disclaimer">FAR / FRR / EER 是本机有限样本的观测估计，只用于设备参数选择，不代表人口级生物识别认证准确率。</p>
 
       <section class="history">
-        <h3>校准历史</h3>
+        <h3>ERes2Net-large 校准历史</h3>
         <p v-if="history.length === 0">暂无校准历史。</p>
         <div v-for="item in history" :key="item.calibrationId" class="history-row">
-          <div>
-            <strong>{{ item.createdAt || item.calibrationId }}</strong>
-            <span>{{ item.speakerModelId }} · {{ item.microphoneName }}</span>
-          </div>
-          <div>
-            <span>T {{ item.threshold.toFixed(4) }}</span>
-            <span>M {{ item.margin?.toFixed(4) ?? '—' }}</span>
-            <span>EER {{ formatMetric(item.eer) }}</span>
-            <span>{{ item.officerCount }} 人 / {{ item.sampleCount }} 样本</span>
-          </div>
+          <div><strong>{{ item.createdAt || item.calibrationId }}</strong><span>{{ item.speakerModelId }} · {{ item.microphoneName }}</span></div>
+          <div><span>T {{ item.threshold.toFixed(4) }}</span><span>M {{ item.margin?.toFixed(4) ?? '—' }}</span><span>EER {{ formatMetric(item.eer) }}</span><span>{{ item.officerCount }} 人 / {{ item.sampleCount }} 样本</span></div>
         </div>
       </section>
     </template>
@@ -157,23 +146,15 @@ onMounted(() => void refresh())
 .calibration-center { display:grid; gap:16px; }
 .center-header { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; padding:18px; border:1px solid #c7d5e0; border-radius:10px; background:#fff; }
 .center-header h2 { margin:0 0 6px; }
-.center-header p { margin:0; color:#607588; }
+.center-header p,.status-card span,.status-card small,.identity-grid small { color:#607588; }
 button { min-height:38px; border:1px solid #7f9db5; border-radius:6px; padding:0 14px; background:#f7fbfe; color:#244a67; font-weight:700; }
-.status-card { display:grid; gap:5px; padding:14px 16px; border:1px solid; border-radius:8px; background:#fff; }
-.tone-ok { border-color:#8fbca2; }
-.tone-warn { border-color:#d6b268; background:#fffaf0; }
-.tone-danger { border-color:#d38a8a; background:#fff4f4; }
-.tone-muted { border-color:#bdc9d2; }
-.status-card span, .status-card small, .identity-grid small { color:#607588; }
-.identity-grid, .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
-.identity-grid article, .metrics article { display:grid; gap:5px; padding:14px; border:1px solid #d2dde5; border-radius:8px; background:#fff; }
-.identity-grid span, .metrics span { color:#607588; font-size:12px; }
-.identity-grid code { overflow-wrap:anywhere; color:#46657d; }
+.section-heading { display:flex; justify-content:space-between; gap:12px; color:#405d74; }.section-heading span { color:#718496; font-size:12px; }
+.identity-grid,.metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
+.identity-grid article,.metrics article { display:grid; gap:5px; padding:14px; border:1px solid #d2dde5; border-radius:8px; background:#fff; }
+.identity-grid span,.metrics span { color:#607588; font-size:12px; }.identity-grid code { overflow-wrap:anywhere; color:#46657d; font-size:12px; }
+.status-card { display:grid; gap:5px; padding:14px 16px; border:1px solid; border-radius:8px; background:#fff; }.tone-ok { border-color:#8fbca2; }.tone-warn { border-color:#d6b268; background:#fffaf0; }.tone-danger { border-color:#d38a8a; background:#fff4f4; }.tone-muted { border-color:#bdc9d2; }
 .disclaimer { margin:0; padding:12px 14px; border-radius:8px; background:#f5f7f9; color:#596d7e; font-size:13px; }
-.history { padding:16px; border:1px solid #c7d5e0; border-radius:10px; background:#fff; }
-.history h3 { margin-top:0; }
-.history-row { display:flex; justify-content:space-between; gap:16px; padding:10px 0; border-top:1px solid #e1e8ed; }
-.history-row > div { display:flex; gap:10px; flex-wrap:wrap; }
-.error { color:#9e3333; }
-.loading { color:#607588; }
+.history { padding:16px; border:1px solid #c7d5e0; border-radius:10px; background:#fff; }.history h3 { margin-top:0; }.history-row { display:flex; justify-content:space-between; gap:16px; padding:10px 0; border-top:1px solid #e1e8ed; }.history-row > div { display:flex; gap:10px; flex-wrap:wrap; }
+.error { color:#9e3333; }.loading { color:#607588; }
+@media (max-width:800px) { .center-header { flex-direction:column; } }
 </style>

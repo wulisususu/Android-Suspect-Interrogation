@@ -8,6 +8,7 @@ import os
 import stat
 import sys
 import tempfile
+import uuid
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,7 @@ MIN_UTTERANCES_PER_IDENTITY = MIN_SAMPLES_PER_IDENTITY
 MIN_VAD_SPEECH_MS = 1_000
 THRESHOLD_KEY = "SUSPECT_SPEAKER_ACCEPT_THRESHOLD"
 MARGIN_KEY = "SUSPECT_SPEAKER_MARGIN"
+SUPPORTED_SPEAKER_BACKENDS = ("xvector", "eres2net_large")
 
 
 @dataclass(frozen=True)
@@ -109,14 +111,43 @@ def _vad_positive_pcm(client: SpeechWorkerClient, pcm: bytes) -> tuple[bytes, in
     return b"".join(pieces), total_ms
 
 
-def _embedding_for_wav(client: SpeechWorkerClient, path: Path) -> tuple[list[float], int]:
+def _normalize_speaker_backend(value: str) -> str:
+    backend = str(value or "").strip().lower()
+    if backend not in SUPPORTED_SPEAKER_BACKENDS:
+        raise ValueError("speaker backend must be xvector or eres2net_large")
+    return backend
+
+
+def _embedding_for_wav(
+    client: SpeechWorkerClient,
+    path: Path,
+    speaker_backend: str,
+) -> tuple[list[float], int, dict[str, object]]:
+    backend = _normalize_speaker_backend(speaker_backend)
     pcm = _read_pcm16_wav(path)
     speech_pcm, speech_ms = _vad_positive_pcm(client, pcm)
-    result = client.extract_embedding(speech_pcm, sample_rate=SAMPLE_RATE)
+    result = client.extract_embedding(
+        speech_pcm,
+        sample_rate=SAMPLE_RATE,
+        backend=backend,
+    )
     embedding = result.get("embedding")
     if not isinstance(embedding, list):
         raise ValueError("speech worker did not return an embedding array")
-    return _normalize(embedding), speech_ms
+    returned_backend = str(result.get("backend_key") or backend).strip().lower()
+    if returned_backend != backend:
+        raise ValueError("speech worker returned an embedding from the wrong speaker backend")
+    model_fingerprint = result.get("model_fingerprint")
+    if not isinstance(model_fingerprint, str) or not model_fingerprint.strip():
+        raise ValueError("speech worker did not return a speaker model fingerprint")
+    metadata: dict[str, object] = {
+        "speaker_backend": backend,
+        "model_id": result.get("model_id"),
+        "model_version": result.get("model_version"),
+        "model_fingerprint": model_fingerprint,
+        "embedding_latency_ms": result.get("latency_ms"),
+    }
+    return _normalize(embedding), speech_ms, metadata
 
 
 def _build_scores(samples: dict[str, list[list[float]]]) -> list[SampleScore]:
@@ -146,7 +177,7 @@ def _build_scores(samples: dict[str, list[list[float]]]) -> list[SampleScore]:
 def _candidate_values(values: Iterable[float]) -> list[float]:
     clipped = sorted({max(0.0, min(1.0, float(v))) for v in values if math.isfinite(float(v))} | {0.0, 1.0})
     mids = {(a + b) / 2.0 for a, b in zip(clipped, clipped[1:]) if b > a}
-    return sorted(clipped | mids)
+    return sorted(set(clipped) | mids)
 
 
 def _evaluate(scores: list[SampleScore], threshold: float, margin: float) -> tuple[int, int, float]:
@@ -264,9 +295,16 @@ def _paths(values: list[str]) -> list[Path]:
     return [Path(value).expanduser() for value in values if str(value).strip()]
 
 
+def _validate_apply_policy(speaker_backend: str, apply: bool) -> None:
+    backend = _normalize_speaker_backend(speaker_backend)
+    if apply and backend != "xvector":
+        raise ValueError("--apply remains xvector-only; ERes2Net-large calibration is diagnostic until explicitly selected")
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Calibrate RK3588 XVector threshold/margin from local WAV samples.")
+    parser = argparse.ArgumentParser(description="Calibrate one RK3588 speaker backend from local WAV samples.")
     parser.add_argument("--socket", default="/run/suspect-interrogation/speech.sock")
+    parser.add_argument("--speaker-backend", choices=SUPPORTED_SPEAKER_BACKENDS, default="xvector")
     parser.add_argument("--suspect-wav", action="append", default=[])
     parser.add_argument("--interrogator-wav", action="append", default=[])
     parser.add_argument("--recorder-wav", action="append", default=[])
@@ -277,6 +315,8 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--output")
     args = parser.parse_args()
+    speaker_backend = _normalize_speaker_backend(args.speaker_backend)
+    _validate_apply_policy(speaker_backend, bool(args.apply))
 
     groups = {
         "SUSPECT": _paths([*args.suspect_wav, *args.suspect_wavs]),
@@ -296,20 +336,37 @@ def main() -> int:
     client = SpeechWorkerClient(args.socket, timeout=30.0)
     health = client.health()
     models = health.get("models") if isinstance(health, dict) else None
-    if not isinstance(models, dict) or not models.get("vad") or not models.get("speaker"):
-        raise SystemExit("speech worker VAD/XVector models are not ready")
+    if not isinstance(models, dict) or not models.get("vad"):
+        raise SystemExit("speech worker VAD model is not ready")
+    backend_health = health.get("speaker_backends") if isinstance(health, dict) else None
+    if isinstance(backend_health, dict):
+        selected_health = backend_health.get(speaker_backend)
+        if isinstance(selected_health, dict) and selected_health.get("ready") is not True:
+            raise SystemExit(f"speech worker speaker backend is not ready: {speaker_backend}")
+    elif speaker_backend == "xvector" and not models.get("speaker"):
+        raise SystemExit("speech worker XVector model is not ready")
 
     samples: dict[str, list[list[float]]] = {}
     speech_ms_by_identity: dict[str, int] = {}
+    run_model_metadata: dict[str, object] | None = None
     for identity, paths in groups.items():
         vectors: list[list[float]] = []
         total_speech_ms = 0
         for path in paths:
-            vector, speech_ms = _embedding_for_wav(client, path)
+            vector, speech_ms, metadata = _embedding_for_wav(client, path, speaker_backend)
+            if run_model_metadata is None:
+                run_model_metadata = dict(metadata)
+            else:
+                for key in ("speaker_backend", "model_id", "model_version", "model_fingerprint"):
+                    if metadata.get(key) != run_model_metadata.get(key):
+                        raise SystemExit(f"speaker model metadata changed during calibration: {key}")
             vectors.append(vector)
             total_speech_ms += speech_ms
         samples[identity] = vectors
         speech_ms_by_identity[identity] = total_speech_ms
+
+    if run_model_metadata is None:
+        raise SystemExit("calibration produced no speaker model metadata")
 
     scores = _build_scores(samples)
     threshold, margin, metrics = choose_calibration(scores)
@@ -321,6 +378,11 @@ def main() -> int:
 
     report = {
         "status": "safe" if metrics["false_accepts"] == 0 and metrics["false_rejects"] == 0 else "unsafe",
+        "calibration_id": f"{speaker_backend}-{uuid.uuid4().hex}",
+        "speaker_backend": speaker_backend,
+        "model_id": run_model_metadata.get("model_id"),
+        "model_version": run_model_metadata.get("model_version"),
+        "model_fingerprint": run_model_metadata.get("model_fingerprint"),
         "sample_rate": SAMPLE_RATE,
         "minimum_samples_per_identity": MIN_SAMPLES_PER_IDENTITY,
         "identities": {identity: {"samples": len(samples[identity]), "voiced_ms": speech_ms_by_identity[identity]} for identity in sorted(samples)},
@@ -341,6 +403,11 @@ def main() -> int:
 
 REPORT_PAYLOAD = (
     "status",
+    "calibration_id",
+    "speaker_backend",
+    "model_id",
+    "model_version",
+    "model_fingerprint",
     "sample_rate",
     "minimum_samples_per_identity",
     "identities",

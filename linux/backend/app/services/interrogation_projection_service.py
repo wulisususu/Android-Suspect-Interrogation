@@ -35,6 +35,16 @@ def _json_list(raw: str) -> list[str]:
 
 
 class InterrogationProjectionService:
+    """Legacy deterministic regex projection compatibility path.
+
+    Production ASR capture reaches this service only when
+    ``formal_routing_mode == 'legacy'`` (AsrCaptureService has no Qwen fragment
+    sink). The explicit ``/speech-fragments/{id}/process`` API also keeps this
+    path available for rollback/manual compatibility. Qwen mode must not invoke
+    it in parallel with QARoutingCoordinator, otherwise one raw fragment could
+    produce two formal projections.
+    """
+
     def __init__(self, db: Session):
         self.db = db
 
@@ -60,6 +70,13 @@ class InterrogationProjectionService:
             active = rounds_repo.active_round(self.db, case_id, session_id)
             if active is not None:
                 rounds_repo.append_round_answer(self.db, active, text, [fragment.id])
+                question = question_repo.get_case(self.db, case_id, active.case_question_id)
+                question_repo.set_canonical_answer(
+                    self.db,
+                    question,
+                    answer_text=active.answer_text,
+                    first_asked_at=active.started_at,
+                )
                 return self._record_processed(fragment.id, case_id, "ROUND_APPEND", active.id)
             return self._record_processed(fragment.id, case_id, "RAW_ONLY", None)
         if speaker not in _OFFICER_SPEAKERS:

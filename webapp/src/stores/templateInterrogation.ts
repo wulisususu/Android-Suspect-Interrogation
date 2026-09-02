@@ -13,6 +13,7 @@ import {
   linkPendingQuestion,
   reassociateRound as reassociateRoundApi,
   reorderCaseQuestions as reorderCaseQuestionsApi,
+  resolveQaUnit as resolveQaUnitApi,
   saveQuestionToLibrary as saveQuestionToLibraryApi,
   updateCaseQuestion as updateCaseQuestionApi,
   updateRoundAnswer as updateRoundAnswerApi,
@@ -23,6 +24,7 @@ import type {
   CaseQuestionCreateInput,
   CaseQuestionUpdateInput,
   PendingResolution,
+  QAUnitResolution,
   RoundReassociateInput,
   StandardQuestion,
   TemplateWorkspace,
@@ -31,7 +33,7 @@ import { roundGroups } from '../utils/templateInterrogation'
 import { useInterrogationStore } from './interrogation'
 
 function emptyWorkspace(caseId = ''): TemplateWorkspace {
-  return { caseId, questions: [], rounds: [], pendingQuestions: [] }
+  return { caseId, questions: [], rounds: [], pendingQuestions: [], qaUnits: [] }
 }
 
 function dialogueOrder(left: TemporaryAsrFragment, right: TemporaryAsrFragment): number {
@@ -55,6 +57,7 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
   let generation = 0
   let workspaceRefreshTimer: ReturnType<typeof setTimeout> | undefined
   let captureBridgeStop: WatchStopHandle | undefined
+  let formalRevisionBridgeStop: WatchStopHandle | undefined
 
   const groupedRounds = computed(() => roundGroups(workspace.value.questions, workspace.value.rounds))
   const unresolvedPending = computed(() => workspace.value.pendingQuestions.filter((item) => item.status === 'PENDING' || item.status === 'DEFERRED'))
@@ -77,6 +80,8 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     clearScheduledRefresh()
     captureBridgeStop?.()
     captureBridgeStop = undefined
+    formalRevisionBridgeStop?.()
+    formalRevisionBridgeStop = undefined
     caseId.value = nextCaseId
     workspace.value = emptyWorkspace(nextCaseId)
     dialogueHistory.value = []
@@ -110,11 +115,13 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
   function handleAsrFragment(fragment: TemporaryAsrFragment, scope = currentScope()) {
     if (!isCurrentScope(scope) || fragment.caseId !== scope.caseId) return
     upsertDialogue(fragment, scope)
+    // Legacy projection mode has no committed QA routing revision event.
     scheduleWorkspaceRefresh(scope)
   }
 
   function attachCaptureBridge(scope: StoreScope) {
     captureBridgeStop?.()
+    formalRevisionBridgeStop?.()
     const interrogation = useInterrogationStore()
     captureBridgeStop = watch(
       () => interrogation.capture.fragments,
@@ -123,6 +130,13 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
         for (const fragment of fragments) handleAsrFragment(fragment, scope)
       },
       { deep: true, immediate: true },
+    )
+    formalRevisionBridgeStop = watch(
+      () => interrogation.formalRecordRevision,
+      (revision, previousRevision) => {
+        if (!isCurrentScope(scope) || revision === previousRevision) return
+        scheduleWorkspaceRefresh(scope, 0)
+      },
     )
   }
 
@@ -224,6 +238,10 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     })
   }
 
+  async function resolveQaUnit(qaUnitId: string, resolution: QAUnitResolution) {
+    await runMutation((scope) => resolveQaUnitApi(scope.caseId, qaUnitId, resolution))
+  }
+
   async function reassociateRound(roundId: string, input: RoundReassociateInput) {
     await runMutation((scope) => reassociateRoundApi(scope.caseId, roundId, input))
   }
@@ -277,6 +295,7 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     reorderCaseQuestions,
     deactivateCaseQuestion,
     resolvePendingQuestion,
+    resolveQaUnit,
     reassociateRound,
     updateRoundAnswer,
     loadQuestionLibrary,

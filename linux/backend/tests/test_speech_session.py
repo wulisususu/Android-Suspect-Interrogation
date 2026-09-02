@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import pytest
+
+from app.ai.errors import WorkerCrashedError
 from app.ai.speech.types import SpeechEventType
 from speech_worker.session import SpeechSession
 
@@ -37,9 +40,19 @@ class FakeRuntime:
         self.transcribe_calls.append((pcm, sample_rate))
         return {"text": "测试口供", "confidence": 0.93}
 
-    def speaker_embedding(self, pcm: bytes, sample_rate: int) -> dict:
+    def speaker_embedding(self, pcm: bytes, sample_rate: int, *, backend_key: str | None = None) -> dict:
         self.speaker_calls.append((pcm, sample_rate))
-        return {"embedding": [0.6, 0.8], "model_id": "xvector"}
+        return {
+            "embedding": [0.6, 0.8],
+            "backend_key": "eres2net_large",
+            "model_id": "eres2net",
+        }
+
+
+class MissingSpeakerMetadataRuntime(FakeRuntime):
+    def speaker_embedding(self, pcm: bytes, sample_rate: int, *, backend_key: str | None = None) -> dict:
+        self.speaker_calls.append((pcm, sample_rate))
+        return {"embedding": [0.6, 0.8]}
 
 
 def _pcm(ms: int, sample_rate: int = 16000, value: int = 1) -> bytes:
@@ -87,12 +100,21 @@ def test_start_then_end_decodes_utterance_once_with_shared_bounds():
     assert final_events[1].text == "测试口供"
     assert final_events[1].confidence == 0.93
     assert final_events[2].embedding == [0.6, 0.8]
-    assert final_events[2].model_id == "xvector"
+    assert final_events[2].model_id == "eres2net"
+    assert final_events[2].details["backend_key"] == "eres2net_large"
     assert all(event.type is not SpeechEventType.ASR_PARTIAL for event in final_events)
 
     expected_utterance = first + _pcm(100, value=2)
     assert runtime.transcribe_calls == [(expected_utterance, 16000)]
     assert runtime.speaker_calls == [(expected_utterance, 16000)]
+
+
+def test_speaker_result_requires_runtime_model_metadata():
+    runtime = MissingSpeakerMetadataRuntime(vad_outputs=[[[0, 100]]])
+    session = SpeechSession("session-no-model", 16000, runtime, chunk_size_ms=200)
+
+    with pytest.raises(WorkerCrashedError, match="model metadata"):
+        session.push_pcm(_pcm(200, value=3))
 
 
 def test_delayed_start_recovers_audio_from_preroll_using_absolute_vad_time():

@@ -26,7 +26,10 @@ class SpeakerRole(_StrEnumCompat):
 
 
 class SpeakerSource(_StrEnumCompat):
+    # Historical persisted value. Keep readable forever; new model-backed
+    # decisions use SPEAKER_EMBEDDING so provenance is backend-neutral.
     X_VECTOR = "X_VECTOR"
+    SPEAKER_EMBEDDING = "SPEAKER_EMBEDDING"
     SUSPECT_EXCLUSION = "SUSPECT_EXCLUSION"
     MANUAL = "MANUAL"
     UNASSIGNED = "UNASSIGNED"
@@ -89,9 +92,9 @@ def decide_speaker(
         return _unknown(threshold, margin)
 
     # Suspect-only mode is intentionally asymmetric: the registered suspect is
-    # verified by XVector; speech that fails the suspect threshold is treated as
-    # generic police speech, explicitly marked as exclusion rather than a
-    # biometrically verified officer identity.
+    # verified by the selected speaker-embedding backend; speech that fails the
+    # suspect threshold is treated as generic police speech, explicitly marked
+    # as exclusion rather than a biometrically verified officer identity.
     if enabled == {SpeakerRole.SUSPECT}:
         suspect = _find(active, SpeakerRole.SUSPECT)
         if suspect is None:
@@ -220,7 +223,7 @@ def _verified(
 ) -> SpeakerDecision:
     return SpeakerDecision(
         role=candidate.role,
-        source=SpeakerSource.X_VECTOR,
+        source=SpeakerSource.SPEAKER_EMBEDDING,
         voiceprint_verified=True,
         score=candidate.score,
         second_best_score=second_best_score,

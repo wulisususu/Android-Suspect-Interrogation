@@ -20,16 +20,11 @@ _FLOAT32_BYTES = 4
 _SNAPSHOT_PREFIX = "__session_snapshot__:"
 _ALLOWED_SOURCES = {"ALSA", "BROWSER"}
 _QUALITY_WEIGHTS = {"GOOD": 1.0, "FAIR": 0.75}
+_ERES2NET_LARGE = "eres2net_large"
 
 
 class OfficerVoiceprintLibraryService:
-    """System-level officer voiceprint profile and sample administration.
-
-    The legacy ``officer_voiceprints`` table remains an internal compatibility
-    bridge for the established ASR path. It always mirrors the latest aggregate
-    reference for an officer. Session binding clones that bridge row, so active
-    interrogations never follow later global-library updates.
-    """
+    """System-level, model-isolated officer voiceprint sample library."""
 
     def __init__(self, db: Session, *, speech_client: Any):
         self.db = db
@@ -37,7 +32,7 @@ class OfficerVoiceprintLibraryService:
 
     def list_profiles(self, *, active_only: bool = True) -> list[dict[str, Any]]:
         self._materialize_legacy_profiles()
-        stmt = select(OfficerVoiceProfile)
+        stmt = select(OfficerVoiceProfile).where(OfficerVoiceProfile.model_key == _ERES2NET_LARGE)
         if active_only:
             stmt = stmt.where(
                 OfficerVoiceProfile.active.is_(True),
@@ -45,11 +40,15 @@ class OfficerVoiceprintLibraryService:
                 OfficerVoiceProfile.sample_count > 0,
             )
         stmt = stmt.order_by(OfficerVoiceProfile.officer_id.asc())
-        return [self._profile_dict(profile) for profile in self.db.scalars(stmt)]
+        return [self._profile_with_backend_status(profile) for profile in self.db.scalars(stmt)]
 
     def get_profile(self, officer_id: str, *, include_inactive: bool = True) -> dict[str, Any]:
-        profile = self._profile_or_error(officer_id, include_inactive=include_inactive)
-        result = self._profile_dict(profile)
+        profile = self._profile_or_error(
+            officer_id,
+            model_key=_ERES2NET_LARGE,
+            include_inactive=include_inactive,
+        )
+        result = self._profile_with_backend_status(profile)
         samples = list(
             self.db.scalars(
                 select(OfficerVoiceSample)
@@ -82,16 +81,61 @@ class OfficerVoiceprintLibraryService:
             raise DomainError("VOICEPRINT_SOURCE_INVALID", "民警声纹录音音源无效", 400)
 
         self._materialize_legacy_profiles()
-        reference = VoiceprintService(self.db, speech_client=self.speech_client)._build_reference(pcm)
-        model_fingerprint = self._current_model_fingerprint()
+        reference = VoiceprintService(
+            self.db,
+            speech_client=self.speech_client,
+        ).build_reference_for_backend(pcm, _ERES2NET_LARGE)
+
+        primary_profile, primary_sample, primary_bridge, primary_created = self._store_reference_sample(
+            officer_id=officer_id,
+            officer_name=officer_name,
+            reference=reference,
+            actor_id=actor_id,
+            source=source,
+            device_id=device_id,
+            device_name=device_name,
+            microphone_fingerprint=microphone_fingerprint,
+            microphone_fingerprint_certainty=microphone_fingerprint_certainty,
+        )
+        self._audit_sample(
+            profile=primary_profile,
+            sample=primary_sample,
+            actor_id=actor_id,
+            created_profile=primary_created,
+        )
+        self.db.commit()
+
+        result = self._profile_dict(primary_profile, bridge=primary_bridge)
+        result["latestSampleId"] = primary_sample.id
+        result["backends"] = {_ERES2NET_LARGE: self._ready_backend_result(primary_profile, primary_sample, primary_bridge)}
+        return result
+
+    def _store_reference_sample(
+        self,
+        *,
+        officer_id: str,
+        officer_name: str,
+        reference: dict[str, Any],
+        actor_id: str | None,
+        source: str,
+        device_id: str | None,
+        device_name: str | None,
+        microphone_fingerprint: str | None,
+        microphone_fingerprint_certainty: str | None,
+    ) -> tuple[OfficerVoiceProfile, OfficerVoiceSample, OfficerVoiceprint, bool]:
+        model_key = str(reference["model_key"])
         profile = self.db.scalar(
-            select(OfficerVoiceProfile).where(OfficerVoiceProfile.officer_id == officer_id)
+            select(OfficerVoiceProfile).where(
+                OfficerVoiceProfile.officer_id == officer_id,
+                OfficerVoiceProfile.model_key == model_key,
+            )
         )
         created_profile = profile is None
         if profile is None:
             profile = OfficerVoiceProfile(
                 id=str(uuid4()),
                 officer_id=officer_id,
+                model_key=model_key,
                 officer_name=officer_name,
                 aggregate_embedding=reference["bytes"],
                 embedding_dim=reference["dimension"],
@@ -110,9 +154,13 @@ class OfficerVoiceprintLibraryService:
             profile.active = True
             profile.revoked_at = None
 
+        model_fingerprint = self._optional_text(reference.get("model_fingerprint"))
+        if model_fingerprint is None:
+            model_fingerprint = self._current_model_fingerprint(model_key)
         sample = OfficerVoiceSample(
             id=str(uuid4()),
             profile_id=profile.id,
+            model_key=model_key,
             embedding=bytes(reference["bytes"]),
             embedding_dim=int(reference["dimension"]),
             model_id=str(reference["model_id"]),
@@ -122,7 +170,9 @@ class OfficerVoiceprintLibraryService:
             usable_duration_ms=int(reference["usable_duration_ms"]),
             segment_count=int(reference["segment_count"]),
             audio_source=source,
-            device_id=self._optional_text(device_id) or ("browser-default" if source == "BROWSER" else "alsa-default"),
+            device_id=self._optional_text(device_id) or (
+                "browser-default" if source == "BROWSER" else "alsa-default"
+            ),
             device_name=self._optional_text(device_name) or (
                 "Windows Browser Microphone" if source == "BROWSER" else "Linux ALSA Microphone"
             ),
@@ -139,6 +189,16 @@ class OfficerVoiceprintLibraryService:
 
         self._rebuild_profile(profile, reactivate=True)
         bridge = self._sync_bridge(profile)
+        return profile, sample, bridge, created_profile
+
+    def _audit_sample(
+        self,
+        *,
+        profile: OfficerVoiceProfile,
+        sample: OfficerVoiceSample,
+        actor_id: str | None,
+        created_profile: bool,
+    ) -> None:
         audit_repo.add(
             self.db,
             case_id=None,
@@ -159,6 +219,7 @@ class OfficerVoiceprintLibraryService:
                 "audio_source": sample.audio_source,
                 "device_id": sample.device_id,
                 "device_name": sample.device_name,
+                "model_key": sample.model_key,
                 "model_id": sample.model_id,
                 "model_version": sample.model_version,
                 "model_fingerprint": sample.model_fingerprint,
@@ -166,10 +227,6 @@ class OfficerVoiceprintLibraryService:
                 "microphone_fingerprint_certainty": sample.microphone_fingerprint_certainty,
             },
         )
-        self.db.commit()
-        result = self._profile_dict(profile, bridge=bridge)
-        result["latestSampleId"] = sample.id
-        return result
 
     def disable_sample(
         self,
@@ -179,9 +236,13 @@ class OfficerVoiceprintLibraryService:
         reason: str | None = None,
         actor_id: str | None = None,
     ) -> dict[str, Any]:
-        profile = self._profile_or_error(officer_id, include_inactive=True)
+        normalized = str(officer_id or "").strip()
+        if not normalized:
+            raise DomainError("OFFICER_IDENTITY_REQUIRED", "民警编号不能为空", 400)
+        self._materialize_legacy_profiles()
         sample = self.db.get(OfficerVoiceSample, str(sample_id))
-        if sample is None or sample.profile_id != profile.id:
+        profile = self.db.get(OfficerVoiceProfile, sample.profile_id) if sample is not None else None
+        if sample is None or profile is None or profile.officer_id != normalized:
             raise DomainError("OFFICER_VOICEPRINT_SAMPLE_NOT_FOUND", "民警声纹样本不存在", 404)
         if sample.active:
             sample.active = False
@@ -200,6 +261,7 @@ class OfficerVoiceprintLibraryService:
                     "officer_id": profile.officer_id,
                     "profile_id": profile.id,
                     "sample_id": sample.id,
+                    "model_key": sample.model_key,
                     "disabled_reason": sample.disabled_reason,
                     "aggregate_version": profile.aggregate_version,
                     "sample_count": profile.sample_count,
@@ -207,45 +269,70 @@ class OfficerVoiceprintLibraryService:
             )
             self.db.commit()
         else:
-            bridge = self._bridge(profile.officer_id)
+            bridge = self._bridge(profile.officer_id, model_key=profile.model_key)
         return self._profile_dict(profile, bridge=bridge)
 
     def revoke_profile(self, officer_id: str, *, actor_id: str | None = None) -> dict[str, Any]:
-        profile = self._profile_or_error(officer_id, include_inactive=True)
-        profile.active = False
-        profile.revoked_at = datetime.now(timezone.utc)
-        bridge = self._bridge(profile.officer_id)
-        if bridge is not None:
-            bridge.active = False
-            bridge.revoked_at = profile.revoked_at
+        normalized = str(officer_id or "").strip()
+        if not normalized:
+            raise DomainError("OFFICER_IDENTITY_REQUIRED", "民警编号不能为空", 400)
+        self._materialize_legacy_profiles()
+        profiles = list(
+            self.db.scalars(
+                select(OfficerVoiceProfile).where(OfficerVoiceProfile.officer_id == normalized)
+            )
+        )
+        if not profiles:
+            raise DomainError("OFFICER_VOICEPRINT_NOT_FOUND", "民警声纹档案不存在", 404)
+        revoked_at = datetime.now(timezone.utc)
+        for profile in profiles:
+            profile.active = False
+            profile.revoked_at = revoked_at
+            bridge = self._bridge(profile.officer_id, model_key=profile.model_key)
+            if bridge is not None:
+                bridge.active = False
+                bridge.revoked_at = revoked_at
         audit_repo.add(
             self.db,
             case_id=None,
             actor_id=actor_id,
             action="OFFICER_VOICEPRINT_REVOKE",
             target_type="OFFICER_VOICE_PROFILE",
-            target_id=profile.id,
+            target_id=next((p.id for p in profiles if p.model_key == _ERES2NET_LARGE), profiles[0].id),
             detail={
-                "officer_id": profile.officer_id,
-                "officer_name": profile.officer_name,
-                "aggregate_version": profile.aggregate_version,
-                "sample_count": profile.sample_count,
+                "officer_id": normalized,
+                "model_keys": sorted(profile.model_key for profile in profiles),
             },
         )
         self.db.commit()
-        return self._profile_dict(profile, bridge=bridge)
+        primary = next((profile for profile in profiles if profile.model_key == _ERES2NET_LARGE), profiles[0])
+        return self._profile_with_backend_status(primary)
 
-    def _profile_or_error(self, officer_id: str, *, include_inactive: bool) -> OfficerVoiceProfile:
+    def _profile_or_error(
+        self,
+        officer_id: str,
+        *,
+        model_key: str = _ERES2NET_LARGE,
+        include_inactive: bool,
+    ) -> OfficerVoiceProfile:
         normalized = str(officer_id or "").strip()
+        key = str(model_key or "").strip().lower()
         if not normalized:
             raise DomainError("OFFICER_IDENTITY_REQUIRED", "民警编号不能为空", 400)
+        if not key:
+            raise DomainError("VOICEPRINT_MODEL_KEY_REQUIRED", "声纹模型标识不能为空", 400)
         self._materialize_legacy_profiles()
         profile = self.db.scalar(
-            select(OfficerVoiceProfile).where(OfficerVoiceProfile.officer_id == normalized)
+            select(OfficerVoiceProfile).where(
+                OfficerVoiceProfile.officer_id == normalized,
+                OfficerVoiceProfile.model_key == key,
+            )
         )
         if profile is None:
             raise DomainError("OFFICER_VOICEPRINT_NOT_FOUND", "民警声纹档案不存在", 404)
-        if not include_inactive and (not profile.active or profile.revoked_at is not None or profile.sample_count <= 0):
+        if not include_inactive and (
+            not profile.active or profile.revoked_at is not None or profile.sample_count <= 0
+        ):
             raise DomainError("OFFICER_VOICEPRINT_NOT_ACTIVE", "民警声纹档案已停用", 409)
         return profile
 
@@ -258,14 +345,19 @@ class OfficerVoiceprintLibraryService:
             )
         )
         for bridge in bridges:
+            key = str(bridge.model_key or _ERES2NET_LARGE)
             exists = self.db.scalar(
-                select(OfficerVoiceProfile.id).where(OfficerVoiceProfile.officer_id == bridge.officer_id)
+                select(OfficerVoiceProfile.id).where(
+                    OfficerVoiceProfile.officer_id == bridge.officer_id,
+                    OfficerVoiceProfile.model_key == key,
+                )
             )
             if exists is not None:
                 continue
             profile = OfficerVoiceProfile(
                 id=str(uuid4()),
                 officer_id=bridge.officer_id,
+                model_key=key,
                 officer_name=bridge.officer_name,
                 aggregate_embedding=bytes(bridge.embedding),
                 embedding_dim=bridge.embedding_dim,
@@ -282,6 +374,7 @@ class OfficerVoiceprintLibraryService:
                 OfficerVoiceSample(
                     id=str(uuid4()),
                     profile_id=profile.id,
+                    model_key=key,
                     embedding=bytes(bridge.embedding),
                     embedding_dim=bridge.embedding_dim,
                     model_id=bridge.model_id,
@@ -304,7 +397,7 @@ class OfficerVoiceprintLibraryService:
             )
         self.db.flush()
 
-    def _current_model_fingerprint(self) -> str | None:
+    def _current_model_fingerprint(self, model_key: str) -> str | None:
         health_fn = getattr(self.speech_client, "health", None)
         if not callable(health_fn):
             return None
@@ -314,10 +407,22 @@ class OfficerVoiceprintLibraryService:
             return None
         if not isinstance(health, dict):
             return None
-        value = health.get("speaker_model_fingerprint")
-        return self._optional_text(value)
+        backend_map = health.get("speaker_backends")
+        if isinstance(backend_map, dict):
+            backend = backend_map.get(model_key)
+            if isinstance(backend, dict):
+                value = backend.get("model_fingerprint")
+                if value:
+                    return self._optional_text(value)
+        return None
 
-    def _validate_reference_compatibility(self, profile: OfficerVoiceProfile, reference: dict[str, Any]) -> None:
+    def _validate_reference_compatibility(
+        self,
+        profile: OfficerVoiceProfile,
+        reference: dict[str, Any],
+    ) -> None:
+        if profile.model_key != str(reference["model_key"]):
+            raise DomainError("OFFICER_VOICEPRINT_MODEL_MISMATCH", "新样本声纹模型空间与现有档案不一致", 409)
         if profile.embedding_dim != int(reference["dimension"]):
             raise DomainError("OFFICER_VOICEPRINT_MODEL_MISMATCH", "新样本声纹维度与现有档案不一致", 409)
         if profile.model_id != str(reference["model_id"]):
@@ -346,15 +451,20 @@ class OfficerVoiceprintLibraryService:
             return
 
         dimension = samples[0].embedding_dim
+        model_key = samples[0].model_key
         model_id = samples[0].model_id
         model_version = samples[0].model_version
         weighted = [0.0] * dimension
         total_weight = 0.0
         for sample in samples:
-            if sample.embedding_dim != dimension or sample.model_id != model_id:
+            if (
+                sample.model_key != model_key
+                or sample.model_key != profile.model_key
+                or sample.embedding_dim != dimension
+                or sample.model_id != model_id
+            ):
                 raise DomainError("OFFICER_VOICEPRINT_MODEL_MISMATCH", "启用样本包含不兼容的声纹模型", 409)
-            vector = self._decode_embedding(sample.embedding, sample.embedding_dim)
-            vector = self._normalize(vector)
+            vector = self._normalize(self._decode_embedding(sample.embedding, sample.embedding_dim))
             weight = self._sample_weight(sample)
             for index, value in enumerate(vector):
                 weighted[index] += value * weight
@@ -373,7 +483,7 @@ class OfficerVoiceprintLibraryService:
         self.db.flush()
 
     def _sync_bridge(self, profile: OfficerVoiceProfile) -> OfficerVoiceprint:
-        bridge = self._bridge(profile.officer_id)
+        bridge = self._bridge(profile.officer_id, model_key=profile.model_key)
         active_samples = list(
             self.db.scalars(
                 select(OfficerVoiceSample).where(
@@ -387,6 +497,7 @@ class OfficerVoiceprintLibraryService:
             bridge = OfficerVoiceprint(
                 id=str(uuid4()),
                 officer_id=profile.officer_id,
+                model_key=profile.model_key,
                 officer_name=profile.officer_name,
                 embedding=bytes(profile.aggregate_embedding),
                 embedding_dim=profile.embedding_dim,
@@ -411,14 +522,38 @@ class OfficerVoiceprintLibraryService:
         self.db.flush()
         return bridge
 
-    def _bridge(self, officer_id: str) -> OfficerVoiceprint | None:
+    def _bridge(self, officer_id: str, *, model_key: str = _ERES2NET_LARGE) -> OfficerVoiceprint | None:
         return self.db.scalar(
-            select(OfficerVoiceprint).where(OfficerVoiceprint.officer_id == officer_id)
+            select(OfficerVoiceprint).where(
+                OfficerVoiceprint.officer_id == officer_id,
+                OfficerVoiceprint.model_key == model_key,
+            )
         )
 
-    def _profile_dict(self, profile: OfficerVoiceProfile, *, bridge: OfficerVoiceprint | None = None) -> dict[str, Any]:
+    def _profile_with_backend_status(self, profile: OfficerVoiceProfile) -> dict[str, Any]:
+        result = self._profile_dict(profile)
+        result["backends"] = {
+            _ERES2NET_LARGE: {
+                "ready": bool(profile.active and profile.revoked_at is None and profile.sample_count > 0),
+                "status": "READY" if profile.active and profile.revoked_at is None and profile.sample_count > 0 else "NOT_READY",
+                "profileId": profile.id,
+                "modelKey": profile.model_key,
+                "modelId": profile.model_id,
+                "modelVersion": profile.model_version,
+                "embeddingDim": profile.embedding_dim,
+                "sampleCount": profile.sample_count,
+            }
+        }
+        return result
+
+    def _profile_dict(
+        self,
+        profile: OfficerVoiceProfile,
+        *,
+        bridge: OfficerVoiceprint | None = None,
+    ) -> dict[str, Any]:
         if bridge is None:
-            bridge = self._bridge(profile.officer_id)
+            bridge = self._bridge(profile.officer_id, model_key=profile.model_key)
         active_samples = list(
             self.db.scalars(
                 select(OfficerVoiceSample).where(
@@ -439,9 +574,12 @@ class OfficerVoiceprintLibraryService:
             "aggregateVersion": profile.aggregate_version,
             "usableDurationMs": sum(int(row.usable_duration_ms) for row in active_samples),
             "embeddingDim": profile.embedding_dim,
+            "modelKey": profile.model_key,
             "modelId": profile.model_id,
             "modelVersion": profile.model_version,
-            "quality": "AGGREGATED" if profile.sample_count > 1 else (active_samples[0].quality if active_samples else "UNAVAILABLE"),
+            "quality": "AGGREGATED" if profile.sample_count > 1 else (
+                active_samples[0].quality if active_samples else "UNAVAILABLE"
+            ),
             "updatedAt": profile.updated_at.isoformat() if profile.updated_at is not None else None,
         }
 
@@ -456,6 +594,7 @@ class OfficerVoiceprintLibraryService:
             "audioSource": sample.audio_source,
             "deviceId": sample.device_id,
             "deviceName": sample.device_name,
+            "modelKey": sample.model_key,
             "modelId": sample.model_id,
             "modelVersion": sample.model_version,
             "modelFingerprint": sample.model_fingerprint,
@@ -465,6 +604,26 @@ class OfficerVoiceprintLibraryService:
             "disabledAt": sample.disabled_at.isoformat() if sample.disabled_at is not None else None,
             "disabledReason": sample.disabled_reason,
             "createdBy": sample.created_by,
+        }
+
+    @staticmethod
+    def _ready_backend_result(
+        profile: OfficerVoiceProfile,
+        sample: OfficerVoiceSample,
+        bridge: OfficerVoiceprint,
+    ) -> dict[str, Any]:
+        return {
+            "ready": True,
+            "status": "READY",
+            "profileId": profile.id,
+            "voiceprintId": bridge.id,
+            "sampleId": sample.id,
+            "modelKey": profile.model_key,
+            "modelId": profile.model_id,
+            "modelVersion": profile.model_version,
+            "modelFingerprint": sample.model_fingerprint,
+            "embeddingDim": profile.embedding_dim,
+            "sampleCount": profile.sample_count,
         }
 
     @staticmethod

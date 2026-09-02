@@ -33,6 +33,17 @@
       "memory_mb": 256,
       "capabilities": ["embedding"]
     },
+    "speaker.eres2net_large": {
+      "kind": "speaker",
+      "backend": "modelscope",
+      "path": "speech_eres2net_large_200k_sv_zh-cn_16k-common",
+      "architecture": "eres2net_large",
+      "required_files": ["configuration.json", "pretrained_eres2net.pt"],
+      "device": "cpu",
+      "context": 0,
+      "memory_mb": 0,
+      "capabilities": ["embedding"]
+    },
     "ocr.default": {
       "kind": "ocr",
       "backend": "paddleocr",
@@ -46,10 +57,10 @@
     },
     "llm.default": {
       "kind": "llm",
-      "backend": "rkllm",
-      "path": "llm/default",
-      "architecture": "qwen",
-      "required_files": ["model.rkllm"],
+      "backend": "llamapi",
+      "path": "external/llamapi",
+      "architecture": "qwen3",
+      "required_files": [],
       "device": "npu",
       "context": 4096,
       "memory_mb": 4096,

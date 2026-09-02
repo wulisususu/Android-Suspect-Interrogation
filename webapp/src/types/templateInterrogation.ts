@@ -5,6 +5,16 @@ export type FormalQuestionSection = 'OPENING' | 'BODY' | 'CLOSING'
 export type PendingMatchStatus = 'UNMATCHED' | 'AMBIGUOUS' | 'MATCHED_EXISTING'
 export type PendingStatus = 'PENDING' | 'DEFERRED' | 'ADDED' | 'LINKED' | 'IGNORED'
 export type RoundStatus = 'ACTIVE' | 'CLOSED' | 'DETACHED'
+export type QARouteClass = 'MATCH_FIXED' | 'MATCH_EXISTING' | 'CREATE_LIVE_FROM_SPEECH' | 'NEEDS_REVIEW' | 'IGNORE'
+
+export interface FormalQAUnit {
+  id: string; caseId: string; sessionId: string | null; status: 'OPEN' | 'CLOSED' | 'ROUTING' | 'APPLIED' | 'NEEDS_REVIEW' | 'IGNORED'
+  classification: QARouteClass | null; rawQuestionText: string; rawAnswerText: string
+  formalQuestionText: string | null; formalAnswerText: string | null; targetQuestionId: string | null
+  candidateQuestionIds: string[]; questionFragmentIds: string[]; answerFragmentIds: string[]
+  confidence: number | null; modelId: string | null; reasonCode: string | null
+  startedAt: string | null; endedAt: string | null; createdAt: string | null; updatedAt: string | null
+}
 
 export interface FormalQuestionRound {
   id: string; caseId: string; sessionId: string | null; caseQuestionId: string; roundNo: number
@@ -15,7 +25,8 @@ export interface FormalQuestionRound {
 export interface FormalQuestion {
   id: string; caseId: string; source: FormalQuestionSource; standardQuestionId: string | null; text: string
   regexPatterns: string[]; aliases: string[]; sectionType: FormalQuestionSection; templateKey: string | null
-  templateItemKey: string | null; locked: boolean; sortOrder: number; active: boolean; rounds: FormalQuestionRound[]
+  templateItemKey: string | null; locked: boolean; formalAnswerText: string; firstAskedAt: string | null
+  sortOrder: number; active: boolean; rounds: FormalQuestionRound[]
   createdAt: string | null; updatedAt: string | null
 }
 
@@ -31,7 +42,7 @@ export interface StandardQuestion {
 }
 
 export interface TemplateWorkspace {
-  caseId: string; templateKey?: string | null; questions: FormalQuestion[]; rounds: FormalQuestionRound[]; pendingQuestions: PendingFormalQuestion[]
+  caseId: string; templateKey?: string | null; questions: FormalQuestion[]; rounds: FormalQuestionRound[]; pendingQuestions: PendingFormalQuestion[]; qaUnits: FormalQAUnit[]
 }
 
 export type LiveDialogueItem = TemporaryAsrFragment
@@ -42,3 +53,8 @@ export type PendingResolution =
   | { action: 'LINK'; caseQuestionId: string; roundMode: 'APPEND_EXISTING' | 'NEW_ROUND' }
   | { action: 'IGNORE' }
 export interface RoundReassociateInput { caseQuestionId?: string | null; newQuestionText?: string | null }
+export type QAUnitResolution =
+  | { action: 'CREATE_LIVE'; formalQuestion?: string | null; formalAnswer?: string | null }
+  | { action: 'LINK_QA'; caseQuestionId: string; formalAnswer?: string | null }
+  | { action: 'LINK_ANSWER'; caseQuestionId: string; formalAnswer?: string | null }
+  | { action: 'IGNORE' }

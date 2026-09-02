@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import func, select
@@ -74,5 +75,19 @@ def create_case(
         sort_order=next_case_sort_order(db, case_id), active=True,
     )
     db.add(row)
+    db.flush()
+    return row
+
+
+def set_canonical_answer(
+    db: Session,
+    row: CaseQuestion,
+    *,
+    answer_text: str,
+    first_asked_at: datetime | None = None,
+) -> CaseQuestion:
+    row.formal_answer_text = str(answer_text or "").strip()
+    if row.first_asked_at is None and first_asked_at is not None:
+        row.first_asked_at = first_asked_at
     db.flush()
     return row

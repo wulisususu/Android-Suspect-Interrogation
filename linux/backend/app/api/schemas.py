@@ -157,3 +157,10 @@ class RoundUpdateRequest(FlexibleModel):
 
 class SaveQuestionToLibraryRequest(FlexibleModel):
     category: str = "通用"
+
+
+class QAUnitResolutionRequest(FlexibleModel):
+    action: Literal["CREATE_LIVE", "LINK_QA", "LINK_ANSWER", "IGNORE"]
+    case_question_id: str | None = Field(default=None, alias="caseQuestionId")
+    formal_question: str | None = Field(default=None, alias="formalQuestion")
+    formal_answer: str | None = Field(default=None, alias="formalAnswer")

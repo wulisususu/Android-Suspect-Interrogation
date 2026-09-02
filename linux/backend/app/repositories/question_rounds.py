@@ -171,7 +171,10 @@ def create_round(
     answer_text: str = "",
     answer_fragment_ids: list[str] | None = None,
     status: str = "ACTIVE",
+    started_at: datetime | None = None,
+    ended_at: datetime | None = None,
 ) -> QuestionRound:
+    now = datetime.now(timezone.utc)
     row = QuestionRound(
         id=str(uuid4()),
         case_id=case_id,
@@ -183,8 +186,8 @@ def create_round(
         answer_text=str(answer_text or "").strip(),
         answer_fragment_ids_json=json.dumps(answer_fragment_ids or [], ensure_ascii=False),
         status=status,
-        started_at=datetime.now(timezone.utc),
-        ended_at=None if status == "ACTIVE" else datetime.now(timezone.utc),
+        started_at=started_at or now,
+        ended_at=None if status == "ACTIVE" else (ended_at or now),
     )
     db.add(row)
     db.flush()

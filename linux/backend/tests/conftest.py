@@ -22,9 +22,10 @@ def enroll_test_suspect_voiceprint():
                 voiceprint_repo.enroll_suspect(
                     db,
                     case_id=case_id,
+                    model_key="eres2net_large",
                     embedding=_TEST_EMBEDDING,
                     embedding_dim=4,
-                    model_id="test-xvector",
+                    model_id="test-eres2net-large",
                     model_version="fixture",
                     enrollment_quality="TEST_FIXTURE",
                     usable_duration_ms=20_000,

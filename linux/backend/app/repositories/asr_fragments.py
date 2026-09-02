@@ -7,7 +7,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.database.models import ASRCaptureSession, ASRFragment, Message, ProcessedSpeechFragment
+from app.database.models import ASRCaptureSession, ASRFragment, Message, ProcessedSpeechFragment, QAUnitFragment
 from app.domain.errors import DomainError
 from app.repositories import audit as audit_repo
 from app.repositories import recognition_evidence as evidence_repo
@@ -113,7 +113,7 @@ def create_fragment(
         speaker_model_fingerprint = snapshot.speaker_model_fingerprint
     if microphone_fingerprint is None and snapshot is not None:
         microphone_fingerprint = snapshot.microphone_fingerprint
-    speaker_model_id = speaker_model_id or "xvector"
+    speaker_model_id = speaker_model_id or "eres2net_large"
     speaker_model_version = speaker_model_version or os.environ.get("SUSPECT_XVECTOR_MODEL_VERSION", "local")
 
     evidence_repo.create_evidence(
@@ -228,3 +228,26 @@ def confirm_fragment(db: Session, *, fragment_id: str, message_id: str) -> ASRFr
     item.state = "CONFIRMED"
     db.flush()
     return item
+
+
+def list_unassigned_for_session(
+    db: Session,
+    case_id: str,
+    session_id: str,
+    *,
+    limit: int = 256,
+) -> list[ASRFragment]:
+    assigned = select(QAUnitFragment.fragment_id).where(QAUnitFragment.fragment_id == ASRFragment.id)
+    stmt = (
+        select(ASRFragment)
+        .join(ASRCaptureSession, ASRCaptureSession.id == ASRFragment.capture_session_id)
+        .where(
+            ASRFragment.case_id == case_id,
+            ASRCaptureSession.interrogation_session_id == session_id,
+            ASRFragment.speaker.in_(("INTERROGATOR", "RECORDER", "OFFICER_FALLBACK", "SUSPECT")),
+            ~assigned.exists(),
+        )
+        .order_by(ASRFragment.ordinal.asc())
+        .limit(max(1, min(int(limit), 4096)))
+    )
+    return list(db.scalars(stmt))

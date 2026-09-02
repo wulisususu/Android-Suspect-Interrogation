@@ -40,7 +40,7 @@ class SessionService:
             state = WorkflowState.CASE_CREATED
         if state != WorkflowState.CASE_CREATED:
             raise DomainError("SESSION_START_NOT_ALLOWED", f"当前状态不可开始审讯：{state.value}", 409)
-        if voiceprint_repo.get_suspect(self.db, case_id) is None:
+        if voiceprint_repo.get_suspect(self.db, case_id, model_key="eres2net_large") is None:
             raise DomainError(
                 "SUSPECT_VOICEPRINT_REQUIRED",
                 "请先完成嫌疑人声纹注册再开始审讯",
