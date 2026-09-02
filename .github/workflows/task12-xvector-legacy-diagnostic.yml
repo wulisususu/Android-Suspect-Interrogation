@@ -30,9 +30,10 @@ jobs:
               if token in board:
                   raise SystemExit(f'forbidden mutation token: {token}')
           required=[
-              'LEGACY_TARGET="$RUNNER_TEMP/task12-funasr-085"',
-              '--no-deps --target "$LEGACY_TARGET" "funasr==0.8.5"',
-              'rm -rf "$LEGACY_TARGET"',
+              'LEGACY_ROOT="$RUNNER_TEMP/task12-funasr-legacy"',
+              '--no-deps --target "$LEGACY_TARGET" "funasr==$version"',
+              'for version in 0.8.4 0.8.6; do',
+              'rm -rf "$LEGACY_ROOT"',
           ]
           for token in required:
               if token not in board:
@@ -43,34 +44,41 @@ jobs:
   board-diagnostic:
     needs: hosted-safety
     runs-on: [self-hosted, rk3588]
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
-      - name: Stage pinned FunASR 0.8.5 only in runner temp
+      - name: Test adjacent published legacy FunASR runtimes in runner temp
         shell: bash
         run: |
           set -euo pipefail
           PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
-          LEGACY_TARGET="$RUNNER_TEMP/task12-funasr-085"
-          test -x "$PY"
-          rm -rf "$LEGACY_TARGET"
-          mkdir -p "$LEGACY_TARGET"
-          "$PY" -m pip install --disable-pip-version-check --no-deps --target "$LEGACY_TARGET" "funasr==0.8.5"
-          test -f "$LEGACY_TARGET/funasr/bin/sv_infer.py"
-          echo "LEGACY_TARGET=$LEGACY_TARGET" >> "$GITHUB_ENV"
-          echo "LEGACY_PYTHON=$PY" >> "$GITHUB_ENV"
-
-      - name: Load existing XVector checkpoint with pinned legacy runtime
-        shell: bash
-        run: |
-          set -euo pipefail
           MODEL_ROOT=/home/youyeetoo/funasr-models/xvector
+          LEGACY_ROOT="$RUNNER_TEMP/task12-funasr-legacy"
+          test -x "$PY"
           test -f "$MODEL_ROOT/sv.yaml"
           test -f "$MODEL_ROOT/sv.pth"
-          PYTHONPATH="$LEGACY_TARGET" PYTHONNOUSERSITE=1 MODELSCOPE_OFFLINE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-            "$LEGACY_PYTHON" - "$MODEL_ROOT" <<'PY'
+          rm -rf "$LEGACY_ROOT"
+          mkdir -p "$LEGACY_ROOT"
+          winner=''
+
+          for version in 0.8.4 0.8.6; do
+            LEGACY_TARGET="$LEGACY_ROOT/$version"
+            echo "=== FUNASR_LEGACY_CANDIDATE=$version ==="
+            rm -rf "$LEGACY_TARGET"
+            mkdir -p "$LEGACY_TARGET"
+            if ! "$PY" -m pip install --disable-pip-version-check --no-deps --target "$LEGACY_TARGET" "funasr==$version"; then
+              echo "candidate=$version install_ok=false"
+              continue
+            fi
+            if [[ ! -f "$LEGACY_TARGET/funasr/bin/sv_infer.py" ]]; then
+              echo "candidate=$version sv_infer_present=false"
+              continue
+            fi
+
+            if PYTHONPATH="$LEGACY_TARGET" PYTHONNOUSERSITE=1 MODELSCOPE_OFFLINE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+              "$PY" - "$MODEL_ROOT" "$version" <<'PY'
           import json, math, sys, time
-          root=sys.argv[1]
-          report={'python': sys.executable}
+          root, expected_version=sys.argv[1], sys.argv[2]
+          report={'python': sys.executable, 'candidate_version': expected_version}
           try:
               import funasr
               report['funasr_version']=getattr(funasr,'__version__','unknown')
@@ -109,12 +117,26 @@ jobs:
           print(json.dumps(report,ensure_ascii=False,sort_keys=True))
           if not report.get('legacy_load_ok') or not report.get('embedding_ok'):
               raise SystemExit(1)
-          print('TASK12_XVECTOR_FUNASR_085_RUNTIME_OK')
           PY
+            then
+              winner="$version"
+              echo "TASK12_XVECTOR_LEGACY_RUNTIME_OK version=$version"
+              break
+            else
+              echo "candidate=$version runtime_ok=false"
+            fi
+          done
 
-      - name: Cleanup runner-temp legacy package
+          if [[ -z "$winner" ]]; then
+            echo 'NO_COMPATIBLE_PUBLISHED_LEGACY_FUNASR_RUNTIME' >&2
+            exit 1
+          fi
+          echo "FUNASR_LEGACY_WINNER=$winner"
+
+      - name: Cleanup runner-temp legacy packages
         if: always()
         shell: bash
         run: |
           set +e
-          rm -rf "$LEGACY_TARGET"
+          LEGACY_ROOT="$RUNNER_TEMP/task12-funasr-legacy"
+          rm -rf "$LEGACY_ROOT"
