@@ -110,14 +110,14 @@ def test_compare_requires_authority_and_unavailable_backend_cannot_be_authoritat
             json={"mode": "eres2net_large"},
         )
         assert unavailable_single.status_code == 409
-        assert unavailable_single.json()["error"]["code"] == "SPEAKER_BACKEND_NOT_READY"
+        assert unavailable_single.json()["code"] == "SPEAKER_BACKEND_NOT_READY"
 
         unavailable_authority = client.put(
             "/api/v1/speaker-runtime/selection",
             json={"mode": "compare", "authoritative_backend": "eres2net_large"},
         )
         assert unavailable_authority.status_code == 409
-        assert unavailable_authority.json()["error"]["code"] == "SPEAKER_BACKEND_NOT_READY"
+        assert unavailable_authority.json()["code"] == "SPEAKER_BACKEND_NOT_READY"
 
         compare = client.put(
             "/api/v1/speaker-runtime/selection",
