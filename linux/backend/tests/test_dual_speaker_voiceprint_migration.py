@@ -174,10 +174,11 @@ def test_0009_migrates_preexisting_rows_to_xvector_without_changing_embedding_by
                 "officer_voice_samples",
                 "session_officer_voice_snapshots",
                 "session_voice_assignments",
-            ):
-                backup = f"__0009_backup_{table}"
-                connection.execute(text(f'CREATE TABLE "{backup}" AS SELECT * FROM "{table}"'))
-                connection.execute(text(f'DELETE FROM "{table}"'))
+                ):
+                    backup = f"__0009_backup_{table}"
+                    connection.execute(text(f'CREATE TABLE "{backup}" AS SELECT * FROM "{table}"'))
+                    if table != "session_voice_assignments":
+                        connection.execute(text(f'DELETE FROM "{table}"'))
     finally:
         engine.dispose()
 

@@ -44,12 +44,29 @@ def _backup_and_clear_dependencies() -> dict[str, tuple[str, ...]]:
     for table in _DEPENDENT_TABLES:
         backup = f"__0009_backup_{table}"
         if backup in inspector.get_table_names():
+            columns = tuple(str(column["name"]) for column in inspector.get_columns(backup))
             pending_rows = bind.execute(sa.text(f"SELECT COUNT(*) FROM {_quoted(table)}")).scalar_one()
             if int(pending_rows) != 0:
-                raise RuntimeError(
-                    f"0009 cannot resume while {table} has rows beside its interrupted backup"
-                )
-            columns_by_table[table] = tuple(str(column["name"]) for column in inspector.get_columns(backup))
+                backup_rows = bind.execute(sa.text(f"SELECT COUNT(*) FROM {_quoted(backup)}")).scalar_one()
+                rendered = ", ".join(_quoted(column) for column in columns)
+                live_only = bind.execute(
+                    sa.text(
+                        f"SELECT {rendered} FROM {_quoted(table)} "
+                        f"EXCEPT SELECT {rendered} FROM {_quoted(backup)}"
+                    )
+                ).first()
+                backup_only = bind.execute(
+                    sa.text(
+                        f"SELECT {rendered} FROM {_quoted(backup)} "
+                        f"EXCEPT SELECT {rendered} FROM {_quoted(table)}"
+                    )
+                ).first()
+                if int(pending_rows) != int(backup_rows) or live_only is not None or backup_only is not None:
+                    raise RuntimeError(
+                        f"0009 cannot resume while {table} has rows beside its interrupted backup"
+                    )
+                bind.execute(sa.text(f"DELETE FROM {_quoted(table)}"))
+            columns_by_table[table] = columns
             continue
 
         columns_by_table[table] = tuple(str(column["name"]) for column in inspector.get_columns(table))
