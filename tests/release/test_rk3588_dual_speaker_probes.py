@@ -89,6 +89,14 @@ def test_non_xvector_calibration_cannot_apply_to_production_env():
         module._validate_apply_policy("eres2net_large", True)
 
 
+def test_calibration_candidate_values_include_endpoints_and_midpoints():
+    module = load_script(CALIBRATE, "task12_calibrate_candidates")
+
+    assert module._candidate_values((-0.5, 0.2, 0.6, 1.5)) == pytest.approx(
+        [0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0]
+    )
+
+
 def test_speech_smoke_accepts_concrete_backend_and_forwards_it_to_embedding(tmp_path: Path):
     module = load_script(SMOKE, "task12_smoke")
     signature = inspect.signature(module._embedding)

@@ -177,7 +177,7 @@ def _build_scores(samples: dict[str, list[list[float]]]) -> list[SampleScore]:
 def _candidate_values(values: Iterable[float]) -> list[float]:
     clipped = sorted({max(0.0, min(1.0, float(v))) for v in values if math.isfinite(float(v))} | {0.0, 1.0})
     mids = {(a + b) / 2.0 for a, b in zip(clipped, clipped[1:]) if b > a}
-    return sorted(clipped | mids)
+    return sorted(set(clipped) | mids)
 
 
 def _evaluate(scores: list[SampleScore], threshold: float, margin: float) -> tuple[int, int, float]:
