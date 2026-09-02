@@ -109,14 +109,23 @@ class SpeechWorkerClient:
             normalized.append([start_ms, end_ms])
         return normalized
 
-    def extract_embedding(self, pcm: bytes, sample_rate: int = 16000) -> dict[str, Any]:
-        return self._require_dict(
-            self._request(
-                "extract_embedding",
-                sample_rate=int(sample_rate),
-                pcm_b64=base64.b64encode(pcm).decode("ascii"),
-            )
-        )
+    def extract_embedding(
+        self,
+        pcm: bytes,
+        sample_rate: int = 16000,
+        *,
+        backend: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "sample_rate": int(sample_rate),
+            "pcm_b64": base64.b64encode(pcm).decode("ascii"),
+        }
+        if backend is not None:
+            backend_key = str(backend).strip().lower()
+            if not backend_key:
+                raise ValueError("speaker embedding backend must not be empty")
+            payload["backend_key"] = backend_key
+        return self._require_dict(self._request("extract_embedding", **payload))
 
     def _request(self, op: str, **payload: Any) -> Any:
         request_id = uuid.uuid4().hex
