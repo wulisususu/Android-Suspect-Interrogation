@@ -10,33 +10,34 @@ def replace_once(path: str, old: str, new: str) -> None:
     text = target.read_text(encoding="utf-8")
     count = text.count(old)
     if count != 1:
-        raise SystemExit(f"{path}: expected one compatibility anchor, found {count}")
+        raise SystemExit(f"{path}: expected one compatibility anchor, found {count}: {old[:80]!r}")
     target.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
 def main() -> None:
     # Preserve the legacy readiness response shape for the default XVector path.
-    # Non-default backend selection is explicit and exposes the backend discriminator.
+    # The main Task 6 patch inserts selectedSpeakerBackend immediately before
+    # suspectReady; convert that one return into a result and append the backend
+    # discriminator only for a non-default selection.
     replace_once(
         "linux/backend/app/services/voiceprint_service.py",
         '        return {\n'
         '            "selectedSpeakerBackend": self.speaker_model_key,\n'
-        '            "suspectReady": suspect is not None,\n'
-        '            "interrogatorReady": interrogator_ready,\n'
-        '            "recorderReady": recorder_ready,\n'
-        '            "recognitionMode": "SUSPECT_ONLY",\n'
-        '            "canStart": suspect is not None,\n'
-        '        }\n',
+        '            "suspectReady": suspect is not None,\n',
         '        result = {\n'
-        '            "suspectReady": suspect is not None,\n'
-        '            "interrogatorReady": interrogator_ready,\n'
-        '            "recorderReady": recorder_ready,\n'
-        '            "recognitionMode": "SUSPECT_ONLY",\n'
+        '            "suspectReady": suspect is not None,\n',
+    )
+    replace_once(
+        "linux/backend/app/services/voiceprint_service.py",
+        '            "canStart": suspect is not None,\n'
+        '        }\n\n'
+        '    def enroll_suspect',
         '            "canStart": suspect is not None,\n'
         '        }\n'
         '        if self.speaker_model_key != _XVECTOR:\n'
         '            result["selectedSpeakerBackend"] = self.speaker_model_key\n'
-        '        return result\n',
+        '        return result\n\n'
+        '    def enroll_suspect',
     )
 
     # An omitted backend is the legacy call form. Still send XVector to the worker,
