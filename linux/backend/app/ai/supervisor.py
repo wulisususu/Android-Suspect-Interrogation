@@ -37,35 +37,31 @@ class _InProcessSpeechClient:
         self,
         session_id: str,
         sample_rate: int = 16000,
-        speaker_backend: str = "xvector",
+        speaker_backend: str = "eres2net_large",
         authoritative_backend: str | None = None,
     ) -> dict[str, Any]:
         session_id = str(session_id).strip()
         sample_rate = int(sample_rate)
-        speaker_backend = str(speaker_backend or "xvector").strip().lower()
+        speaker_backend = str(speaker_backend or "eres2net_large").strip().lower()
         authority_key = (
             None
             if authoritative_backend is None
             else str(authoritative_backend).strip().lower()
         )
-        concrete = {"xvector", "eres2net_large"}
         if not session_id:
             raise AIError("session_id is required")
         if sample_rate <= 0:
             raise AIError("sample_rate must be positive")
-        if speaker_backend not in {*concrete, "compare"}:
-            raise AIError("unsupported speaker backend", details={"speaker_backend": speaker_backend})
-        if speaker_backend == "compare":
-            if authority_key not in concrete:
-                raise AIError("authoritative speaker backend is required in compare mode")
-        elif authority_key is not None and authority_key != speaker_backend:
+        if speaker_backend != "eres2net_large":
+            raise AIError("speaker backend must be eres2net_large", details={"speaker_backend": speaker_backend})
+        if authority_key is not None and authority_key != speaker_backend:
             raise AIError("authoritative speaker backend must match single backend")
         with self._lock:
             self._sessions[session_id] = {
                 "sample_rate": sample_rate,
                 "bytes_received": 0,
                 "speaker_backend": speaker_backend,
-                "authoritative_backend": authority_key or speaker_backend,
+                "authoritative_backend": speaker_backend,
             }
         result = {
             "session_id": session_id,

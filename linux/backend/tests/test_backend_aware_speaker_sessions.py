@@ -19,6 +19,7 @@ from app.runtime_settings import RuntimeSettings
 from app.services.asr_capture_service import AsrCaptureService
 from app.services.voiceprint_service import VoiceprintService
 from speech_worker.main import SpeechWorkerServer
+from speech_worker.session import SpeechSession
 
 
 XVECTOR = "xvector"
@@ -86,6 +87,12 @@ def test_runtime_settings_validate_selected_speaker_backend():
         RuntimeSettings(speaker_backend="XVECTOR")
     with pytest.raises(ValueError, match="eres2net_large"):
         RuntimeSettings(speaker_backend="unknown-space")
+
+
+@pytest.mark.parametrize("backend", [XVECTOR, "compare"])
+def test_speech_session_rejects_non_eres2net_product_backend(backend: str):
+    with pytest.raises(ValueError, match="eres2net_large"):
+        SpeechSession("single-eres", 16_000, object(), speaker_backend_key=backend)
 
 
 def test_readiness_uses_only_selected_model_reference(tmp_path: Path):

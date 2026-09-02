@@ -19,7 +19,7 @@ from hardware.base import DeviceInfo
 
 
 router = APIRouter(prefix="/speaker-calibration", tags=["speaker-calibration"])
-SpeakerBackendKey = Literal["xvector", "eres2net_large"]
+SpeakerBackendKey = Literal["eres2net_large"]
 
 
 class RecomputeBody(BaseModel):
@@ -37,7 +37,7 @@ def _model_provider(request: Request, backend: SpeakerBackendKey | None = None):
                 identity = injected(backend)
             except TypeError:
                 identity = injected()
-            actual = str(getattr(identity, "backend_key", "xvector") or "xvector").strip().lower()
+            actual = str(getattr(identity, "backend_key", "eres2net_large") or "eres2net_large").strip().lower()
             if actual != backend:
                 raise DomainError(
                     "SPEAKER_MODEL_BACKEND_MISMATCH",
@@ -49,7 +49,7 @@ def _model_provider(request: Request, backend: SpeakerBackendKey | None = None):
 
         return injected_provider
 
-    selected = str(backend or "xvector").strip().lower()
+    selected = str(backend or "eres2net_large").strip().lower()
 
     def provide() -> CurrentSpeakerModelIdentity:
         client = getattr(request.app.state, "speech_client", None)
@@ -58,8 +58,6 @@ def _model_provider(request: Request, backend: SpeakerBackendKey | None = None):
         health = client.health()
         backends = health.get("speaker_backends") if isinstance(health, dict) else None
         backend_health = backends.get(selected) if isinstance(backends, dict) else None
-        if not isinstance(backend_health, dict) and selected == "xvector":
-            backend_health = health if isinstance(health, dict) else {}
         backend_health = backend_health or {}
         fingerprint = backend_health.get("model_fingerprint") or backend_health.get("speaker_model_fingerprint")
         if not fingerprint:

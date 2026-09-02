@@ -64,17 +64,17 @@ describe('VoiceprintPreparationPanel helpers', () => {
   it('renders exact temporary speaker labels without guessing unknown identities', () => {
     expect(temporarySpeakerPresentation('SUSPECT', '张某')).toEqual({
       label: '嫌疑人 · 张某',
-      detail: 'XVector 声纹匹配',
+      detail: 'ERes2Net-large 声纹匹配',
       needsConfirmation: false,
     })
     expect(temporarySpeakerPresentation('INTERROGATOR', '李警官')).toEqual({
       label: '主审民警 · 李警官',
-      detail: 'XVector 声纹匹配',
+      detail: 'ERes2Net-large 声纹匹配',
       needsConfirmation: false,
     })
     expect(temporarySpeakerPresentation('RECORDER', '王警官')).toEqual({
       label: '记录民警 · 王警官',
-      detail: 'XVector 声纹匹配',
+      detail: 'ERes2Net-large 声纹匹配',
       needsConfirmation: false,
     })
     expect(temporarySpeakerPresentation('OFFICER_FALLBACK')).toEqual({

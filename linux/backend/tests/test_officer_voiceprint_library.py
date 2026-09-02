@@ -1,5 +1,6 @@
 import struct
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -27,20 +28,25 @@ class FakeSpeechClient:
 
     def health(self):
         return {
-            "speaker_model_id": "xvector",
-            "speaker_model_version": "rk3588-local",
-            "speaker_model_fingerprint": MODEL_FP,
+            "speaker_backends": {
+                ERES2NET: {
+                    "model_id": "eres2net-large",
+                    "model_version": "rk3588-local",
+                    "model_fingerprint": MODEL_FP,
+                }
+            }
         }
 
     def speech_segments(self, pcm: bytes, sample_rate: int = SAMPLE_RATE):
         assert pcm and sample_rate == SAMPLE_RATE
         return [list(item) for item in GOOD_SEGMENTS]
 
-    def extract_embedding(self, pcm: bytes, sample_rate: int = SAMPLE_RATE):
+    def extract_embedding(self, pcm: bytes, sample_rate: int = SAMPLE_RATE, *, backend: str = ERES2NET):
         assert pcm and sample_rate == SAMPLE_RATE
+        assert backend == ERES2NET
         vector = self.embeddings[min(self.index, len(self.embeddings) - 1)]
         self.index += 1
-        return {"embedding": vector, "model_id": "xvector", "model_version": "rk3588-local"}
+        return {"embedding": vector, "backend_key": ERES2NET, "model_id": "eres2net-large", "model_version": "rk3588-local", "model_fingerprint": MODEL_FP}
 
 
 class FakeDualSpeechClient:
@@ -126,7 +132,7 @@ def service(db: Session, axis: int = 0) -> OfficerVoiceprintLibraryService:
     return OfficerVoiceprintLibraryService(db, speech_client=FakeSpeechClient(vectors))
 
 
-def test_one_officer_capture_creates_isolated_samples_for_both_backends(tmp_path):
+def test_one_officer_capture_creates_eres2net_samples_only(tmp_path):
     engine, db = make_db(tmp_path)
     try:
         speech = FakeDualSpeechClient()
@@ -157,42 +163,30 @@ def test_one_officer_capture_creates_isolated_samples_for_both_backends(tmp_path
             )
         )
         assert speech.segment_calls == 1
-        x_chunks = [pcm for backend, pcm in speech.embedding_calls if backend == XVECTOR]
         e_chunks = [pcm for backend, pcm in speech.embedding_calls if backend == ERES2NET]
-        assert len(x_chunks) >= 3
-        assert x_chunks == e_chunks
-        assert {profile.model_key for profile in profiles} == {XVECTOR, ERES2NET}
-        assert {sample.model_key for sample in samples} == {XVECTOR, ERES2NET}
-        by_key = {profile.model_key: profile for profile in profiles}
-        sample_by_key = {sample.model_key: sample for sample in samples}
-        assert by_key[XVECTOR].embedding_dim == 3
-        assert by_key[ERES2NET].embedding_dim == 4
-        assert sample_by_key[XVECTOR].model_fingerprint == "x" * 64
-        assert sample_by_key[ERES2NET].model_fingerprint == "e" * 64
-        assert result["modelKey"] == XVECTOR
-        assert result["dualReady"] is True
-        assert result["backends"][XVECTOR]["status"] == "READY"
+        assert len(e_chunks) >= 3
+        assert {profile.model_key for profile in profiles} == {ERES2NET}
+        assert {sample.model_key for sample in samples} == {ERES2NET}
+        assert profiles[0].embedding_dim == 4
+        assert samples[0].model_fingerprint == "e" * 64
+        assert result["modelKey"] == ERES2NET
         assert result["backends"][ERES2NET]["status"] == "READY"
     finally:
         db.close()
         engine.dispose()
 
 
-def test_optional_eres_failure_keeps_officer_xvector_sample(tmp_path):
+def test_eres_failure_does_not_fall_back_to_legacy_xvector(tmp_path):
     engine, db = make_db(tmp_path)
     try:
-        result = OfficerVoiceprintLibraryService(
-            db,
-            speech_client=FakeDualSpeechClient(fail_backend=ERES2NET),
-        ).add_sample("P-DUAL", "双模型警官", pcm16(30_000), audio_source="ALSA")
+        with pytest.raises(BackendUnavailableError):
+            OfficerVoiceprintLibraryService(
+                db,
+                speech_client=FakeDualSpeechClient(fail_backend=ERES2NET),
+            ).add_sample("P-DUAL", "双模型警官", pcm16(30_000), audio_source="ALSA")
 
         profiles = list(db.scalars(select(OfficerVoiceProfile).where(OfficerVoiceProfile.officer_id == "P-DUAL")))
-        assert [profile.model_key for profile in profiles] == [XVECTOR]
-        assert result["modelKey"] == XVECTOR
-        assert result["dualReady"] is False
-        assert result["backends"][XVECTOR]["status"] == "READY"
-        assert result["backends"][ERES2NET]["status"] == "NOT_READY"
-        assert result["backends"][ERES2NET]["errorCode"] == "BACKEND_UNAVAILABLE"
+        assert profiles == []
     finally:
         db.close()
         engine.dispose()
@@ -230,7 +224,7 @@ def test_second_enrollment_appends_sample_and_increments_aggregate_version(tmp_p
         profile = db.scalar(
             select(OfficerVoiceProfile).where(
                 OfficerVoiceProfile.officer_id == "P-001",
-                OfficerVoiceProfile.model_key == XVECTOR,
+                OfficerVoiceProfile.model_key == ERES2NET,
             )
         )
         samples = list(db.scalars(select(OfficerVoiceSample).where(OfficerVoiceSample.profile_id == profile.id)))

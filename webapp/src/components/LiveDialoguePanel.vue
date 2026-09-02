@@ -242,7 +242,7 @@ onMounted(() => { void scrollToLatest(true) })
               <div><small>Threshold</small><strong>{{ scoreText(item.recognitionEvidence.threshold) }}</strong></div>
               <div><small>Margin</small><strong>{{ scoreText(item.recognitionEvidence.margin) }}</strong></div>
               <div><small>阈值来源</small><strong>{{ thresholdSourceLabel(item.recognitionEvidence.thresholdSource) }}</strong></div>
-              <div><small>声纹模型</small><strong>{{ item.recognitionEvidence.speakerModelId || 'xvector' }} {{ item.recognitionEvidence.speakerModelVersion || '—' }}</strong></div>
+              <div><small>声纹模型</small><strong>{{ item.recognitionEvidence.speakerModelId || 'eres2net_large' }} {{ item.recognitionEvidence.speakerModelVersion || '—' }}</strong></div>
               <div><small>ASR 模型</small><strong>{{ item.recognitionEvidence.asrModelId || '—' }} {{ item.recognitionEvidence.asrModelVersion || '' }}</strong></div>
               <div><small>校准状态</small><strong>{{ item.recognitionEvidence.calibrationStatus || '—' }}</strong></div>
               <div><small>模型指纹</small><strong>{{ shortFingerprint(item.recognitionEvidence.speakerModelFingerprint) }}</strong></div>

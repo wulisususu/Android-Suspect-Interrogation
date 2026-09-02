@@ -157,9 +157,8 @@ class SpeechWorkerServer:
             session_id = self._required_session_id(request)
             sample_rate = int(request.get("sample_rate") or 16000)
             speaker_backend = str(request.get("speaker_backend") or "eres2net_large").strip().lower()
-            authoritative_backend = request.get("authoritative_backend")
-            if not speaker_backend:
-                raise AIError("speaker_backend is required")
+            if speaker_backend != "eres2net_large":
+                raise AIError("speaker_backend must be eres2net_large")
             with self._sessions_lock:
                 if session_id in self._sessions:
                     raise ResourceBusyError("speech session is already open", details={"session_id": session_id})
@@ -169,11 +168,7 @@ class SpeechWorkerServer:
                         sample_rate,
                         self.runtime,
                         speaker_backend_key=speaker_backend,
-                        authoritative_speaker_backend_key=(
-                            None
-                            if authoritative_backend is None
-                            else str(authoritative_backend)
-                        ),
+                        authoritative_speaker_backend_key="eres2net_large",
                     ),
                     threading.RLock(),
                 )
@@ -182,8 +177,6 @@ class SpeechWorkerServer:
                 "sample_rate": sample_rate,
                 "speaker_backend": speaker_backend,
             }
-            if authoritative_backend is not None:
-                result["authoritative_backend"] = str(authoritative_backend).strip().lower()
             return result
 
         if op == "push_pcm":

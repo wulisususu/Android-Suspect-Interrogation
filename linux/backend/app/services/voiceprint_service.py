@@ -26,9 +26,7 @@ _MIN_EMBEDDING_SEGMENTS = 3
 _FLOAT32_BYTES = 4
 _CLIP_LEVEL = 32760
 _MAX_CLIPPED_SAMPLE_RATIO = 0.01
-_XVECTOR = "xvector"
 _ERES2NET_LARGE = "eres2net_large"
-_ENROLLMENT_BACKENDS = (_XVECTOR, _ERES2NET_LARGE)
 
 
 class VoiceprintService:
@@ -66,7 +64,15 @@ class VoiceprintService:
         suspect = voiceprint_repo.get_suspect(self.db, case_id, model_key=_ERES2NET_LARGE)
         interrogator_ready = bool(assignment is not None and self._officer_active(assignment.interrogator_officer_id, _ERES2NET_LARGE))
         recorder_ready = bool(assignment is not None and self._officer_active(assignment.recorder_officer_id, _ERES2NET_LARGE))
-        return {"suspectReady": suspect is not None, "interrogatorReady": interrogator_ready, "recorderReady": recorder_ready, "recognitionMode": self._recognition_mode(interrogator_ready, recorder_ready), "canStart": suspect is not None}
+        return {
+            "selectedSpeakerBackend": _ERES2NET_LARGE,
+            "authoritativeSpeakerBackend": _ERES2NET_LARGE,
+            "suspectReady": suspect is not None,
+            "interrogatorReady": interrogator_ready,
+            "recorderReady": recorder_ready,
+            "recognitionMode": self._recognition_mode(interrogator_ready, recorder_ready),
+            "canStart": suspect is not None,
+        }
 
     def enroll_suspect(self, case_id: str, pcm: bytes, actor_id: str | None = None) -> dict:
         case_repo.get(self.db, case_id)
@@ -326,26 +332,6 @@ class VoiceprintService:
     def _build_reference(self, pcm: bytes) -> dict[str, Any]:
         return self.build_reference_for_backend(pcm, _ERES2NET_LARGE)
 
-    def _build_dual_references(
-        self,
-        pcm: bytes,
-    ) -> tuple[dict[str, dict[str, Any]], dict[str, Exception]]:
-        prepared = self._prepare_reference_audio(pcm)
-        references: dict[str, dict[str, Any]] = {}
-        failures: dict[str, Exception] = {}
-
-        # XVector remains required for backward compatibility in Task 5.
-        references[_XVECTOR] = self._build_reference_for_backend(prepared, _XVECTOR)
-
-        try:
-            references[_ERES2NET_LARGE] = self._build_reference_for_backend(
-                prepared,
-                _ERES2NET_LARGE,
-            )
-        except (AIError, DomainError) as exc:
-            failures[_ERES2NET_LARGE] = exc
-        return references, failures
-
     def _prepare_reference_audio(self, pcm: bytes) -> dict[str, Any]:
         audio = self._validate_pcm16(pcm)
         segments = self.speech_client.speech_segments(audio, sample_rate=_SAMPLE_RATE)
@@ -500,7 +486,7 @@ class VoiceprintService:
     ) -> dict:
         return {
             "dimension": row.embedding_dim,
-            "model_key": getattr(row, "model_key", _XVECTOR),
+            "model_key": getattr(row, "model_key", _ERES2NET_LARGE),
             "model_id": row.model_id,
             "model_version": row.model_version,
             "model_fingerprint": reference.get("model_fingerprint") if reference else None,

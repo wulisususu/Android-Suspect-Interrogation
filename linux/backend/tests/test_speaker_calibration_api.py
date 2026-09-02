@@ -35,15 +35,15 @@ def _seed(app):
         for index, officer in enumerate(("P1", "P2", "P3")):
             profile = OfficerVoiceProfile(
                 id=str(uuid4()), officer_id=officer, officer_name=officer,
-                aggregate_embedding=_embedding(index, 0), embedding_dim=3,
-                model_id="xvector", model_version="v1", aggregate_version=1,
+                aggregate_embedding=_embedding(index, 0), embedding_dim=3, model_key="eres2net_large",
+                model_id="eres2net-large", model_version="v1", aggregate_version=1,
                 sample_count=3, active=True, revoked_at=None,
             )
             db.add(profile); db.flush()
             for sample_index in range(3):
                 db.add(OfficerVoiceSample(
-                    id=str(uuid4()), profile_id=profile.id, embedding=_embedding(index, (sample_index - 1) * 0.03),
-                    embedding_dim=3, model_id="xvector", model_version="v1", model_fingerprint=MODEL_FP,
+                    id=str(uuid4()), profile_id=profile.id, embedding=_embedding(index, (sample_index - 1) * 0.03), model_key="eres2net_large",
+                    embedding_dim=3, model_id="eres2net-large", model_version="v1", model_fingerprint=MODEL_FP,
                     quality="GOOD", usable_duration_ms=22_000, segment_count=3, audio_source="ALSA",
                     device_id="hw:1,0", device_name="USB Mic", microphone_fingerprint=MIC_FP,
                     microphone_fingerprint_certainty="STRONG", active=True,
@@ -58,7 +58,7 @@ def test_calibration_api_recomputes_from_global_library_and_returns_history(tmp_
         hardware_manager=None,
         ai_supervisor=FakeSupervisor(),
     )
-    app.state.speaker_calibration_model_provider = lambda: CurrentSpeakerModelIdentity("xvector", "v1", MODEL_FP)
+    app.state.speaker_calibration_model_provider = lambda: CurrentSpeakerModelIdentity("eres2net-large", "v1", MODEL_FP, backend_key="eres2net_large")
     app.state.speaker_calibration_microphone_provider = lambda: CurrentMicrophoneIdentity(
         "ALSA", "hw:1,0", "USB Mic", MIC_FP, "STRONG"
     )
@@ -80,6 +80,9 @@ def test_calibration_api_recomputes_from_global_library_and_returns_history(tmp_
         history = client.get('/api/v1/speaker-calibration/history').json()['data']
         assert len(history) == 1
         assert history[0]['calibrationId'] == payload['calibration']['calibrationId']
+
+        legacy = client.get('/api/v1/speaker-calibration/status?backend=xvector')
+        assert legacy.status_code == 422
 
     with app.state.session_factory() as db:
         audit = db.query(AuditLog).filter(AuditLog.action == 'SPEAKER_DEVICE_CALIBRATION_RECOMPUTE').one()

@@ -113,7 +113,7 @@ def create_fragment(
         speaker_model_fingerprint = snapshot.speaker_model_fingerprint
     if microphone_fingerprint is None and snapshot is not None:
         microphone_fingerprint = snapshot.microphone_fingerprint
-    speaker_model_id = speaker_model_id or "xvector"
+    speaker_model_id = speaker_model_id or "eres2net_large"
     speaker_model_version = speaker_model_version or os.environ.get("SUSPECT_XVECTOR_MODEL_VERSION", "local")
 
     evidence_repo.create_evidence(

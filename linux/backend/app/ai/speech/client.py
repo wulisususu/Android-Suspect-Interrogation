@@ -53,20 +53,15 @@ class SpeechWorkerClient:
         speaker_backend: str | None = None,
         authoritative_backend: str | None = None,
     ) -> dict[str, Any]:
-        explicit_backend = speaker_backend is not None
-        backend_key = str(speaker_backend or "xvector").strip().lower()
-        if not backend_key:
-            raise ValueError("speaker_backend must not be empty")
+        backend_key = str(speaker_backend or "eres2net_large").strip().lower()
+        if backend_key != "eres2net_large":
+            raise ValueError("speaker_backend must be eres2net_large")
         authority_key = (
             None
             if authoritative_backend is None
             else str(authoritative_backend).strip().lower()
         )
-        concrete = {"xvector", "eres2net_large"}
-        if backend_key == "compare":
-            if authority_key not in concrete:
-                raise ValueError("authoritative_backend is required for compare mode")
-        elif authority_key is not None and authority_key != backend_key:
+        if authority_key is not None and authority_key != backend_key:
             raise ValueError("authoritative_backend must match the single speaker backend")
 
         payload: dict[str, Any] = {
@@ -74,13 +69,7 @@ class SpeechWorkerClient:
             "sample_rate": int(sample_rate),
             "speaker_backend": backend_key,
         }
-        if authority_key is not None:
-            payload["authoritative_backend"] = authority_key
-        result = self._require_dict(self._request("open_session", **payload))
-        if not explicit_backend:
-            result.pop("speaker_backend", None)
-            result.pop("authoritative_backend", None)
-        return result
+        return self._require_dict(self._request("open_session", **payload))
 
     def push_pcm(self, session_id: str, pcm: bytes) -> list[SpeechEvent]:
         result = self._request(
@@ -152,11 +141,10 @@ class SpeechWorkerClient:
             "sample_rate": int(sample_rate),
             "pcm_b64": base64.b64encode(pcm).decode("ascii"),
         }
-        if backend is not None:
-            backend_key = str(backend).strip().lower()
-            if not backend_key:
-                raise ValueError("speaker embedding backend must not be empty")
-            payload["backend_key"] = backend_key
+        backend_key = str(backend or "eres2net_large").strip().lower()
+        if backend_key != "eres2net_large":
+            raise ValueError("speaker embedding backend must be eres2net_large")
+        payload["backend_key"] = backend_key
         return self._require_dict(self._request("extract_embedding", **payload))
 
     def _request(self, op: str, **payload: Any) -> Any:

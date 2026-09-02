@@ -182,7 +182,7 @@ class SuspectVoiceprint(TimestampMixin, Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
-    model_key: Mapped[str] = mapped_column(String(64), default="xvector", nullable=False, index=True)
+    model_key: Mapped[str] = mapped_column(String(64), default="eres2net_large", nullable=False, index=True)
     embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
     model_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -198,7 +198,7 @@ class OfficerVoiceprint(TimestampMixin, Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     officer_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    model_key: Mapped[str] = mapped_column(String(64), default="xvector", nullable=False, index=True)
+    model_key: Mapped[str] = mapped_column(String(64), default="eres2net_large", nullable=False, index=True)
     officer_name: Mapped[str] = mapped_column(String(128), nullable=False)
     embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)

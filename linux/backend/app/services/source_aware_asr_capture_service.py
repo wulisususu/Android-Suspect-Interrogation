@@ -36,7 +36,7 @@ class SourceAwareAsrCaptureService:
         backend_calibration_resolver_factory: BackendCalibrationResolverFactory | None = None,
         fragment_sink: Callable[[str, str], None] | None = None,
         capture_finished_sink: Callable[[str, str], None] | None = None,
-        speaker_model_key: str = "xvector",
+        speaker_model_key: str = "eres2net_large",
         speaker_authoritative_backend: str | None = None,
     ) -> None:
         self.session_factory = session_factory
@@ -50,7 +50,9 @@ class SourceAwareAsrCaptureService:
         self.capture_finished_sink = capture_finished_sink
         self.calibration_resolver_factory = calibration_resolver_factory
         self.backend_calibration_resolver_factory = backend_calibration_resolver_factory
-        self.speaker_model_key = str(speaker_model_key or "xvector").strip().lower()
+        self.speaker_model_key = str(speaker_model_key or "eres2net_large").strip().lower()
+        if self.speaker_model_key != "eres2net_large":
+            raise ValueError("speaker_model_key must be eres2net_large")
         self.speaker_authoritative_backend = (
             None
             if speaker_authoritative_backend is None
@@ -92,12 +94,9 @@ class SourceAwareAsrCaptureService:
             else None
         )
         secondary_resolver = None
-        primary_backend = authoritative_backend if mode == "compare" else mode
+        primary_backend = "eres2net_large"
         if self.backend_calibration_resolver_factory is not None:
             resolver = self.backend_calibration_resolver_factory(source, primary_backend)
-            if mode == "compare":
-                secondary_backend = "eres2net_large" if primary_backend == "xvector" else "xvector"
-                secondary_resolver = self.backend_calibration_resolver_factory(source, secondary_backend)
         return AsrCaptureService(
             session_factory=self.session_factory,
             device_manager=audio_input,
@@ -112,73 +111,6 @@ class SourceAwareAsrCaptureService:
             speaker_model_key=mode,
             speaker_authoritative_backend=authoritative_backend,
         )
-
-    def configure_speaker_backend(
-        self,
-        mode: str,
-        authoritative_backend: str | None = None,
-    ) -> dict[str, str]:
-        normalized_mode = str(mode or "xvector").strip().lower()
-        normalized_authority = (
-            None
-            if authoritative_backend is None
-            else str(authoritative_backend).strip().lower()
-        )
-        concrete = {"xvector", "eres2net_large"}
-        if normalized_mode not in {*concrete, "compare"}:
-            raise DomainError("SPEAKER_BACKEND_SELECTION_INVALID", "声纹运行模式无效", 422)
-        if normalized_mode == "compare":
-            if normalized_authority not in concrete:
-                raise DomainError(
-                    "SPEAKER_BACKEND_SELECTION_INVALID",
-                    "Compare 模式必须指定业务 authoritative backend",
-                    422,
-                )
-        else:
-            if normalized_authority not in {None, normalized_mode}:
-                raise DomainError(
-                    "SPEAKER_BACKEND_SELECTION_INVALID",
-                    "单后端模式的 authoritative backend 必须与所选后端一致",
-                    422,
-                )
-            normalized_authority = None
-
-        with self._lock:
-            for active_case in list(self._capture_sources):
-                self._prune_capture_if_stopped(active_case)
-            if self._capture_sources or self._preparation_source is not None:
-                raise DomainError(
-                    "SPEAKER_BACKEND_SELECTION_BUSY",
-                    "当前存在活动语音会话，不能切换声纹 embedding space",
-                    409,
-                )
-            replacement: dict[str, AsrCaptureService] = {}
-            for source, audio_input in self._inputs.items():
-                if audio_input is None:
-                    continue
-                replacement[source] = self._build_service(
-                    source,
-                    audio_input,
-                    normalized_mode,
-                    normalized_authority,
-                )
-            old_services = self._services
-            self._services = replacement
-            self._default_service = self._services.get("ALSA") or next(iter(self._services.values()))
-            self.speaker_model_key = normalized_mode
-            self.speaker_authoritative_backend = normalized_authority
-
-        for service in old_services.values():
-            try:
-                service.shutdown()
-            except Exception:
-                pass
-        return {
-            "mode": normalized_mode,
-            "authoritativeBackend": (
-                normalized_authority if normalized_mode == "compare" else normalized_mode
-            ),
-        }
 
     def _source(self, source: str | None = None) -> str:
         selected = normalize_audio_source(source) or current_request_audio_source("ALSA")

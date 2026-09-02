@@ -17,7 +17,7 @@ from app.domain.errors import DomainError
 
 _FLOAT32_BYTES = 4
 _SNAPSHOT_PREFIX = "__session_snapshot__:"
-_DEFAULT_MODEL_KEY = "xvector"
+_DEFAULT_MODEL_KEY = "eres2net_large"
 
 
 def _embedding_bytes(embedding: bytes, embedding_dim: int) -> bytes:

@@ -9,7 +9,6 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.ai.errors import AIError, BackendUnavailableError
 from app.database.models import OfficerVoiceprint
 from app.database.voiceprint_models import OfficerVoiceProfile, OfficerVoiceSample
 from app.domain.errors import DomainError
@@ -21,9 +20,7 @@ _FLOAT32_BYTES = 4
 _SNAPSHOT_PREFIX = "__session_snapshot__:"
 _ALLOWED_SOURCES = {"ALSA", "BROWSER"}
 _QUALITY_WEIGHTS = {"GOOD": 1.0, "FAIR": 0.75}
-_XVECTOR = "xvector"
 _ERES2NET_LARGE = "eres2net_large"
-_ENROLLMENT_BACKENDS = (_XVECTOR, _ERES2NET_LARGE)
 
 
 class OfficerVoiceprintLibraryService:
@@ -35,9 +32,7 @@ class OfficerVoiceprintLibraryService:
 
     def list_profiles(self, *, active_only: bool = True) -> list[dict[str, Any]]:
         self._materialize_legacy_profiles()
-        # Keep the established API one-row-per-officer. XVector remains the
-        # compatibility primary until Task 6 makes session selection explicit.
-        stmt = select(OfficerVoiceProfile).where(OfficerVoiceProfile.model_key == _XVECTOR)
+        stmt = select(OfficerVoiceProfile).where(OfficerVoiceProfile.model_key == _ERES2NET_LARGE)
         if active_only:
             stmt = stmt.where(
                 OfficerVoiceProfile.active.is_(True),
@@ -50,7 +45,7 @@ class OfficerVoiceprintLibraryService:
     def get_profile(self, officer_id: str, *, include_inactive: bool = True) -> dict[str, Any]:
         profile = self._profile_or_error(
             officer_id,
-            model_key=_XVECTOR,
+            model_key=_ERES2NET_LARGE,
             include_inactive=include_inactive,
         )
         result = self._profile_with_backend_status(profile)
@@ -86,15 +81,15 @@ class OfficerVoiceprintLibraryService:
             raise DomainError("VOICEPRINT_SOURCE_INVALID", "民警声纹录音音源无效", 400)
 
         self._materialize_legacy_profiles()
-        references, failures = VoiceprintService(
+        reference = VoiceprintService(
             self.db,
             speech_client=self.speech_client,
-        )._build_dual_references(pcm)
+        ).build_reference_for_backend(pcm, _ERES2NET_LARGE)
 
         primary_profile, primary_sample, primary_bridge, primary_created = self._store_reference_sample(
             officer_id=officer_id,
             officer_name=officer_name,
-            reference=references[_XVECTOR],
+            reference=reference,
             actor_id=actor_id,
             source=source,
             device_id=device_id,
@@ -110,58 +105,9 @@ class OfficerVoiceprintLibraryService:
         )
         self.db.commit()
 
-        backend_results: dict[str, dict[str, Any]] = {
-            _XVECTOR: self._ready_backend_result(
-                primary_profile,
-                primary_sample,
-                primary_bridge,
-            )
-        }
-
-        optional_reference = references.get(_ERES2NET_LARGE)
-        if optional_reference is not None:
-            try:
-                profile, sample, bridge, created = self._store_reference_sample(
-                    officer_id=officer_id,
-                    officer_name=officer_name,
-                    reference=optional_reference,
-                    actor_id=actor_id,
-                    source=source,
-                    device_id=device_id,
-                    device_name=device_name,
-                    microphone_fingerprint=microphone_fingerprint,
-                    microphone_fingerprint_certainty=microphone_fingerprint_certainty,
-                )
-                self._audit_sample(
-                    profile=profile,
-                    sample=sample,
-                    actor_id=actor_id,
-                    created_profile=created,
-                )
-                self.db.commit()
-                backend_results[_ERES2NET_LARGE] = self._ready_backend_result(
-                    profile,
-                    sample,
-                    bridge,
-                )
-            except (AIError, DomainError) as exc:
-                self.db.rollback()
-                backend_results[_ERES2NET_LARGE] = self._not_ready_backend_result(exc)
-        else:
-            backend_results[_ERES2NET_LARGE] = self._not_ready_backend_result(
-                failures.get(_ERES2NET_LARGE)
-                or BackendUnavailableError(
-                    "ERes2Net-large officer reference is unavailable",
-                    details={"backend_key": _ERES2NET_LARGE},
-                )
-            )
-
         result = self._profile_dict(primary_profile, bridge=primary_bridge)
         result["latestSampleId"] = primary_sample.id
-        result["dualReady"] = all(
-            backend_results[key].get("ready") is True for key in _ENROLLMENT_BACKENDS
-        )
-        result["backends"] = backend_results
+        result["backends"] = {_ERES2NET_LARGE: self._ready_backend_result(primary_profile, primary_sample, primary_bridge)}
         return result
 
     def _store_reference_sample(
@@ -352,21 +298,21 @@ class OfficerVoiceprintLibraryService:
             actor_id=actor_id,
             action="OFFICER_VOICEPRINT_REVOKE",
             target_type="OFFICER_VOICE_PROFILE",
-            target_id=next((p.id for p in profiles if p.model_key == _XVECTOR), profiles[0].id),
+            target_id=next((p.id for p in profiles if p.model_key == _ERES2NET_LARGE), profiles[0].id),
             detail={
                 "officer_id": normalized,
                 "model_keys": sorted(profile.model_key for profile in profiles),
             },
         )
         self.db.commit()
-        primary = next((profile for profile in profiles if profile.model_key == _XVECTOR), profiles[0])
+        primary = next((profile for profile in profiles if profile.model_key == _ERES2NET_LARGE), profiles[0])
         return self._profile_with_backend_status(primary)
 
     def _profile_or_error(
         self,
         officer_id: str,
         *,
-        model_key: str = _XVECTOR,
+        model_key: str = _ERES2NET_LARGE,
         include_inactive: bool,
     ) -> OfficerVoiceProfile:
         normalized = str(officer_id or "").strip()
@@ -399,7 +345,7 @@ class OfficerVoiceprintLibraryService:
             )
         )
         for bridge in bridges:
-            key = str(bridge.model_key or _XVECTOR)
+            key = str(bridge.model_key or _ERES2NET_LARGE)
             exists = self.db.scalar(
                 select(OfficerVoiceProfile.id).where(
                     OfficerVoiceProfile.officer_id == bridge.officer_id,
@@ -468,8 +414,6 @@ class OfficerVoiceprintLibraryService:
                 value = backend.get("model_fingerprint")
                 if value:
                     return self._optional_text(value)
-        if model_key == _XVECTOR:
-            return self._optional_text(health.get("speaker_model_fingerprint"))
         return None
 
     def _validate_reference_compatibility(
@@ -578,7 +522,7 @@ class OfficerVoiceprintLibraryService:
         self.db.flush()
         return bridge
 
-    def _bridge(self, officer_id: str, *, model_key: str = _XVECTOR) -> OfficerVoiceprint | None:
+    def _bridge(self, officer_id: str, *, model_key: str = _ERES2NET_LARGE) -> OfficerVoiceprint | None:
         return self.db.scalar(
             select(OfficerVoiceprint).where(
                 OfficerVoiceprint.officer_id == officer_id,
@@ -588,29 +532,18 @@ class OfficerVoiceprintLibraryService:
 
     def _profile_with_backend_status(self, profile: OfficerVoiceProfile) -> dict[str, Any]:
         result = self._profile_dict(profile)
-        profiles = list(
-            self.db.scalars(
-                select(OfficerVoiceProfile).where(
-                    OfficerVoiceProfile.officer_id == profile.officer_id
-                )
-            )
-        )
         result["backends"] = {
-            item.model_key: {
-                "ready": bool(item.active and item.revoked_at is None and item.sample_count > 0),
-                "status": "READY" if item.active and item.revoked_at is None and item.sample_count > 0 else "NOT_READY",
-                "profileId": item.id,
-                "modelKey": item.model_key,
-                "modelId": item.model_id,
-                "modelVersion": item.model_version,
-                "embeddingDim": item.embedding_dim,
-                "sampleCount": item.sample_count,
+            _ERES2NET_LARGE: {
+                "ready": bool(profile.active and profile.revoked_at is None and profile.sample_count > 0),
+                "status": "READY" if profile.active and profile.revoked_at is None and profile.sample_count > 0 else "NOT_READY",
+                "profileId": profile.id,
+                "modelKey": profile.model_key,
+                "modelId": profile.model_id,
+                "modelVersion": profile.model_version,
+                "embeddingDim": profile.embedding_dim,
+                "sampleCount": profile.sample_count,
             }
-            for item in profiles
         }
-        result["dualReady"] = all(
-            result["backends"].get(key, {}).get("ready") is True for key in _ENROLLMENT_BACKENDS
-        )
         return result
 
     def _profile_dict(
@@ -691,24 +624,6 @@ class OfficerVoiceprintLibraryService:
             "modelFingerprint": sample.model_fingerprint,
             "embeddingDim": profile.embedding_dim,
             "sampleCount": profile.sample_count,
-        }
-
-    @staticmethod
-    def _not_ready_backend_result(exc: Exception) -> dict[str, Any]:
-        if isinstance(exc, AIError):
-            code = exc.code
-            message = exc.message
-        elif isinstance(exc, DomainError):
-            code = exc.code
-            message = exc.message
-        else:
-            code = "BACKEND_UNAVAILABLE"
-            message = str(exc)
-        return {
-            "ready": False,
-            "status": "NOT_READY",
-            "errorCode": code,
-            "message": message,
         }
 
     @staticmethod

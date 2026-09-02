@@ -137,7 +137,9 @@ def create_app(
     def current_model_identity(backend_override: str | None = None) -> CurrentSpeakerModelIdentity:
         configured_backend = "eres2net_large"
         default_backend = configured_backend
-        backend_key = str(backend_override or default_backend or "xvector").strip().lower()
+        backend_key = str(backend_override or default_backend or "eres2net_large").strip().lower()
+        if backend_key != "eres2net_large":
+            backend_key = "eres2net_large"
         try:
             health = speech_client.health()
         except Exception:
@@ -148,8 +150,6 @@ def create_app(
             candidate = all_backends.get(backend_key)
             if isinstance(candidate, dict):
                 backend_health = candidate
-        if backend_health is None and backend_key == "xvector":
-            backend_health = health if isinstance(health, dict) else {}
         backend_health = backend_health or {}
         fingerprint = str(backend_health.get("model_fingerprint") or backend_health.get("speaker_model_fingerprint") or "UNAVAILABLE")
         model_id = str(backend_health.get("model_id") or backend_health.get("speaker_model_id") or backend_key)
@@ -188,7 +188,7 @@ def create_app(
 
     def runtime_backend_calibration_resolver_factory(source: str, backend_key: str):
         normalized_source = str(source or "ALSA").upper()
-        normalized_backend = str(backend_key or "xvector").strip().lower()
+        normalized_backend = str(backend_key or "eres2net_large").strip().lower()
 
         def runtime_calibration_resolver(db):
             lifecycle = SpeakerCalibrationService(
@@ -205,7 +205,7 @@ def create_app(
         primary_backend = configured_backend
         return runtime_backend_calibration_resolver_factory(
             source,
-            str(primary_backend or "xvector"),
+            str(primary_backend or "eres2net_large"),
         )
 
     @asynccontextmanager

@@ -36,7 +36,7 @@ class CurrentSpeakerModelIdentity:
     model_id: str
     model_version: str | None
     fingerprint: str
-    backend_key: str = "xvector"
+    backend_key: str = "eres2net_large"
 
 
 @dataclass(frozen=True)
@@ -74,7 +74,7 @@ class SpeakerCalibrationService:
         model = self.model_provider()
         microphone = self.microphone_provider()
         corpus = self._compatible_corpus(model, microphone)
-        backend_key = str(model.backend_key or "xvector").strip().lower()
+        backend_key = str(model.backend_key or "eres2net_large").strip().lower()
         exact = calibration_repo.latest_calibration(
             self.db,
             speaker_backend_key=backend_key,
@@ -168,7 +168,7 @@ class SpeakerCalibrationService:
 
     def history(self, *, limit: int = 100) -> list[dict]:
         model = self.model_provider()
-        backend_key = str(model.backend_key or "xvector").strip().lower()
+        backend_key = str(model.backend_key or "eres2net_large").strip().lower()
         return [
             self._calibration_dict(row)
             for row in calibration_repo.list_calibrations(
@@ -208,7 +208,7 @@ class SpeakerCalibrationService:
             sample_count=corpus.sample_count,
             corpus_digest=corpus.digest,
             algorithm_version=ALGORITHM_VERSION,
-            speaker_backend_key=str(model.backend_key or "xvector").strip().lower(),
+            speaker_backend_key=str(model.backend_key or "eres2net_large").strip().lower(),
             speaker_model_id=model.model_id,
             speaker_model_version=model.model_version,
             speaker_model_fingerprint=model.fingerprint,
@@ -257,7 +257,7 @@ class SpeakerCalibrationService:
                 OfficerVoiceProfile.active.is_(True),
                 OfficerVoiceProfile.revoked_at.is_(None),
                 OfficerVoiceSample.active.is_(True),
-                OfficerVoiceSample.model_key == str(model.backend_key or "xvector").strip().lower(),
+                OfficerVoiceSample.model_key == str(model.backend_key or "eres2net_large").strip().lower(),
                 OfficerVoiceSample.audio_source == microphone.audio_source,
                 OfficerVoiceSample.model_fingerprint == model.fingerprint,
                 OfficerVoiceSample.microphone_fingerprint == microphone.fingerprint,

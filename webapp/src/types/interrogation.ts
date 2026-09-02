@@ -274,8 +274,7 @@ export type VoiceRecognitionMode =
   | 'SUSPECT_PLUS_RECORDER'
   | 'FULL'
 
-export type SpeakerBackendKey = 'xvector' | 'eres2net_large'
-export type SpeakerRuntimeMode = SpeakerBackendKey | 'compare'
+export type SpeakerBackendKey = 'eres2net_large'
 
 export interface VoiceprintBackendReadiness {
   suspectReady: boolean
@@ -286,9 +285,8 @@ export interface VoiceprintBackendReadiness {
 }
 
 export interface VoiceprintReadiness extends VoiceprintBackendReadiness {
-  selectedSpeakerBackend?: SpeakerRuntimeMode
+  selectedSpeakerBackend?: SpeakerBackendKey
   authoritativeSpeakerBackend?: SpeakerBackendKey
-  backends?: Record<SpeakerBackendKey, VoiceprintBackendReadiness>
   simulated?: boolean
 }
 

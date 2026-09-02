@@ -8,7 +8,7 @@ from app.ai.speech.types import SpeechEvent, SpeechEventType
 
 
 PCM_SAMPLE_WIDTH_BYTES = 2
-_CONCRETE_SPEAKER_BACKENDS = ("xvector", "eres2net_large")
+_PRODUCT_SPEAKER_BACKEND = "eres2net_large"
 
 
 class SpeechRuntime(Protocol):
@@ -48,7 +48,7 @@ class SpeechSession:
         sample_rate: int,
         runtime: SpeechRuntime,
         *,
-        speaker_backend_key: str = "xvector",
+        speaker_backend_key: str = _PRODUCT_SPEAKER_BACKEND,
         authoritative_speaker_backend_key: str | None = None,
         chunk_size_ms: int = 200,
         pre_roll_ms: int = 1200,
@@ -61,25 +61,22 @@ class SpeechSession:
             raise ValueError("chunk_size_ms must be positive")
         if int(pre_roll_ms) < 0:
             raise ValueError("pre_roll_ms cannot be negative")
-        backend_key = str(speaker_backend_key or "xvector").strip().lower()
-        if backend_key not in {*_CONCRETE_SPEAKER_BACKENDS, "compare"}:
-            raise ValueError("speaker_backend_key must be xvector, eres2net_large or compare")
+        backend_key = str(speaker_backend_key or _PRODUCT_SPEAKER_BACKEND).strip().lower()
+        if backend_key != _PRODUCT_SPEAKER_BACKEND:
+            raise ValueError("speaker_backend_key must be eres2net_large")
         authoritative_key = (
             None
             if authoritative_speaker_backend_key is None
             else str(authoritative_speaker_backend_key).strip().lower()
         )
-        if backend_key == "compare":
-            if authoritative_key not in _CONCRETE_SPEAKER_BACKENDS:
-                raise ValueError("authoritative speaker backend is required in compare mode")
-        elif authoritative_key is not None and authoritative_key != backend_key:
+        if authoritative_key is not None and authoritative_key != _PRODUCT_SPEAKER_BACKEND:
             raise ValueError("authoritative speaker backend must match the single session backend")
 
         self.session_id = session_id
         self.sample_rate = int(sample_rate)
         self.runtime = runtime
         self.speaker_backend_key = backend_key
-        self.authoritative_speaker_backend_key = authoritative_key or backend_key
+        self.authoritative_speaker_backend_key = _PRODUCT_SPEAKER_BACKEND
         self.chunk_size_ms = int(chunk_size_ms)
         self.pre_roll_ms = int(pre_roll_ms)
 

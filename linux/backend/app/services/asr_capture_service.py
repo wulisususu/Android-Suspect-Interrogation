@@ -99,7 +99,7 @@ class AsrCaptureService:
         secondary_calibration_resolver: CalibrationResolver | None = None,
         fragment_sink: FragmentSink | None = None,
         capture_finished_sink: CaptureFinishedSink | None = None,
-        speaker_model_key: str = "xvector",
+        speaker_model_key: str = "eres2net_large",
         speaker_authoritative_backend: str | None = None,
     ) -> None:
         self.session_factory = session_factory
@@ -112,24 +112,19 @@ class AsrCaptureService:
         self.secondary_calibration_resolver = secondary_calibration_resolver
         self.fragment_sink = fragment_sink
         self.capture_finished_sink = capture_finished_sink
-        self.speaker_model_key = str(speaker_model_key or "xvector").strip().lower()
-        if self.speaker_model_key not in {"xvector", "eres2net_large", "compare"}:
-            raise ValueError("speaker_model_key must be xvector, eres2net_large or compare")
+        self.speaker_model_key = str(speaker_model_key or "eres2net_large").strip().lower()
+        if self.speaker_model_key != "eres2net_large":
+            raise ValueError("speaker_model_key must be eres2net_large")
         configured_authority = (
             None
             if speaker_authoritative_backend is None
             else str(speaker_authoritative_backend).strip().lower()
         )
-        if self.speaker_model_key == "compare":
-            self.compare_coordinator = SpeakerBackendCompareCoordinator(configured_authority)
-            self.authoritative_speaker_backend = self.compare_coordinator.authoritative_backend
-            self.secondary_speaker_backend = self.compare_coordinator.secondary_backend
-        else:
-            if configured_authority is not None and configured_authority != self.speaker_model_key:
-                raise ValueError("speaker_authoritative_backend must match the single backend")
-            self.compare_coordinator = None
-            self.authoritative_speaker_backend = self.speaker_model_key
-            self.secondary_speaker_backend = None
+        if configured_authority is not None and configured_authority != self.speaker_model_key:
+            raise ValueError("speaker_authoritative_backend must match the single backend")
+        self.compare_coordinator = None
+        self.authoritative_speaker_backend = self.speaker_model_key
+        self.secondary_speaker_backend = None
         if self.sample_rate <= 0:
             raise ValueError("sample_rate must be positive")
 
@@ -168,11 +163,7 @@ class AsrCaptureService:
                     data={"speaker_backend": self.authoritative_speaker_backend},
                 )
             resolved = self._resolve_calibration(db)
-            secondary_calibration = (
-                self._resolve_secondary_calibration(db)
-                if self.speaker_model_key == "compare"
-                else None
-            )
+            secondary_calibration = None
             capture = asr_repo.create_capture_session(
                 db,
                 case_id=case_id,
@@ -217,24 +208,11 @@ class AsrCaptureService:
         speech_open = False
         audio_started = False
         try:
-            if self.speaker_model_key == "xvector":
-                self.ai_supervisor.open_speech_session(
-                    runtime.speech_session_id,
-                    sample_rate=self.sample_rate,
-                )
-            elif self.speaker_model_key == "compare":
-                self.ai_supervisor.open_speech_session(
-                    runtime.speech_session_id,
-                    sample_rate=self.sample_rate,
-                    speaker_backend="compare",
-                    authoritative_backend=self.authoritative_speaker_backend,
-                )
-            else:
-                self.ai_supervisor.open_speech_session(
-                    runtime.speech_session_id,
-                    sample_rate=self.sample_rate,
-                    speaker_backend=self.speaker_model_key,
-                )
+            self.ai_supervisor.open_speech_session(
+                runtime.speech_session_id,
+                sample_rate=self.sample_rate,
+                speaker_backend="eres2net_large",
+            )
             speech_open = True
             self.device_manager.start_record()
             audio_started = True

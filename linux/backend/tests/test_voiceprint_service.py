@@ -202,6 +202,8 @@ def test_readiness_requires_suspect_but_never_requires_police_voiceprints(tmp_pa
         service = VoiceprintService(db, speech_client=good_speech())
         before = service.readiness("CASE-1")
         assert before == {
+            "selectedSpeakerBackend": "eres2net_large",
+            "authoritativeSpeakerBackend": "eres2net_large",
             "suspectReady": False,
             "interrogatorReady": False,
             "recorderReady": False,
@@ -212,6 +214,8 @@ def test_readiness_requires_suspect_but_never_requires_police_voiceprints(tmp_pa
         service.enroll_suspect("CASE-1", pcm16(30000), actor_id="op")
         after = service.readiness("CASE-1")
         assert after == {
+            "selectedSpeakerBackend": "eres2net_large",
+            "authoritativeSpeakerBackend": "eres2net_large",
             "suspectReady": True,
             "interrogatorReady": False,
             "recorderReady": False,

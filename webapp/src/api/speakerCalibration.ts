@@ -1,23 +1,9 @@
 import { http } from './http'
 
-export type SpeakerBackendKey = 'xvector' | 'eres2net_large'
-export type SpeakerRuntimeMode = SpeakerBackendKey | 'compare'
+export type SpeakerBackendKey = 'eres2net_large'
 
-export function speakerBackendLabel(backend: SpeakerBackendKey): string {
-  return backend === 'xvector' ? 'XVector' : 'ERes2Net-large'
-}
-
-export function validateSpeakerRuntimeSelection(
-  mode: SpeakerRuntimeMode,
-  authoritativeBackend: SpeakerBackendKey | null,
-): { valid: boolean; reason: string } {
-  if (mode === 'compare' && authoritativeBackend === null) {
-    return { valid: false, reason: 'Compare 模式必须指定业务 authoritative backend' }
-  }
-  if (mode !== 'compare' && authoritativeBackend !== null && authoritativeBackend !== mode) {
-    return { valid: false, reason: '单后端模式的 authoritative backend 必须与当前模式一致' }
-  }
-  return { valid: true, reason: '' }
+export function speakerBackendLabel(_backend: SpeakerBackendKey = 'eres2net_large'): string {
+  return 'ERes2Net-large'
 }
 
 export type SpeakerCalibrationStatus =
@@ -27,29 +13,6 @@ export type SpeakerCalibrationStatus =
   | 'STALE_MIC'
   | 'RECOMPUTE_RECOMMENDED'
   | 'INSUFFICIENT_DATA'
-
-export interface SpeakerBackendHealth {
-  ready: boolean
-  installed: boolean
-  modelId?: string | null
-  modelVersion?: string | null
-  modelFingerprint?: string | null
-  errorCode?: string | null
-  errorType?: string | null
-}
-
-export interface SpeakerRuntimeState {
-  selection: { mode: SpeakerRuntimeMode; authoritativeBackend: SpeakerBackendKey }
-  backends: Record<SpeakerBackendKey, SpeakerBackendHealth>
-  degraded: boolean
-  comparisonMetrics: {
-    correctRoleRate: number | null
-    errorRate: number | null
-    unknownRate: number | null
-    latencyMs: Record<SpeakerBackendKey, number | null>
-    status: string
-  }
-}
 
 export interface SpeakerCalibrationRecord {
   calibrationId: string
@@ -114,47 +77,20 @@ function unwrap<T>(payload: unknown): T {
   return payload as T
 }
 
-export async function fetchSpeakerRuntimeStatus(): Promise<SpeakerRuntimeState> {
-  const response = await http.get('/api/v1/speaker-runtime')
-  return unwrap<SpeakerRuntimeState>(response.data)
-}
-
-export async function updateSpeakerRuntimeSelection(
-  mode: SpeakerRuntimeMode,
-  authoritativeBackend: SpeakerBackendKey | null,
-): Promise<SpeakerRuntimeState> {
-  const validation = validateSpeakerRuntimeSelection(mode, authoritativeBackend)
-  if (!validation.valid) throw new Error(validation.reason)
-  const response = await http.put('/api/v1/speaker-runtime/selection', {
-    mode,
-    ...(mode === 'compare' ? { authoritative_backend: authoritativeBackend } : {}),
-  })
-  return unwrap<SpeakerRuntimeState>(response.data)
-}
-
-export async function fetchSpeakerCalibrationStatus(
-  backend: SpeakerBackendKey = 'xvector',
-): Promise<SpeakerCalibrationState> {
-  const response = await http.get('/api/v1/speaker-calibration/status', { params: { backend } })
+export async function fetchSpeakerCalibrationStatus(): Promise<SpeakerCalibrationState> {
+  const response = await http.get('/api/v1/speaker-calibration/status')
   return unwrap<SpeakerCalibrationState>(response.data)
 }
 
-export async function fetchSpeakerCalibrationHistory(
-  limit = 50,
-  backend: SpeakerBackendKey = 'xvector',
-): Promise<SpeakerCalibrationRecord[]> {
-  const response = await http.get('/api/v1/speaker-calibration/history', { params: { limit, backend } })
+export async function fetchSpeakerCalibrationHistory(limit = 50): Promise<SpeakerCalibrationRecord[]> {
+  const response = await http.get('/api/v1/speaker-calibration/history', { params: { limit } })
   return unwrap<SpeakerCalibrationRecord[]>(response.data)
 }
 
-export async function recomputeSpeakerCalibration(
-  actorId?: string,
-  backend: SpeakerBackendKey = 'xvector',
-): Promise<SpeakerCalibrationState> {
+export async function recomputeSpeakerCalibration(actorId?: string): Promise<SpeakerCalibrationState> {
   const response = await http.post(
     '/api/v1/speaker-calibration/recompute',
     actorId ? { actor_id: actorId } : {},
-    { params: { backend } },
   )
   return unwrap<SpeakerCalibrationState>(response.data)
 }
