@@ -31,8 +31,8 @@ class FakeRuntime:
     def transcribe(self, pcm: bytes, sample_rate: int) -> dict:
         return {"text": "测试口供", "confidence": 0.95, "model_id": "paraformer"}
 
-    def speaker_embedding(self, pcm: bytes, sample_rate: int) -> dict:
-        return {"embedding": [0.6, 0.8], "backend_key": "xvector", "model_id": "xvector"}
+    def speaker_embedding(self, pcm: bytes, sample_rate: int, *, backend_key: str | None = None) -> dict:
+        return {"embedding": [0.6, 0.8], "backend_key": "eres2net_large", "model_id": "eres2net"}
 
 
 def _pcm(ms: int, sample_rate: int = 16000) -> bytes:
@@ -68,7 +68,7 @@ def test_server_round_trip_uses_unix_socket_and_session_lifecycle(tmp_path: Path
         assert health["sessions"] == 0
 
         opened = client.open_session("case-1", sample_rate=16000)
-        assert opened == {"session_id": "case-1", "sample_rate": 16000}
+        assert opened == {"session_id": "case-1", "sample_rate": 16000, "speaker_backend": "eres2net_large"}
 
         start_events = client.push_pcm("case-1", _pcm(200))
         assert [event.type for event in start_events] == [SpeechEventType.VAD_START]
@@ -83,7 +83,7 @@ def test_server_round_trip_uses_unix_socket_and_session_lifecycle(tmp_path: Path
         assert final_events[2].embedding == [0.6, 0.8]
 
         embedding = client.extract_embedding(_pcm(200), sample_rate=16000)
-        assert embedding == {"embedding": [0.6, 0.8], "backend_key": "xvector", "model_id": "xvector"}
+        assert embedding == {"embedding": [0.6, 0.8], "backend_key": "eres2net_large", "model_id": "eres2net"}
 
         client.close_session("case-1")
         assert client.health()["sessions"] == 0

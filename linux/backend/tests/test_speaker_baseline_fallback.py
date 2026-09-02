@@ -35,7 +35,7 @@ class BaselineSpeechSupervisor:
     speaker_threshold_source = "MODEL_BASELINE"
     speaker_margin = None
 
-    def open_speech_session(self, session_id: str, *, sample_rate: int = 16000):
+    def open_speech_session(self, session_id: str, *, sample_rate: int = 16000, speaker_backend: str | None = None):
         return {"session_id": session_id, "sample_rate": sample_rate}
 
     def push_speech_pcm(self, _session_id: str, _pcm: bytes):
@@ -64,7 +64,7 @@ def _seed_case(tmp_path: Path, *, with_suspect_voiceprint: bool):
                 case_id=case.id,
                 embedding=struct.pack("<4f", 1.0, 0.0, 0.0, 0.0),
                 embedding_dim=4,
-                model_id="test-xvector",
+                model_id="eres2net_large",
                 model_version="test",
                 enrollment_quality="TEST",
                 usable_duration_ms=20_000,
@@ -133,6 +133,6 @@ def test_formal_capture_still_blocks_when_suspect_voiceprint_is_missing(tmp_path
     with pytest.raises(Exception) as caught:
         service.start(case_id)
 
-    assert getattr(caught.value, "code", None) == "SUSPECT_VOICEPRINT_REQUIRED"
+    assert getattr(caught.value, "code", None) == "SUSPECT_VOICEPRINT_BACKEND_REQUIRED"
     assert device.started == 0
     engine.dispose()

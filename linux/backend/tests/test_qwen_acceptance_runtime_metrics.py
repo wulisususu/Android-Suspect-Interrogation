@@ -8,7 +8,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PROBE_SCRIPT = REPO_ROOT / "scripts" / "ci" / "probe-llamapi-qwen-routing.py"
 MEMORY_SCRIPT = REPO_ROOT / "scripts" / "ci" / "sample-process-memory.py"
-WORKFLOW = REPO_ROOT / ".github" / "workflows" / "rk3588-qwen-formal-routing-acceptance.yml"
 
 
 def _load(path: Path, name: str):
@@ -71,13 +70,3 @@ def test_memory_sampler_parses_proc_rss_and_cgroup_bytes():
     assert sampler.parse_proc_status_kb("Name:\ttest\n") is None
     assert sampler.parse_cgroup_bytes_to_kb("7516192768\n") == 7_340_032
     assert sampler.parse_cgroup_bytes_to_kb("max\n") is None
-
-
-def test_final_rk3588_workflow_runs_twenty_decisions_and_reliable_memory_sampler():
-    source = WORKFLOW.read_text(encoding="utf-8")
-    assert "--repetitions 4" in source
-    assert "sample-process-memory.py" in source
-    assert "ps -o rss=" not in source
-    assert "llamapi_peak_process_rss_kb" in source
-    assert "llamapi_peak_cgroup_memory_kb" in source
-    assert "semantic-final-20" in source

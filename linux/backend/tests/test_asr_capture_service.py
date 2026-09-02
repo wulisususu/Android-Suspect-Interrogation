@@ -56,7 +56,7 @@ class FakeSpeechSupervisor:
         self.finalized: list[str] = []
         self.closed: list[str] = []
 
-    def open_speech_session(self, session_id: str, *, sample_rate: int = 16000):
+    def open_speech_session(self, session_id: str, *, sample_rate: int = 16000, speaker_backend: str | None = None):
         self.opened.append((session_id, sample_rate))
         return {"session_id": session_id, "sample_rate": sample_rate}
 

@@ -42,7 +42,7 @@ class FakeSpeechClient:
         assert sample_rate == SAMPLE_RATE
         vector = GOOD_EMBEDDINGS[self.embedding_calls % len(GOOD_EMBEDDINGS)]
         self.embedding_calls += 1
-        return {"embedding": vector, "model_id": "xvector", "model_version": "api-test"}
+        return {"embedding": vector, "backend_key": "eres2net_large", "model_id": "eres2net_large", "model_version": "api-test"}
 
 
 class FakeCaptureService:
@@ -155,6 +155,8 @@ def test_suspect_enrollment_changes_readiness_and_allows_session_start(tmp_path)
 
         before = payload(client.get(f"/api/v1/cases/{case_id}/voiceprints/readiness"))
         assert before == {
+            "selectedSpeakerBackend": "eres2net_large",
+            "authoritativeSpeakerBackend": "eres2net_large",
             "suspectReady": False,
             "interrogatorReady": False,
             "recorderReady": False,

@@ -74,21 +74,25 @@ def test_calibration_rejects_non_finite_or_out_of_range_values(monkeypatch):
             SpeakerCalibration.from_env()
 
 
-def test_xvector_load_failure_keeps_asr_and_vad_available(tmp_path: Path):
+def test_eres2net_load_failure_keeps_asr_and_vad_available(tmp_path: Path):
     model_root = tmp_path / "funasr"
-    for name in ("paraformer", "fsmn-vad", "xvector"):
+    for name in ("paraformer", "fsmn-vad"):
         (model_root / name).mkdir(parents=True)
+    eres_dir = model_root / "eres2net-large"
+    eres_dir.mkdir()
+    (eres_dir / "pretrained_eres2net.pt").write_bytes(b"fixture")
 
     class FakeModel:
         def generate(self, **_kwargs):
             return []
 
     def factory(*, model: str, **_kwargs):
-        if Path(model).name == "xvector":
-            raise RuntimeError("xvector unavailable")
         return FakeModel()
 
-    runtime = FunASRSpeechRuntime(model_root=model_root, model_factory=factory)
+    def eres_factory(_path: Path):
+        raise RuntimeError("eres2net unavailable")
+
+    runtime = FunASRSpeechRuntime(model_root=model_root, eres2net_model_dir=eres_dir, model_factory=factory, eres2net_model_factory=eres_factory)
     runtime.load()
 
     health = runtime.health()
@@ -98,7 +102,7 @@ def test_xvector_load_failure_keeps_asr_and_vad_available(tmp_path: Path):
     assert runtime.speaker_model is None
 
 
-def test_xvector_inference_failure_does_not_discard_successful_asr():
+def test_eres2net_inference_failure_does_not_discard_successful_asr():
     class Runtime:
         def vad_stream(self, _pcm, _sample_rate, *, cache, is_final, chunk_size_ms):
             del cache, is_final, chunk_size_ms
@@ -107,8 +111,8 @@ def test_xvector_inference_failure_does_not_discard_successful_asr():
         def transcribe(self, _pcm, _sample_rate):
             return {"text": "这是有效转写", "confidence": 0.91, "model_id": "paraformer"}
 
-        def speaker_embedding(self, _pcm, _sample_rate):
-            raise BackendUnavailableError("xvector inference failed")
+        def speaker_embedding(self, _pcm, _sample_rate, *, backend_key=None):
+            raise BackendUnavailableError("eres2net inference failed")
 
     session = SpeechSession("s-1", 16000, Runtime(), pre_roll_ms=1200)
     events = session.push_pcm(b"\x01\x00" * 16000)
