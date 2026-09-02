@@ -1,0 +1,78 @@
+name: Dual Speaker Task6 Apply Gate
+
+on:
+  push:
+    branches:
+      - 'feat/dual-speaker-backends'
+    paths:
+      - '.superpowers/dual-speaker-task6-apply.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dual-speaker-task6-apply
+  cancel-in-progress: false
+
+jobs:
+  apply-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PYTHONPATH: linux/backend
+      HARDWARE_MODE: mock
+      DEVICE_SIMULATOR: '1'
+      AI_MODE: mock
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/dual-speaker-backends
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: linux/backend/requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r linux/backend/requirements.txt pytest httpx
+      - name: Apply deterministic Task 6 edits
+        run: python .superpowers/dual-speaker-task6-apply.py
+      - name: Compile backend
+        run: python -m compileall -q linux/backend
+      - name: Task 4-6 specialist gate
+        run: |
+          python -m pytest \
+            linux/backend/tests/test_backend_aware_speaker_sessions.py \
+            linux/backend/tests/test_dual_voiceprint_enrollment.py \
+            linux/backend/tests/test_dual_speaker_voiceprint_persistence.py \
+            linux/backend/tests/test_dual_speaker_voiceprint_migration.py \
+            linux/backend/tests/test_voiceprint_repositories.py \
+            linux/backend/tests/test_voiceprint_service.py \
+            linux/backend/tests/test_voiceprint_api.py \
+            linux/backend/tests/test_officer_voiceprint_library.py \
+            linux/backend/tests/test_speech_worker_server.py \
+            linux/backend/tests/test_speech_session.py \
+            linux/backend/tests/test_funasr_runtime_adapter.py \
+            linux/backend/tests/test_migrations.py \
+            -q
+      - name: Commit production edits only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            linux/backend/app/ai/supervisor.py \
+            linux/backend/app/services/voiceprint_service.py \
+            linux/backend/app/services/asr_capture_service.py \
+            linux/backend/app/services/source_aware_asr_capture_service.py \
+            linux/backend/app/main.py \
+            linux/backend/app/api/voiceprints.py
+          if git diff --cached --quiet; then
+            echo 'No production changes to commit.'
+            exit 0
+          fi
+          git commit -m 'feat: bind sessions to selected speaker backend'
+          git push origin HEAD:feat/dual-speaker-backends
