@@ -6,6 +6,7 @@ on:
       - feat/dual-speaker-backends
     paths:
       - .superpowers/task8-calibration-isolation-apply.py
+      - .superpowers/task8-calibration-migration-contracts.py
       - .github/workflows/task8-calibration-isolation.yml
   workflow_dispatch:
 
@@ -44,6 +45,9 @@ jobs:
       - name: Apply Task 8 production patch
         run: python .superpowers/task8-calibration-isolation-apply.py
 
+      - name: Align Task 8 migration contracts
+        run: python .superpowers/task8-calibration-migration-contracts.py
+
       - name: Compile backend
         run: python -m compileall -q linux/backend
 
@@ -57,7 +61,11 @@ jobs:
             linux/backend/tests/test_asr_capture_service.py
 
       - name: Migration tests
-        run: python -m pytest -q linux/backend/tests/test_migrations.py
+        run: |
+          python -m pytest -q \
+            linux/backend/tests/test_migrations.py \
+            linux/backend/tests/test_dual_speaker_voiceprint_migration.py \
+            linux/backend/tests/test_speaker_calibration_migration_contract.py
 
       - name: Full backend regression
         run: python -m pytest -q linux/backend/tests
@@ -75,7 +83,9 @@ jobs:
             linux/backend/app/services/asr_capture_service.py \
             linux/backend/app/main.py \
             linux/backend/tests/test_speaker_calibration_service.py \
-            linux/backend/tests/test_migrations.py
+            linux/backend/tests/test_migrations.py \
+            linux/backend/tests/test_dual_speaker_voiceprint_migration.py \
+            linux/backend/tests/test_speaker_calibration_migration_contract.py
           git diff --cached --check
           if git diff --cached --quiet; then
             echo "No Task 8 production changes to commit"
