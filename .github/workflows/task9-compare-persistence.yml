@@ -1,0 +1,70 @@
+name: Task 9 Compare Persistence Gate
+
+on:
+  push:
+    branches:
+      - feat/dual-speaker-backends
+    paths:
+      - linux/backend/app/database/recognition_models.py
+      - linux/backend/app/repositories/speaker_compare_evidence.py
+      - linux/backend/alembic/versions/0011_speaker_backend_comparison_evidence.py
+      - linux/backend/tests/test_speaker_compare_evidence_persistence.py
+      - .superpowers/task9-compare-persistence-contracts.py
+      - .github/workflows/task9-compare-persistence.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  persistence-green:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: linux/backend
+      HARDWARE_MODE: mock
+      DEVICE_SIMULATOR: "1"
+      AI_MODE: mock
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/dual-speaker-backends
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: linux/backend/requirements.txt
+      - name: Install backend test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r linux/backend/requirements.txt pytest httpx
+      - name: Align 0011 migration contracts
+        run: python .superpowers/task9-compare-persistence-contracts.py
+      - name: Compile backend
+        run: python -m compileall -q linux/backend
+      - name: Compare persistence contract
+        run: python -m pytest -q linux/backend/tests/test_speaker_compare_evidence_persistence.py
+      - name: Migration contracts
+        run: |
+          python -m pytest -q \
+            linux/backend/tests/test_migrations.py \
+            linux/backend/tests/test_dual_speaker_voiceprint_migration.py \
+            linux/backend/tests/test_speaker_calibration_migration_contract.py
+      - name: Full backend regression
+        run: python -m pytest -q linux/backend/tests
+      - name: Commit verified 0011 contract updates
+        run: |
+          set -euo pipefail
+          git add \
+            linux/backend/tests/test_migrations.py \
+            linux/backend/tests/test_dual_speaker_voiceprint_migration.py \
+            linux/backend/tests/test_speaker_calibration_migration_contract.py
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No migration contract changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "test: cover speaker backend comparison evidence migration"
+          git push origin HEAD:feat/dual-speaker-backends
