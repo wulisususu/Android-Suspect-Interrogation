@@ -1,0 +1,70 @@
+name: Task 12 Dual Speaker Probe GREEN
+
+on:
+  push:
+    branches:
+      - feat/dual-speaker-backends
+    paths:
+      - '.superpowers/task12-calibration-green.py'
+      - '.superpowers/task12-smoke-probe-green.py'
+      - '.superpowers/task12-workflow-green.py'
+      - '.github/workflows/task12-dual-probe-green.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  task12-green:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: linux/backend
+      HARDWARE_MODE: mock
+      DEVICE_SIMULATOR: '1'
+      AI_MODE: mock
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/dual-speaker-backends
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: linux/backend/requirements.txt
+      - name: Install test dependencies
+        run: python -m pip install -r linux/backend/requirements.txt pytest
+      - name: Apply Task 12 production changes
+        run: |
+          set -euo pipefail
+          python .superpowers/task12-calibration-green.py
+          python .superpowers/task12-smoke-probe-green.py
+          python .superpowers/task12-workflow-green.py
+      - name: Compile Task 12 scripts
+        run: |
+          python -m py_compile \
+            scripts/ci/probe-eres2net-large.py \
+            scripts/ci/rk3588-speech-calibrate.py \
+            scripts/ci/rk3588-speech-smoke.py
+      - name: Task 12 dual-backend contracts
+        run: python -m pytest -q tests/release/test_rk3588_dual_speaker_probes.py
+      - name: Existing ERes package-probe regression
+        run: python -m pytest -q tests/release/test_funasr_probe_script.py
+      - name: Existing RK3588 speech-script regression
+        run: python -m pytest -q tests/release/test_rk3588_speech_scripts.py
+      - name: Full release regression
+        run: python -m pytest -q tests/release
+      - name: Commit Task 12 production changes only after GREEN
+        run: |
+          set -euo pipefail
+          git status --short
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            scripts/ci/probe-eres2net-large.py \
+            scripts/ci/rk3588-speech-calibrate.py \
+            scripts/ci/rk3588-speech-smoke.py \
+            .github/workflows/rk3588-dual-speaker-probe.yml
+          git diff --cached --check
+          git commit -m 'test: add rk3588 dual speaker backend probes'
+          git push origin HEAD:feat/dual-speaker-backends
