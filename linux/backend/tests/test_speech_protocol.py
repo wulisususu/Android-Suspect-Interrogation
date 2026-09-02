@@ -62,6 +62,31 @@ def test_protocol_rejects_oversized_messages_before_body_read(tmp_path: Path):
         right.close()
 
 
+def test_speaker_result_protocol_preserves_backend_evidence_and_legacy_source_text():
+    payload = {
+        "type": "SPEAKER_RESULT",
+        "session_id": "session-speaker",
+        "start_ms": 100,
+        "end_ms": 1800,
+        "embedding": [1.0, 0.0, 0.0],
+        "model_id": "iic/speech_eres2net_large_200k_sv_zh-cn_16k-common",
+        "details": {
+            "backend_key": "eres2net_large",
+            "model_version": "v1",
+            "model_fingerprint": "sha256:eres-test",
+            "speaker_source": "X_VECTOR",
+        },
+    }
+
+    event = SpeechEvent.from_dict(payload)
+    encoded = event.to_dict()
+
+    assert encoded["details"]["backend_key"] == "eres2net_large"
+    assert encoded["details"]["model_fingerprint"] == "sha256:eres-test"
+    assert encoded["details"]["speaker_source"] == "X_VECTOR"
+    assert encoded["model_id"] == payload["model_id"]
+
+
 def test_client_operations_round_trip_through_deterministic_mock_worker(tmp_path: Path):
     socket_path = tmp_path / "speech.sock"
     pcm = b"\x00\x01\xfe\xff" * 32
