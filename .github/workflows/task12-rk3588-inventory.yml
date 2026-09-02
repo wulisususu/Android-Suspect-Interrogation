@@ -24,11 +24,30 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Verify probe syntax and non-destructive contract
+      - name: Verify inventory is metadata-only and non-destructive
+        shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile scripts/ci/probe-eres2net-large.py
-          ! grep -Eq 'snapshot_download|pip install|unlink\(|rmtree\(' scripts/ci/probe-eres2net-large.py
+          python - <<'PY'
+          from pathlib import Path
+
+          text = Path('.github/workflows/task12-rk3588-inventory.yml').read_text(encoding='utf-8')
+          forbidden = [
+              'systemctl ' + 'restart',
+              'systemctl ' + 'stop',
+              'systemctl ' + 'start',
+              'SUSPECT_' + 'SPEAKER_BACKEND=',
+              'snapshot_' + 'download',
+              'pip ' + 'install',
+              ':80' + '00',
+          ]
+          for token in forbidden:
+              if token in text:
+                  raise SystemExit(f'forbidden board mutation token: {token}')
+          if 'open(' in text or '.read_bytes(' in text or '.read_text(' in text[text.find('board-inventory'):]:
+              raise SystemExit('board inventory must not open/read candidate audio content')
+          print('TASK12_AUDIO_INVENTORY_HOSTED_CONTRACT_OK')
+          PY
 
   board-inventory:
     needs: hosted-contract
@@ -36,7 +55,6 @@ jobs:
     timeout-minutes: 15
     env:
       PYTHONDONTWRITEBYTECODE: '1'
-      PYTHONPATH: ${{ github.workspace }}/linux/backend
     steps:
       - name: Checkout exact revision
         uses: actions/checkout@v4
@@ -45,71 +63,128 @@ jobs:
           fetch-depth: 1
           clean: true
 
-      - name: Read-only ERes2Net package inventory
+      - name: Read-only project audio metadata inventory
         shell: bash
         run: |
           set -euo pipefail
-          OUT="$RUNNER_TEMP/task12-inventory"
+          OUT="$RUNNER_TEMP/task12-audio-inventory"
           mkdir -p "$OUT"
-          python3 scripts/ci/probe-eres2net-large.py \
-            --search-root /opt/suspect-interrogation/models \
-            --search-root /home/youyeetoo/.cache/modelscope \
-            --search-root /home/youyeetoo/funasr-models \
-            --allow-missing \
-            --output "$OUT/eres2net-package.json"
-          cat "$OUT/eres2net-package.json"
-
-      - name: Read-only speech runtime health
-        shell: bash
-        run: |
-          set -euo pipefail
-          SOCKET=/run/suspect-interrogation/speech.sock
-          if [[ ! -S "$SOCKET" ]]; then
-            echo 'speech_socket=missing'
-            exit 0
-          fi
-          PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
-          RELEASE="$(readlink -f /opt/suspect-interrogation/current)"
-          PYTHONPATH="$RELEASE/linux/backend" "$PY" - <<'PY'
+          python3 - "$OUT/audio-metadata.json" <<'PY'
           import json
-          from app.ai.speech.client import SpeechWorkerClient
-          health=SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=30).health()
-          safe={
-              'models': health.get('models'),
-              'speaker_backends': health.get('speaker_backends'),
-              'degraded': health.get('degraded'),
+          import os
+          import re
+          import sys
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          output = Path(sys.argv[1])
+          audio_exts = {'.wav', '.wave', '.pcm', '.raw'}
+          role_tokens = {
+              'SUSPECT': ('suspect', 'subject', 'detainee', 'xianyiren', '嫌疑', '被审'),
+              'INTERROGATOR': ('interrogator', 'officer', 'police', 'examiner', 'shenxun', 'xunwen', '审讯', '讯问', '民警', '警员'),
+              'RECORDER': ('recorder', 'clerk', 'scribe', 'recordkeeper', 'jiluyuan', '记录', '书记员'),
           }
-          print(json.dumps(safe, ensure_ascii=False, sort_keys=True, indent=2))
+          prune_names = {
+              '.git', '.cache', '.local', 'node_modules', 'models', 'runtime', 'current',
+              '_work', 'actions-runner', 'venv', '.venv', '__pycache__',
+          }
+          name_hint = re.compile(r'(suspect|interrogation|voiceprint|speaker|speech|audio|record)', re.I)
+
+          roots = [
+              Path('/var/lib/suspect-interrogation'),
+              Path('/opt/suspect-interrogation/data'),
+              Path('/srv/suspect-interrogation'),
+              Path('/data/suspect-interrogation'),
+          ]
+          for base in (Path('/home/youyeetoo'), Path('/mnt'), Path('/srv'), Path('/data')):
+              try:
+                  children = list(base.iterdir()) if base.is_dir() else []
+              except OSError:
+                  children = []
+              for child in children:
+                  try:
+                      if child.is_dir() and name_hint.search(child.name):
+                          roots.append(child)
+                  except OSError:
+                      continue
+
+          deduped = []
+          seen = set()
+          for root in roots:
+              key = str(root)
+              if key not in seen:
+                  seen.add(key)
+                  deduped.append(root)
+
+          report = {
+              'contract': 'metadata-only; candidate audio bytes were not opened or uploaded',
+              'extensions': sorted(audio_exts),
+              'roots': [],
+              'same_corpus_candidate_roots': [],
+          }
+
+          for root in deduped:
+              item = {
+                  'root': str(root),
+                  'exists': root.is_dir(),
+                  'audio_count': 0,
+                  'extension_counts': {},
+                  'role_counts': {'SUSPECT': 0, 'INTERROGATOR': 0, 'RECORDER': 0, 'UNLABELED': 0},
+                  'parent_directory_counts': [],
+                  'metadata_bytes_total': 0,
+              }
+              if not item['exists']:
+                  report['roots'].append(item)
+                  continue
+
+              extension_counts = Counter()
+              role_counts = Counter()
+              parent_counts = defaultdict(int)
+              bytes_total = 0
+
+              for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+                  dirnames[:] = [d for d in dirnames if d not in prune_names]
+                  for filename in filenames:
+                      suffix = Path(filename).suffix.lower()
+                      if suffix not in audio_exts:
+                          continue
+                      full = Path(dirpath) / filename
+                      item['audio_count'] += 1
+                      extension_counts[suffix] += 1
+                      parent_counts[str(Path(dirpath))] += 1
+                      try:
+                          bytes_total += full.stat().st_size
+                      except OSError:
+                          pass
+
+                      label_text = str(full).lower()
+                      matched = None
+                      for role, tokens in role_tokens.items():
+                          if any(token.lower() in label_text for token in tokens):
+                              matched = role
+                              break
+                      role_counts[matched or 'UNLABELED'] += 1
+
+              item['extension_counts'] = dict(sorted(extension_counts.items()))
+              item['role_counts'] = {key: role_counts.get(key, 0) for key in ('SUSPECT', 'INTERROGATOR', 'RECORDER', 'UNLABELED')}
+              item['parent_directory_counts'] = [
+                  {'directory': parent, 'count': count}
+                  for parent, count in sorted(parent_counts.items())
+              ]
+              item['metadata_bytes_total'] = bytes_total
+              if all(item['role_counts'].get(role, 0) >= 3 for role in ('SUSPECT', 'INTERROGATOR', 'RECORDER')):
+                  report['same_corpus_candidate_roots'].append(str(root))
+              report['roots'].append(item)
+
+          output.write_text(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2), encoding='utf-8')
+          print(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2))
+          print('TASK12_BROAD_AUDIO_METADATA_INVENTORY_COMPLETE')
           PY
 
-      - name: Count existing calibration WAV corpus without reading audio
-        shell: bash
-        run: |
-          set -euo pipefail
-          for root in \
-            /var/lib/suspect-interrogation/calibration \
-            /var/lib/suspect-interrogation/speaker-calibration \
-            /opt/suspect-interrogation/calibration \
-            /home/youyeetoo/suspect-speaker-calibration; do
-            if [[ -d "$root" ]]; then
-              count="$(find "$root" -type f \( -iname '*.wav' -o -iname '*.wave' \) -printf '.' 2>/dev/null | wc -c)"
-              echo "corpus_root=$root wav_count=$count"
-              find "$root" -mindepth 1 -maxdepth 1 -type d -printf 'corpus_group=%f\n' 2>/dev/null | sort || true
-            else
-              echo "corpus_root=$root status=missing"
-            fi
-          done
-          for envfile in /etc/suspect-interrogation/runtime.env /etc/suspect-interrogation/ai-worker.env; do
-            if sudo -n test -f "$envfile"; then
-              sudo -n awk -F= '/CALIBRATION.*(DIR|CORPUS|WAV)|VOICEPRINT.*(DIR|CORPUS)/ {print "configured_key=" $1}' "$envfile" || true
-            fi
-          done
-          echo TASK12_READ_ONLY_INVENTORY_COMPLETE
-
-      - name: Upload non-audio package manifest
+      - name: Upload metadata-only inventory
         uses: actions/upload-artifact@v4
         with:
-          name: task12-rk3588-inventory-${{ github.run_id }}
-          path: ${{ runner.temp }}/task12-inventory/eres2net-package.json
+          name: task12-rk3588-audio-metadata-${{ github.run_id }}
+          path: ${{ runner.temp }}/task12-audio-inventory/audio-metadata.json
           if-no-files-found: error
           retention-days: 7
