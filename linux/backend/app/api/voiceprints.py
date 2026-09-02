@@ -63,7 +63,13 @@ def _capture_service(request: Request):
 
 
 def _service(request: Request, db: Session) -> VoiceprintService:
-    return VoiceprintService(db, speech_client=_speech_client(request))
+    settings = getattr(request.app.state, "runtime_settings", None)
+    speaker_model_key = getattr(settings, "speaker_backend", "xvector")
+    return VoiceprintService(
+        db,
+        speech_client=_speech_client(request),
+        speaker_model_key=speaker_model_key,
+    )
 
 
 def _officer_library(request: Request, db: Session) -> OfficerVoiceprintLibraryService:

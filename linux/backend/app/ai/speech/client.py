@@ -50,12 +50,13 @@ class SpeechWorkerClient:
         session_id: str,
         sample_rate: int = 16000,
         *,
-        speaker_backend: str = "xvector",
+        speaker_backend: str | None = None,
     ) -> dict[str, Any]:
+        explicit_backend = speaker_backend is not None
         backend_key = str(speaker_backend or "xvector").strip().lower()
         if not backend_key:
             raise ValueError("speaker_backend must not be empty")
-        return self._require_dict(
+        result = self._require_dict(
             self._request(
                 "open_session",
                 session_id=session_id,
@@ -63,6 +64,9 @@ class SpeechWorkerClient:
                 speaker_backend=backend_key,
             )
         )
+        if not explicit_backend:
+            result.pop("speaker_backend", None)
+        return result
 
     def push_pcm(self, session_id: str, pcm: bytes) -> list[SpeechEvent]:
         result = self._request(

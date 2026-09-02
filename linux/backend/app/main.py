@@ -208,6 +208,7 @@ def create_app(
             calibration_resolver_factory=runtime_calibration_resolver_factory,
             fragment_sink=None if routing_coordinator is None else routing_coordinator.enqueue_fragment,
             capture_finished_sink=None if routing_coordinator is None else routing_coordinator.flush_capture,
+            speaker_model_key=settings.speaker_backend,
         )
         app.state.asr_capture_service = capture_service
         try:

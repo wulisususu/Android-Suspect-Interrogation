@@ -90,6 +90,7 @@ class AsrCaptureService:
         calibration_resolver: CalibrationResolver | None = None,
         fragment_sink: FragmentSink | None = None,
         capture_finished_sink: CaptureFinishedSink | None = None,
+        speaker_model_key: str = "xvector",
     ) -> None:
         self.session_factory = session_factory
         self.device_manager = device_manager
@@ -100,6 +101,9 @@ class AsrCaptureService:
         self.calibration_resolver = calibration_resolver
         self.fragment_sink = fragment_sink
         self.capture_finished_sink = capture_finished_sink
+        self.speaker_model_key = str(speaker_model_key or "xvector").strip().lower()
+        if self.speaker_model_key not in {"xvector", "eres2net_large"}:
+            raise ValueError("speaker_model_key must be xvector or eres2net_large")
         if self.sample_rate <= 0:
             raise ValueError("sample_rate must be positive")
 
@@ -126,8 +130,15 @@ class AsrCaptureService:
             interrogation_session = session_repo.active_for_case(db, case_id)
             if interrogation_session is None:
                 raise DomainError("SESSION_NOT_ACTIVE", "请先开始审讯再启动语音采集", 409)
-            if voiceprint_repo.get_suspect(db, case_id) is None:
-                raise DomainError("SUSPECT_VOICEPRINT_REQUIRED", "请先完成嫌疑人声纹注册", 409)
+            if voiceprint_repo.get_suspect(
+                db, case_id, model_key=self.speaker_model_key
+            ) is None:
+                raise DomainError(
+                    "SUSPECT_VOICEPRINT_BACKEND_REQUIRED",
+                    f"请先完成 {self.speaker_model_key} 嫌疑人声纹注册",
+                    409,
+                    data={"speaker_backend": self.speaker_model_key},
+                )
             resolved = self._resolve_calibration(db)
             capture = asr_repo.create_capture_session(
                 db,
@@ -169,7 +180,11 @@ class AsrCaptureService:
         speech_open = False
         audio_started = False
         try:
-            self.ai_supervisor.open_speech_session(runtime.speech_session_id, sample_rate=self.sample_rate)
+            self.ai_supervisor.open_speech_session(
+                runtime.speech_session_id,
+                sample_rate=self.sample_rate,
+                speaker_backend=self.speaker_model_key,
+            )
             speech_open = True
             self.device_manager.start_record()
             audio_started = True
@@ -266,7 +281,10 @@ class AsrCaptureService:
         speech_open = False
         audio_started = False
         try:
-            self.ai_supervisor.open_speech_session(runtime.speech_session_id, sample_rate=self.sample_rate)
+            self.ai_supervisor.open_speech_session(
+                runtime.speech_session_id,
+                sample_rate=self.sample_rate,
+            )
             speech_open = True
             self.device_manager.start_record()
             audio_started = True
@@ -605,9 +623,16 @@ class AsrCaptureService:
         speaker_event: SpeechEvent | None,
     ) -> tuple[list[dict[str, Any]], set[SpeakerRole]]:
         embedding = self._normalize_vector(speaker_event.embedding if speaker_event is not None else None)
-        suspect = voiceprint_repo.get_suspect(db, case.id)
+        suspect = voiceprint_repo.get_suspect(
+            db, case.id, model_key=self.speaker_model_key
+        )
         if suspect is None:
-            raise DomainError("SUSPECT_VOICEPRINT_REQUIRED", "嫌疑人声纹不可用", 409)
+            raise DomainError(
+                "SUSPECT_VOICEPRINT_BACKEND_REQUIRED",
+                f"{self.speaker_model_key} 嫌疑人声纹不可用",
+                409,
+                data={"speaker_backend": self.speaker_model_key},
+            )
 
         enabled: set[SpeakerRole] = {SpeakerRole.SUSPECT}
         references: list[tuple[SpeakerRole, Any, str | None, str | None]] = [
@@ -813,6 +838,7 @@ class AsrCaptureService:
             "interrogationSessionId": runtime.interrogation_session_id,
             "status": "CAPTURING" if active else "STOPPED",
             "sampleRate": self.sample_rate,
+            "speakerModelKey": self.speaker_model_key,
             "speakerThreshold": runtime.speaker_threshold,
             "thresholdSource": runtime.threshold_source,
             "speakerMarginConfigured": runtime.speaker_margin is not None,

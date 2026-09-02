@@ -34,6 +34,7 @@ class SourceAwareAsrCaptureService:
         calibration_resolver_factory: CalibrationResolverFactory | None = None,
         fragment_sink: Callable[[str, str], None] | None = None,
         capture_finished_sink: Callable[[str, str], None] | None = None,
+        speaker_model_key: str = "xvector",
     ) -> None:
         self.session_factory = session_factory
         self.device_manager = device_manager
@@ -44,6 +45,7 @@ class SourceAwareAsrCaptureService:
         self.read_timeout = float(read_timeout)
         self.fragment_sink = fragment_sink
         self.capture_finished_sink = capture_finished_sink
+        self.speaker_model_key = str(speaker_model_key or "xvector").strip().lower()
         self._lock = threading.RLock()
         self._capture_sources: dict[str, str] = {}
         self._preparation_source: tuple[str, str] | None = None
@@ -67,6 +69,7 @@ class SourceAwareAsrCaptureService:
                 calibration_resolver=resolver,
                 fragment_sink=fragment_sink,
                 capture_finished_sink=capture_finished_sink,
+                speaker_model_key=self.speaker_model_key,
             )
 
         if not self._services:

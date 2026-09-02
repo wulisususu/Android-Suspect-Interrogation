@@ -33,16 +33,32 @@ class _InProcessSpeechClient:
         with self._lock:
             return {"status": "ok", "sessions": len(self._sessions)}
 
-    def open_session(self, session_id: str, sample_rate: int = 16000) -> dict[str, Any]:
+    def open_session(
+        self,
+        session_id: str,
+        sample_rate: int = 16000,
+        speaker_backend: str = "xvector",
+    ) -> dict[str, Any]:
         session_id = str(session_id).strip()
         sample_rate = int(sample_rate)
+        speaker_backend = str(speaker_backend or "xvector").strip().lower()
         if not session_id:
             raise AIError("session_id is required")
         if sample_rate <= 0:
             raise AIError("sample_rate must be positive")
+        if speaker_backend not in {"xvector", "eres2net_large"}:
+            raise AIError("unsupported speaker backend", details={"speaker_backend": speaker_backend})
         with self._lock:
-            self._sessions[session_id] = {"sample_rate": sample_rate, "bytes_received": 0}
-        return {"session_id": session_id, "sample_rate": sample_rate}
+            self._sessions[session_id] = {
+                "sample_rate": sample_rate,
+                "bytes_received": 0,
+                "speaker_backend": speaker_backend,
+            }
+        return {
+            "session_id": session_id,
+            "sample_rate": sample_rate,
+            "speaker_backend": speaker_backend,
+        }
 
     def push_pcm(self, session_id: str, pcm: bytes) -> list[SpeechEvent]:
         with self._lock:
@@ -303,8 +319,18 @@ class AISupervisor:
     def recognize(self, image: bytes, *, capability: str, session_id: str, options: dict[str, Any] | None = None) -> OCRResult:
         return self._prepare("ocr").request("ocr", {"image": image, "capability": capability, "session_id": session_id, "options": options or {}})
 
-    def open_speech_session(self, session_id: str, *, sample_rate: int = 16000) -> dict[str, Any]:
-        result = self._speech_client.open_session(session_id, sample_rate=sample_rate)
+    def open_speech_session(
+        self,
+        session_id: str,
+        *,
+        sample_rate: int = 16000,
+        speaker_backend: str = "xvector",
+    ) -> dict[str, Any]:
+        result = self._speech_client.open_session(
+            session_id,
+            sample_rate=sample_rate,
+            speaker_backend=speaker_backend,
+        )
         self._speech_sessions.add(session_id)
         return result
 
