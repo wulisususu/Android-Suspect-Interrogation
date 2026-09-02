@@ -210,9 +210,10 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
       </footer>
     </article>
   </section>
+</template>
+
 <style scoped>
 .qa-question-drop, .qa-answer-drop { position: relative; border-radius: 6px; }
 .qa-question-drop:has(textarea:focus), .qa-answer-drop:has(textarea:focus) { outline: none; }
 .qa-question-drop > small, .qa-answer-drop > small { margin-left: 8px; color: #84909d; font-size: 10px; }
 </style>
-</template>
