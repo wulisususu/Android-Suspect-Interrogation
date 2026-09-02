@@ -1,0 +1,83 @@
+name: Task 12 XVector Legacy Runtime Diagnostic
+
+on:
+  push:
+    branches:
+      - feat/dual-speaker-backends
+    paths:
+      - '.github/workflows/task12-xvector-legacy-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hosted-safety:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify read-only diagnostic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/task12-xvector-legacy-diagnostic.yml').read_text(encoding='utf-8')
+          board=text.split('\n  board-diagnostic:\n',1)[1]
+          forbidden=['pip install','apt install','systemctl ','snapshot_download','rm -rf /opt','SUSPECT_SPEAKER_BACKEND=']
+          for token in forbidden:
+              if token in board:
+                  raise SystemExit(f'forbidden mutation token: {token}')
+          print('TASK12_XVECTOR_LEGACY_DIAGNOSTIC_SAFE')
+          PY
+
+  board-diagnostic:
+    needs: hosted-safety
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 15
+    steps:
+      - name: Inspect candidate legacy Python runtimes read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODEL_ROOT=/home/youyeetoo/funasr-models/xvector
+          test -f "$MODEL_ROOT/sv.yaml"
+          test -f "$MODEL_ROOT/sv.pth"
+          for candidate in \
+            /opt/suspect-interrogation/runtime/funasr-env/bin/python \
+            /home/youyeetoo/rkllm_model_zoo/funasr_env/bin/python; do
+            echo "=== candidate=$candidate ==="
+            if [[ ! -x "$candidate" ]]; then
+              echo 'status=missing'
+              continue
+            fi
+            "$candidate" - "$MODEL_ROOT" <<'PY'
+          import json, sys, time
+          root=sys.argv[1]
+          report={'python': sys.executable}
+          try:
+              import funasr
+              report['funasr_version']=getattr(funasr,'__version__','unknown')
+              from funasr.bin.sv_infer import Speech2Xvector
+              started=time.perf_counter()
+              runtime=Speech2Xvector(
+                  sv_train_config=root + '/sv.yaml',
+                  sv_model_file=root + '/sv.pth',
+                  device='cpu',
+                  dtype='float32',
+                  embedding_node='resnet1_dense',
+              )
+              report['legacy_import_ok']=True
+              report['legacy_load_ok']=True
+              report['load_seconds']=round(time.perf_counter()-started,6)
+              del runtime
+          except Exception as exc:
+              report['legacy_import_ok']=False
+              report['legacy_load_ok']=False
+              report['error_type']=type(exc).__name__
+              report['error']=str(exc)[:500]
+          print(json.dumps(report,ensure_ascii=False,sort_keys=True))
+          PY
+          done
+          echo 'TASK12_XVECTOR_LEGACY_DIAGNOSTIC_COMPLETE'
