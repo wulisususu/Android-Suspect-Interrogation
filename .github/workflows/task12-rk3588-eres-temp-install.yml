@@ -1,0 +1,178 @@
+name: Task 12 RK3588 Temporary ERes Install Probe
+
+on:
+  push:
+    branches:
+      - feat/dual-speaker-backends
+    paths:
+      - '.github/workflows/task12-rk3588-eres-temp-install.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task12-rk3588-eres-temp-install
+  cancel-in-progress: false
+
+jobs:
+  hosted-safety:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify temporary-only mutation boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          text=Path('.github/workflows/task12-rk3588-eres-temp-install.yml').read_text(encoding='utf-8')
+          forbidden=('systemctl restart', 'sudo ', '/opt/suspect-interrogation/models/eres', 'SUSPECT_SPEAKER_BACKEND=')
+          for token in forbidden:
+              assert token not in text, token
+          assert '$RUNNER_TEMP' in text
+          assert 'snapshot_download' in text
+          PY
+
+  rk3588-temp-install:
+    needs: hosted-safety
+    runs-on: [self-hosted, rk3588]
+    timeout-minutes: 60
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONPATH: ${{ github.workspace }}/linux/backend
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          clean: true
+
+      - name: Verify project FunASR runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY=/opt/suspect-interrogation/runtime/funasr-env/bin/python
+          test -x "$PY"
+          "$PY" - <<'PY'
+          import modelscope, torch
+          print('modelscope', getattr(modelscope, '__version__', 'unknown'))
+          print('torch', getattr(torch, '__version__', 'unknown'))
+          PY
+          echo "TASK12_PY=$PY" >> "$GITHUB_ENV"
+
+      - name: Download ERes2Net package into runner temp only
+        shell: bash
+        run: |
+          set -euo pipefail
+          CACHE="$RUNNER_TEMP/task12-modelscope-cache"
+          OUT="$RUNNER_TEMP/task12-eres-temp"
+          mkdir -p "$CACHE" "$OUT"
+          MODEL_DIR="$($TASK12_PY - "$CACHE" <<'PY'
+          import sys
+          from modelscope.hub.snapshot_download import snapshot_download
+          path=snapshot_download(
+              'iic/speech_eres2net_large_200k_sv_zh-cn_16k-common',
+              cache_dir=sys.argv[1],
+          )
+          print(path)
+          PY
+          )"
+          test -d "$MODEL_DIR"
+          echo "ERES_TEMP_MODEL_DIR=$MODEL_DIR" >> "$GITHUB_ENV"
+          echo "TASK12_TEMP_OUT=$OUT" >> "$GITHUB_ENV"
+          python3 scripts/ci/probe-eres2net-large.py \
+            --model-dir "$MODEL_DIR" \
+            --output "$OUT/package-manifest.json"
+
+      - name: Generate synthetic PCM16 smoke input in runner temp
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/task12-synthetic.wav" <<'PY'
+          import math, struct, sys, wave
+          path=sys.argv[1]
+          rate=16000
+          samples=[int(1800*math.sin(2*math.pi*220*i/rate)) for i in range(rate*3)]
+          pcm=struct.pack('<%dh' % len(samples), *samples)
+          with wave.open(path, 'wb') as f:
+              f.setnchannels(1); f.setsampwidth(2); f.setframerate(rate); f.writeframes(pcm)
+          PY
+
+      - name: Start isolated worker from exact revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -d /opt/suspect-interrogation/models/funasr ]]; then
+            FUNASR_ROOT=/opt/suspect-interrogation/models/funasr
+          elif [[ -d /home/youyeetoo/funasr-models ]]; then
+            FUNASR_ROOT=/home/youyeetoo/funasr-models
+          else
+            echo 'FUNASR_MODEL_ROOT_MISSING' >&2
+            exit 1
+          fi
+          SOCKET="$RUNNER_TEMP/task12-eres-temp.sock"
+          LOG="$RUNNER_TEMP/task12-eres-temp-worker.log"
+          export SUSPECT_SPEECH_SOCKET="$SOCKET"
+          export SUSPECT_FUNASR_MODEL_ROOT="$FUNASR_ROOT"
+          export SUSPECT_ERES2NET_MODEL_DIR="$ERES_TEMP_MODEL_DIR"
+          export MODELSCOPE_OFFLINE=1
+          export HF_HUB_OFFLINE=1
+          export TRANSFORMERS_OFFLINE=1
+          "$TASK12_PY" -m speech_worker.main >"$LOG" 2>&1 &
+          PID=$!
+          echo "$PID" > "$RUNNER_TEMP/task12-eres-temp.pid"
+          for _ in $(seq 1 240); do
+            [[ -S "$SOCKET" ]] && break
+            if ! kill -0 "$PID" 2>/dev/null; then
+              cat "$LOG" >&2 || true
+              exit 1
+            fi
+            sleep 0.5
+          done
+          test -S "$SOCKET" || { cat "$LOG" >&2 || true; exit 1; }
+          echo "TASK12_TEMP_SOCKET=$SOCKET" >> "$GITHUB_ENV"
+
+      - name: Run real ERes2Net embedding through isolated speech worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/probe-eres2net-large.py \
+            --model-dir "$ERES_TEMP_MODEL_DIR" \
+            --socket "$TASK12_TEMP_SOCKET" \
+            --embedding-wav "$RUNNER_TEMP/task12-synthetic.wav" \
+            --output "$TASK12_TEMP_OUT/runtime-embedding.json"
+          python3 - "$TASK12_TEMP_OUT/runtime-embedding.json" <<'PY'
+          import json, sys
+          d=json.load(open(sys.argv[1], encoding='utf-8'))
+          assert d['status'] == 'INSTALLED'
+          assert int(d['embedding_dim']) > 0
+          assert d['runtime_model_fingerprint']
+          print('TASK12_ERES_TEMP_EMBEDDING_COMPLETE')
+          PY
+
+      - name: Upload non-audio JSON evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task12-eres-temp-install-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/task12-eres-temp/package-manifest.json
+            ${{ runner.temp }}/task12-eres-temp/runtime-embedding.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Cleanup temporary model and isolated worker
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [[ -f "$RUNNER_TEMP/task12-eres-temp.pid" ]]; then
+            PID="$(cat "$RUNNER_TEMP/task12-eres-temp.pid")"
+            kill "$PID" 2>/dev/null || true
+            wait "$PID" 2>/dev/null || true
+          fi
+          rm -f "$RUNNER_TEMP/task12-eres-temp.sock" "$RUNNER_TEMP/task12-synthetic.wav"
+          rm -rf "$RUNNER_TEMP/task12-modelscope-cache"
