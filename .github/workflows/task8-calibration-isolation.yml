@@ -1,0 +1,87 @@
+name: Task 8 Calibration Isolation Apply
+
+on:
+  push:
+    branches:
+      - feat/dual-speaker-backends
+    paths:
+      - .superpowers/task8-calibration-isolation-apply.py
+      - .github/workflows/task8-calibration-isolation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: task8-calibration-isolation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: linux/backend
+      HARDWARE_MODE: mock
+      DEVICE_SIMULATOR: "1"
+      AI_MODE: mock
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/dual-speaker-backends
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: linux/backend/requirements.txt
+
+      - name: Install backend test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r linux/backend/requirements.txt pytest httpx
+
+      - name: Apply Task 8 production patch
+        run: python .superpowers/task8-calibration-isolation-apply.py
+
+      - name: Compile backend
+        run: python -m compileall -q linux/backend
+
+      - name: Task 8 calibration tests
+        run: |
+          python -m pytest -q \
+            linux/backend/tests/test_speaker_calibration_repository.py \
+            linux/backend/tests/test_speaker_calibration_service.py \
+            linux/backend/tests/test_speaker_calibration_runtime.py \
+            linux/backend/tests/test_speaker_baseline_fallback.py \
+            linux/backend/tests/test_asr_capture_service.py
+
+      - name: Migration tests
+        run: python -m pytest -q linux/backend/tests/test_migrations.py
+
+      - name: Full backend regression
+        run: python -m pytest -q linux/backend/tests
+
+      - name: Commit verified Task 8 production changes
+        run: |
+          set -euo pipefail
+          git status --short
+          git add \
+            linux/backend/alembic/versions/0010_backend_scoped_speaker_calibration.py \
+            linux/backend/app/database/voiceprint_models.py \
+            linux/backend/app/repositories/speaker_calibrations.py \
+            linux/backend/app/services/speaker_calibration_service.py \
+            linux/backend/app/services/speaker_calibration_runtime.py \
+            linux/backend/app/services/asr_capture_service.py \
+            linux/backend/app/main.py \
+            linux/backend/tests/test_speaker_calibration_service.py \
+            linux/backend/tests/test_migrations.py
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No Task 8 production changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat: calibrate speaker backends independently"
+          git push origin HEAD:feat/dual-speaker-backends
