@@ -6,6 +6,7 @@ on:
       - feat/dual-speaker-backends
     paths:
       - linux/backend/tests/test_speaker_runtime_api.py
+      - linux/backend/tests/test_speaker_runtime_reconfigure.py
       - webapp/src/components/SpeakerBackendControls.test.ts
       - .github/workflows/task10-speaker-ui-red.yml
   workflow_dispatch:
@@ -28,7 +29,10 @@ jobs:
       - name: Install backend test dependencies
         run: python -m pip install -r linux/backend/requirements.txt pytest httpx
       - name: Backend Task 10 contract
-        run: python -m pytest -q linux/backend/tests/test_speaker_runtime_api.py
+        run: |
+          python -m pytest -q \
+            linux/backend/tests/test_speaker_runtime_api.py \
+            linux/backend/tests/test_speaker_runtime_reconfigure.py
       - uses: actions/setup-node@v4
         if: always()
         with:
