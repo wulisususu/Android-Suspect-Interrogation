@@ -1,0 +1,50 @@
+name: Task 9 Compare Core Gate
+
+on:
+  push:
+    branches:
+      - feat/dual-speaker-backends
+    paths:
+      - linux/backend/app/services/speaker_backend_compare.py
+      - linux/backend/app/ai/speech/types.py
+      - linux/backend/app/runtime_settings.py
+      - linux/backend/speech_worker/session.py
+      - linux/backend/tests/test_speaker_backend_compare.py
+      - linux/backend/tests/test_speech_session.py
+      - linux/backend/tests/test_speaker_compare_settings.py
+      - .github/workflows/task9-compare-core.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare-core:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: linux/backend
+      HARDWARE_MODE: mock
+      DEVICE_SIMULATOR: "1"
+      AI_MODE: mock
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/dual-speaker-backends
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: linux/backend/requirements.txt
+      - name: Install backend test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r linux/backend/requirements.txt pytest httpx
+      - name: Compile compare core
+        run: python -m compileall -q linux/backend
+      - name: Run compare core contracts
+        run: |
+          python -m pytest -q \
+            linux/backend/tests/test_speaker_backend_compare.py \
+            linux/backend/tests/test_speech_session.py \
+            linux/backend/tests/test_speaker_compare_settings.py \
+            linux/backend/tests/test_speech_protocol.py
