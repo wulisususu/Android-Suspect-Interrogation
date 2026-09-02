@@ -6,6 +6,7 @@ on:
       - 'feat/dual-speaker-backends'
     paths:
       - '.superpowers/dual-speaker-task6-apply.py'
+      - '.github/workflows/dual-speaker-task6-apply.yml'
   workflow_dispatch:
 
 permissions:
@@ -39,6 +40,26 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r linux/backend/requirements.txt pytest httpx
+      - name: Disambiguate preparation session anchor
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('linux/backend/app/services/asr_capture_service.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''        try:\n            self.ai_supervisor.open_speech_session(runtime.speech_session_id, sample_rate=self.sample_rate)\n            speech_open = True\n            self.device_manager.start_record()\n'''
+          new = '''        try:\n            self.ai_supervisor.open_speech_session(\n                runtime.speech_session_id,\n                sample_rate=self.sample_rate,\n            )\n            speech_open = True\n            self.device_manager.start_record()\n'''
+          # The formal capture block and question-prep block share the one-line call.
+          # Rewrite only the second occurrence (question-prep) as a semantic no-op so
+          # the deterministic Task 6 script can require a unique formal-capture anchor.
+          first = text.find(old)
+          second = text.find(old, first + 1) if first >= 0 else -1
+          third = text.find(old, second + 1) if second >= 0 else -1
+          if first < 0 or second < 0 or third >= 0:
+              raise SystemExit(f'expected exactly two capture/prep anchors; first={first} second={second} third={third}')
+          text = text[:second] + text[second:].replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
       - name: Apply deterministic Task 6 edits
         run: python .superpowers/dual-speaker-task6-apply.py
       - name: Compile backend
