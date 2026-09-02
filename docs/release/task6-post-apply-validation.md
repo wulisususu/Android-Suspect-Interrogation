@@ -1,9 +1,16 @@
 # Task 6 post-apply regression marker
 
-This no-code release note exists to trigger the normal Linux CI path filters after the Task 6 production edits were committed by `github-actions[bot]`.
+This no-code release note exists to trigger the normal Linux CI path filters after Task 6 production edits are committed by `github-actions[bot]`.
 
-Production commit under validation: `315e87ae163f9157ca240a13951154d41f5faa10`.
+Production commit under validation: `a00f7197` (`fix: preserve xvector session compatibility`).
 
-The deterministic Task 4–6 specialist gate passed 62 tests before that production commit was created (Actions run `33579884896`). The bot-authored production push itself produced an `action_required` Linux CI run with zero jobs, so this user-authored documentation commit is used to obtain a normal full-regression run over the unchanged production tree.
+Evidence before the production commit was created:
 
-This document is not completion evidence. Task 6 remains incomplete until the required Linux core regression is GREEN.
+- Task 4–6 specialist gate: **62 passed**.
+- Previously failing regression files: **22 passed**.
+- Full backend Python regression: **360 passed**.
+- Gate run: `33580140858`.
+
+The production fix preserves the historical default-XVector public contract while continuing to bind non-default ERes2Net sessions explicitly. Because the production commit was bot-authored, this user-authored documentation-only update triggers the normal pull-request Linux CI against the actual post-fix production tree.
+
+This document is not completion evidence. Task 6 remains incomplete until the standard Linux hosted gate, including DB/API/security/mock/Vue/browser/release integration stages, reaches its required result.
