@@ -33,6 +33,17 @@
       "memory_mb": 256,
       "capabilities": ["embedding"]
     },
+    "speaker.eres2net_large": {
+      "kind": "speaker",
+      "backend": "modelscope",
+      "path": "speech_eres2net_large_200k_sv_zh-cn_16k-common",
+      "architecture": "eres2net_large",
+      "required_files": ["configuration.json", "pretrained_eres2net.pt"],
+      "device": "cpu",
+      "context": 0,
+      "memory_mb": 0,
+      "capabilities": ["embedding"]
+    },
     "ocr.default": {
       "kind": "ocr",
       "backend": "paddleocr",
