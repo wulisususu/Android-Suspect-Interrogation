@@ -70,7 +70,7 @@ jobs:
           fetch-depth: 1
           clean: true
 
-      - name: Resolve installed runtime and ERes2Net package
+      - name: Resolve runtime and stage ERes2Net package without production mutation
         shell: bash
         run: |
           set -euo pipefail
@@ -86,23 +86,56 @@ jobs:
             echo 'FUNASR_MODEL_ROOT_MISSING' >&2
             exit 1
           fi
+
           python3 scripts/ci/probe-eres2net-large.py \
             --search-root /opt/suspect-interrogation/models \
             --search-root /home/youyeetoo/.cache/modelscope \
             --search-root /home/youyeetoo/funasr-models \
+            --allow-missing \
             --output "$OUT/eres2net-package.json"
-          ERES_MODEL_DIR="$(python3 - "$OUT/eres2net-package.json" <<'PY'
+
+          read -r ERES_STATUS ERES_MODEL_DIR < <(python3 - "$OUT/eres2net-package.json" <<'PY'
           import json, sys
           data=json.load(open(sys.argv[1], encoding='utf-8'))
-          if data.get('status') != 'INSTALLED' or not data.get('model_dir'):
-              raise SystemExit('ERES2NET_MODEL_NOT_INSTALLED')
-          print(data['model_dir'])
+          print(data.get('status') or '', data.get('model_dir') or '')
           PY
-          )"
+          )
+
+          if [[ "$ERES_STATUS" == 'INSTALLED' && -n "$ERES_MODEL_DIR" && -d "$ERES_MODEL_DIR" ]]; then
+            ERES_MODEL_SOURCE=installed
+          else
+            CACHE="$RUNNER_TEMP/task12-modelscope-cache"
+            mkdir -p "$CACHE"
+            ERES_MODEL_DIR="$(
+              MODELSCOPE_OFFLINE=0 HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 \
+              "$FUNASR_PYTHON" - "$CACHE" <<'PY'
+          import sys
+          from modelscope.hub.snapshot_download import snapshot_download
+          path=snapshot_download(
+              'iic/speech_eres2net_large_200k_sv_zh-cn_16k-common',
+              cache_dir=sys.argv[1],
+          )
+          print(path)
+          PY
+            )"
+            test -d "$ERES_MODEL_DIR"
+            ERES_MODEL_SOURCE=runner_temp
+            python3 scripts/ci/probe-eres2net-large.py \
+              --model-dir "$ERES_MODEL_DIR" \
+              --output "$OUT/eres2net-package.json"
+          fi
+
+          test -f "$ERES_MODEL_DIR/configuration.json"
+          test -f "$ERES_MODEL_DIR/pretrained_eres2net.pt"
+          printf '{"model_id":"%s","source":"%s"}\n' \
+            'iic/speech_eres2net_large_200k_sv_zh-cn_16k-common' "$ERES_MODEL_SOURCE" \
+            > "$OUT/eres2net-source.json"
+          echo "eres_model_source=$ERES_MODEL_SOURCE"
           echo "TASK12_OUT=$OUT" >> "$GITHUB_ENV"
           echo "FUNASR_PYTHON=$FUNASR_PYTHON" >> "$GITHUB_ENV"
           echo "FUNASR_MODEL_ROOT=$FUNASR_MODEL_ROOT" >> "$GITHUB_ENV"
           echo "ERES_MODEL_DIR=$ERES_MODEL_DIR" >> "$GITHUB_ENV"
+          echo "ERES_MODEL_SOURCE=$ERES_MODEL_SOURCE" >> "$GITHUB_ENV"
 
       - name: Resolve existing three-identity calibration corpus without copying audio
         shell: bash
@@ -270,7 +303,7 @@ jobs:
           print('TASK12_DUAL_SPEAKER_PROBE_COMPLETE')
           PY
 
-      - name: Stop isolated worker
+      - name: Cleanup isolated worker and temporary ERes model
         if: always()
         shell: bash
         run: |
@@ -281,6 +314,7 @@ jobs:
             wait "$PID" 2>/dev/null || true
           fi
           rm -f "$RUNNER_TEMP/task12-dual-speaker.sock"
+          rm -rf "$RUNNER_TEMP/task12-modelscope-cache"
 
       - name: Upload JSON evidence only
         if: always()
@@ -289,6 +323,7 @@ jobs:
           name: task12-rk3588-dual-speaker-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/task12-dual-speaker/eres2net-package.json
+            ${{ runner.temp }}/task12-dual-speaker/eres2net-source.json
             ${{ runner.temp }}/task12-dual-speaker/eres2net-runtime-probe.json
             ${{ runner.temp }}/task12-dual-speaker/xvector-calibration.json
             ${{ runner.temp }}/task12-dual-speaker/eres2net-calibration.json
