@@ -1,0 +1,43 @@
+name: Task 9 Compare RED
+
+on:
+  push:
+    branches:
+      - feat/dual-speaker-backends
+    paths:
+      - linux/backend/tests/test_speaker_backend_compare.py
+      - linux/backend/tests/test_speech_session.py
+      - linux/backend/tests/test_speaker_compare_settings.py
+      - .github/workflows/task9-compare-red.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  red-contract:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: linux/backend
+      HARDWARE_MODE: mock
+      DEVICE_SIMULATOR: "1"
+      AI_MODE: mock
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/dual-speaker-backends
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: linux/backend/requirements.txt
+      - name: Install backend test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r linux/backend/requirements.txt pytest httpx
+      - name: Run Task 9 RED contracts
+        run: |
+          python -m pytest -q \
+            linux/backend/tests/test_speaker_backend_compare.py \
+            linux/backend/tests/test_speech_session.py \
+            linux/backend/tests/test_speaker_compare_settings.py
