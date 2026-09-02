@@ -120,6 +120,7 @@ def test_service_bootstrap_allows_eres2net_cold_start_before_requiring_socket():
     assert "for _ in $(seq 1 240); do" in workflow
     assert "sudo -n test -S /run/suspect-interrogation/speech.sock" in workflow
     assert "sudo -n -u suspect-interrogation env" in workflow
+    assert "sudo -n curl --cacert /etc/suspect-interrogation/tls/ca.crt" in workflow
     assert "SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=30).health()" in workflow
 
 

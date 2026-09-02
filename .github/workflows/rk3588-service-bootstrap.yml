@@ -363,14 +363,14 @@ jobs:
           sudo -n test -S /run/suspect-interrogation/speech.sock
 
           for attempt in $(seq 1 30); do
-            if curl --cacert /etc/suspect-interrogation/tls/ca.crt -fsS "https://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" >/tmp/suspect-ready.json; then
+            if sudo -n curl --cacert /etc/suspect-interrogation/tls/ca.crt -fsS "https://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" >/tmp/suspect-ready.json; then
               break
             fi
             sleep 1
           done
-          curl --cacert /etc/suspect-interrogation/tls/ca.crt -fsS "https://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/live" >/dev/null
-          curl --cacert /etc/suspect-interrogation/tls/ca.crt -fsS "https://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" | tee /tmp/suspect-ready.json
-          curl --cacert /etc/suspect-interrogation/tls/ca.crt -fsS "https://127.0.0.1:${SUSPECT_DEPLOY_PORT}/" | tee /tmp/suspect-index.html >/dev/null
+          sudo -n curl --cacert /etc/suspect-interrogation/tls/ca.crt -fsS "https://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/live" >/dev/null
+          sudo -n curl --cacert /etc/suspect-interrogation/tls/ca.crt -fsS "https://127.0.0.1:${SUSPECT_DEPLOY_PORT}/health/ready" | tee /tmp/suspect-ready.json
+          sudo -n curl --cacert /etc/suspect-interrogation/tls/ca.crt -fsS "https://127.0.0.1:${SUSPECT_DEPLOY_PORT}/" | tee /tmp/suspect-index.html >/dev/null
           grep -q '<div id="app"></div>' /tmp/suspect-index.html
           test -f /opt/suspect-interrogation/current/webapp/dist/index.html
           echo "backend_service=active port=${SUSPECT_DEPLOY_PORT}"
