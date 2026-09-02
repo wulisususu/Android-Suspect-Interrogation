@@ -115,6 +115,12 @@ def test_production_workflow_uses_https_and_verifies_certificate_identity():
     assert "0012_mark_xvector_voiceprints_for_reenrollment (head)" in workflow
 
 
+def test_service_bootstrap_allows_eres2net_cold_start_before_requiring_socket():
+    workflow = read(".github/workflows/rk3588-service-bootstrap.yml")
+    assert "for _ in $(seq 1 240); do" in workflow
+    assert "SpeechWorkerClient('/run/suspect-interrogation/speech.sock', timeout=30).health()" in workflow
+
+
 def test_ca_download_endpoint_is_registered_without_private_key_endpoint():
     assert (ROOT / "linux/backend/app/api/tls.py").is_file()
     main = read("linux/backend/app/main.py")
