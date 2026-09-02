@@ -29,24 +29,24 @@ class FakeBackend:
         )
 
 
-def test_default_selection_is_xvector(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_production_selection_is_eres2net_large_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SUSPECT_SPEAKER_BACKEND", raising=False)
     monkeypatch.delenv("SUSPECT_SPEAKER_AUTHORITATIVE_BACKEND", raising=False)
 
     selection = resolve_speaker_backend_selection()
 
-    assert selection.mode is SpeakerRuntimeMode.XVECTOR
-    assert selection.authoritative_backend is SpeakerBackendKey.XVECTOR
-    assert selection.backends == (SpeakerBackendKey.XVECTOR,)
+    assert selection.mode is SpeakerRuntimeMode.ERES2NET_LARGE
+    assert selection.authoritative_backend is SpeakerBackendKey.ERES2NET_LARGE
+    assert selection.backends == (SpeakerBackendKey.ERES2NET_LARGE,)
 
 
-def test_compare_selection_requires_an_explicit_real_authoritative_backend(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("legacy_mode", ("xvector", "compare"))
+def test_production_selection_rejects_legacy_modes(
+    legacy_mode: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("SUSPECT_SPEAKER_BACKEND", "compare")
-    monkeypatch.delenv("SUSPECT_SPEAKER_AUTHORITATIVE_BACKEND", raising=False)
+    monkeypatch.setenv("SUSPECT_SPEAKER_BACKEND", legacy_mode)
 
-    with pytest.raises(ValueError, match="authoritative"):
+    with pytest.raises(ValueError, match="eres2net_large"):
         resolve_speaker_backend_selection()
 
 

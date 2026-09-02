@@ -28,7 +28,6 @@ from app.api.interrogation import router as interrogation_router
 from app.api.responses import envelope
 from app.api.signature import router as signature_router
 from app.api.speaker_calibration import router as speaker_calibration_router
-from app.api.speaker_runtime import router as speaker_runtime_router
 from app.api.template_workspace import router as template_workspace_router
 from app.api.tls import router as tls_router
 from app.api.voiceprints import router as voiceprints_router
@@ -136,12 +135,8 @@ def create_app(
     )
 
     def current_model_identity(backend_override: str | None = None) -> CurrentSpeakerModelIdentity:
-        configured_backend = str(settings.speaker_backend or "xvector").strip().lower()
-        default_backend = (
-            settings.speaker_authoritative_backend
-            if configured_backend == "compare"
-            else configured_backend
-        )
+        configured_backend = "eres2net_large"
+        default_backend = configured_backend
         backend_key = str(backend_override or default_backend or "xvector").strip().lower()
         try:
             health = speech_client.health()
@@ -206,12 +201,8 @@ def create_app(
         return runtime_calibration_resolver
 
     def runtime_calibration_resolver_factory(source: str):
-        configured_backend = str(settings.speaker_backend or "xvector").strip().lower()
-        primary_backend = (
-            settings.speaker_authoritative_backend
-            if configured_backend == "compare"
-            else configured_backend
-        )
+        configured_backend = "eres2net_large"
+        primary_backend = configured_backend
         return runtime_backend_calibration_resolver_factory(
             source,
             str(primary_backend or "xvector"),
@@ -242,8 +233,7 @@ def create_app(
             backend_calibration_resolver_factory=runtime_backend_calibration_resolver_factory,
             fragment_sink=None if routing_coordinator is None else routing_coordinator.enqueue_fragment,
             capture_finished_sink=None if routing_coordinator is None else routing_coordinator.flush_capture,
-            speaker_model_key=settings.speaker_backend,
-            speaker_authoritative_backend=settings.speaker_authoritative_backend,
+            speaker_model_key="eres2net_large",
         )
         app.state.asr_capture_service = capture_service
         try:
@@ -317,7 +307,6 @@ def create_app(
     app.include_router(asr_router, prefix="/api/v1")
     app.include_router(voiceprints_router, prefix="/api/v1")
     app.include_router(speaker_calibration_router, prefix="/api/v1")
-    app.include_router(speaker_runtime_router, prefix="/api/v1")
     app.include_router(client_context_router, prefix="/api/v1")
     app.include_router(compat_router)
     app.include_router(websocket_router)

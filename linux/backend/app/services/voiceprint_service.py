@@ -37,27 +37,22 @@ class VoiceprintService:
         db: Session,
         *,
         speech_client: Any,
-        speaker_model_key: str = _XVECTOR,
+        speaker_model_key: str = _ERES2NET_LARGE,
         speaker_authoritative_backend: str | None = None,
     ):
         self.db = db
         self.speech_client = speech_client
-        self.speaker_model_key = str(speaker_model_key or _XVECTOR).strip().lower()
+        self.speaker_model_key = str(speaker_model_key or _ERES2NET_LARGE).strip().lower()
         configured_authority = (
             None
             if speaker_authoritative_backend is None
             else str(speaker_authoritative_backend).strip().lower()
         )
-        if self.speaker_model_key not in {*_ENROLLMENT_BACKENDS, "compare"}:
-            raise ValueError("speaker_model_key must be xvector, eres2net_large or compare")
-        if self.speaker_model_key == "compare":
-            if configured_authority not in _ENROLLMENT_BACKENDS:
-                raise ValueError("speaker_authoritative_backend is required for compare mode")
-            self.authoritative_speaker_backend = configured_authority
-        else:
-            if configured_authority not in {None, self.speaker_model_key}:
-                raise ValueError("speaker_authoritative_backend must match the single backend")
-            self.authoritative_speaker_backend = self.speaker_model_key
+        if self.speaker_model_key != _ERES2NET_LARGE:
+            raise ValueError("speaker_model_key must be eres2net_large")
+        if configured_authority not in {None, _ERES2NET_LARGE}:
+            raise ValueError("speaker_authoritative_backend must be eres2net_large")
+        self.authoritative_speaker_backend = _ERES2NET_LARGE
 
     def readiness(self, case_id: str) -> dict:
         case_repo.get(self.db, case_id)
@@ -68,45 +63,14 @@ class VoiceprintService:
                 select(SessionVoiceAssignment).where(SessionVoiceAssignment.session_id == session.id)
             )
 
-        backend_states: dict[str, dict[str, Any]] = {}
-        for backend in _ENROLLMENT_BACKENDS:
-            suspect = voiceprint_repo.get_suspect(self.db, case_id, model_key=backend)
-            interrogator_ready = False
-            recorder_ready = False
-            if assignment is not None:
-                interrogator_ready = self._officer_active(
-                    assignment.interrogator_officer_id, backend
-                )
-                recorder_ready = self._officer_active(
-                    assignment.recorder_officer_id, backend
-                )
-            backend_states[backend] = {
-                "suspectReady": suspect is not None,
-                "interrogatorReady": interrogator_ready,
-                "recorderReady": recorder_ready,
-                "recognitionMode": self._recognition_mode(interrogator_ready, recorder_ready),
-                "canStart": suspect is not None,
-            }
-
-        authoritative = backend_states[self.authoritative_speaker_backend]
-        result = dict(authoritative)
-        if self.speaker_model_key == "compare":
-            result.update(
-                {
-                    "selectedSpeakerBackend": "compare",
-                    "authoritativeSpeakerBackend": self.authoritative_speaker_backend,
-                    "backends": backend_states,
-                }
-            )
-        elif self.speaker_model_key != _XVECTOR:
-            result["selectedSpeakerBackend"] = self.speaker_model_key
-        return result
+        suspect = voiceprint_repo.get_suspect(self.db, case_id, model_key=_ERES2NET_LARGE)
+        interrogator_ready = bool(assignment is not None and self._officer_active(assignment.interrogator_officer_id, _ERES2NET_LARGE))
+        recorder_ready = bool(assignment is not None and self._officer_active(assignment.recorder_officer_id, _ERES2NET_LARGE))
+        return {"suspectReady": suspect is not None, "interrogatorReady": interrogator_ready, "recorderReady": recorder_ready, "recognitionMode": self._recognition_mode(interrogator_ready, recorder_ready), "canStart": suspect is not None, "selectedSpeakerBackend": _ERES2NET_LARGE}
 
     def enroll_suspect(self, case_id: str, pcm: bytes, actor_id: str | None = None) -> dict:
         case_repo.get(self.db, case_id)
-        references, failures = self._build_dual_references(pcm)
-
-        primary_reference = references[_XVECTOR]
+        primary_reference = self._build_reference(pcm)
         primary_row, primary_action = self._upsert_suspect_reference(
             case_id=case_id,
             reference=primary_reference,
@@ -124,60 +88,12 @@ class VoiceprintService:
                 reference=primary_reference,
             ),
         )
-        # XVector is the backward-compatible authoritative enrollment reference.
-        # Commit it before attempting optional ERes2Net persistence so an optional
-        # backend cannot erase a successfully refreshed XVector identity.
         self.db.commit()
-
-        backend_results: dict[str, dict[str, Any]] = {
-            _XVECTOR: self._ready_backend_result(primary_row, primary_reference)
-        }
-
-        optional_reference = references.get(_ERES2NET_LARGE)
-        if optional_reference is not None:
-            try:
-                optional_row, optional_action = self._upsert_suspect_reference(
-                    case_id=case_id,
-                    reference=optional_reference,
-                )
-                audit_repo.add(
-                    self.db,
-                    case_id=case_id,
-                    actor_id=actor_id,
-                    action=optional_action,
-                    target_type="SUSPECT_VOICEPRINT",
-                    target_id=optional_row.id,
-                    detail=self._audit_reference_detail(
-                        optional_row,
-                        optional_reference["segment_count"],
-                        reference=optional_reference,
-                    ),
-                )
-                self.db.commit()
-                backend_results[_ERES2NET_LARGE] = self._ready_backend_result(
-                    optional_row,
-                    optional_reference,
-                )
-            except (AIError, DomainError) as exc:
-                self.db.rollback()
-                backend_results[_ERES2NET_LARGE] = self._not_ready_backend_result(exc)
-        else:
-            backend_results[_ERES2NET_LARGE] = self._not_ready_backend_result(
-                failures.get(_ERES2NET_LARGE)
-                or BackendUnavailableError(
-                    "ERes2Net-large enrollment reference is unavailable",
-                    details={"backend_key": _ERES2NET_LARGE},
-                )
-            )
 
         return {
             "caseId": case_id,
             "voiceprintId": primary_row.id,
             "ready": True,
-            "dualReady": all(
-                backend_results[key].get("ready") is True for key in _ENROLLMENT_BACKENDS
-            ),
-            "backends": backend_results,
             "usableDurationMs": primary_row.usable_duration_ms,
             "embeddingDim": primary_row.embedding_dim,
             "modelKey": primary_row.model_key,
@@ -326,7 +242,7 @@ class VoiceprintService:
     def list_officers(self, active_only: bool = True) -> list[dict]:
         # Legacy API remains XVector-centric through Task 5. Task 6 selects a
         # backend explicitly for session binding/readiness.
-        stmt = select(OfficerVoiceprint).where(OfficerVoiceprint.model_key == _XVECTOR)
+        stmt = select(OfficerVoiceprint).where(OfficerVoiceprint.model_key == _ERES2NET_LARGE)
         if active_only:
             stmt = stmt.where(OfficerVoiceprint.active.is_(True), OfficerVoiceprint.revoked_at.is_(None))
         stmt = stmt.order_by(OfficerVoiceprint.officer_id.asc())
@@ -393,10 +309,10 @@ class VoiceprintService:
     def build_reference_for_backend(self, pcm: bytes, backend: str) -> dict[str, Any]:
         """Build one model-specific reference from source PCM using enrollment semantics."""
         backend_key = str(backend or "").strip().lower()
-        if backend_key not in _ENROLLMENT_BACKENDS:
+        if backend_key != _ERES2NET_LARGE:
             raise DomainError(
                 "VOICEPRINT_BACKEND_UNSUPPORTED",
-                "声纹 reference 只能使用已支持的具体 embedding backend",
+                "声纹 reference 只能使用 ERes2Net-large",
                 400,
                 data={"backend_key": backend_key},
             )
@@ -404,7 +320,7 @@ class VoiceprintService:
         return self._build_reference_for_backend(prepared, backend_key)
 
     def _build_reference(self, pcm: bytes) -> dict[str, Any]:
-        return self.build_reference_for_backend(pcm, _XVECTOR)
+        return self.build_reference_for_backend(pcm, _ERES2NET_LARGE)
 
     def _build_dual_references(
         self,

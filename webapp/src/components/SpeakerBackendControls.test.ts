@@ -29,14 +29,14 @@ describe('speaker backend controls', () => {
     expect(modes).toHaveLength(3)
   })
 
-  it('system settings exposes mode, authority, backend health and calibration without an auto-winner', () => {
+  it('system settings exposes ERes2Net-large management without a backend selector', () => {
     const source = readFileSync(new URL('../views/SystemSettingsView.vue', import.meta.url), 'utf8')
     const calibration = readFileSync(new URL('./SpeakerCalibrationCenter.vue', import.meta.url), 'utf8')
 
-    expect(source).toContain('XVector')
     expect(source).toContain('ERes2Net-large')
-    expect(source).toContain('Compare')
-    expect(source).toContain('authoritative')
+    expect(source).not.toContain('XVector')
+    expect(source).not.toContain('Compare')
+    expect(source).not.toContain('authoritative')
 
     expect(calibration).toContain('模型状态')
     expect(calibration).toContain('校准状态')
@@ -48,12 +48,4 @@ describe('speaker backend controls', () => {
     expect(calibration).not.toContain('自动选择胜者')
   })
 
-  it('case preparation shows the one-recording dual-backend readiness result', () => {
-    const source = readFileSync(new URL('./VoiceprintPreparationPanel.vue', import.meta.url), 'utf8')
-    expect(source).toContain('XVector')
-    expect(source).toContain('ERes2Net-large')
-    expect(source).toContain('一次录制')
-    expect(source).toContain('authoritative')
-    expect(source).not.toContain('最终 VAD 复核与 XVector 声纹聚合')
-  })
 })

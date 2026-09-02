@@ -154,7 +154,7 @@ def test_speech_worker_dispatch_forwards_embedding_backend_to_runtime(tmp_path):
     assert runtime.calls == [ERES2NET]
 
 
-def test_suspect_one_capture_builds_two_isolated_model_references(tmp_path):
+def test_suspect_capture_builds_one_eres2net_reference(tmp_path):
     engine, db = make_db(tmp_path)
     try:
         speech = FakeDualSpeechClient()
@@ -172,49 +172,35 @@ def test_suspect_one_capture_builds_two_isolated_model_references(tmp_path):
             )
         )
         assert speech.segment_calls == 1
-        x_chunks = [pcm for backend, pcm in speech.embedding_calls if backend == XVECTOR]
         e_chunks = [pcm for backend, pcm in speech.embedding_calls if backend == ERES2NET]
-        assert len(x_chunks) >= 3
-        assert x_chunks == e_chunks
+        assert len(e_chunks) >= 3
 
-        assert {row.model_key for row in rows} == {XVECTOR, ERES2NET}
-        by_key = {row.model_key: row for row in rows}
-        assert by_key[XVECTOR].embedding_dim == 3
-        assert by_key[ERES2NET].embedding_dim == 4
-        assert by_key[XVECTOR].model_id == "xvector"
-        assert by_key[ERES2NET].model_id.startswith("iic/speech_eres2net_large")
+        assert {row.model_key for row in rows} == {ERES2NET}
+        assert rows[0].embedding_dim == 4
+        assert rows[0].model_id.startswith("iic/speech_eres2net_large")
 
         assert result["ready"] is True
-        assert result["dualReady"] is True
-        assert result["voiceprintId"] == by_key[XVECTOR].id
-        assert result["backends"][XVECTOR]["status"] == "READY"
-        assert result["backends"][ERES2NET]["status"] == "READY"
-        assert result["backends"][XVECTOR]["embeddingDim"] == 3
-        assert result["backends"][ERES2NET]["embeddingDim"] == 4
+        assert result["voiceprintId"] == rows[0].id
+        assert result["modelKey"] == ERES2NET
+        assert result["embeddingDim"] == 4
     finally:
         db.close()
         engine.dispose()
 
 
-def test_optional_eres_failure_preserves_xvector_and_is_explicit_not_ready(tmp_path):
+def test_eres_failure_does_not_persist_a_fallback_reference(tmp_path):
     engine, db = make_db(tmp_path)
     try:
         speech = FakeDualSpeechClient(fail_backend=ERES2NET)
-        result = VoiceprintService(db, speech_client=speech).enroll_suspect(
-            "CASE-DUAL",
-            pcm16(),
-            actor_id="op-dual",
-        )
+        with pytest.raises(BackendUnavailableError):
+            VoiceprintService(db, speech_client=speech).enroll_suspect(
+                "CASE-DUAL",
+                pcm16(),
+                actor_id="op-dual",
+            )
 
         rows = list(db.scalars(select(SuspectVoiceprint).where(SuspectVoiceprint.case_id == "CASE-DUAL")))
-        assert len(rows) == 1
-        assert rows[0].model_key == XVECTOR
-        assert result["ready"] is True
-        assert result["dualReady"] is False
-        assert result["backends"][XVECTOR]["status"] == "READY"
-        assert result["backends"][ERES2NET]["status"] == "NOT_READY"
-        assert result["backends"][ERES2NET]["ready"] is False
-        assert result["backends"][ERES2NET]["errorCode"] == "BACKEND_UNAVAILABLE"
+        assert rows == []
     finally:
         db.close()
         engine.dispose()

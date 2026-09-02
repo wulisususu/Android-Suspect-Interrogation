@@ -1,80 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { ref } from 'vue'
 import OfficerVoiceprintLibrary from '../components/OfficerVoiceprintLibrary.vue'
 import SpeakerCalibrationCenter from '../components/SpeakerCalibrationCenter.vue'
-import {
-  fetchSpeakerRuntimeStatus,
-  speakerBackendLabel,
-  updateSpeakerRuntimeSelection,
-  validateSpeakerRuntimeSelection,
-  type SpeakerBackendKey,
-  type SpeakerRuntimeMode,
-  type SpeakerRuntimeState,
-} from '../api/speakerCalibration'
 
 defineEmits<{ back: [] }>()
 
-const activeTab = ref<'runtime' | 'library' | 'calibration'>('runtime')
-const runtime = ref<SpeakerRuntimeState | null>(null)
-const selectedMode = ref<SpeakerRuntimeMode>('xvector')
-const selectedAuthority = ref<SpeakerBackendKey>('xvector')
-const loadingRuntime = ref(true)
-const savingRuntime = ref(false)
-const runtimeError = ref('')
-
-const selectionValidation = computed(() => validateSpeakerRuntimeSelection(
-  selectedMode.value,
-  selectedMode.value === 'compare' ? selectedAuthority.value : null,
-))
-
-function backendReady(backend: SpeakerBackendKey): boolean {
-  return runtime.value?.backends[backend]?.ready === true
-}
-
-function syncSelection(next: SpeakerRuntimeState) {
-  runtime.value = next
-  selectedMode.value = next.selection.mode
-  selectedAuthority.value = next.selection.authoritativeBackend
-}
-
-async function loadRuntime() {
-  loadingRuntime.value = true
-  runtimeError.value = ''
-  try {
-    syncSelection(await fetchSpeakerRuntimeStatus())
-  } catch (cause) {
-    runtimeError.value = cause instanceof Error ? cause.message : '无法读取声纹运行状态'
-  } finally {
-    loadingRuntime.value = false
-  }
-}
-
-async function saveRuntimeSelection() {
-  if (!selectionValidation.value.valid) {
-    runtimeError.value = selectionValidation.value.reason
-    return
-  }
-  savingRuntime.value = true
-  runtimeError.value = ''
-  try {
-    syncSelection(await updateSpeakerRuntimeSelection(
-      selectedMode.value,
-      selectedMode.value === 'compare' ? selectedAuthority.value : null,
-    ))
-  } catch (cause) {
-    runtimeError.value = cause instanceof Error ? cause.message : '声纹运行模式切换失败'
-  } finally {
-    savingRuntime.value = false
-  }
-}
-
-watch(selectedMode, (mode) => {
-  if (mode === 'compare' && !backendReady(selectedAuthority.value)) {
-    selectedAuthority.value = backendReady('xvector') ? 'xvector' : 'eres2net_large'
-  }
-})
-
-onMounted(() => void loadRuntime())
+const activeTab = ref<'library' | 'calibration'>('library')
 </script>
 
 <template>
@@ -84,66 +15,16 @@ onMounted(() => void loadRuntime())
         <button class="back-button" @click="$emit('back')">‹ 返回案件管理</button>
         <span>系统设置</span>
         <h1>声纹系统管理</h1>
-        <p>运行模式、双后端模型状态、民警声纹资产和设备校准统一在此维护；切换只影响后续新会话。</p>
+        <p>ERes2Net-large 声纹登记、状态与设备校准统一在此维护。</p>
       </div>
     </header>
 
     <nav class="settings-tabs" aria-label="声纹系统设置">
-      <button :class="{ active: activeTab === 'runtime' }" @click="activeTab = 'runtime'">运行模式</button>
       <button :class="{ active: activeTab === 'library' }" @click="activeTab = 'library'">民警声纹库</button>
       <button :class="{ active: activeTab === 'calibration' }" @click="activeTab = 'calibration'">设备校准中心</button>
     </nav>
 
-    <section v-if="activeTab === 'runtime'" class="runtime-panel">
-      <div class="runtime-header">
-        <div>
-          <h2>Speaker backend</h2>
-          <p>可选择 XVector、ERes2Net-large 或 Compare。Compare 必须明确指定业务 authoritative backend，secondary 只提供诊断证据。</p>
-        </div>
-        <button :disabled="loadingRuntime || savingRuntime || !selectionValidation.valid" @click="saveRuntimeSelection">
-          {{ savingRuntime ? '正在应用…' : '应用到后续新会话' }}
-        </button>
-      </div>
-
-      <p v-if="runtimeError" class="runtime-error">{{ runtimeError }}</p>
-      <p v-if="loadingRuntime" class="runtime-loading">正在读取双后端状态…</p>
-
-      <template v-else-if="runtime">
-        <div class="mode-grid" role="group" aria-label="声纹运行模式">
-          <label><input v-model="selectedMode" type="radio" value="xvector" :disabled="!backendReady('xvector')"> XVector</label>
-          <label><input v-model="selectedMode" type="radio" value="eres2net_large" :disabled="!backendReady('eres2net_large')"> ERes2Net-large</label>
-          <label><input v-model="selectedMode" type="radio" value="compare"> Compare</label>
-        </div>
-
-        <div v-if="selectedMode === 'compare'" class="authority-row">
-          <label for="speaker-authority">业务 authoritative backend</label>
-          <select id="speaker-authority" v-model="selectedAuthority">
-            <option value="xvector" :disabled="!backendReady('xvector')">XVector</option>
-            <option value="eres2net_large" :disabled="!backendReady('eres2net_large')">ERes2Net-large</option>
-          </select>
-          <span>只有 authoritative 结果可以改变正式审讯业务角色；另一后端永不自动晋升。</span>
-        </div>
-
-        <div class="backend-health-grid">
-          <article v-for="backend in (['xvector', 'eres2net_large'] as SpeakerBackendKey[])" :key="backend">
-            <div class="backend-title">
-              <strong>{{ speakerBackendLabel(backend) }}</strong>
-              <span :class="runtime.backends[backend].ready ? 'ready' : 'unavailable'">
-                {{ runtime.backends[backend].ready ? 'READY' : 'UNAVAILABLE' }}
-              </span>
-            </div>
-            <small>{{ runtime.backends[backend].modelId || '模型未识别' }} · {{ runtime.backends[backend].modelVersion || 'version unknown' }}</small>
-            <code>{{ runtime.backends[backend].modelFingerprint || 'fingerprint unavailable' }}</code>
-            <small v-if="runtime.backends[backend].errorCode">{{ runtime.backends[backend].errorCode }} · {{ runtime.backends[backend].errorType || 'runtime error' }}</small>
-          </article>
-        </div>
-
-        <p v-if="runtime.degraded" class="degraded-warning">Compare 当前为 degraded：secondary backend 不可用，但 authoritative backend 可继续承担业务判定。</p>
-        <p class="runtime-note">当前选择：{{ runtime.selection.mode }} · authoritative={{ runtime.selection.authoritativeBackend }}。运行时切换不覆盖启动配置，服务重启后仍以 SUSPECT_SPEAKER_BACKEND 为默认。</p>
-      </template>
-    </section>
-
-    <OfficerVoiceprintLibrary v-else-if="activeTab === 'library'" />
+    <OfficerVoiceprintLibrary v-if="activeTab === 'library'" />
     <SpeakerCalibrationCenter v-else />
   </main>
 </template>

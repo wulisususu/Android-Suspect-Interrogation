@@ -156,7 +156,7 @@ class SpeechWorkerServer:
         if op == "open_session":
             session_id = self._required_session_id(request)
             sample_rate = int(request.get("sample_rate") or 16000)
-            speaker_backend = str(request.get("speaker_backend") or "xvector").strip().lower()
+            speaker_backend = str(request.get("speaker_backend") or "eres2net_large").strip().lower()
             authoritative_backend = request.get("authoritative_backend")
             if not speaker_backend:
                 raise AIError("speaker_backend is required")
