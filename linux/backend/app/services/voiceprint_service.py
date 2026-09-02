@@ -66,7 +66,7 @@ class VoiceprintService:
         suspect = voiceprint_repo.get_suspect(self.db, case_id, model_key=_ERES2NET_LARGE)
         interrogator_ready = bool(assignment is not None and self._officer_active(assignment.interrogator_officer_id, _ERES2NET_LARGE))
         recorder_ready = bool(assignment is not None and self._officer_active(assignment.recorder_officer_id, _ERES2NET_LARGE))
-        return {"suspectReady": suspect is not None, "interrogatorReady": interrogator_ready, "recorderReady": recorder_ready, "recognitionMode": self._recognition_mode(interrogator_ready, recorder_ready), "canStart": suspect is not None, "selectedSpeakerBackend": _ERES2NET_LARGE}
+        return {"suspectReady": suspect is not None, "interrogatorReady": interrogator_ready, "recorderReady": recorder_ready, "recognitionMode": self._recognition_mode(interrogator_ready, recorder_ready), "canStart": suspect is not None}
 
     def enroll_suspect(self, case_id: str, pcm: bytes, actor_id: str | None = None) -> dict:
         case_repo.get(self.db, case_id)
@@ -189,7 +189,9 @@ class VoiceprintService:
         return self._officer_dict(row)
 
     def update_officer(self, officer_id: str, pcm: bytes, actor_id: str | None = None) -> dict:
-        existing = voiceprint_repo.get_officer(self.db, officer_id, active_only=False)
+        existing = voiceprint_repo.get_officer(
+            self.db, officer_id, model_key=_ERES2NET_LARGE, active_only=False
+        )
         if existing is None:
             raise DomainError("OFFICER_VOICEPRINT_NOT_FOUND", "民警声纹档案不存在", 404)
         reference = self._build_reference(pcm)
@@ -226,7 +228,9 @@ class VoiceprintService:
         return self._officer_dict(row)
 
     def revoke_officer(self, officer_id: str, actor_id: str | None = None) -> dict:
-        row = voiceprint_repo.revoke_officer(self.db, officer_id=officer_id)
+        row = voiceprint_repo.revoke_officer(
+            self.db, officer_id=officer_id, model_key=_ERES2NET_LARGE
+        )
         audit_repo.add(
             self.db,
             case_id=None,
@@ -442,13 +446,7 @@ class VoiceprintService:
             pass
         if supports_backend:
             return method(pcm, sample_rate=_SAMPLE_RATE, backend=backend)
-        if backend == _XVECTOR:
-            # Compatibility seam for existing local fakes and pre-Task-5 clients.
-            return method(pcm, sample_rate=_SAMPLE_RATE)
-        raise BackendUnavailableError(
-            "speech client does not support the requested speaker backend",
-            details={"backend_key": backend},
-        )
+        return method(pcm, sample_rate=_SAMPLE_RATE)
 
     def _officer_active(self, officer_id: str | None, model_key: str | None = None) -> bool:
         return bool(
