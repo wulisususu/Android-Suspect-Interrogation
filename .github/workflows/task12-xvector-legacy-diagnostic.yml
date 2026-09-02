@@ -32,6 +32,7 @@ jobs:
           required=[
               'LEGACY_ROOT="$RUNNER_TEMP/task12-funasr-legacy"',
               '--no-deps --target "$LEGACY_TARGET" "funasr==$version"',
+              '--no-deps --target "$LEGACY_TARGET" "humanfriendly==10.0"',
               'for version in 0.8.4 0.8.6; do',
               'rm -rf "$LEGACY_ROOT"',
           ]
@@ -69,6 +70,7 @@ jobs:
               echo "candidate=$version install_ok=false"
               continue
             fi
+            "$PY" -m pip install --disable-pip-version-check --no-deps --target "$LEGACY_TARGET" "humanfriendly==10.0"
             if [[ ! -f "$LEGACY_TARGET/funasr/bin/sv_infer.py" ]]; then
               echo "candidate=$version sv_infer_present=false"
               continue
