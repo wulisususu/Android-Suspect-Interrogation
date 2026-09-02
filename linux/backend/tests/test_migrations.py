@@ -33,7 +33,7 @@ REQUIRED_TABLES = (
     CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES | OFFICER_LIBRARY_TABLES |
     CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES | QWEN_ROUTING_TABLES
 )
-ALEMBIC_HEAD = "0009_dual_speaker_backends"
+ALEMBIC_HEAD = "0010_backend_scoped_speaker_calibration"
 
 
 def _run_alembic(tmp_path, target: str):
@@ -128,6 +128,10 @@ def test_alembic_upgrade_head_builds_required_schema(tmp_path):
             "fragment_id", "revision_no", "before_speaker", "after_speaker", "before_text",
             "after_text", "actor_id", "reason",
         } <= revision_columns
+        calibration_columns = {item["name"] for item in inspector.get_columns("speaker_device_calibrations")}
+        snapshot_columns = {item["name"] for item in inspector.get_columns("session_speaker_calibration_snapshots")}
+        assert "speaker_backend_key" in calibration_columns
+        assert "speaker_backend_key" in snapshot_columns
         formal_columns = {item["name"] for item in inspector.get_columns("case_questions")}
         assert {"section_type", "template_key", "template_item_key", "locked", "formal_answer_text", "first_asked_at"} <= formal_columns
         with engine.connect() as connection:

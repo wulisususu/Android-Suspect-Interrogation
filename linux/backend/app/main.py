@@ -135,15 +135,28 @@ def create_app(
     )
 
     def current_model_identity() -> CurrentSpeakerModelIdentity:
+        backend_key = str(settings.speaker_backend or "xvector").strip().lower()
         try:
             health = speech_client.health()
         except Exception:
             health = {}
-        fingerprint = str(health.get("speaker_model_fingerprint") or "UNAVAILABLE")
+        backend_health = None
+        all_backends = health.get("speaker_backends") if isinstance(health, dict) else None
+        if isinstance(all_backends, dict):
+            candidate = all_backends.get(backend_key)
+            if isinstance(candidate, dict):
+                backend_health = candidate
+        if backend_health is None and backend_key == "xvector":
+            backend_health = health if isinstance(health, dict) else {}
+        backend_health = backend_health or {}
+        fingerprint = str(backend_health.get("model_fingerprint") or backend_health.get("speaker_model_fingerprint") or "UNAVAILABLE")
+        model_id = str(backend_health.get("model_id") or backend_health.get("speaker_model_id") or backend_key)
+        model_version_value = backend_health.get("model_version", backend_health.get("speaker_model_version"))
         return CurrentSpeakerModelIdentity(
-            str(health.get("speaker_model_id") or "xvector"),
-            None if health.get("speaker_model_version") is None else str(health.get("speaker_model_version")),
+            model_id,
+            None if model_version_value is None else str(model_version_value),
             fingerprint,
+            backend_key=backend_key,
         )
 
     def current_microphone_identity(source: str = "ALSA") -> CurrentMicrophoneIdentity:
@@ -243,6 +256,7 @@ def create_app(
     app.state.qa_routing_coordinator = None
     app.state.browser_audio_input = browser_audio_input
     app.state.speech_client = speech_client
+    app.state.speaker_calibration_model_provider = current_model_identity
     app.state.voiceprint_capture = (
         AudioCaptureService(
             manager,

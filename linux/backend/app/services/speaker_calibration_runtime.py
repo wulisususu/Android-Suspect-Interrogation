@@ -15,6 +15,7 @@ class ResolvedSpeakerCalibration:
     status: str
     speaker_model_fingerprint: str | None
     microphone_fingerprint: str | None
+    speaker_backend_key: str | None = None
 
 
 def resolve_speaker_calibration(lifecycle: Any, legacy: SpeakerCalibration) -> ResolvedSpeakerCalibration:
@@ -24,6 +25,7 @@ def resolve_speaker_calibration(lifecycle: Any, legacy: SpeakerCalibration) -> R
     model = state.get("currentModel") if isinstance(state, dict) else None
     microphone = state.get("currentMicrophone") if isinstance(state, dict) else None
     model_fp = model.get("fingerprint") if isinstance(model, dict) else None
+    backend_key = model.get("backendKey") if isinstance(model, dict) else None
     mic_fp = microphone.get("fingerprint") if isinstance(microphone, dict) else None
 
     if status in {"VALID", "RECOMPUTE_RECOMMENDED"} and isinstance(calibration, dict):
@@ -35,6 +37,7 @@ def resolve_speaker_calibration(lifecycle: Any, legacy: SpeakerCalibration) -> R
             status=status,
             speaker_model_fingerprint=None if model_fp is None else str(model_fp),
             microphone_fingerprint=None if mic_fp is None else str(mic_fp),
+            speaker_backend_key=None if backend_key is None else str(backend_key),
         )
 
     # Once DB calibration history exists, stale/insufficient lifecycle state must
@@ -49,6 +52,7 @@ def resolve_speaker_calibration(lifecycle: Any, legacy: SpeakerCalibration) -> R
             status=status,
             speaker_model_fingerprint=None if model_fp is None else str(model_fp),
             microphone_fingerprint=None if mic_fp is None else str(mic_fp),
+            speaker_backend_key=None if backend_key is None else str(backend_key),
         )
 
     if legacy.accept_threshold is not None:
@@ -60,6 +64,7 @@ def resolve_speaker_calibration(lifecycle: Any, legacy: SpeakerCalibration) -> R
             status=status,
             speaker_model_fingerprint=None if model_fp is None else str(model_fp),
             microphone_fingerprint=None if mic_fp is None else str(mic_fp),
+            speaker_backend_key=None if backend_key is None else str(backend_key),
         )
 
     return ResolvedSpeakerCalibration(
@@ -70,4 +75,5 @@ def resolve_speaker_calibration(lifecycle: Any, legacy: SpeakerCalibration) -> R
         status=status,
         speaker_model_fingerprint=None if model_fp is None else str(model_fp),
         microphone_fingerprint=None if mic_fp is None else str(mic_fp),
+        speaker_backend_key=None if backend_key is None else str(backend_key),
     )

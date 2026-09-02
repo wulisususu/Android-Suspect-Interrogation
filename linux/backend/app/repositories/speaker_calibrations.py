@@ -27,6 +27,7 @@ def create_calibration(
     sample_count: int,
     corpus_digest: str,
     algorithm_version: str,
+    speaker_backend_key: str = "xvector",
     speaker_model_id: str,
     speaker_model_version: str | None,
     speaker_model_fingerprint: str,
@@ -55,6 +56,7 @@ def create_calibration(
         "sample_count": int(sample_count),
         "corpus_digest": str(corpus_digest),
         "algorithm_version": str(algorithm_version),
+        "speaker_backend_key": str(speaker_backend_key or "xvector").strip().lower(),
         "speaker_model_id": str(speaker_model_id),
         "speaker_model_version": None if speaker_model_version is None else str(speaker_model_version),
         "speaker_model_fingerprint": str(speaker_model_fingerprint),
@@ -73,19 +75,45 @@ def create_calibration(
     return row
 
 
-def latest_calibration(db: Session) -> SpeakerDeviceCalibration | None:
+def latest_calibration(
+    db: Session,
+    *,
+    speaker_backend_key: str | None = None,
+    speaker_model_fingerprint: str | None = None,
+    microphone_fingerprint: str | None = None,
+) -> SpeakerDeviceCalibration | None:
+    query = select(SpeakerDeviceCalibration)
+    if speaker_backend_key is not None:
+        query = query.where(
+            SpeakerDeviceCalibration.speaker_backend_key == str(speaker_backend_key).strip().lower()
+        )
+    if speaker_model_fingerprint is not None:
+        query = query.where(
+            SpeakerDeviceCalibration.speaker_model_fingerprint == str(speaker_model_fingerprint)
+        )
+    if microphone_fingerprint is not None:
+        query = query.where(
+            SpeakerDeviceCalibration.microphone_fingerprint == str(microphone_fingerprint)
+        )
     return db.scalars(
-        select(SpeakerDeviceCalibration)
-        .order_by(SpeakerDeviceCalibration.created_at.desc(), SpeakerDeviceCalibration.id.desc())
-        .limit(1)
+        query.order_by(SpeakerDeviceCalibration.created_at.desc(), SpeakerDeviceCalibration.id.desc()).limit(1)
     ).first()
 
 
-def list_calibrations(db: Session, *, limit: int = 100) -> list[SpeakerDeviceCalibration]:
+def list_calibrations(
+    db: Session,
+    *,
+    limit: int = 100,
+    speaker_backend_key: str | None = None,
+) -> list[SpeakerDeviceCalibration]:
+    query = select(SpeakerDeviceCalibration)
+    if speaker_backend_key is not None:
+        query = query.where(
+            SpeakerDeviceCalibration.speaker_backend_key == str(speaker_backend_key).strip().lower()
+        )
     return list(
         db.scalars(
-            select(SpeakerDeviceCalibration)
-            .order_by(SpeakerDeviceCalibration.created_at.desc(), SpeakerDeviceCalibration.id.desc())
+            query.order_by(SpeakerDeviceCalibration.created_at.desc(), SpeakerDeviceCalibration.id.desc())
             .limit(max(1, int(limit)))
         )
     )
@@ -101,6 +129,7 @@ def create_session_snapshot(
     margin: float | None,
     threshold_source: str,
     calibration_status: str,
+    speaker_backend_key: str = "xvector",
     speaker_model_fingerprint: str | None,
     microphone_fingerprint: str | None,
 ) -> SessionSpeakerCalibrationSnapshot:
@@ -113,6 +142,7 @@ def create_session_snapshot(
         margin=None if margin is None else float(margin),
         threshold_source=str(threshold_source),
         calibration_status=str(calibration_status),
+        speaker_backend_key=str(speaker_backend_key or "xvector").strip().lower(),
         speaker_model_fingerprint=(
             None if speaker_model_fingerprint is None else str(speaker_model_fingerprint)
         ),

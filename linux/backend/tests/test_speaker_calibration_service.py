@@ -85,9 +85,10 @@ def _service(
     model_fp: str = MODEL_FP,
     mic_fp: str = MIC_FP,
 ):
+    backend_key = "eres2net_large" if model_id == "eres2net-large" else "xvector"
     return SpeakerCalibrationService(
         db,
-        model_provider=lambda: CurrentSpeakerModelIdentity(model_id, "v1", model_fp),
+        model_provider=lambda: CurrentSpeakerModelIdentity(model_id, "v1", model_fp, backend_key=backend_key),
         microphone_provider=lambda: CurrentMicrophoneIdentity("ALSA", "hw:1,0", "USB Mic", mic_fp, "STRONG"),
     )
 
@@ -107,6 +108,7 @@ def test_recompute_creates_valid_calibration_and_model_or_mic_change_expires_it(
         assert created["calibration"]["far"] >= 0.0
         assert created["calibration"]["frr"] >= 0.0
         assert created["calibration"]["eer"] >= 0.0
+        assert created["calibration"]["speakerBackendKey"] == "xvector"
         assert created["calibration"]["speakerModelFingerprint"] == MODEL_FP
         assert created["calibration"]["microphoneFingerprint"] == MIC_FP
 

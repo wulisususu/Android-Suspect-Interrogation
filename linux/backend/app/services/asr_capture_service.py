@@ -158,6 +158,7 @@ class AsrCaptureService:
                 margin=resolved.margin,
                 threshold_source=resolved.source,
                 calibration_status=resolved.status,
+                speaker_backend_key=resolved.speaker_backend_key or self.speaker_model_key,
                 speaker_model_fingerprint=resolved.speaker_model_fingerprint,
                 microphone_fingerprint=resolved.microphone_fingerprint,
             )

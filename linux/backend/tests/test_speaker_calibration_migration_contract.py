@@ -33,7 +33,7 @@ def test_alembic_head_contains_device_calibration_history_and_sample_fingerprint
         calibration_columns = {item["name"] for item in inspector.get_columns("speaker_device_calibrations")}
         assert {
             "threshold", "margin", "far", "frr", "eer", "eer_threshold", "eer_far", "eer_frr",
-            "speaker_model_fingerprint", "microphone_fingerprint", "corpus_digest",
+            "speaker_backend_key", "speaker_model_fingerprint", "microphone_fingerprint", "corpus_digest",
         } <= calibration_columns
 
         sample_columns = {item["name"] for item in inspector.get_columns("officer_voice_samples")}
@@ -41,6 +41,6 @@ def test_alembic_head_contains_device_calibration_history_and_sample_fingerprint
 
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert revision == "0009_dual_speaker_backends"
+        assert revision == "0010_backend_scoped_speaker_calibration"
     finally:
         engine.dispose()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base, TimestampMixin, utc_now
@@ -81,6 +81,15 @@ class SpeakerDeviceCalibration(Base):
     """Immutable device-specific speaker calibration history row."""
 
     __tablename__ = "speaker_device_calibrations"
+    __table_args__ = (
+        Index(
+            "ix_speaker_device_calibration_scope",
+            "speaker_backend_key",
+            "speaker_model_fingerprint",
+            "microphone_fingerprint",
+            "created_at",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     status_at_creation: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
@@ -98,6 +107,7 @@ class SpeakerDeviceCalibration(Base):
     sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
     corpus_digest: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     algorithm_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    speaker_backend_key: Mapped[str] = mapped_column(String(64), default="xvector", nullable=False, index=True)
     speaker_model_id: Mapped[str] = mapped_column(String(128), nullable=False)
     speaker_model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     speaker_model_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -129,6 +139,7 @@ class SessionSpeakerCalibrationSnapshot(Base):
     margin: Mapped[float | None] = mapped_column(Float, nullable=True)
     threshold_source: Mapped[str] = mapped_column(String(32), nullable=False)
     calibration_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    speaker_backend_key: Mapped[str] = mapped_column(String(64), default="xvector", nullable=False, index=True)
     speaker_model_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     microphone_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)

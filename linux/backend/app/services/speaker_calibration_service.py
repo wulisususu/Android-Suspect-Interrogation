@@ -36,6 +36,7 @@ class CurrentSpeakerModelIdentity:
     model_id: str
     model_version: str | None
     fingerprint: str
+    backend_key: str = "xvector"
 
 
 @dataclass(frozen=True)
@@ -73,25 +74,62 @@ class SpeakerCalibrationService:
         model = self.model_provider()
         microphone = self.microphone_provider()
         corpus = self._compatible_corpus(model, microphone)
-        latest = calibration_repo.latest_calibration(self.db)
+        backend_key = str(model.backend_key or "xvector").strip().lower()
+        exact = calibration_repo.latest_calibration(
+            self.db,
+            speaker_backend_key=backend_key,
+            speaker_model_fingerprint=model.fingerprint,
+            microphone_fingerprint=microphone.fingerprint,
+        )
+        latest = exact
 
-        if latest is None:
-            status = CalibrationStatus.NOT_CALIBRATED
-            usable = False
-            reason = "尚未完成设备声纹校准"
-        elif latest.speaker_model_fingerprint != model.fingerprint:
-            status = CalibrationStatus.STALE_MODEL
-            usable = False
-            reason = "XVector 模型已更换，需要重新校准"
-        elif latest.microphone_fingerprint != microphone.fingerprint:
-            status = CalibrationStatus.STALE_MIC
-            usable = False
-            reason = "检测到麦克风已更换，请重新校准"
+        if exact is None:
+            same_backend_mic = calibration_repo.latest_calibration(
+                self.db,
+                speaker_backend_key=backend_key,
+                microphone_fingerprint=microphone.fingerprint,
+            )
+            same_backend_model = calibration_repo.latest_calibration(
+                self.db,
+                speaker_backend_key=backend_key,
+                speaker_model_fingerprint=model.fingerprint,
+            )
+            backend_latest = calibration_repo.latest_calibration(
+                self.db,
+                speaker_backend_key=backend_key,
+            )
+            if backend_latest is None:
+                status = CalibrationStatus.NOT_CALIBRATED
+                usable = False
+                reason = "尚未完成当前声纹后端的设备校准"
+            elif same_backend_mic is not None:
+                latest = same_backend_mic
+                status = CalibrationStatus.STALE_MODEL
+                usable = False
+                reason = "当前声纹模型指纹已更换，需要重新校准"
+            elif same_backend_model is not None:
+                latest = same_backend_model
+                status = CalibrationStatus.STALE_MIC
+                usable = False
+                reason = "检测到麦克风已更换，请重新校准"
+            else:
+                latest = backend_latest
+                status = (
+                    CalibrationStatus.STALE_MODEL
+                    if backend_latest.speaker_model_fingerprint != model.fingerprint
+                    else CalibrationStatus.STALE_MIC
+                )
+                usable = False
+                reason = (
+                    "当前声纹模型指纹已更换，需要重新校准"
+                    if status is CalibrationStatus.STALE_MODEL
+                    else "检测到麦克风已更换，请重新校准"
+                )
         elif not corpus.ready:
             status = CalibrationStatus.INSUFFICIENT_DATA
             usable = False
             reason = "当前兼容民警声纹样本不足，无法形成完整设备校准"
-        elif self._material_growth(latest, corpus):
+        elif self._material_growth(exact, corpus):
             status = CalibrationStatus.RECOMPUTE_RECOMMENDED
             usable = True
             reason = "民警声纹库有效样本明显增加，建议重新计算校准"
@@ -113,6 +151,7 @@ class SpeakerCalibrationService:
                 "ready": corpus.ready,
             },
             "currentModel": {
+                "backendKey": backend_key,
                 "modelId": model.model_id,
                 "modelVersion": model.model_version,
                 "fingerprint": model.fingerprint,
@@ -128,7 +167,14 @@ class SpeakerCalibrationService:
         }
 
     def history(self, *, limit: int = 100) -> list[dict]:
-        return [self._calibration_dict(row) for row in calibration_repo.list_calibrations(self.db, limit=limit)]
+        model = self.model_provider()
+        backend_key = str(model.backend_key or "xvector").strip().lower()
+        return [
+            self._calibration_dict(row)
+            for row in calibration_repo.list_calibrations(
+                self.db, limit=limit, speaker_backend_key=backend_key
+            )
+        ]
 
     def recompute(self, *, actor_id: str | None = None) -> dict:
         model = self.model_provider()
@@ -162,6 +208,7 @@ class SpeakerCalibrationService:
             sample_count=corpus.sample_count,
             corpus_digest=corpus.digest,
             algorithm_version=ALGORITHM_VERSION,
+            speaker_backend_key=str(model.backend_key or "xvector").strip().lower(),
             speaker_model_id=model.model_id,
             speaker_model_version=model.model_version,
             speaker_model_fingerprint=model.fingerprint,
@@ -187,6 +234,7 @@ class SpeakerCalibrationService:
                 "observed_eer": row.eer,
                 "officer_count": row.officer_count,
                 "sample_count": row.sample_count,
+                "speaker_backend_key": row.speaker_backend_key,
                 "model_fingerprint": row.speaker_model_fingerprint,
                 "microphone_fingerprint": row.microphone_fingerprint,
                 "metric_scope": "LOCAL_FINITE_CORPUS_ESTIMATE",
@@ -209,6 +257,7 @@ class SpeakerCalibrationService:
                 OfficerVoiceProfile.active.is_(True),
                 OfficerVoiceProfile.revoked_at.is_(None),
                 OfficerVoiceSample.active.is_(True),
+                OfficerVoiceSample.model_key == str(model.backend_key or "xvector").strip().lower(),
                 OfficerVoiceSample.audio_source == microphone.audio_source,
                 OfficerVoiceSample.model_fingerprint == model.fingerprint,
                 OfficerVoiceSample.microphone_fingerprint == microphone.fingerprint,
@@ -287,6 +336,7 @@ class SpeakerCalibrationService:
             "sampleCount": row.sample_count,
             "corpusDigest": row.corpus_digest,
             "algorithmVersion": row.algorithm_version,
+            "speakerBackendKey": row.speaker_backend_key,
             "speakerModelId": row.speaker_model_id,
             "speakerModelVersion": row.speaker_model_version,
             "speakerModelFingerprint": row.speaker_model_fingerprint,
