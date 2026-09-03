@@ -139,8 +139,18 @@ class QARoutingCoordinator:
             builder = QAUnitBuilder(db, idle_close_seconds=self.idle_close_seconds)
             closed_ids = builder.consume_fragment(case_id, fragment_id)
             db.commit()
+        self._publish_open_unit_for_fragment(fragment_id)
         for qa_unit_id in closed_ids:
             self._route_unit(qa_unit_id)
+
+    def _publish_open_unit_for_fragment(self, fragment_id: str) -> None:
+        with self.session_factory() as db:
+            unit = qa_repo.find_for_fragment(db, fragment_id)
+            if unit is None or unit.status != "OPEN" or not unit.session_id:
+                return
+            payload = qa_unit_dict(unit)
+            session_id = unit.session_id
+        self.publish_event(session_id, "QA_UNIT_UPDATED", payload)
 
     def _recover_session(self, case_id: str, session_id: str) -> None:
         closed_ids: list[str] = []
