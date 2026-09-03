@@ -120,6 +120,7 @@ def test_streaming_vad_passes_only_new_pcm_and_session_cache(tmp_path: Path):
     call = runtime.vad_model.generate_calls[-1]
     assert call["input"] == chunk
     assert call["cache"] is cache
+    assert call["max_single_segment_time"] == 5000
     assert call["is_final"] is False
     assert call["chunk_size"] == 200
 
