@@ -58,6 +58,36 @@ class CaseService:
             except ValueError as exc:
                 raise DomainError("INVALID_STAGE", "无效审讯阶段", 400) from exc
         case_repo.update_fields(self.db, row, patch)
+        identity_fields = {
+            "suspectName": "name",
+            "gender": "gender",
+            "idNumber": "id_number",
+            "nation": "nation",
+            "birthDate": "birth_date",
+            "address": "address",
+        }
+        if any(key in patch for key in identity_fields):
+            persons = person_repo.list_for_case(self.db, case_id)
+            if persons:
+                identity = persons[-1]
+                for key, attribute in identity_fields.items():
+                    if key in patch:
+                        setattr(identity, attribute, str(patch[key] or ""))
+            else:
+                person_repo.create(
+                    self.db,
+                    case_id=case_id,
+                    data={
+                        "name": patch.get("suspectName", row.suspect_name),
+                        "gender": patch.get("gender", row.gender),
+                        "idNumber": patch.get("idNumber", ""),
+                        "nation": patch.get("nation", ""),
+                        "birthDate": patch.get("birthDate", ""),
+                        "address": patch.get("address", ""),
+                        "source": "MANUAL",
+                    },
+                )
+            self.db.flush()
         after = self._case_data(row)
         audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="CASE_UPDATE", target_type="CASE", target_id=case_id, before=before, after=after, detail=patch)
         self.db.commit()
