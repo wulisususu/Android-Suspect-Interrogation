@@ -5,6 +5,14 @@ import workspaceSource from '../views/InterrogationWorkspace.vue?raw'
 
 
 describe('recognition evidence workbench contract', () => {
+  it('renders merged question and answer turns while retaining raw evidence access', () => {
+    expect(dialogueSource).toContain('liveDialogueTurns')
+    expect(dialogueSource).toContain('问${turn.ordinal}')
+    expect(dialogueSource).toContain('答${turn.ordinal}')
+    expect(dialogueSource).toContain("turn.kind === 'UNCONFIRMED'")
+    expect(dialogueSource).toContain('原始识别片段与证据')
+  })
+
   it('shows independent AI recognition evidence on every dialogue turn', () => {
     expect(dialogueSource).toContain('识别证据')
     expect(dialogueSource).toContain('recognitionEvidence')
