@@ -32,7 +32,8 @@ class AISettings:
         mode = os.getenv("AI_MODE", "mock").strip().lower()
         if mode not in {"mock", "real"}:
             raise ValueError("AI_MODE must be 'mock' or 'real'")
-        calibration = SpeakerCalibration.from_env()
+        speaker_backend = os.getenv("SUSPECT_SPEAKER_BACKEND", "eres2net_large")
+        calibration = SpeakerCalibration.from_env(backend_key=speaker_backend)
         return cls(
             mode=mode,
             model_root=Path(os.getenv("MODEL_ROOT", str(backend_dir / "models"))).expanduser(),
