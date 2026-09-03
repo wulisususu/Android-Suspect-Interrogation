@@ -200,10 +200,12 @@ def test_ai_settings_support_speech_socket_and_unconfigured_speaker_thresholds(m
     monkeypatch.setenv("SUSPECT_SPEECH_SOCKET", str(socket_path))
     monkeypatch.delenv("SUSPECT_SPEAKER_ACCEPT_THRESHOLD", raising=False)
     monkeypatch.delenv("SUSPECT_SPEAKER_MARGIN", raising=False)
+    monkeypatch.setenv("SUSPECT_SPEAKER_BACKEND", "eres2net_large")
 
     settings = AISettings.from_env()
     assert settings.speech_socket == socket_path
     assert settings.speaker_accept_threshold is None
+    assert settings.speaker_effective_threshold == pytest.approx(0.372)
     assert settings.speaker_margin is None
 
     monkeypatch.setenv("SUSPECT_SPEAKER_ACCEPT_THRESHOLD", "0.73")
