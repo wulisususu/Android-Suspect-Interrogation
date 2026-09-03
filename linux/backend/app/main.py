@@ -196,7 +196,10 @@ def create_app(
                 model_provider=lambda: current_model_identity(normalized_backend),
                 microphone_provider=lambda: current_microphone_identity(normalized_source),
             )
-            return resolve_speaker_calibration(lifecycle, SpeakerCalibration.from_env())
+            return resolve_speaker_calibration(
+                lifecycle,
+                SpeakerCalibration.from_env(backend_key=normalized_backend),
+            )
 
         return runtime_calibration_resolver
 
