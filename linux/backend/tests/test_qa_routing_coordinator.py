@@ -264,6 +264,31 @@ def test_events_are_published_after_committed_routing_state(tmp_path):
         engine.dispose()
 
 
+def test_attributable_fragment_publishes_open_qa_unit_before_routing(tmp_path):
+    engine, factory, case_id, session_id, capture_id = seed(tmp_path)
+    events = EventCollector(factory)
+    coordinator = QARoutingCoordinator(
+        session_factory=factory,
+        ai_supervisor=FakeSupervisor(),
+        publish_event=events,
+        idle_close_seconds=60.0,
+        poll_interval=0.01,
+    )
+    q_id, _a_id = add_exchange(factory, case_id=case_id, capture_id=capture_id)
+    try:
+        coordinator._consume_fragment(case_id, q_id)
+        assert len(events.events) == 1
+        published_session_id, event, payload, persisted_status = events.events[0]
+        assert published_session_id == session_id
+        assert event == "QA_UNIT_UPDATED"
+        assert persisted_status == "OPEN"
+        assert payload["status"] == "OPEN"
+        assert payload["rawQuestionText"] == "你几点到的？"
+        assert payload["rawAnswerText"] == ""
+    finally:
+        engine.dispose()
+
+
 def qa_repo_status(factory, case_id: str, status: str):
     with factory() as db:
         return [row for row in qa_repo.list_for_case(db, case_id) if row.status == status]
