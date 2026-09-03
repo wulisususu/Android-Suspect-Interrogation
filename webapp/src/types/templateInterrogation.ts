@@ -45,7 +45,10 @@ export interface TemplateWorkspace {
   caseId: string; templateKey?: string | null; questions: FormalQuestion[]; rounds: FormalQuestionRound[]; pendingQuestions: PendingFormalQuestion[]; qaUnits: FormalQAUnit[]
 }
 
-export type LiveDialogueItem = TemporaryAsrFragment
+export type LiveDialogueTurn =
+  | { kind: 'QUESTION'; key: string; unitId: string; ordinal: number; text: string; startedAt: string | null }
+  | { kind: 'ANSWER'; key: string; unitId: string; ordinal: number; text: string; startedAt: string | null }
+  | { kind: 'UNCONFIRMED'; key: string; fragment: TemporaryAsrFragment; text: string; startedAt: string | null }
 export interface CaseQuestionCreateInput { text: string; source?: FormalQuestionSource; standardQuestionId?: string | null; regexPatterns?: string[]; afterQuestionId?: string | null }
 export interface CaseQuestionUpdateInput { text?: string; regexPatterns?: string[] }
 export type PendingResolution =
