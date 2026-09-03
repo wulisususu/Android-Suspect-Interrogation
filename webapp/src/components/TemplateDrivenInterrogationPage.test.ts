@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import pageSource from './TemplateDrivenInterrogationPage.vue?raw'
+import workspaceSource from '../views/InterrogationWorkspace.vue?raw'
 import formalSource from './FormalTemplatePanel.vue?raw'
 import dialogueSource from './LiveDialoguePanel.vue?raw'
 import preparationSource from './QuestionPreparationPanel.vue?raw'
@@ -46,6 +47,14 @@ describe('template-driven interrogation C-page contract', () => {
     expect(pageSource).toContain(':voice-draft="questionDictationDraft"')
     expect(pageSource).toContain('@voice-start="emit(\'questionDictationStart\')"')
     expect(pageSource).toContain('@voice-stop="emit(\'questionDictationStop\')"')
+  })
+
+  it('gates live dialogue on suspect voiceprint enrollment without the legacy preparation stack', () => {
+    expect(pageSource).toContain("import VoiceprintEnrollmentGate from './VoiceprintEnrollmentGate.vue'")
+    expect(pageSource).toContain('v-if="!readiness.suspectReady"')
+    expect(pageSource).toContain('v-else')
+    expect(workspaceSource).not.toContain('voiceprint-prep-stack')
+    expect(workspaceSource).not.toContain('<VoiceprintPreparationPanel')
   })
 
   it('retires the legacy monolithic interrogation C-page', () => {

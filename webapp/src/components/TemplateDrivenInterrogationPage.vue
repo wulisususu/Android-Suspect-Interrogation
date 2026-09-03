@@ -12,6 +12,9 @@ import type {
   SessionState,
   TemporaryAsrFragment,
   TemporaryAsrSpeaker,
+  OfficerVoiceprint,
+  VoiceprintEnrollmentState,
+  VoiceprintReadiness,
 } from '../types/interrogation'
 import type {
   CaseQuestionCreateInput,
@@ -25,6 +28,7 @@ import type {
 import FormalTemplatePanel from './FormalTemplatePanel.vue'
 import LiveDialoguePanel from './LiveDialoguePanel.vue'
 import QuestionPreparationPanel from './QuestionPreparationPanel.vue'
+import VoiceprintEnrollmentGate from './VoiceprintEnrollmentGate.vue'
 import './templateInterrogation.css'
 
 const props = defineProps<{
@@ -48,6 +52,15 @@ const props = defineProps<{
   questionDictationBusy: boolean
   questionDictationDraft: string
   questionDictationError: string
+  readiness: VoiceprintReadiness
+  officers: OfficerVoiceprint[]
+  selectedInterrogatorOfficerId: string | null
+  selectedRecorderOfficerId: string | null
+  voiceprintEnrollmentState: VoiceprintEnrollmentState
+  voiceprintBusy: boolean
+  voiceprintSource: import('../api/browserVoiceprint').VoiceprintAudioSource | null
+  voiceprintReason: string
+  voiceprintSecureContext: boolean
 }>()
 
 const emit = defineEmits<{
@@ -56,6 +69,11 @@ const emit = defineEmits<{
   captureStop: [target?: AsrInsertionTarget]
   questionDictationStart: []
   questionDictationStop: []
+  suspectStart: []
+  suspectStop: []
+  selectInterrogator: [officerId: string | null]
+  selectRecorder: [officerId: string | null]
+  bindRoles: []
   generateAi: []
   loadLibrary: [category?: string]
   createQuestion: [input: CaseQuestionCreateInput]
@@ -304,7 +322,27 @@ async function confirmSignature() {
         />
       </div>
 
+      <VoiceprintEnrollmentGate
+        v-if="!readiness.suspectReady"
+        :suspect-name="summary.suspectName"
+        :readiness="readiness"
+        :officers="officers"
+        :selected-interrogator-officer-id="selectedInterrogatorOfficerId"
+        :selected-recorder-officer-id="selectedRecorderOfficerId"
+        :enrollment-state="voiceprintEnrollmentState"
+        :busy="voiceprintBusy"
+        :source="voiceprintSource"
+        :reason="voiceprintReason"
+        :secure-context="voiceprintSecureContext"
+        @suspect-start="emit('suspectStart')"
+        @suspect-stop="emit('suspectStop')"
+        @select-interrogator="emit('selectInterrogator', $event)"
+        @select-recorder="emit('selectRecorder', $event)"
+        @bind-roles="emit('bindRoles')"
+      />
+
       <LiveDialoguePanel
+        v-else
         :dialogue="dialogueHistory"
         :partial-text="capture.partialText"
         :pending-questions="workspace.pendingQuestions"

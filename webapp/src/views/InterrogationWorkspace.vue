@@ -10,8 +10,7 @@ import CaseOverviewPage from '../components/CaseOverviewPage.vue'
 import CaseProfilePage from '../components/CaseProfilePage.vue'
 import SessionControls from '../components/SessionControls.vue'
 import TemplateDrivenInterrogationPage from '../components/TemplateDrivenInterrogationPage.vue'
-import VoiceprintAudioSourceBanner from '../components/VoiceprintAudioSourceBanner.vue'
-import VoiceprintPreparationPanel, { voiceprintStartGuard } from '../components/VoiceprintPreparationPanel.vue'
+import { voiceprintStartGuard } from '../components/VoiceprintPreparationPanel.vue'
 import { useAutoVoiceprintEnrollment } from '../composables/useAutoVoiceprintEnrollment'
 import { useInterrogationStore } from '../stores/interrogation'
 import { useTemplateInterrogationStore } from '../stores/templateInterrogation'
@@ -241,25 +240,6 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
         <CaseOverviewPage v-else-if="activePage === 'overview'" :timeline="store.timeline" :facts="store.facts" />
 
         <div v-else class="interrogation-workspace-stack">
-          <div v-if="store.session.status === 'READY'" class="voiceprint-prep-stack">
-            <VoiceprintAudioSourceBanner :source="autoVoiceprint.source" :reason="autoVoiceprint.reason" :secure-context="autoVoiceprint.secureContext" />
-            <VoiceprintPreparationPanel
-              :suspect-name="store.caseSummary.suspectName"
-              :readiness="store.voiceprintReadiness"
-              :officers="store.officerVoiceprints"
-              :selected-interrogator-officer-id="store.selectedInterrogatorOfficerId"
-              :selected-recorder-officer-id="store.selectedRecorderOfficerId"
-              :enrollment-state="store.voiceprintEnrollmentState"
-              :busy="store.voiceprintBusy"
-              :session-status="store.session.status"
-              @suspect-start="autoVoiceprint.startSuspect()"
-              @suspect-stop="autoVoiceprint.stopSuspect()"
-              @select-interrogator="store.selectInterrogatorOfficer($event)"
-              @select-recorder="store.selectRecorderOfficer($event)"
-              @bind-roles="store.bindVoiceprintRoles()"
-            />
-          </div>
-
           <TemplateDrivenInterrogationPage
             :case-id="store.caseId"
             :summary="store.caseSummary"
@@ -281,11 +261,25 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
             :question-dictation-busy="questionDictationBusy"
             :question-dictation-draft="questionDictationDraft"
             :question-dictation-error="questionDictationError"
+            :readiness="store.voiceprintReadiness"
+            :officers="store.officerVoiceprints"
+            :selected-interrogator-officer-id="store.selectedInterrogatorOfficerId"
+            :selected-recorder-officer-id="store.selectedRecorderOfficerId"
+            :voiceprint-enrollment-state="store.voiceprintEnrollmentState"
+            :voiceprint-busy="store.voiceprintBusy"
+            :voiceprint-source="autoVoiceprint.source.value"
+            :voiceprint-reason="autoVoiceprint.reason.value"
+            :voiceprint-secure-context="autoVoiceprint.secureContext.value"
             @saved="refreshCaseWorkspace"
             @capture-start="store.startCapture"
             @capture-stop="store.stopCapture($event)"
             @question-dictation-start="startQuestionDictation"
             @question-dictation-stop="stopQuestionDictation"
+            @suspect-start="autoVoiceprint.startSuspect()"
+            @suspect-stop="autoVoiceprint.stopSuspect()"
+            @select-interrogator="store.selectInterrogatorOfficer($event)"
+            @select-recorder="store.selectRecorderOfficer($event)"
+            @bind-roles="store.bindVoiceprintRoles()"
             @generate-ai="generateCaseOverview"
             @load-library="loadQuestionLibrary"
             @create-question="createFormalQuestion"
@@ -309,8 +303,5 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
 .interrogation-workspace-stack {
   min-height: 0;
   height: 100%;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
 }
-.voiceprint-prep-stack { max-height: 44vh; overflow: auto; }
 </style>
