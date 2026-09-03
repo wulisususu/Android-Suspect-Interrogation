@@ -92,6 +92,8 @@ def test_default_model_paths_are_stable_opt_layout(monkeypatch):
         assert call["device"] == "cpu"
         assert call["disable_update"] is True
         assert call["disable_pbar"] is True
+    vad_call = next(call for call in FakeAutoModel.calls if call["model"].endswith("fsmn-vad"))
+    assert vad_call["max_single_segment_time"] == 5000
 
 
 def test_vad_and_asr_outputs_are_normalized_without_fabricated_partials(tmp_path: Path):
