@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import type { CaseSummary, DocumentSignerRole, DocumentSigningState, SessionState } from '../types/interrogation'
+import type { CaseSummary, DocumentSignerRole, DocumentSigningState, FactItem, SessionState } from '../types/interrogation'
 import type { CaseQuestionUpdateInput, FormalQuestion, FormalQuestionRound, QAUnitResolution } from '../types/templateInterrogation'
 
 const props = defineProps<{
   summary: CaseSummary
+  facts: FactItem[]
   session: SessionState
   questions: FormalQuestion[]
   rounds: FormalQuestionRound[]
@@ -29,6 +30,7 @@ const emit = defineEmits<{
   generateAi: []
   freeze: []
   sign: [role: DocumentSignerRole]
+  updateHeader: [target: 'case' | 'fact', key: string, value: string]
 }>()
 
 const questionDrafts = reactive<Record<string, string>>({})
@@ -70,6 +72,20 @@ function formatRecordTime(value?: number | null) {
   if (!value) return '____年__月__日__时__分'
   const d = new Date(value)
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}时${String(d.getMinutes()).padStart(2, '0')}分`
+}
+function factText(key: string, fallback = '') {
+  const value = props.facts.find((item) => item.key === key)?.value?.trim()
+  return !value || value === '未录入' ? fallback : value
+}
+function saveHeader(event: Event, target: 'case' | 'fact', key: string) {
+  if (props.documentFrozen || props.busy) return
+  const value = (event.target as HTMLInputElement).value.trim()
+  emit('updateHeader', target, key, value)
+}
+function autoGrow(event: Event) {
+  const input = event.target as HTMLTextAreaElement
+  input.style.height = 'auto'
+  input.style.height = `${input.scrollHeight}px`
 }
 function startBodyDrag(event: DragEvent, id: string) {
   if (props.documentFrozen || props.busy || !event.dataTransfer) return
@@ -163,21 +179,21 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
       <p v-if="aiError" class="inline-error record-no-print">{{ aiError }}</p>
       <section class="record-meta-grid">
         <p><b>时间</b><span>{{ formatRecordTime(session.startedAt || summary.createdAt) }} 至 {{ session.endedAt ? formatRecordTime(session.endedAt) : '____________' }}</span></p>
-        <p><b>地点</b><span>____________________________________________</span></p>
-        <p><b>询问人</b><span>{{ summary.officerName || '________' }}　工作单位 ________________________</span></p>
-        <p><b>记录人</b><span>________　工作单位 ______________________________</span></p>
-        <p><b>被询问人</b><span>{{ summary.suspectName || '________' }}</span></p>
-        <p><b>身份证证件种类及号码</b><span>身份证，{{ summary.idNumber || '________________________' }}</span></p>
-        <p><b>性别</b><span>{{ summary.gender || '____' }}　出生日期 {{ summary.birthDate || '____________' }}</span></p>
-        <p><b>联系方式</b><span>____________________________________________</span></p>
-        <p><b>现住址</b><span>{{ summary.address || '____________________________________________' }}</span></p>
-        <p><b>户籍所在地</b><span>____________________________________________</span></p>
+        <p><b>地点</b><input class="record-meta-editor" aria-label="地点" :value="factText('interrogation_place')" :disabled="busy || documentFrozen" placeholder="填写询问地点" @change="saveHeader($event, 'fact', 'interrogation_place')"></p>
+        <p><b>询问人</b><input class="record-meta-editor short" aria-label="询问人" :value="summary.officerName === '当前警官' ? '' : summary.officerName" :disabled="busy || documentFrozen" placeholder="填写询问人" @change="saveHeader($event, 'case', 'officerName')"><span class="record-meta-label">工作单位</span><input class="record-meta-editor" aria-label="询问人工作单位" :value="factText('officer_unit')" :disabled="busy || documentFrozen" @change="saveHeader($event, 'fact', 'officer_unit')"></p>
+        <p><b>记录人</b><input class="record-meta-editor short" aria-label="记录人" :value="factText('recorder_name')" :disabled="busy || documentFrozen" placeholder="填写记录人" @change="saveHeader($event, 'fact', 'recorder_name')"><span class="record-meta-label">工作单位</span><input class="record-meta-editor" aria-label="记录人工作单位" :value="factText('recorder_unit')" :disabled="busy || documentFrozen" @change="saveHeader($event, 'fact', 'recorder_unit')"></p>
+        <p><b>被询问人</b><input class="record-meta-editor" aria-label="被询问人" :value="summary.suspectName === '待录入' ? '' : summary.suspectName" :disabled="busy || documentFrozen" placeholder="填写被询问人" @change="saveHeader($event, 'case', 'suspectName')"></p>
+        <p><b>身份证证件种类及号码</b><input class="record-meta-editor short" aria-label="身份证件种类" :value="factText('id_document_type', '身份证')" :disabled="busy || documentFrozen" @change="saveHeader($event, 'fact', 'id_document_type')"><span class="record-meta-label">，</span><input class="record-meta-editor" aria-label="身份证件号码" :value="summary.idNumber" :disabled="busy || documentFrozen" @change="saveHeader($event, 'case', 'idNumber')"></p>
+        <p><b>性别</b><input class="record-meta-editor tiny" aria-label="性别" :value="summary.gender" :disabled="busy || documentFrozen" @change="saveHeader($event, 'case', 'gender')"><span class="record-meta-label">出生日期</span><input class="record-meta-editor" aria-label="出生日期" :value="summary.birthDate" :disabled="busy || documentFrozen" @change="saveHeader($event, 'case', 'birthDate')"></p>
+        <p><b>联系方式</b><input class="record-meta-editor" aria-label="联系方式" :value="factText('contact')" :disabled="busy || documentFrozen" @change="saveHeader($event, 'fact', 'contact')"></p>
+        <p><b>现住址</b><input class="record-meta-editor" aria-label="现住址" :value="summary.address" :disabled="busy || documentFrozen" @change="saveHeader($event, 'case', 'address')"></p>
+        <p><b>户籍所在地</b><input class="record-meta-editor" aria-label="户籍所在地" :value="factText('household_registration')" :disabled="busy || documentFrozen" @change="saveHeader($event, 'fact', 'household_registration')"></p>
       </section>
 
       <section class="record-qa-section fixed-opening">
         <div v-for="q in openingQuestions" :key="q.id" class="record-qa fixed-question">
           <p class="record-question"><b>问：</b><span>{{ q.text }}</span></p>
-          <label class="record-answer"><b>答：</b><textarea v-model="canonicalAnswerDrafts[q.id]" :disabled="busy || documentFrozen" rows="1" @blur="saveCanonicalAnswer(q)"></textarea></label>
+          <label class="record-answer"><b>答：</b><textarea v-model="canonicalAnswerDrafts[q.id]" :disabled="busy || documentFrozen" rows="1" @input="autoGrow($event)" @blur="saveCanonicalAnswer(q)"></textarea></label>
           <small v-if="latestRound(q.id)?.actualQuestionText && latestRound(q.id)?.actualQuestionText !== q.text" class="actual-question record-no-print">现场原问法：{{ latestRound(q.id)?.actualQuestionText }}</small>
         </div>
       </section>
@@ -188,8 +204,8 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
       <section class="record-qa-section body-section">
         <article v-for="q in bodyQuestions" :key="q.id" class="record-qa body-question" draggable="true" @dragstart="startBodyDrag($event, q.id)" @dragover.prevent @drop="dropBody($event, q.id)">
           <div class="body-question-tools record-no-print"><span class="drag-handle" title="拖动排序">⋮⋮</span><span>{{ q.source === 'LIVE' ? '实时对话' : q.source === 'STANDARD' ? '问题库' : '本案问题' }}</span><button :disabled="busy || documentFrozen" @click="emit('saveLibrary', q.id)">存入题库</button><button class="danger-link" :disabled="busy || documentFrozen" @click="emit('removeQuestion', q.id)">移出笔录</button></div>
-          <label class="record-question editable-question qa-question-drop" @dragover="allowPendingDrop($event, `qa-${q.id}`)" @drop.stop="dropQaOnQuestion($event, q.id)"><b>问：</b><textarea v-model="questionDrafts[q.id]" :disabled="busy || documentFrozen" rows="1" @blur="saveQuestion(q)"></textarea><small class="record-no-print">整组 QA 可拖到本题</small></label>
-          <label class="record-answer qa-answer-drop" @dragover="allowPendingDrop($event, `answer-${q.id}`)" @drop.stop="dropAnswerOnQuestion($event, q.id)"><b>答：</b><textarea v-model="canonicalAnswerDrafts[q.id]" :disabled="busy || documentFrozen" rows="2" placeholder="等待现场回答" @blur="saveCanonicalAnswer(q)"></textarea><small class="record-no-print">仅答案可拖到这里</small></label>
+          <label class="record-question editable-question qa-question-drop" @dragover="allowPendingDrop($event, `qa-${q.id}`)" @drop.stop="dropQaOnQuestion($event, q.id)"><b>问：</b><textarea v-model="questionDrafts[q.id]" :disabled="busy || documentFrozen" rows="1" @input="autoGrow($event)" @blur="saveQuestion(q)"></textarea><small class="record-no-print">整组 QA 可拖到本题</small></label>
+          <label class="record-answer qa-answer-drop" @dragover="allowPendingDrop($event, `answer-${q.id}`)" @drop.stop="dropAnswerOnQuestion($event, q.id)"><b>答：</b><textarea v-model="canonicalAnswerDrafts[q.id]" :disabled="busy || documentFrozen" rows="2" placeholder="等待现场回答" @input="autoGrow($event)" @blur="saveCanonicalAnswer(q)"></textarea><small class="record-no-print">仅答案可拖到这里</small></label>
           <small v-if="latestRound(q.id)?.actualQuestionText && latestRound(q.id)?.actualQuestionText !== q.text" class="actual-question record-no-print">现场原问法：{{ latestRound(q.id)?.actualQuestionText }}</small>
           <div class="record-drop-zone compact record-no-print" :class="{ active: dragOverKey === q.id }" @dragover="allowPendingDrop($event, q.id)" @dragleave="dragOverKey = ''" @drop="dropGap($event, q.id)">拖到这里，插入在本题之后 / 新建现场问题</div>
         </article>
@@ -199,7 +215,7 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
       <section class="record-qa-section fixed-closing">
         <div v-for="q in closingQuestions" :key="q.id" class="record-qa fixed-question">
           <p class="record-question"><b>问：</b><span>{{ q.text }}</span></p>
-          <label class="record-answer"><b>答：</b><textarea v-model="canonicalAnswerDrafts[q.id]" :disabled="busy || documentFrozen" rows="1" @blur="saveCanonicalAnswer(q)"></textarea></label>
+          <label class="record-answer"><b>答：</b><textarea v-model="canonicalAnswerDrafts[q.id]" :disabled="busy || documentFrozen" rows="1" @input="autoGrow($event)" @blur="saveCanonicalAnswer(q)"></textarea></label>
           <small v-if="latestRound(q.id)?.actualQuestionText && latestRound(q.id)?.actualQuestionText !== q.text" class="actual-question record-no-print">现场原问法：{{ latestRound(q.id)?.actualQuestionText }}</small>
         </div>
       </section>
