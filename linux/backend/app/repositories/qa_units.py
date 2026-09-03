@@ -46,6 +46,15 @@ def active_for_session(db: Session, case_id: str, session_id: str) -> QAUnit | N
     )
 
 
+def find_for_fragment(db: Session, fragment_id: str) -> QAUnit | None:
+    return db.scalar(
+        select(QAUnit)
+        .join(QAUnitFragment, QAUnitFragment.qa_unit_id == QAUnit.id)
+        .where(QAUnitFragment.fragment_id == fragment_id)
+        .limit(1)
+    )
+
+
 def append_fragment(db: Session, row: QAUnit, *, fragment_id: str, role: str, position: int) -> QAUnitFragment:
     normalized_role = str(role or "").upper()
     if normalized_role not in _ROLES:
@@ -59,6 +68,13 @@ def append_fragment(db: Session, row: QAUnit, *, fragment_id: str, role: str, po
     db.add(link)
     db.flush()
     return link
+
+
+def refresh_text(db: Session, row: QAUnit, *, raw_question_text: str, raw_answer_text: str) -> QAUnit:
+    row.raw_question_text = str(raw_question_text or "").strip()
+    row.raw_answer_text = str(raw_answer_text or "").strip()
+    db.flush()
+    return row
 
 
 def close(db: Session, row: QAUnit, *, raw_question_text: str, raw_answer_text: str, ended_at: datetime) -> QAUnit:
