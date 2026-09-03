@@ -69,6 +69,7 @@ class QAUnitBuilder:
                 role="QUESTION",
                 position=self._next_position(active),
             )
+            self._refresh_text(active)
             return closed_ids
 
         if active is None:
@@ -106,6 +107,7 @@ class QAUnitBuilder:
             role="ANSWER",
             position=self._next_position(active),
         )
+        self._refresh_text(active)
         return []
 
     def close_idle(self, *, now: datetime) -> list[str]:
@@ -166,6 +168,15 @@ class QAUnitBuilder:
                 continue
             (question if link.role == "QUESTION" else answer).append(text)
         return " ".join(question), " ".join(answer)
+
+    def _refresh_text(self, unit: QAUnit) -> None:
+        question_text, answer_text = self._texts(unit)
+        qa_repo.refresh_text(
+            self.db,
+            unit,
+            raw_question_text=question_text,
+            raw_answer_text=answer_text,
+        )
 
     def _close(self, unit: QAUnit) -> None:
         question_text, answer_text = self._texts(unit)
