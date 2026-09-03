@@ -90,7 +90,7 @@ function normalizedSelect(event: Event) {
 
     <div v-if="readiness.simulated" class="voiceprint-warning">当前为浏览器开发模拟；模拟结果不能解锁正式声纹审讯。</div>
 
-    <p class="eres-backend-hint">嫌疑人和民警声纹统一使用 ERes2Net-large；旧声纹记录会保留，但需要重新录入后才能用于正式审讯。</p>
+    <p class="eres-backend-hint">嫌疑人声纹是开始审讯的唯一必需项。民警声纹和完整校准可选：已匹配的嫌疑人会自动标注，其他声音会保留为待人工确认片段，不会中断浏览器录音或正式审讯。</p>
 
     <div class="voiceprint-preparation-grid">
       <article class="voiceprint-person-row required">

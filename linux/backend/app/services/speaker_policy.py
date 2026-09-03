@@ -91,17 +91,16 @@ def decide_speaker(
     if bool(overlap) or duration < _MIN_USABLE_DURATION_MS:
         return _unknown(threshold, margin)
 
-    # Suspect-only mode is intentionally asymmetric: the registered suspect is
-    # verified by the selected speaker-embedding backend; speech that fails the
-    # suspect threshold is treated as generic police speech, explicitly marked
-    # as exclusion rather than a biometrically verified officer identity.
+    # Suspect-only mode verifies only the registered suspect.  A non-match
+    # cannot establish that the speaker is a police officer, so it stays
+    # unassigned for the operator to confirm without interrupting capture.
     if enabled == {SpeakerRole.SUSPECT}:
         suspect = _find(active, SpeakerRole.SUSPECT)
         if suspect is None:
             return _unknown(threshold, margin)
         if suspect.score >= threshold:
             return _verified(suspect, None, threshold, margin)
-        return _fallback(suspect.score, threshold, margin)
+        return _unknown(threshold, margin, score=suspect.score)
 
     ranked = sorted(active, key=lambda item: item.score, reverse=True)
     if not ranked:
@@ -116,9 +115,8 @@ def decide_speaker(
     if passes_threshold and passes_margin:
         return _verified(best, second_score, threshold, margin)
 
-    # Full mode has references for both officer roles, so a failed or ambiguous
-    # biometric match remains UNKNOWN. There is no exclusion fallback because
-    # doing so would discard useful uncertainty among fully enrolled speakers.
+    # A failed or ambiguous biometric match remains UNKNOWN. A non-match never
+    # establishes an officer identity or a generic police role.
     full_mode = {
         SpeakerRole.SUSPECT,
         SpeakerRole.INTERROGATOR,
@@ -131,15 +129,6 @@ def decide_speaker(
             score=best.score,
             second_best_score=second_score,
         )
-
-    # Partial mode has exactly one registered officer role. If the suspect is
-    # clearly below the calibrated threshold by at least the calibrated margin,
-    # the utterance may be classified only as generic police speech. It is never
-    # attributed to the registered officer unless that officer independently
-    # passes both threshold and margin.
-    suspect = _find(active, SpeakerRole.SUSPECT)
-    if suspect is not None and suspect.score < (threshold - margin):
-        return _fallback(suspect.score, threshold, margin, second_score)
 
     return _unknown(
         threshold,
@@ -231,26 +220,6 @@ def _verified(
         margin=margin,
         speaker_id=candidate.speaker_id,
         speaker_name=candidate.speaker_name,
-        low_confidence=False,
-    )
-
-
-def _fallback(
-    suspect_score: float,
-    threshold: float,
-    margin: float,
-    second_best_score: float | None = None,
-) -> SpeakerDecision:
-    return SpeakerDecision(
-        role=SpeakerRole.OFFICER_FALLBACK,
-        source=SpeakerSource.SUSPECT_EXCLUSION,
-        voiceprint_verified=False,
-        score=suspect_score,
-        second_best_score=second_best_score,
-        threshold=threshold,
-        margin=margin,
-        speaker_id=None,
-        speaker_name=None,
         low_confidence=False,
     )
 

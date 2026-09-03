@@ -35,7 +35,7 @@ def test_legacy_xvector_provenance_value_remains_readable():
     assert SpeakerSource.X_VECTOR.value == "X_VECTOR"
 
 
-def test_suspect_only_model_baseline_rejects_high_impostor_score_below_vendor_threshold():
+def test_suspect_only_model_baseline_leaves_high_impostor_score_for_manual_confirmation():
     result = decide_speaker(
         candidates=[candidate(SpeakerRole.SUSPECT, 0.90, "suspect-1", "张某")],
         enabled_roles={SpeakerRole.SUSPECT},
@@ -45,10 +45,11 @@ def test_suspect_only_model_baseline_rejects_high_impostor_score_below_vendor_th
         overlap=False,
     )
 
-    assert result.role is SpeakerRole.OFFICER_FALLBACK
-    assert result.source is SpeakerSource.SUSPECT_EXCLUSION
+    assert result.role is SpeakerRole.UNKNOWN
+    assert result.source is SpeakerSource.UNASSIGNED
     assert result.voiceprint_verified is False
     assert result.score == pytest.approx(0.90)
+    assert result.low_confidence is True
 
 
 def test_suspect_only_model_baseline_accepts_score_above_vendor_threshold():
@@ -81,18 +82,18 @@ def test_suspect_only_accepts_verified_suspect():
     assert result.low_confidence is False
 
 
-def test_suspect_only_uses_police_fallback_when_suspect_is_excluded():
+def test_suspect_only_leaves_nonmatching_speech_for_manual_confirmation():
     result = decide(
         [candidate(SpeakerRole.SUSPECT, 0.42, "suspect-1", "张某")],
         {SpeakerRole.SUSPECT},
     )
-    assert result.role is SpeakerRole.OFFICER_FALLBACK
-    assert result.source is SpeakerSource.SUSPECT_EXCLUSION
+    assert result.role is SpeakerRole.UNKNOWN
+    assert result.source is SpeakerSource.UNASSIGNED
     assert result.voiceprint_verified is False
     assert result.score == pytest.approx(0.42)
     assert result.speaker_id is None
     assert result.speaker_name is None
-    assert result.low_confidence is False
+    assert result.low_confidence is True
 
 
 def test_partial_mode_accepts_registered_officer_when_threshold_and_margin_pass():
@@ -112,7 +113,7 @@ def test_partial_mode_accepts_registered_officer_when_threshold_and_margin_pass(
     assert result.speaker_name == "李警官"
 
 
-def test_partial_mode_uses_unverified_police_fallback_only_when_suspect_is_clearly_excluded():
+def test_partial_mode_keeps_unmatched_speech_for_manual_confirmation():
     result = decide(
         [
             candidate(SpeakerRole.SUSPECT, 0.40),
@@ -120,11 +121,12 @@ def test_partial_mode_uses_unverified_police_fallback_only_when_suspect_is_clear
         ],
         {SpeakerRole.SUSPECT, SpeakerRole.INTERROGATOR},
     )
-    assert result.role is SpeakerRole.OFFICER_FALLBACK
-    assert result.source is SpeakerSource.SUSPECT_EXCLUSION
+    assert result.role is SpeakerRole.UNKNOWN
+    assert result.source is SpeakerSource.UNASSIGNED
     assert result.voiceprint_verified is False
     assert result.speaker_id is None
     assert result.speaker_name is None
+    assert result.low_confidence is True
 
 
 def test_partial_mode_keeps_near_threshold_suspect_as_unknown_instead_of_forcing_fallback():
@@ -209,8 +211,8 @@ def test_policy_ignores_candidates_for_roles_not_enabled_in_session():
         ],
         {SpeakerRole.SUSPECT},
     )
-    assert result.role is SpeakerRole.OFFICER_FALLBACK
-    assert result.source is SpeakerSource.SUSPECT_EXCLUSION
+    assert result.role is SpeakerRole.UNKNOWN
+    assert result.source is SpeakerSource.UNASSIGNED
 
 
 def test_policy_rejects_invalid_calibration_values():

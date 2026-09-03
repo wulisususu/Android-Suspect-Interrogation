@@ -114,7 +114,7 @@ def test_missing_xvector_result_preserves_asr_as_unknown_and_audits_low_confiden
     engine.dispose()
 
 
-def test_suspect_exclusion_fallback_is_audited_without_biometric_vector(tmp_path: Path):
+def test_suspect_only_nonmatch_stays_pending_for_manual_confirmation(tmp_path: Path):
     engine, factory, service, runtime = _service_and_runtime(tmp_path)
     speaker = SpeechEvent(
         type=SpeechEventType.SPEAKER_RESULT,
@@ -128,15 +128,16 @@ def test_suspect_exclusion_fallback_is_audited_without_biometric_vector(tmp_path
 
     with factory() as db:
         fragment = db.query(ASRFragment).one()
-        assert fragment.speaker == "OFFICER_FALLBACK"
-        assert fragment.speaker_source == "SUSPECT_EXCLUSION"
+        assert fragment.speaker == "UNKNOWN"
+        assert fragment.speaker_source == "UNASSIGNED"
         assert fragment.voiceprint_verified is False
+        assert fragment.low_confidence is True
 
-        audit = db.query(AuditLog).filter(AuditLog.action == "ASR_SPEAKER_FALLBACK").one()
+        audit = db.query(AuditLog).filter(AuditLog.action == "ASR_SPEAKER_LOW_CONFIDENCE").one()
         assert audit.target_id == fragment.id
         after = json.loads(audit.after_json)
-        assert after["speaker"] == "OFFICER_FALLBACK"
-        assert after["speaker_source"] == "SUSPECT_EXCLUSION"
+        assert after["speaker"] == "UNKNOWN"
+        assert after["speaker_source"] == "UNASSIGNED"
         serialized = " ".join((audit.before_json, audit.after_json, audit.detail_json)).lower()
         assert "embedding" not in serialized
         assert "pcm" not in serialized
