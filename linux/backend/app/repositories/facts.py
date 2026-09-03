@@ -14,11 +14,25 @@ DEFAULT_FACTS = [
     ("process", "行为经过", "尚未形成完整顺序", "missing", "把关键动作拆成连续问题逐项固定。"),
     ("evidence", "证据对应", "待绑定", "pending", "将回答与监控、照片、物证等证据编号关联。"),
     ("after", "事后处置 / 后果", "尚未固定", "missing", "确认离开路线、物品处置以及是否联系他人。"),
+    ("current_address", "现住址", "未录入", "missing", None),
+    ("case_type", "案件类别", "未录入", "missing", None),
+    ("interrogation_round", "询问次数", "1", "confirmed", None),
+    ("interrogation_place", "询问地点", "未录入", "missing", None),
+    ("officer_unit", "询问人工作单位", "未录入", "missing", None),
+    ("recorder_name", "记录人", "未录入", "missing", None),
+    ("recorder_unit", "记录人工作单位", "未录入", "missing", None),
+    ("id_document_type", "身份证件种类", "身份证", "confirmed", None),
+    ("peoples_representative", "人民陪审员", "否", "confirmed", None),
+    ("contact", "联系方式", "未录入", "missing", None),
+    ("household_registration", "户籍所在地", "未录入", "missing", None),
 ]
 
 
 def seed_defaults(db: Session, case_id: str) -> None:
+    existing = set(db.scalars(select(Fact.fact_key).where(Fact.case_id == case_id)))
     for fact_key, label, value, status, suggestion in DEFAULT_FACTS:
+        if fact_key in existing:
+            continue
         db.add(Fact(
             id=str(uuid4()), case_id=case_id, fact_key=fact_key, label=label,
             value=value, status=status, suggestion=suggestion,
@@ -31,6 +45,7 @@ def list_for_case(db: Session, case_id: str) -> list[Fact]:
 
 
 def update(db: Session, case_id: str, fact_key: str, patch: dict) -> Fact:
+    seed_defaults(db, case_id)
     item = db.scalar(select(Fact).where(Fact.case_id == case_id, Fact.fact_key == fact_key))
     if item is None:
         raise DomainError("FACT_NOT_FOUND", "事实项不存在", 404)
