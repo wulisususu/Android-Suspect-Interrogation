@@ -21,6 +21,12 @@ describe('template-driven interrogation C-page contract', () => {
     expect(formalSource).not.toContain('<span class="panel-kicker">正式笔录</span>')
   })
 
+  it('keeps formal-record header data editable and grows multi-line QA editors', () => {
+    expect(formalSource).toContain('record-meta-editor')
+    expect(formalSource).toContain('@input="autoGrow($event)"')
+    expect(formalSource).toContain("emit('updateHeader'")
+  })
+
   it('keeps legacy conflict and low-confidence business marks out of the new formal page', () => {
     expect(formalSource).not.toContain('矛盾标记')
     expect(formalSource).not.toContain('标记矛盾')
