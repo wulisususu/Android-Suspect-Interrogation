@@ -78,7 +78,12 @@ class FunASRSpeechRuntime:
         for name in _CRITICAL_MODEL_NAMES:
             model_path = model_dirs[name]
             try:
-                loaded[name] = self._load_model(factory, model_path)
+                options = (
+                    {"max_single_segment_time": _FORMAL_MAX_SINGLE_SEGMENT_MS}
+                    if name == "fsmn-vad"
+                    else {}
+                )
+                loaded[name] = self._load_model(factory, model_path, **options)
             except Exception as exc:
                 self._clear_models()
                 raise BackendUnavailableError(
@@ -131,12 +136,13 @@ class FunASRSpeechRuntime:
         self.speaker_model_fingerprint = backend.model_fingerprint
 
     @staticmethod
-    def _load_model(factory: ModelFactory, model_path: Path) -> Any:
+    def _load_model(factory: ModelFactory, model_path: Path, **options: Any) -> Any:
         return factory(
             model=str(model_path),
             device="cpu",
             disable_update=True,
             disable_pbar=True,
+            **options,
         )
 
     def health(self) -> dict[str, Any]:
