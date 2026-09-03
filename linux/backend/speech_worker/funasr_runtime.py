@@ -11,6 +11,7 @@ from speech_worker.speaker.eres2net_large import ERes2NetLargeBackend, ModelFact
 
 DEFAULT_MODEL_ROOT = Path("/opt/suspect-interrogation/models/funasr")
 _CRITICAL_MODEL_NAMES = ("paraformer", "fsmn-vad")
+_FORMAL_MAX_SINGLE_SEGMENT_MS = 5_000
 _MODEL_NAMES = _CRITICAL_MODEL_NAMES
 ModelFactory = Callable[..., Any]
 
@@ -196,6 +197,11 @@ class FunASRSpeechRuntime:
             cache=cache,
             is_final=bool(is_final),
             chunk_size=int(chunk_size_ms),
+            # FSMN-VAD normally allows a continuous 60-second segment.  In a
+            # live interrogation that can contain both a question and answer,
+            # producing one mixed speaker embedding.  Short bounded turns keep
+            # ASR and speaker verification aligned to the same speaker.
+            max_single_segment_time=_FORMAL_MAX_SINGLE_SEGMENT_MS,
         )
         return self._normalize_vad(result)
 
