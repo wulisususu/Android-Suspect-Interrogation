@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { backendErrorMessage, updateAsrFragment } from '../api/interrogation'
+import { updateCaseFact, updateCaseProfile } from '../api/caseProfile'
 import {
   startQuestionPreparationDictation,
   stopQuestionPreparationDictation,
@@ -14,7 +15,7 @@ import { voiceprintStartGuard } from '../components/VoiceprintPreparationPanel.v
 import { useAutoVoiceprintEnrollment } from '../composables/useAutoVoiceprintEnrollment'
 import { useInterrogationStore } from '../stores/interrogation'
 import { useTemplateInterrogationStore } from '../stores/templateInterrogation'
-import type { TemporaryAsrSpeaker } from '../types/interrogation'
+import type { CaseSummary, TemporaryAsrSpeaker } from '../types/interrogation'
 import type {
   CaseQuestionCreateInput,
   CaseQuestionUpdateInput,
@@ -157,6 +158,24 @@ function reassociateFormalRound(roundId: string, input: RoundReassociateInput) {
 function updateFormalAnswer(roundId: string, answerText: string) { return runTemplateAction(() => templateStore.updateRoundAnswer(roundId, answerText)) }
 function saveFormalQuestionToLibrary(questionId: string) { return runTemplateAction(() => templateStore.saveQuestionToLibrary(questionId)) }
 
+async function saveRecordHeader(target: 'case' | 'fact', key: string, value: string) {
+  if (!store.caseId) return
+  try {
+    if (target === 'case') {
+      await updateCaseProfile(store.caseId, { [key]: value } as Partial<CaseSummary>)
+    } else {
+      await updateCaseFact(store.caseId, key, {
+        value: value || '未录入',
+        status: value ? 'confirmed' : 'missing',
+      })
+    }
+    await refreshCaseWorkspace()
+    store.feedback('笔录抬头已保存')
+  } catch (err) {
+    store.feedback(backendErrorMessage(err), true)
+  }
+}
+
 async function correctRecognitionFragment(fragmentId: string, speaker: TemporaryAsrSpeaker, reason: string) {
   const caseId = store.caseId
   if (!caseId) return
@@ -243,6 +262,7 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
           <TemplateDrivenInterrogationPage
             :case-id="store.caseId"
             :summary="store.caseSummary"
+            :facts="store.facts"
             :session="store.session"
             :capture="store.capture"
             :can-record="store.canRecord"
@@ -291,6 +311,7 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
             @update-answer="updateFormalAnswer"
             @save-library="saveFormalQuestionToLibrary"
             @correct-fragment="correctRecognitionFragment"
+            @update-header="saveRecordHeader"
           />
         </div>
       </section>
