@@ -69,6 +69,28 @@ def test_officer_then_two_suspect_fragments_forms_one_unit(tmp_path):
         engine.dispose()
 
 
+def test_open_unit_exposes_merged_turn_text_without_closing(tmp_path):
+    engine, db, case, session, capture = make_context(tmp_path)
+    try:
+        builder = QAUnitBuilder(db)
+        q1 = add_fragment(db, capture, ordinal=1, speaker="INTERROGATOR", text="你叫什么名字？", start_ms=0, end_ms=700)
+        q2 = add_fragment(db, capture, ordinal=2, speaker="INTERROGATOR", text="把基本情况说一下。", start_ms=800, end_ms=1500)
+        a1 = add_fragment(db, capture, ordinal=3, speaker="SUSPECT", text="我叫张伟，男，二十八岁。", start_ms=1800, end_ms=2800)
+
+        builder.consume_fragment(case.id, q1.id)
+        builder.consume_fragment(case.id, q2.id)
+        builder.consume_fragment(case.id, a1.id)
+
+        unit = qa_repo.active_for_session(db, case.id, session.id)
+        assert unit is not None and unit.status == "OPEN"
+        assert unit.raw_question_text == "你叫什么名字？ 把基本情况说一下。"
+        assert unit.raw_answer_text == "我叫张伟，男，二十八岁。"
+        assert [link.fragment_id for link in unit.fragments] == [q1.id, q2.id, a1.id]
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_next_officer_question_closes_previous_unit(tmp_path):
     engine, db, case, session, capture = make_context(tmp_path)
     try:
