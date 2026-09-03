@@ -27,6 +27,10 @@ class CaseUpdateRequest(FlexibleModel):
     gender: str | None = None
     age: str | int | None = None
     officerName: str | None = None
+    idNumber: str | None = None
+    nation: str | None = None
+    birthDate: str | None = None
+    address: str | None = None
     stage: str | None = None
     actor_id: str | None = None
 
