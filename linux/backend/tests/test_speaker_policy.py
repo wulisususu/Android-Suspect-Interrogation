@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from app.ai.speech.calibration import MODEL_BASELINE_THRESHOLD
+from app.ai.speech.calibration import (
+    ERES2NET_LARGE_BASELINE_THRESHOLD,
+    LEGACY_XVECTOR_BASELINE_THRESHOLD,
+)
 from app.services.speaker_policy import (
     SpeakerRole,
     SpeakerSource,
@@ -35,11 +38,11 @@ def test_legacy_xvector_provenance_value_remains_readable():
     assert SpeakerSource.X_VECTOR.value == "X_VECTOR"
 
 
-def test_suspect_only_model_baseline_leaves_high_impostor_score_for_manual_confirmation():
+def test_suspect_only_legacy_xvector_baseline_leaves_high_impostor_score_for_manual_confirmation():
     result = decide_speaker(
         candidates=[candidate(SpeakerRole.SUSPECT, 0.90, "suspect-1", "张某")],
         enabled_roles={SpeakerRole.SUSPECT},
-        threshold=MODEL_BASELINE_THRESHOLD,
+        threshold=LEGACY_XVECTOR_BASELINE_THRESHOLD,
         margin=0.0,
         usable_duration_ms=1800,
         overlap=False,
@@ -52,11 +55,11 @@ def test_suspect_only_model_baseline_leaves_high_impostor_score_for_manual_confi
     assert result.low_confidence is True
 
 
-def test_suspect_only_model_baseline_accepts_score_above_vendor_threshold():
+def test_suspect_only_eres2net_baseline_accepts_score_above_vendor_threshold():
     result = decide_speaker(
-        candidates=[candidate(SpeakerRole.SUSPECT, 0.96, "suspect-1", "张某")],
+        candidates=[candidate(SpeakerRole.SUSPECT, 0.68, "suspect-1", "张某")],
         enabled_roles={SpeakerRole.SUSPECT},
-        threshold=MODEL_BASELINE_THRESHOLD,
+        threshold=ERES2NET_LARGE_BASELINE_THRESHOLD,
         margin=0.0,
         usable_duration_ms=1800,
         overlap=False,
