@@ -9,6 +9,7 @@ import type {
   CaseSummary,
   DocumentSignerRole,
   DocumentSigningState,
+  FactItem,
   SessionState,
   TemporaryAsrFragment,
   TemporaryAsrSpeaker,
@@ -34,6 +35,7 @@ import './templateInterrogation.css'
 const props = defineProps<{
   caseId: string
   summary: CaseSummary
+  facts: FactItem[]
   session: SessionState
   capture: AsrCaptureStatus
   canRecord: boolean
@@ -86,6 +88,7 @@ const emit = defineEmits<{
   updateAnswer: [roundId: string, answerText: string]
   saveLibrary: [questionId: string]
   correctFragment: [fragmentId: string, speaker: TemporaryAsrSpeaker, reason: string]
+  updateHeader: [target: 'case' | 'fact', key: string, value: string]
 }>()
 
 type SignaturePoint = { x: number; y: number; t: number; p: number }
@@ -298,6 +301,7 @@ async function confirmSignature() {
 
         <FormalTemplatePanel
           :summary="summary"
+          :facts="facts"
           :session="session"
           :questions="workspace.questions"
           :rounds="workspace.rounds"
@@ -319,6 +323,7 @@ async function confirmSignature() {
           @generate-ai="emit('generateAi')"
           @freeze="finishAndFreeze"
           @sign="openSignature"
+          @update-header="(target, key, value) => emit('updateHeader', target, key, value)"
         />
       </div>
 
