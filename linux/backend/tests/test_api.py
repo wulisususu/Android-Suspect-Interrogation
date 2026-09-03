@@ -149,6 +149,44 @@ def test_confirmed_identity_intake_allows_session_start_without_hardware_reread(
         assert session["state"] == "QUESTIONING"
 
 
+def test_formal_record_header_updates_persist_identity_and_missing_facts(tmp_path):
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'formal-header.db'}",
+        hardware_gateway=MockHardwareGateway(simulated=False),
+    )
+    with TestClient(app) as client:
+        created = payload(client.post("/api/v1/cases", json={"operator_id": "op-header", "suspectName": "初始姓名"}))
+        case_id = created["id"]
+        payload(client.post("/api/v1/identity/confirm", json={
+            "case_id": case_id,
+            "name": "初始姓名",
+            "id_number": "320101199001010011",
+            "gender": "男",
+            "birth_date": "1990-01-01",
+            "address": "初始地址",
+            "source": "MANUAL",
+        }))
+
+        updated = payload(client.put(f"/api/v1/cases/{case_id}", json={
+            "suspectName": "修订姓名",
+            "idNumber": "320101199001010022",
+            "birthDate": "1991-02-03",
+            "address": "修订地址",
+        }))
+        assert updated["suspectName"] == "修订姓名"
+        assert updated["idNumber"] == "320101199001010022"
+        assert updated["birthDate"] == "1991-02-03"
+        assert updated["address"] == "修订地址"
+
+        place = payload(client.put(
+            f"/api/v1/cases/{case_id}/facts/interrogation_place",
+            json={"value": "第一讯问室", "status": "confirmed"},
+        ))
+        assert place["value"] == "第一讯问室"
+        facts = payload(client.get(f"/api/v1/cases/{case_id}/facts"))
+        assert next(item for item in facts if item["key"] == "interrogation_place")["value"] == "第一讯问室"
+
+
 def test_session_start_requires_suspect_voiceprint_after_identity(tmp_path):
     app = create_app(
         database_url=f"sqlite:///{tmp_path / 'voiceprint-required.db'}",
