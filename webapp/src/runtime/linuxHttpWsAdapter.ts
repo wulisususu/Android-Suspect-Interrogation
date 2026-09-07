@@ -55,7 +55,7 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
 
   switch (operation) {
     case 'case.create': return { method: 'POST', url: '/api/v1/cases', data: payload }
-    case 'case.list': return { method: 'GET', url: '/api/v1/cases', params: { limit: payload.limit } }
+    case 'case.list': return { method: 'GET', url: '/api/v1/cases', params: { limit: payload.limit, query: payload.query } }
     case 'case.get': return { method: 'GET', url: `/api/v1/cases/${caseId}` }
     case 'case.update': return { method: 'PUT', url: `/api/v1/cases/${caseId}`, data: payload.patch ?? payload }
     case 'case.ai.list': return { method: 'GET', url: `/api/v1/cases/${caseId}/ai-analyses` }

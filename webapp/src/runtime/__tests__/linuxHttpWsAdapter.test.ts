@@ -3,6 +3,19 @@ import { LinuxHttpWsAdapter, buildRuntimeWebSocketUrl } from '../linuxHttpWsAdap
 import { RuntimeAdapterError } from '../errors'
 
 describe('LinuxHttpWsAdapter', () => {
+  it('passes a case-list query to FastAPI', async () => {
+    const calls: Array<{ params?: Record<string, unknown> }> = []
+    const adapter = new LinuxHttpWsAdapter({
+      request: async (config) => {
+        calls.push({ params: config.params })
+        return { data: { ok: true, data: [] } }
+      },
+    })
+
+    await adapter.invoke('case.list', { limit: 100, query: '3201011' })
+    expect(calls[0].params).toEqual({ limit: 100, query: '3201011' })
+  })
+
   it('routes Linux operations through /api/v1 and preserves identity case binding', async () => {
     const calls: Array<{ method: string; url: string; data?: unknown }> = []
     const adapter = new LinuxHttpWsAdapter({

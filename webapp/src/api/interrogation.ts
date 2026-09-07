@@ -272,8 +272,8 @@ export async function createCase(payload: Partial<CaseSummary> = {}): Promise<Ca
   const request = { ...payload, operator_id: payload.officerName || '当前警官', case_type: 'suspect_interrogation' } as unknown as Record<string, unknown>
   return normalizeCaseSummary(await runtime().invoke<unknown>('case.create', request), payload)
 }
-export async function fetchCases(limit = 50): Promise<CaseSummary[]> {
-  const result = await runtime().invoke<unknown[]>('case.list', { limit })
+export async function fetchCases(limit = 50, query = ''): Promise<CaseSummary[]> {
+  const result = await runtime().invoke<unknown[]>('case.list', { limit, query })
   return Array.isArray(result) ? result.map((item) => normalizeCaseSummary(item)) : []
 }
 export async function fetchCase(caseId: string): Promise<CaseSummary> { return normalizeCaseSummary(await runtime().invoke<unknown>('case.get', { caseId }), { id: caseId }) }
