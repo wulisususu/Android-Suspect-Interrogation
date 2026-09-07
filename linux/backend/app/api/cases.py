@@ -15,8 +15,12 @@ def create_case(body: CaseCreateRequest, db: Session = Depends(get_db)):
 
 
 @router.get("")
-def list_cases(limit: int = Query(100, ge=1, le=1000), db: Session = Depends(get_db)):
-    return envelope(CaseService(db).list(limit))
+def list_cases(
+    limit: int = Query(100, ge=1, le=1000),
+    query: str | None = Query(None, min_length=1, max_length=128),
+    db: Session = Depends(get_db),
+):
+    return envelope(CaseService(db).list(limit, query))
 
 
 @router.get("/{case_id}")

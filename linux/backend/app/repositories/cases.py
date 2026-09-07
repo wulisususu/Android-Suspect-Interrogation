@@ -1,10 +1,10 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.database.models import Case
+from app.database.models import Case, Person
 from app.domain.errors import DomainError
 
 
@@ -34,8 +34,18 @@ def get(db: Session, case_id: str) -> Case:
     return item
 
 
-def list_all(db: Session, limit: int = 100) -> list[Case]:
-    return list(db.scalars(select(Case).order_by(Case.updated_at.desc()).limit(int(limit))))
+def list_all(db: Session, limit: int = 100, query: str | None = None) -> list[Case]:
+    statement = select(Case)
+    normalized = str(query or "").strip()
+    if normalized:
+        statement = statement.outerjoin(Person, Person.case_id == Case.id)
+        if normalized.isdecimal():
+            escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            condition = Person.id_number.like(f"{escaped}%", escape="\\")
+        else:
+            condition = or_(Case.suspect_name == normalized, Person.name == normalized)
+        statement = statement.where(condition).distinct()
+    return list(db.scalars(statement.order_by(Case.updated_at.desc()).limit(int(limit))))
 
 
 def update_fields(db: Session, item: Case, patch: dict) -> Case:

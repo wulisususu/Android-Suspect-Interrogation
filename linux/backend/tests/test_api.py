@@ -229,3 +229,23 @@ def test_canonical_api_errors_are_structured(tmp_path):
         assert validation.status_code == 422
         assert validation.json()["ok"] is False
         assert validation.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_case_list_searches_exact_name_and_identity_prefix(tmp_path):
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'case-search.db'}",
+        hardware_gateway=MockHardwareGateway(simulated=False),
+    )
+    with TestClient(app) as client:
+        first = payload(client.post("/api/v1/cases", json={"operator_id": "op", "suspectName": "发噶发"}))
+        second = payload(client.post("/api/v1/cases", json={"operator_id": "op", "suspectName": "发噶爱"}))
+        payload(client.post("/api/v1/identity/confirm", json={
+            "case_id": first["id"], "name": "发噶发", "id_number": "320101199001010011", "source": "MANUAL",
+        }))
+        payload(client.post("/api/v1/identity/confirm", json={
+            "case_id": second["id"], "name": "发噶爱", "id_number": "320101199001010022", "source": "MANUAL",
+        }))
+
+        assert [row["id"] for row in payload(client.get("/api/v1/cases", params={"query": "发噶发"}))] == [first["id"]]
+        assert [row["id"] for row in payload(client.get("/api/v1/cases", params={"query": "3201011"}))] == [second["id"], first["id"]]
+        assert payload(client.get("/api/v1/cases", params={"query": "发"})) == []

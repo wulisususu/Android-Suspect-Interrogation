@@ -46,8 +46,8 @@ class CaseService:
     def get(self, case_id: str) -> dict:
         return self._case_data(case_repo.get(self.db, case_id))
 
-    def list(self, limit: int = 100) -> list[dict]:
-        return [self._case_data(row) for row in case_repo.list_all(self.db, limit)]
+    def list(self, limit: int = 100, query: str | None = None) -> list[dict]:
+        return [self._case_data(row) for row in case_repo.list_all(self.db, limit, query)]
 
     def update(self, case_id: str, patch: dict, actor_id: str | None = None) -> dict:
         row = case_repo.get(self.db, case_id)
