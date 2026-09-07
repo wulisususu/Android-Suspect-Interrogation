@@ -27,6 +27,9 @@ const loading = ref(true)
 const error = ref('')
 const cases = ref<CaseRow[]>([])
 const identityOpen = ref(false)
+const searchTerm = ref('')
+const activeQuery = ref('')
+let requestGeneration = 0
 
 function fmtTime(ts?: number) {
   if (!ts) return ''
@@ -48,16 +51,48 @@ function identitySourceText(source?: string) {
   return source || ''
 }
 
-async function load() {
+function isIdentityPrefix(value: string) {
+  return /^\d{7,}$/.test(value)
+}
+
+async function load(query = '') {
+  const generation = ++requestGeneration
+  activeQuery.value = query
   loading.value = true
   error.value = ''
   try {
-    cases.value = await fetchCases(50)
+    const result = await fetchCases(query ? 100 : 50, query)
+    if (generation !== requestGeneration) return
+    cases.value = result
   } catch (err) {
+    if (generation !== requestGeneration) return
     error.value = backendErrorMessage(err)
   } finally {
-    loading.value = false
+    if (generation === requestGeneration) loading.value = false
   }
+}
+
+function handleSearchInput() {
+  const value = searchTerm.value.trim()
+  if (!value) {
+    void load()
+    return
+  }
+  if (isIdentityPrefix(value)) {
+    void load(value)
+    return
+  }
+  if (activeQuery.value) void load()
+}
+
+function submitSearch() {
+  const value = searchTerm.value.trim()
+  if (!value) {
+    void load()
+    return
+  }
+  if (/^\d+$/.test(value) && !isIdentityPrefix(value)) return
+  void load(value)
 }
 
 async function created(item: CaseSummary) {
@@ -106,7 +141,16 @@ onMounted(load)
         <strong>案件列表</strong>
         <span>选择案件进入工作台，或新建询问后先完成身份核验</span>
       </div>
-      <button class="refresh-button" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新列表' }}</button>
+      <form class="case-search" @submit.prevent="submitSearch">
+        <input
+          v-model="searchTerm"
+          aria-label="按姓名或身份证搜索"
+          placeholder="输入完整姓名，或身份证前 7 位"
+          @input="handleSearchInput"
+        />
+        <button type="submit" :disabled="loading || !searchTerm.trim()">查询</button>
+      </form>
+      <button class="refresh-button" :disabled="loading" @click="load()">{{ loading ? '刷新中…' : '刷新列表' }}</button>
     </section>
 
     <div v-if="loading" class="status-banner">正在加载案件历史…</div>
@@ -212,6 +256,9 @@ onMounted(load)
 .case-list-toolbar > div { display: flex; align-items: baseline; gap: 14px; }
 .case-list-toolbar strong { color: #183f5b; font-size: 18px; }
 .case-list-toolbar span { color: #718594; font-size: 13px; }
+.case-search { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.case-search input { width: 320px; min-height: 40px; box-sizing: border-box; border: 1px solid #9eb5c5; border-radius: 4px; padding: 0 12px; color: #284b62; font: inherit; }
+.case-search button { min-height: 40px; border: 1px solid #2b79ae; border-radius: 4px; padding: 0 17px; background: #2371a6; color: #fff; font: inherit; font-weight: 700; touch-action: manipulation; }
 .refresh-button { min-width: 112px; min-height: 44px; }
 .status-banner { margin: 18px 32px; padding: 18px; border: 1px solid #b7cad8; background: #f7fbfe; text-align: center; color: #526b7d; }
 .status-banner.error { border-color: #dfaaa3; background: #fff3f1; color: #9b3229; }
