@@ -121,6 +121,7 @@ health_check() {
 }
 
 restart_runtime() {
+  systemctl_safe reset-failed interrogation-api.service
   systemctl_safe restart interrogation-api.service
   systemctl_safe try-restart ai-worker.service || true
   systemctl_safe restart kiosk.service || true
