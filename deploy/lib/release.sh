@@ -11,6 +11,7 @@ release_name_for_source() {
 stage_source_tree() {
   local source="$1" destination="$2"
   mkdir -p "$destination"
+  chmod 0755 "$destination"
   tar -C "$source" --exclude='.git' --exclude='node_modules' --exclude='webapp/node_modules' --exclude='webapp/dist' -cf - . | tar -C "$destination" -xf -
 }
 
