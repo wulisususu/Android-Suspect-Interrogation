@@ -160,19 +160,21 @@ class MossRuntime:
             self.on_state('DECODING')
             generation = self.decoder.decode(built.embeds)
             self.last_generation = generation
+            raw, count, normal = generation.text, generation.token_count, generation.normal_termination
+            error = generation.error or classify_generation(raw, count, normal)
+            if error:
+                return result(error)
+            self.on_state('PARSING')
+            parsed = parse_generation(raw, window, window_id=identity,
+                                      model_manifest_sha256=self.manifest_sha256)
+            if parsed.invalid_fragments or not parsed.valid_segments:
+                return result('MOSS_INVALID_GENERATION')
+            status = (ParseStatus.REPAIRED if any(s.parse_status == ParseStatus.REPAIRED
+                      for s in parsed.valid_segments) else ParseStatus.VALID)
+            return result(None, parsed.valid_segments, status)
+        except MemoryError:
+            return result('MOSS_OOM')
         except ContextBudgetExceeded:
             return result('MOSS_CONTEXT_BUDGET_EXCEEDED')
         except (ValueError, RuntimeError, OSError) as exc:
             return result(str(exc) if str(exc).startswith('MOSS_') else f'MOSS_RUNTIME_ERROR:{exc}')
-        raw, count, normal = generation.text, generation.token_count, generation.normal_termination
-        error = generation.error or classify_generation(raw, count, normal)
-        if error:
-            return result(error)
-        self.on_state('PARSING')
-        parsed = parse_generation(raw, window, window_id=identity,
-                                  model_manifest_sha256=self.manifest_sha256)
-        if parsed.invalid_fragments or not parsed.valid_segments:
-            return result('MOSS_INVALID_GENERATION')
-        status = (ParseStatus.REPAIRED if any(s.parse_status == ParseStatus.REPAIRED
-                  for s in parsed.valid_segments) else ParseStatus.VALID)
-        return result(None, parsed.valid_segments, status)

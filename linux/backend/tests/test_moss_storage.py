@@ -42,6 +42,27 @@ def result(record, state=WindowState.DONE):
                         '你好 raw', (), ParseStatus.VALID, None)
 
 
+def test_supervisor_public_reads_and_durable_events(tmp_path):
+    spool, record, _ = make_job(tmp_path)
+    job_id = record['snapshot']['job_id']
+    assert spool.load_windows(job_id) == {'w:0': WindowSpec(0, 1000, 0, 12)}
+    assert spool.load_speaker_state(job_id) == {}
+    assert spool.load_merged_segments(job_id) == ()
+    assert spool.load_window_results(job_id) == ()
+    failed = replace(result(record), state=WindowState.FAILED, error='MOSS_CHILD_CRASHED')
+    spool.save_window_result(job_id, failed)
+    spool.save_job(job_id, JobSnapshot.from_dict(record['snapshot']), windows={})
+    assert spool.load_window_results(job_id) == (failed,)
+    spool.append_event(job_id, {'type': 'generation', 'perf': {'tokens': 7}})
+    spool.append_event(job_id, {'type': 'restart'})
+    path = spool.root / 'jobs' / job_id / 'logs' / 'events.jsonl'
+    before = path.read_bytes()
+    with pytest.raises(TypeError):
+        spool.append_event(job_id, {'invalid': object()})
+    assert path.read_bytes() == before
+    assert [json.loads(line)['type'] for line in path.read_text().splitlines()] == ['generation', 'restart']
+
+
 def test_revision_metadata_layout_and_new_model_revision(tmp_path):
     spool, record, wav = make_job(tmp_path)
     other = make_job(tmp_path, 'other-manifest')[1]

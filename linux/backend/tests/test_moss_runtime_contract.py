@@ -46,6 +46,23 @@ def test_serial_orchestration_and_provenance(tmp_path):
     assert result.token_count == 5119 and result.normal_termination is True
 
 
+@pytest.mark.parametrize('stage', ['encode', 'build', 'decode', 'parse'])
+def test_python_allocation_oom_is_explicit_failed_attempt(tmp_path, monkeypatch, stage):
+    import moss_worker.runtime as module
+    runtime, trace, wav = make_runtime(tmp_path)
+    def oom(*args, **kwargs):
+        raise MemoryError('allocation failed')
+    if stage == 'parse':
+        monkeypatch.setattr(module, 'parse_generation', oom)
+    else:
+        owner = {'encode': runtime.encoder, 'build': runtime.builder, 'decode': runtime.decoder}[stage]
+        monkeypatch.setattr(owner, stage, oom)
+    result = runtime.infer_window(WindowSpec(0, 3000, 0, 12), wav)
+    assert result.state is WindowState.FAILED
+    assert result.error == 'MOSS_OOM'
+    assert result.raw_generation == ('[0.0][S01]你好[1.0]' if stage == 'parse' else '')
+
+
 @pytest.mark.parametrize('text,count,normal', [
     ('[0.0][S01]你好[1.0]', 5120, True),
     ('[0.0][S01]你好[1.0]', 20, None),

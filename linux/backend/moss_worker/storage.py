@@ -16,7 +16,8 @@ import tempfile
 from dataclasses import asdict
 from uuid import uuid4
 
-from .types import JobSnapshot, JobState, WindowResult, WindowState
+from .types import JobSnapshot, JobState, NormalizedSegment, WindowResult, WindowState
+from .windowing import WindowSpec
 
 
 def _sync_directory(path):
@@ -216,6 +217,46 @@ class MossSpool:
     def save_speaker_state(self, job_id, state):
         self._active(job_id)
         atomic_write_json(self._job_path(job_id, 'speaker_state.json'), state)
+
+    def load_windows(self, job_id):
+        self.load_job(job_id)
+        return {key: WindowSpec(**value) for key, value in
+                _read_json(self._job_path(job_id, 'windows.json')).items()}
+
+    def load_window_results(self, job_id):
+        record = self.load_job(job_id)
+        results = []
+        for path in self._job_path(job_id, 'checkpoints').glob('*.json'):
+            result = WindowResult.from_dict(_read_json(self._job_path(job_id, 'checkpoints', path.name)))
+            if result.state is WindowState.DONE:
+                self._validate_result(job_id, record, result)
+            if (result.audio_sha256 != record['snapshot']['audio_sha256'] or
+                    result.model_manifest_sha256 != record['snapshot']['model_manifest_sha256']):
+                raise ValueError('window revision provenance mismatch')
+            for segment in result.segments:
+                if segment.window_id != result.window_id:
+                    raise ValueError('segment provenance integrity mismatch')
+                _validate_segment_manifest(segment, result.model_manifest_sha256)
+            raw = self._window_path(job_id, result.window_id, raw=True)
+            if path != self._window_path(job_id, result.window_id) or not raw.exists() or raw.read_bytes() != result.raw_generation.encode('utf-8'):
+                raise ValueError('window raw/checkpoint integrity mismatch')
+            results.append(result)
+        return tuple(sorted(results, key=lambda result: (result.window.start_ms, result.window_id)))
+
+    def load_speaker_state(self, job_id):
+        self.load_job(job_id)
+        return _read_json(self._job_path(job_id, 'speaker_state.json'))
+
+    def load_merged_segments(self, job_id):
+        self.load_job(job_id)
+        return tuple(NormalizedSegment.from_dict(json.loads(line)) for line in
+                     self._job_path(job_id, 'merged_segments.jsonl').read_text(encoding='utf-8').splitlines())
+
+    def append_event(self, job_id, event):
+        self._active(job_id)
+        line = json.dumps(event, ensure_ascii=False, allow_nan=False) + '\n'
+        path = self._job_path(job_id, 'logs', 'events.jsonl')
+        _atomic_write(path, path.read_text(encoding='utf-8') + line)
 
     def save_merged_segments(self, job_id, segments):
         record = self._active(job_id)
