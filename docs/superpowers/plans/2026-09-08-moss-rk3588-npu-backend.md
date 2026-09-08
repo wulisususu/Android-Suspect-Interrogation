@@ -345,6 +345,8 @@ git commit -m "feat: convert MOSS audio encoder to RKNN"
 
 **Files:** `linux/backend/moss_worker/{__init__,context_budget,windowing,generation_policy}.py`; tests `linux/backend/tests/test_moss_context_budget.py`, `test_moss_windowing.py`, `test_moss_generation_limit.py`; modify `tools/moss_rk3588/build_rkllm.py` and its conversion tests. No application or existing speech-worker changes.
 
+**Verified implementation evidence (2026-09-08):** policy commit `ab75fb0`, same-toolchain 16K builder commit `23e3214`; 50 context/window/generation-limit tests and 29 RKLLM conversion/workflow tests passed. The rebuilt decoder SHA-256 is `e08ba297847920948c4bf4a94141465e6ea5158f60db35308346aea94c849445`; RK3588 runtime reported `max_context_limit: 16384`. Repeated Gate A on the unchanged 666-token engineering fixture produced 7 segments / 2 speakers and normalized character similarity 1.0. This is short-fixture gate evidence, not long-window acceptance; runtime completion metadata and retry persistence still require Tasks 10/11. Source is committed locally; production deployment is incomplete and nothing has been pushed.
+
 - [ ] **Step 1: Run failing policy tests, then implement pure policy functions.** `ContextBudget(max_context_len=16384)` fixes reserve=5120 and safety=512. `plan_windows(duration_ms, expanded_input_tokens, budget)` requires a callable `(start_ms,end_ms)->int` from actual tokenizer/processor expansion; no default estimate. `classify_generation(text, token_count, normal_termination)` returns `GENERATION_LIMIT_REACHED` if any completion guard fails. `plan_retry_windows(failed_window, expanded_input_tokens, budget)` covers the entire failed interval at the next tier with two-minute overlap.
 
 ```python
@@ -548,11 +550,11 @@ class FakeTokenizer:
 def builder():
     return MossEmbeddingBuilder(FakeTokenizer(), FakeTable(), hidden_size=8,
         audio_token_id=99, digit_token_ids={str(i):200+i for i in range(10)},
-        audio_tokens_per_second=12.5, time_marker_every_seconds=2)
+        audio_tokens_per_second=12.5, time_marker_every_seconds=5)
 
 def test_markers_do_not_consume_audio_slots():
-    b=builder(); ids=b.build_audio_span_ids(50)
-    assert ids.count(99)==50 and 202 in ids and 204 in ids
+    b=builder(); ids=b.build_audio_span_ids(125)
+    assert ids == [99]*62 + [205] + [99]*62 + [201,200] + [99]
 
 def test_only_audio_ids_are_replaced():
     b=builder(); a=np.arange(32,dtype=np.float32).reshape(4,8)
@@ -736,7 +738,9 @@ git commit -m "feat: persist MOSS job checkpoints"
 class Enc:
     def encode(self,x,n): return np.zeros((n,8),np.float32)
 class Dec:
-    def generate(self,x,max_new_tokens): return type("R",(),{"text":"[0.0][S01]你好[1.0]"})()
+    def generate(self,x,max_new_tokens):
+        return type("R",(),{"text":"[0.0][S01]你好[1.0]",
+                            "token_count":16,"normal_termination":True})()
 
 def test_runtime_pipeline_order(fake_frontend, fake_builder, window, wav):
     rt=MossRuntime(fake_frontend,Enc(),fake_builder,Dec()); rt.infer_window(window,wav)

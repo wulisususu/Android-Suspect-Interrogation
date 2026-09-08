@@ -244,7 +244,7 @@ Critical invariants:
 - MOSS audio token ID.
 - `audio_tokens_per_second = 12.5` unless the selected checkpoint config states otherwise.
 - `audio_merge_size = 4` unless checkpoint config differs.
-- Numeric time markers are inserted at the configured cadence, currently every 2 seconds.
+- Numeric time markers are inserted at the checkpoint-configured cadence: the selected checkpoint uses 5 seconds (not the processor class's 2-second default). Reproduce the processor's integer marker placement exactly.
 
 The audio span is not just a continuous list of audio placeholders. Numeric marker token IDs occur inside the span. Therefore the embedding builder performs:
 
@@ -289,7 +289,7 @@ expanded_input_tokens
 <= rkllm_max_context_len
 ```
 
-Count the complete actual expanded input, including the exact MOSS template, special tokens, time markers, audio placeholders and assistant prefix. With these reserves, at most 10,752 expanded input tokens fit; 10,753 does not. The diagnostic estimate for 12 minutes (9,000 audio + 1,027 marker digits + assumed 512 prompt + 5,120 generation + 512 safety = 16,171) is not a substitute for the real count. Recount after clipping at a recording/hour boundary and before every submission.
+Count the complete actual expanded input, including the exact MOSS template, special tokens, time markers, audio placeholders and assistant prefix. With these reserves, at most 10,752 expanded input tokens fit; 10,753 does not. Duration-based audio/marker estimates and assumed prompt sizes cannot authorize execution. Load the selected checkpoint's 5-second marker cadence rather than the processor class default. Recount after clipping at a recording/hour boundary and before every submission.
 
 An actual official-processor check with the default prompt and repeated synthetic engineering fixture produced expanded counts 6,354 / 7,926 / 9,498 for 8/10/12 minutes respectively. These are fixture evidence, not constants for execution; different prompts/processor versions must be recounted.
 
