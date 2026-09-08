@@ -653,6 +653,8 @@ Add a second test with a 2x2 correspondence matrix and assert the assignment con
 
 - [ ] **Step 4: Implement deterministic maximum-weight one-to-one assignment.** Enumerate permutations of the smaller speaker set; lexicographic speaker order is tie-breaker. `>=0.85` inherits; lower confidence allocates new `GSxx`.
 
+Bound the exact enumeration before starting it: if `P(max(n_current,n_previous), min(n_current,n_previous)) > 1_000_000`, fail explicitly with `MOSS_SPEAKER_ASSIGNMENT_LIMIT`. This is a computation budget, not approximate matching or permission to collapse speakers. Restore persisted window/local mappings on replay without allocating new labels or rewriting weak assignments. Do not deduplicate overlapping utterances assigned to different known global speakers.
+
 - [ ] **Step 5: Write failing merge test and implement midpoint ownership.**
 
 ```python
