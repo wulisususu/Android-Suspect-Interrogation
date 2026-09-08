@@ -46,6 +46,9 @@ def widen_loaded_model(llm):
 
 
 def build(args):
+    if (type(args.max_context) is not int or not 0 < args.max_context <= 16384
+            or args.max_context % 32 != 0):
+        raise ValueError('max_context must be a positive integer multiple of 32, at most 16384')
     verify_repack(args.model)
     installed = version('rkllm-toolkit')
     if installed != '1.3.0':
@@ -63,7 +66,8 @@ def build(args):
     widen_loaded_model(llm)
     result = llm.build(do_quantization=True, optimization_level=0,
                        quantized_dtype='w8a8', quantized_algorithm='normal',
-                       target_platform='rk3588', num_npu_core=3, dataset=args.dataset)
+                       target_platform='rk3588', num_npu_core=3, dataset=args.dataset,
+                       max_context=args.max_context)
     if result != 0:
         raise RuntimeError(f'RKLLM build failed: {result}')
     result = llm.export_rkllm(args.output)
@@ -78,4 +82,6 @@ if __name__ == '__main__':
     parser.add_argument('--model', required=True)
     parser.add_argument('--dataset', required=True)
     parser.add_argument('--output', required=True)
+    parser.add_argument('--max-context', type=int, default=16384,
+                        help='Compiled context tokens: positive multiple of 32, at most 16384 (default: 16384)')
     build(parser.parse_args())

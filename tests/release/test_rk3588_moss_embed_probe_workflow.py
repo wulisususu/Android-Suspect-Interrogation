@@ -1,10 +1,12 @@
 import importlib.util
 import json
 import pickle
+import runpy
 import subprocess
 import sys
 from types import SimpleNamespace
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -95,6 +97,60 @@ def test_build_uses_available_130_api():
                      "target_platform='rk3588'", 'num_npu_core=3'):
         assert required in source
     assert source.index('widen_loaded_model(llm)', source.index('def build(')) < source.index('result = llm.build(')
+
+
+@pytest.mark.parametrize('max_context', [32, 4096, 16384])
+def test_build_forwards_explicit_context(tmp_path, monkeypatch, max_context):
+    module = tool('build_rkllm')
+    dataset = tmp_path / 'dataset.json'
+    dataset.write_text('[]')
+    output = tmp_path / 'model.rkllm'
+    llm = Mock()
+    llm.load_huggingface.return_value = llm.build.return_value = 0
+    llm.export_rkllm.side_effect = lambda path: (Path(path).write_bytes(b'model'), 0)[1]
+    monkeypatch.setattr(module, 'verify_repack', Mock())
+    monkeypatch.setattr(module, 'version', lambda name: '1.3.0')
+    monkeypatch.setattr(module, 'widen_loaded_model', Mock())
+    monkeypatch.setitem(sys.modules, 'rkllm.api', SimpleNamespace(RKLLM=lambda: llm))
+    module.build(SimpleNamespace(model='verified-repack', dataset=str(dataset),
+                                 output=str(output), max_context=max_context))
+    llm.build.assert_called_once_with(do_quantization=True, optimization_level=0,
+        quantized_dtype='w8a8', quantized_algorithm='normal', target_platform='rk3588',
+        num_npu_core=3, dataset=str(dataset), max_context=max_context)
+
+
+@pytest.mark.parametrize('max_context', [None, True, '16384', 32.0, -32, 0, 1, 31, 33, 16385, 16416])
+def test_build_rejects_invalid_context_before_weight_scan(monkeypatch, max_context):
+    module = tool('build_rkllm')
+    scan = Mock(side_effect=AssertionError('weight scan must not run'))
+    monkeypatch.setattr(module, 'verify_repack', scan)
+    with pytest.raises(ValueError, match='max_context'):
+        module.build(SimpleNamespace(model='unused', max_context=max_context))
+    scan.assert_not_called()
+
+
+def test_build_cli_context_help_and_default(monkeypatch):
+    import argparse
+
+    script = ROOT / 'tools/moss_rk3588/build_rkllm.py'
+    result = subprocess.run([sys.executable, str(script), '--help'], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert '--max-context' in result.stdout and '16384' in result.stdout
+    parse_args = argparse.ArgumentParser.parse_args
+    captured = []
+
+    class Parsed(Exception):
+        pass
+
+    def capture(parser, *args, **kwargs):
+        captured.append(parse_args(parser, *args, **kwargs))
+        raise Parsed
+
+    monkeypatch.setattr(argparse.ArgumentParser, 'parse_args', capture)
+    monkeypatch.setattr(sys, 'argv', [str(script), '--model', 'unused', '--dataset', 'unused', '--output', 'unused'])
+    with pytest.raises(Parsed):
+        runpy.run_path(str(script), run_name='__main__')
+    assert captured[0].max_context == 16384
 
 
 def test_loaded_bf16_model_widens_losslessly_for_fp32_calibration(tmp_path):
