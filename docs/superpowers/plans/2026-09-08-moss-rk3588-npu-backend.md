@@ -4,81 +4,74 @@
 
 **Goal:** Build a standalone, fully offline MOSS-Transcribe-Diarize backend on one RK3588 32 GB device, using RKNN for Whisper-Medium + VQAdaptor, RKLLM for the MOSS-tuned Qwen3-0.6B decoder, and durable long-audio windowing with anonymous global speaker continuity.
 
-**Architecture:** Keep the existing realtime `speech_worker` unchanged. Add a separate `moss_worker` supervisor behind `/run/suspect-interrogation/moss.sock`, with native RKNN/RKLLM inference isolated in a child process. Prove the critical `inputs_embeds -> RKLLM_INPUT_EMBED` bridge first, prove acoustic RKNN parity second, then build the long-audio worker, overlap merger, persistence, application integration, and RK3588 production deployment.
+**Architecture:** Keep the existing realtime `speech_worker` unchanged. Add a separate `moss_worker` supervisor behind `/run/suspect-interrogation/moss.sock`; isolate RKNN/RKLLM native inference in a child process. Prove `inputs_embeds -> RKLLM_INPUT_EMBED` first, prove the acoustic RKNN graph second, then implement long-audio windows, overlap/speaker merge, durable jobs, application integration, and RK3588 deployment.
 
-**Tech Stack:** Python 3.11/3.12, NumPy, `tokenizers`, Hugging Face Transformers/PyTorch only in the PC conversion environment, RKNN Toolkit2 / RKNN Runtime, RKLLM Toolkit **1.3.0** / RKLLM Runtime **1.3.0**, Unix domain sockets, FastAPI, systemd, GitHub Actions self-hosted RK3588 runner.
+**Tech Stack:** Python 3.11/3.12, NumPy, `tokenizers`, PyTorch/Transformers only on the conversion workstation, RKNN Toolkit2/RKNN Runtime, RKLLM Toolkit **1.3.0**/RKLLM Runtime **1.3.0**, Unix sockets, FastAPI, systemd, GitHub Actions self-hosted RK3588 runner.
 
 **Spec:** `docs/superpowers/specs/2026-09-08-moss-rk3588-npu-backend-design.md`
 
 ## Global Constraints
 
-- Target hardware: one RK3588, 32 GB RAM.
-- Production inference works with network disabled. No cloud API, model download, telemetry, or runtime update check is permitted.
-- Phase 1 is MOSS-only. Paraformer, FSMN-VAD, ERes2Net, and real-person identity binding are not dependencies of this backend.
-- Existing `speech_worker` remains unchanged in Phase 1. TCP/8000 must not be stopped, rebound, proxied, or reconfigured.
-- Acoustic path: MOSS Whisper-Medium + 4x temporal merge + VQAdaptor, RKNN FP16, three RK3588 NPU cores available to the active call.
-- Decoder path: **MOSS-tuned** Qwen3-0.6B weights, RKLLM W8A8. Never substitute stock Qwen3 weights.
-- Decoder input is `RKLLM_INPUT_EMBED`; host code reproduces MOSS text/audio embedding injection exactly.
-- Logical progress unit: 60 minutes. Target model window: 35 minutes. Adjacent model windows overlap by 5 minutes.
-- `ContextBudgetPlanner` fallback ladder: 35 -> 30 -> 25 -> 20 minutes. Failure at 20 minutes is terminal for that window.
-- Acoustic micro-chunk size: 30 seconds, fixed RKNN input `[1,80,3000]`; only valid adapted tokens from the last padded chunk are retained.
-- Initial acoustic precision is FP16. Do not add acoustic INT8 in this plan.
-- Initial decoder precision is W8A8.
+- Hardware: one RK3588, 32 GB RAM.
+- Production inference is network-independent: no cloud API, model download, telemetry, or update check.
+- Phase 1 is MOSS-only; Paraformer/FSMN-VAD/ERes2Net are not dependencies and `GSxx` is never auto-bound to a named person.
+- Existing `speech_worker` stays unchanged; TCP/8000 is never stopped, rebound, proxied, or reconfigured.
+- Acoustic graph: MOSS Whisper-Medium -> 4x time merge -> VQAdaptor, RKNN FP16.
+- Decoder: **MOSS-tuned** Qwen3-0.6B, RKLLM W8A8. Stock Qwen3 weights are forbidden as a fallback.
+- Decoder input: `RKLLM_INPUT_EMBED`, complete host-built `float32[n_tokens,1024]`.
+- Logical progress boundary: 60 minutes. Target model window: 35 minutes. Adjacent windows overlap 5 minutes.
+- Context fallback ladder: 35 -> 30 -> 25 -> 20 minutes; failure at 20 minutes is explicit.
+- Acoustic micro-chunk: 30 seconds, RKNN input `[1,80,3000]`; padded tail keeps only valid adapted tokens.
 - `max_concurrent_moss_jobs=1`, `max_concurrent_rknn_runs=1`, `max_concurrent_rkllm_runs=1`.
-- Raw WAV + SHA-256 is the immutable source of truth. All features, embeddings, generations, and transcripts are derived artifacts.
-- Local MOSS speakers are `Sxx`; cross-window anonymous speakers are `GSxx`. No `GSxx` is automatically bound to a named person in Phase 1.
-- Only speaker correspondence confidence `>=0.85` inherits an existing `GSxx`. Weaker evidence allocates a new `GSxx` and records candidate evidence.
-- Native RKNN/RKLLM calls run in a child process. A native crash must not kill the supervisor or FastAPI.
-- Generated `.rknn`, `.rkllm`, token embedding tables, calibration tensors, checkpoint weights, and real/large audio fixtures must never be committed to Git.
-- Follow `AGENTS.md`: source pushed to `linux-adaptation` must pass relevant CI and the exact final commit must complete RK3588 production redeploy/verification before implementation is reported complete.
+- Raw WAV + SHA-256 is immutable source evidence; every model product is derived/versioned.
+- Speaker correspondence `>=0.85` may inherit an existing `GSxx`; lower confidence gets a new `GSxx` plus candidate evidence.
+- Native inference runs in a child; its crash must not terminate the supervisor/FastAPI.
+- Never commit model/checkpoint binaries, `.rknn`, `.rkllm`, token embedding tables, calibration tensors, or real/large acceptance audio.
 - Production service account is exactly `suspect-interrogation:suspect-interrogation`, matching `systemd/ai-worker.service`.
-- Every task uses TDD or an explicit failing hardware gate, reruns focused tests, and commits independently.
+- Production native libraries are `/lib/librknnrt.so` and `/lib/librkllmrt.so` for the current RK3588 image; probes fail closed if absent.
+- Every task begins with a failing test or failing hardware gate, then minimal implementation, focused verification, and an independent commit.
+- `AGENTS.md` production Definition of Done applies to the exact final source SHA.
 
 ---
 
-## File Structure Map
+## File Structure
 
 ```text
 tools/moss_rk3588/
-├─ __init__.py
-├─ requirements.txt
-├─ capture_input_embeds.py
-├─ repack_moss_qwen.py
-├─ build_calibration_set.py
-├─ build_rkllm.py
-├─ export_audio_encoder.py
-├─ build_rknn.py
-├─ export_token_embedding.py
-├─ build_manifest.py
-├─ validate_bundle.py
-├─ compare_pytorch_rknn.py
-├─ compare_pytorch_rkllm.py
-└─ native/rkllm_embed_probe.cpp
+  capture_input_embeds.py       # PyTorch golden capture
+  repack_moss_qwen.py           # MOSS language weights -> standard Qwen3 package
+  build_calibration_set.py      # real inputs_embeds calibration dataset
+  build_rkllm.py                # Qwen3 -> RKLLM W8A8
+  export_audio_encoder.py       # Whisper+merge+adaptor -> ONNX
+  build_rknn.py                 # ONNX -> RKNN FP16
+  export_token_embedding.py     # MOSS token table -> FP16 mmap artifact
+  build_manifest.py             # version/hash manifest + self-test assets
+  validate_bundle.py
+  compare_pytorch_rknn.py
+  compare_pytorch_rkllm.py
+  native/rkllm_embed_probe.cpp
 
 linux/backend/moss_worker/
-├─ __init__.py
-├─ types.py
-├─ context_budget.py
-├─ windowing.py
-├─ embedding_builder.py
-├─ parser.py
-├─ speaker_remap.py
-├─ merger.py
-├─ storage.py
-├─ audio_frontend.py
-├─ rknn_audio_encoder.py
-├─ rkllm_decoder.py
-├─ runtime.py
-├─ child.py
-├─ supervisor.py
-├─ protocol.py
-└─ main.py
+  types.py                      # shared immutable job/window/segment types
+  context_budget.py             # exact MOSS input-token budgeting
+  windowing.py                  # 60m logical boundaries, target 35m/5m overlap
+  embedding_builder.py          # tokenizer/time markers/masked audio injection
+  parser.py                     # generation -> absolute-time segments
+  speaker_remap.py              # local Sxx -> global GSxx
+  merger.py                     # overlap ownership/dedup/conflicts
+  storage.py                    # durable spool/checkpoints
+  audio_frontend.py             # PCM16/16k/mono -> Whisper log-mel micro-chunks
+  rknn_audio_encoder.py
+  rkllm_decoder.py
+  runtime.py                    # one-window pipeline
+  child.py                      # native inference process
+  supervisor.py                 # queue/retry/cancel/crash recovery
+  protocol.py                   # length-prefixed JSON
+  main.py                       # Unix socket server
 
 linux/backend/app/ai/moss/
-├─ __init__.py
-├─ types.py
-└─ client.py
-
+  types.py
+  client.py
 linux/backend/app/services/moss_transcription.py
 linux/backend/requirements-moss-rk3588.txt
 systemd/moss-worker.service
@@ -86,23 +79,22 @@ systemd/moss-worker.service
 
 ---
 
-## Task 1: Capture a PyTorch MOSS golden reference and repack the MOSS Qwen3 weights
+## Task 1: Capture a PyTorch golden reference and repack the MOSS Qwen3 weights
 
 **Files:**
 - Create: `tools/moss_rk3588/__init__.py`
 - Create: `tools/moss_rk3588/requirements.txt`
 - Create: `tools/moss_rk3588/capture_input_embeds.py`
 - Create: `tools/moss_rk3588/repack_moss_qwen.py`
-- Create: `tests/tools/test_moss_reference_tools.py`
+- Test: `tests/tools/test_moss_reference_tools.py`
 
 **Interfaces:**
 - `build_reference_manifest(wav_path: Path, model_fingerprint: str, input_shape: tuple[int,...], output_text: str) -> dict[str, object]`
 - `capture_reference(model_dir: Path, wav_path: Path, output_dir: Path, force: bool=False) -> dict[str, object]`
 - `classify_state_key(key: str) -> str | None`
-- `repack_moss_qwen(model_dir: Path, output_dir: Path) -> dict[str, object]`
-- Reference artifacts: `input_embeds.npy`, **raw C-contiguous `input_embeds.f32`**, `input_ids.npy`, `attention_mask.npy`, `generation.txt`, `reference.json`.
+- Output reference includes `input_embeds.npy` **and raw C-contiguous `input_embeds.f32`** from the same FP32 tensor.
 
-- [ ] **Step 1: Write failing helper tests.**
+- [ ] **Step 1: Write the failing tests.**
 
 ```python
 from pathlib import Path
@@ -110,99 +102,92 @@ from tools.moss_rk3588.capture_input_embeds import build_reference_manifest
 from tools.moss_rk3588.repack_moss_qwen import classify_state_key
 
 
-def test_reference_manifest_records_sha_and_shape(tmp_path: Path):
+def test_manifest_records_audio_sha_and_shape(tmp_path: Path):
     wav = tmp_path / "sample.wav"
     wav.write_bytes(b"RIFFtest")
-    result = build_reference_manifest(wav, "moss-sha", (1, 912, 1024), "[0.0][S01]你好[0.8]")
-    assert len(result["audio_sha256"]) == 64
-    assert result["input_shape"] == [1, 912, 1024]
+    m = build_reference_manifest(wav, "moss-sha", (1, 912, 1024), "[0.0][S01]你好[0.8]")
+    assert len(m["audio_sha256"]) == 64
+    assert m["input_shape"] == [1, 912, 1024]
 
 
-def test_repack_selects_only_language_model_and_head():
+def test_repack_key_mapping_excludes_audio_weights():
     assert classify_state_key("model.language_model.layers.0.self_attn.q_proj.weight") == "model.layers.0.self_attn.q_proj.weight"
     assert classify_state_key("lm_head.weight") == "lm_head.weight"
     assert classify_state_key("model.whisper_encoder.layers.0.self_attn.q_proj.weight") is None
     assert classify_state_key("model.vq_adaptor.layers.0.weight") is None
 ```
 
-- [ ] **Step 2: Run the test and verify failure.**
+- [ ] **Step 2: Verify failure.**
 
-```bash
-python3 -m pytest tests/tools/test_moss_reference_tools.py -q
-```
+Run: `python3 -m pytest tests/tools/test_moss_reference_tools.py -q`
 
-Expected: import failure because the tools do not exist.
+Expected: import failure because the modules do not exist.
 
-- [ ] **Step 3: Add conversion-only dependencies.**
-
-`tools/moss_rk3588/requirements.txt`:
+- [ ] **Step 3: Add conversion-workstation dependencies.**
 
 ```text
 numpy>=1.26,<3
 soundfile>=0.12,<1
 transformers>=5.0,<6
-huggingface-hub>=0.27,<1
 torch>=2.5,<3
 safetensors>=0.4,<1
 onnx>=1.18,<2
 onnxruntime>=1.20,<2
 ```
 
-Rockchip toolkit wheels remain separately installed on the conversion workstation; scripts fail with a clear `RuntimeError` when a required Rockchip module is absent.
+- [ ] **Step 4: Implement golden capture.**
 
-- [ ] **Step 4: Implement the reference capture.**
+```python
+captured = {}
+def hook(module, args, kwargs):
+    captured["embeds"] = kwargs["inputs_embeds"].detach().float().cpu().numpy().copy(order="C")
 
-Register a `forward_pre_hook(..., with_kwargs=True)` on `model.model.language_model`, copy `kwargs["inputs_embeds"]` to CPU FP32, run `model.generate(..., do_sample=False)`, then save both `.npy` and raw `.f32` from the same C-contiguous array. `reference.json` stores shape, dtype, audio SHA-256, model fingerprint, Python/Torch/Transformers versions, and generated text. Refuse to overwrite a non-empty output directory unless `force=True`.
+handle = model.model.language_model.register_forward_pre_hook(hook, with_kwargs=True)
+try:
+    output_ids = model.generate(**inputs, do_sample=False)
+finally:
+    handle.remove()
+```
 
-- [ ] **Step 5: Implement the Qwen repack.**
+Save `.npy`, `.f32`, input IDs/mask, generated text, audio SHA, tensor shape/dtype, model fingerprint, and Python/Torch/Transformers versions. Refuse non-empty output dir unless `force=True`.
 
-Use exactly:
+- [ ] **Step 5: Implement exact language-weight repack.**
 
 ```python
 def classify_state_key(key: str) -> str | None:
     prefix = "model.language_model."
     if key.startswith(prefix):
         return "model." + key[len(prefix):]
-    if key == "lm_head.weight":
-        return key
-    return None
+    return key if key == "lm_head.weight" else None
 ```
 
-Create a standard `Qwen3ForCausalLM` from `model.config.text_config`, load only mapped MOSS language/head tensors, save with safetensors, copy MOSS tokenizer/chat-template files, and write `repack_manifest.json` with source checkpoint SHA-256/fingerprint.
+Instantiate standard `Qwen3ForCausalLM` from `model.config.text_config`, load mapped MOSS tensors, copy MOSS tokenizer/chat-template files, save safetensors and `repack_manifest.json`.
 
-- [ ] **Step 6: Run software tests.**
+- [ ] **Step 6: Verify software tests.**
 
-```bash
-python3 -m pytest tests/tools/test_moss_reference_tools.py -q
-```
+Run: `python3 -m pytest tests/tools/test_moss_reference_tools.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 7: Create one real 30-60 second 2-speaker reference on the conversion workstation.**
+- [ ] **Step 7: Produce one 45-second 2-speaker reference on the conversion workstation.**
 
 ```bash
-python3 tools/moss_rk3588/capture_input_embeds.py \
-  --model /opt/moss-build/source/MOSS-Transcribe-Diarize \
-  --wav /opt/moss-build/fixtures/zh_2spk_45s.wav \
-  --output /opt/moss-build/reference-zh-2spk-45s
-
-python3 tools/moss_rk3588/repack_moss_qwen.py \
-  --model /opt/moss-build/source/MOSS-Transcribe-Diarize \
-  --output /opt/moss-build/moss-qwen3-repacked
+python3 tools/moss_rk3588/capture_input_embeds.py --model /opt/moss-build/source/MOSS-Transcribe-Diarize --wav /opt/moss-build/fixtures/zh_2spk_45s.wav --output /opt/moss-build/reference-zh-2spk-45s
+python3 tools/moss_rk3588/repack_moss_qwen.py --model /opt/moss-build/source/MOSS-Transcribe-Diarize --output /opt/moss-build/moss-qwen3-repacked
 ```
 
-Expected: `input_embeds.npy` final dimension is 1024; `.f32` byte count equals `n_tokens*1024*4`; generation contains timestamps and at least `S01`/`S02` for this fixture.
+Expected: embedding width 1024, `.f32` size = `n_tokens*1024*4`, generation includes timestamped speaker labels.
 
 - [ ] **Step 8: Commit.**
 
 ```bash
 git add tools/moss_rk3588 tests/tools/test_moss_reference_tools.py
-git commit -m "feat: add MOSS reference and Qwen repack tools"
+git commit -m "feat: add MOSS golden reference tools"
 ```
 
 ---
 
-## Task 2: Gate A — prove `RKLLM_INPUT_EMBED` with real MOSS embeddings on RK3588
+## Task 2: Gate A — prove real MOSS `inputs_embeds` through RKLLM on RK3588
 
 **Files:**
 - Create: `tools/moss_rk3588/build_calibration_set.py`
@@ -210,67 +195,47 @@ git commit -m "feat: add MOSS reference and Qwen repack tools"
 - Create: `tools/moss_rk3588/compare_pytorch_rkllm.py`
 - Create: `tools/moss_rk3588/native/rkllm_embed_probe.cpp`
 - Create: `.github/workflows/rk3588-moss-embed-probe.yml`
-- Create: `tests/release/test_rk3588_moss_embed_probe_workflow.py`
+- Test: `tests/release/test_rk3588_moss_embed_probe_workflow.py`
 
-**Interfaces:**
-- Input: Task 1 repacked model + reference directories.
-- Output outside Git: `/opt/moss-build/moss_qwen3_0.6b_w8a8_rk3588.rkllm`.
-- Native CLI: `rkllm_embed_probe MODEL INPUT_F32 N_TOKENS 1024 MAX_NEW_TOKENS`.
-- **Hard gate:** do not begin Task 3 until this passes.
+**Interfaces:** output `/opt/moss-build/moss_qwen3_0.6b_w8a8_rk3588.rkllm`; later tasks are blocked until Gate A passes.
 
-- [ ] **Step 1: Write a failing workflow contract test.**
+- [ ] **Step 1: Write the failing workflow test.**
 
 ```python
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github/workflows/rk3588-moss-embed-probe.yml"
+W = ROOT / ".github/workflows/rk3588-moss-embed-probe.yml"
 
-
-def test_probe_is_manual_offline_and_rk3588_only():
-    text = WORKFLOW.read_text(encoding="utf-8")
+def test_probe_is_manual_offline_rk3588():
+    text = W.read_text(encoding="utf-8")
     assert "workflow_dispatch" in text
-    assert "self-hosted" in text
-    assert "rk3588" in text.lower()
+    assert "self-hosted" in text and "rk3588" in text.lower()
     assert "RKLLM_INPUT_EMBED" in text
-    assert "curl " not in text
-    assert "wget " not in text
+    assert "curl " not in text and "wget " not in text
 ```
 
-- [ ] **Step 2: Verify it fails.**
+- [ ] **Step 2: Verify failure.**
 
-```bash
-python3 -m pytest tests/release/test_rk3588_moss_embed_probe_workflow.py -q
-```
+Run: `python3 -m pytest tests/release/test_rk3588_moss_embed_probe_workflow.py -q`
 
-- [ ] **Step 3: Build calibration data from captured MOSS embeddings.**
+- [ ] **Step 3: Implement calibration dataset generation from captured embeddings.**
 
-`build_calibration_set.py` accepts multiple reference directories, rejects tensors whose last dimension is not 1024, and writes the exact input-embedding dataset format expected by RKLLM Toolkit 1.3.0. Do not calibrate on pure text only.
+Use the Rockchip multimodal calibration convention: for each reference save a pickle containing at least `{"inputs_embeds": torch.from_numpy(array)}` and write `inputs.json` entries with `{"sample": relative_pickle_path, "token_nums": int(array.shape[1])}`. Reject arrays with final dimension !=1024.
 
-- [ ] **Step 4: Convert the repacked MOSS Qwen3 to RKLLM W8A8.**
-
-Use:
+- [ ] **Step 4: Implement RKLLM W8A8 build.**
 
 ```python
-from rkllm.api import RKLLM
 llm = RKLLM()
 assert llm.load_huggingface(model=args.model, device="cpu") == 0
-assert llm.build(
-    do_quantization=True,
-    optimization_level=0,
-    quantized_dtype="w8a8",
-    quantized_algorithm="normal",
-    target_platform="rk3588",
-    num_npu_core=3,
-    dataset=args.dataset,
-) == 0
+assert llm.build(do_quantization=True, optimization_level=0, quantized_dtype="w8a8",
+                 quantized_algorithm="normal", target_platform="rk3588",
+                 num_npu_core=3, dataset=args.dataset) == 0
 assert llm.export_rkllm(args.output) == 0
 ```
 
-Abort unless `repack_manifest.json` identifies the source as MOSS.
+Abort unless the repack manifest identifies a MOSS source checkpoint.
 
-- [ ] **Step 5: Implement the external-embedding C++ probe.**
-
-Core call:
+- [ ] **Step 5: Implement the minimal native external-embedding probe.**
 
 ```cpp
 RKLLMInput input{};
@@ -279,7 +244,6 @@ input.role = "user";
 input.enable_thinking = false;
 input.embed_input.embed = embeds.data();
 input.embed_input.n_tokens = n_tokens;
-
 RKLLMInferParam infer{};
 infer.mode = RKLLM_INFER_GENERATE;
 infer.keep_history = 0;
@@ -287,275 +251,224 @@ infer.max_new_tokens = max_new_tokens;
 int rc = rkllm_run(handle, &input, &infer, nullptr);
 ```
 
-Validate raw file byte size before calling native code. Accumulate UTF-8 callback text and fail on `RKLLM_RUN_ERROR` or non-zero return.
+Reject raw-file byte-count mismatch before native inference; accumulate callback UTF-8 text; fail on native error state/return.
 
-- [ ] **Step 6: Add and run the manual hardware workflow.**
+- [ ] **Step 6: Add the manual self-hosted workflow.**
 
-The runner requires these pre-staged files:
-
-```text
-/opt/moss-build/moss_qwen3_0.6b_w8a8_rk3588.rkllm
-/opt/moss-build/reference-zh-2spk-45s/input_embeds.f32
-/opt/moss-build/reference-zh-2spk-45s/reference.json
-/lib/librkllmrt.so
-```
-
-Compile the probe against the RKLLM 1.3.0 header and `/lib/librkllmrt.so`. No package/model download step is allowed.
+It requires pre-staged model/reference files plus `/lib/librkllmrt.so`, compiles against RKLLM 1.3.0 headers, runs with no install/download step, and saves generation text.
 
 - [ ] **Step 7: Enforce Gate A.**
 
-`compare_pytorch_rkllm.py` fails unless:
+`compare_pytorch_rkllm.py` fails unless: at least one segment parses, at least two speaker labels appear on the chosen fixture, normalized character similarity to PyTorch >=0.80, speaker-count difference <=1, and UTF-8 is valid.
 
-```text
-- at least one timestamped segment parses;
-- at least two speaker labels appear for the chosen 2-speaker fixture;
-- normalized text character similarity to the PyTorch reference is >= 0.80;
-- parsed speaker count differs from PyTorch by <= 1;
-- output is valid UTF-8.
-```
+If Gate A fails: **stop plan execution here**; do not replace MOSS Qwen with stock Qwen or CPU inference.
 
-If Gate A fails, stop here and diagnose conversion/input semantics. Do not switch to stock Qwen3 or CPU Transformers as a hidden fallback.
-
-- [ ] **Step 8: Commit after Gate A passes.**
+- [ ] **Step 8: Verify and commit after hardware Gate A passes.**
 
 ```bash
 python3 -m pytest tests/release/test_rk3588_moss_embed_probe_workflow.py -q
 git add tools/moss_rk3588 .github/workflows/rk3588-moss-embed-probe.yml tests/release/test_rk3588_moss_embed_probe_workflow.py
-git commit -m "test: prove MOSS embeddings on RKLLM"
+git commit -m "test: prove MOSS external embeddings on RKLLM"
 ```
 
 ---
 
-## Task 3: Gate B — convert Whisper-Medium + merge + VQAdaptor to RKNN FP16
+## Task 3: Gate B — export Whisper-Medium + merge + VQAdaptor as RKNN FP16
 
 **Files:**
 - Create: `tools/moss_rk3588/export_audio_encoder.py`
 - Create: `tools/moss_rk3588/build_rknn.py`
 - Create: `tools/moss_rk3588/compare_pytorch_rknn.py`
-- Create: `tests/tools/test_moss_audio_export.py`
+- Test: `tests/tools/test_moss_audio_export.py`
 - Modify: `.github/workflows/rk3588-moss-embed-probe.yml`
 
-**Interfaces:**
-- ONNX input: float32 `[1,80,3000]`.
-- ONNX/RKNN output: `[1,375,1024]`.
-- Output outside Git: `/opt/moss-build/moss_audio_encoder_fp16_rk3588.rknn`.
-- **Hard gate:** no worker implementation before numerical parity passes.
+**Interfaces:** static input `[1,80,3000]`, output `[1,375,1024]`; output `/opt/moss-build/moss_audio_encoder_fp16_rk3588.rknn`.
 
-- [ ] **Step 1: Write the failing merge-shape test.**
+- [ ] **Step 1: Write the failing export-wrapper test.**
 
 ```python
 import torch
 from tools.moss_rk3588.export_audio_encoder import MossAudioEncoderExport
 
+class FakeWhisper(torch.nn.Module):
+    def forward(self, x, return_dict=True):
+        y = torch.zeros(1, 1500, 4)
+        return type("Out", (), {"last_hidden_state": y})()
+class FakeAdaptor(torch.nn.Module):
+    def forward(self, x): return x[..., :4]
 
-def test_export_wrapper_merges_time_by_four(fake_whisper, fake_adaptor):
-    model = MossAudioEncoderExport(fake_whisper, fake_adaptor, merge_size=4)
-    out = model(torch.zeros(1, 80, 3000))
-    assert out.shape[1] == 375
+def test_merge_is_four_to_one():
+    out = MossAudioEncoderExport(FakeWhisper(), FakeAdaptor(), 4)(torch.zeros(1,80,3000))
+    assert out.shape == (1,375,4)
 ```
 
-- [ ] **Step 2: Verify failure.**
-
-```bash
-python3 -m pytest tests/tools/test_moss_audio_export.py -q
-```
+- [ ] **Step 2: Verify failure.** Run: `python3 -m pytest tests/tools/test_moss_audio_export.py -q`
 
 - [ ] **Step 3: Implement export wrapper.**
 
 ```python
 class MossAudioEncoderExport(torch.nn.Module):
-    def __init__(self, whisper, adaptor, merge_size: int = 4):
-        super().__init__()
-        self.whisper = whisper
-        self.adaptor = adaptor
-        self.merge_size = merge_size
-
+    def __init__(self, whisper, adaptor, merge_size=4):
+        super().__init__(); self.whisper=whisper; self.adaptor=adaptor; self.merge_size=merge_size
     def forward(self, input_features):
         feat = self.whisper(input_features, return_dict=True).last_hidden_state
-        b, t, d = feat.shape
-        t_trim = (t // self.merge_size) * self.merge_size
-        merged = feat[:, :t_trim, :].reshape(b, t_trim // self.merge_size, d * self.merge_size)
-        return self.adaptor(merged)
+        b,t,d = feat.shape; t = (t//self.merge_size)*self.merge_size
+        return self.adaptor(feat[:,:t,:].reshape(b,t//self.merge_size,d*self.merge_size))
 ```
 
-Export static ONNX and run ONNX Runtime once before reporting success.
+Load the actual MOSS encoder/adaptor weights, export static ONNX, and require one ONNX Runtime inference to pass.
 
-- [ ] **Step 4: Build RKNN FP16.**
+- [ ] **Step 4: Build RKNN with `do_quantization=False`, `target_platform="rk3588"`.**
 
-Use RKNN Toolkit2 with `target_platform="rk3588"` and `do_quantization=False`. Print model input/output metadata after build.
+- [ ] **Step 5: Enforce board parity Gate B.**
 
-- [ ] **Step 5: Extend the RK3588 workflow and enforce Gate B.**
+Run fixed reference input with `RKNNLite.NPU_CORE_0_1_2`; require `[1,375,1024]`, finite values, flattened cosine >=0.995, MAE <=0.03.
 
-On the board, run one fixed 30-second fixture through RKNN Lite on `NPU_CORE_0_1_2`; compare to PyTorch adapted audio embeddings. Require:
+If Gate B fails: stop and diagnose FP16 export/operators; do not add INT8.
 
-```text
-shape == [1,375,1024]
-all values finite
-flattened cosine similarity >= 0.995
-mean absolute error <= 0.03
-```
-
-If Gate B fails, diagnose FP16/export/operator differences. Do not introduce INT8 acoustic quantization.
-
-- [ ] **Step 6: Commit after Gate B passes.**
+- [ ] **Step 6: Verify and commit.**
 
 ```bash
 python3 -m pytest tests/tools/test_moss_audio_export.py tests/release/test_rk3588_moss_embed_probe_workflow.py -q
-git add tools/moss_rk3588 .github/workflows/rk3588-moss-embed-probe.yml tests/tools/test_moss_audio_export.py
+git add tools/moss_rk3588 tests/tools/test_moss_audio_export.py .github/workflows/rk3588-moss-embed-probe.yml
 git commit -m "feat: convert MOSS audio encoder to RKNN"
 ```
 
 ---
 
-## Task 4: Build a reproducible runtime bundle and self-test assets
+## Task 4: Build and validate the production model bundle
 
 **Files:**
 - Create: `tools/moss_rk3588/export_token_embedding.py`
 - Create: `tools/moss_rk3588/build_manifest.py`
 - Create: `tools/moss_rk3588/validate_bundle.py`
-- Create: `tests/tools/test_moss_bundle_manifest.py`
+- Test: `tests/tools/test_moss_bundle_manifest.py`
 - Modify: `.gitignore`
 
-**Interfaces:**
-- Bundle root: `/opt/suspect-interrogation/models/moss-rk3588` in production.
-- `manifest.json` contains exact toolkit/runtime/model fingerprints and hashes.
-- Self-test assets are generated from non-case fixture data and stay outside Git.
+**Interfaces:** production root `/opt/suspect-interrogation/models/moss-rk3588`; includes self-test inputs generated from non-case fixture data.
 
 - [ ] **Step 1: Write the failing validator test.**
 
 ```python
 from tools.moss_rk3588.validate_bundle import validate_manifest
 
-
-def test_manifest_requires_core_models_and_selftests():
-    errors = validate_manifest({"artifacts": {}}, existing_files=set())
-    text = "\n".join(errors)
-    assert "moss_audio_encoder_fp16_rk3588.rknn" in text
-    assert "moss_qwen3_0.6b_w8a8_rk3588.rkllm" in text
-    assert "selftest/encoder_input.npy" in text
-    assert "selftest/decoder_input.f32" in text
+def test_required_bundle_assets():
+    errors = "\n".join(validate_manifest({"artifacts":{}}, set()))
+    assert "moss_audio_encoder_fp16_rk3588.rknn" in errors
+    assert "moss_qwen3_0.6b_w8a8_rk3588.rkllm" in errors
+    assert "selftest/encoder_input.npy" in errors
+    assert "selftest/decoder_input.f32" in errors
 ```
 
-- [ ] **Step 2: Export token embeddings as little-endian FP16.**
+- [ ] **Step 2: Verify failure.** Run: `python3 -m pytest tests/tools/test_moss_bundle_manifest.py -q`
+
+- [ ] **Step 3: Export token table.**
 
 ```python
-weight = model.model.language_model.embed_tokens.weight.detach().cpu().to(torch.float16)
-weight.numpy().astype("<f2", copy=False).tofile(output_path)
+w = model.model.language_model.embed_tokens.weight.detach().cpu().to(torch.float16)
+w.numpy().astype("<f2", copy=False).tofile(output_path)
 ```
 
-Write `token_embedding.json` with `rows`, `hidden_size=1024`, `dtype=fp16`, byte order, source fingerprint, and SHA-256.
+Write rows, hidden_size=1024, dtype, byte order, source fingerprint and SHA in `token_embedding.json`.
 
-- [ ] **Step 3: Build the manifest from measured values, not literals copied from examples.**
+- [ ] **Step 4: Build manifest and self-tests.**
 
-The script obtains the MOSS source Git SHA via `git -C SOURCE rev-parse HEAD`, refuses a dirty source checkout unless `--allow-dirty` is explicitly supplied, reads the selected checkpoint config for context/token settings, records RKNN Toolkit2 and RKLLM Toolkit 1.3.0 versions, and hashes every runtime artifact.
+Resolve MOSS source SHA with `git -C SOURCE rev-parse HEAD`; refuse dirty checkout unless `--allow-dirty`. Record actual checkpoint config, toolkit/runtime versions and hashes. Generate `selftest/encoder_input.npy`, `encoder_expected.json`, `decoder_input.f32`, `decoder_expected.json`.
 
-- [ ] **Step 4: Generate self-test inputs.**
-
-Create from a fixed non-case fixture:
+- [ ] **Step 5: Validate exact layout.**
 
 ```text
-selftest/encoder_input.npy       # [1,80,3000] float32
-selftest/encoder_expected.json  # shape/finite-check metadata
-selftest/decoder_input.f32       # short [n,1024] float32 embedding input
-selftest/decoder_expected.json   # minimum structural generation checks
+moss_audio_encoder_fp16_rk3588.rknn
+moss_qwen3_0.6b_w8a8_rk3588.rkllm
+moss_token_embedding_fp16.bin
+token_embedding.json
+tokenizer.json
+tokenizer_config.json
+special_tokens_map.json
+generation_config.json
+processor_config.json
+manifest.json
+selftest/encoder_input.npy
+selftest/encoder_expected.json
+selftest/decoder_input.f32
+selftest/decoder_expected.json
 ```
 
-- [ ] **Step 5: Validate exact bundle layout.**
+Verify hashes, `rows*1024*2` embedding bytes, audio token, time-marker config, and positive decoder context.
 
-```text
-moss-rk3588/
-├─ moss_audio_encoder_fp16_rk3588.rknn
-├─ moss_qwen3_0.6b_w8a8_rk3588.rkllm
-├─ moss_token_embedding_fp16.bin
-├─ token_embedding.json
-├─ tokenizer.json
-├─ tokenizer_config.json
-├─ special_tokens_map.json
-├─ generation_config.json
-├─ processor_config.json
-├─ manifest.json
-└─ selftest/
-   ├─ encoder_input.npy
-   ├─ encoder_expected.json
-   ├─ decoder_input.f32
-   └─ decoder_expected.json
-```
-
-Validate hashes, embedding file byte count `rows*1024*2`, required audio token, time-marker config, decoder context, and self-test metadata.
-
-- [ ] **Step 6: Ignore generated assets, run tests, commit.**
+- [ ] **Step 6: Verify and commit.**
 
 ```bash
 python3 -m pytest tests/tools/test_moss_bundle_manifest.py -q
 git add tools/moss_rk3588 tests/tools/test_moss_bundle_manifest.py .gitignore
-git commit -m "feat: define MOSS RK3588 model bundle"
+git commit -m "feat: define MOSS RK3588 runtime bundle"
 ```
 
 ---
 
-## Task 5: Define job types, exact context budgeting, and the long-audio window chain
+## Task 5: Define types, exact context budget, and 60-minute logical windowing
 
 **Files:**
 - Create: `linux/backend/moss_worker/__init__.py`
 - Create: `linux/backend/moss_worker/types.py`
 - Create: `linux/backend/moss_worker/context_budget.py`
 - Create: `linux/backend/moss_worker/windowing.py`
-- Create: `linux/backend/tests/test_moss_windowing.py`
+- Test: `linux/backend/tests/test_moss_windowing.py`
 
 **Interfaces:**
 - `ContextBudgetPlanner(max_context_len=40960, generation_reserve_tokens=8192, safety_margin_tokens=512, prompt_token_count=512)`.
-- `estimate_expanded_input_tokens(duration_ms: int) -> int` reproduces audio token + digit-marker counts.
-- `plan_window(start_ms: int, remaining_ms: int, index: int) -> WindowSpec`.
-- `build_window_chain(total_ms: int, planner: ContextBudgetPlanner) -> list[WindowSpec]`.
-- For non-first windows, `logical_chunk_index = (start_ms + overlap_ms) // 3_600_000`; this makes bridge window `55-90m` belong to logical chunk 1 because its non-overlap ownership begins at 60m.
+- `plan_duration_ms(remaining_ms: int) -> int` selects 35/30/25/20m based on context.
+- `build_window_chain(total_ms: int, planner) -> list[WindowSpec]`.
+- For a non-first window, ownership begins at `start_ms + overlap_ms`; `logical_chunk_index = ownership_start_ms // 3_600_000`.
 
-- [ ] **Step 1: Write failing exact-count and chain tests.**
+- [ ] **Step 1: Write failing exact-count/window tests.**
 
 ```python
 from moss_worker.context_budget import ContextBudgetPlanner
 from moss_worker.windowing import build_window_chain
 
-
-def test_35_minute_default_input_count_matches_moss_markers():
+def test_35m_audio_span_count_matches_moss():
     p = ContextBudgetPlanner(prompt_token_count=0)
-    assert p.estimate_expanded_input_tokens(35 * 60_000) == 26_250 + 3_648
+    assert p.estimate_expanded_input_tokens(35*60_000) == 26_250 + 3_648
 
-
-def test_nominal_two_hour_chain_has_cross_hour_overlap():
+def test_nominal_chain_clips_at_hour_boundaries():
     p = ContextBudgetPlanner(prompt_token_count=512)
-    w = build_window_chain(120 * 60_000, p)
-    assert [(x.start_ms // 60_000, x.duration_ms // 60_000) for x in w[:4]] == [(0,35),(30,30),(55,35),(85,35)]
+    w = build_window_chain(120*60_000, p)
+    assert [(x.start_ms//60_000, x.end_ms//60_000) for x in w[:4]] == [(0,35),(30,60),(55,90),(85,120)]
     assert w[2].logical_chunk_index == 1
 
-
-def test_small_context_uses_only_approved_fallback_durations():
+def test_smaller_context_uses_approved_ladder():
     p = ContextBudgetPlanner(max_context_len=34_000, prompt_token_count=512)
-    spec = p.plan_window(0, 60 * 60_000, 0)
-    assert spec.duration_ms // 60_000 in {30,25,20}
-    assert spec.duration_ms >= 20 * 60_000
+    assert p.plan_duration_ms(60*60_000)//60_000 in {30,25,20}
 ```
 
-Note: the second nominal window ends at the 60-minute recording boundary and is therefore 30 minutes long; later bridge windows resume the 35-minute target.
+- [ ] **Step 2: Verify failure.** Run: `cd linux/backend && python3 -m pytest tests/test_moss_windowing.py -q`
 
-- [ ] **Step 2: Verify failure.**
+- [ ] **Step 3: Define immutable enums/dataclasses.**
 
-```bash
-cd linux/backend && python3 -m pytest tests/test_moss_windowing.py -q
+`types.py`: `JobState`, `WindowState`, `ParseStatus`, `MergeStatus`, `WindowSpec`, `NormalizedSegment`, `WindowResult`, `JobSnapshot`, `JobResult`, with deterministic `to_dict/from_dict`.
+
+- [ ] **Step 4: Implement exact token accounting.**
+
+Audio placeholders = `ceil(seconds*12.5)`. For marker seconds `2,4,...,floor(seconds)` add `len(str(second))` digit tokens. Total = audio + marker digits + prompt count; fit iff total+8192+512 <= max context.
+
+- [ ] **Step 5: Implement logical-boundary clipping.**
+
+```python
+start = 0
+while start < total_ms:
+    duration = planner.plan_duration_ms(total_ms-start)
+    ownership_start = start if not windows else start + overlap_ms
+    logical_end = ((ownership_start // HOUR_MS) + 1) * HOUR_MS
+    end = min(start + duration, logical_end, total_ms)
+    append_window(start, end, ownership_start // HOUR_MS)
+    if end == total_ms: break
+    start = end - overlap_ms
 ```
 
-- [ ] **Step 3: Define types.**
+This produces `0-35, 30-60, 55-90, 85-120` at the default budget and still works when a target window shrinks.
 
-`types.py` defines `JobState`, `WindowState`, `ParseStatus`, `MergeStatus`, `WindowSpec`, `RawSegment`, `NormalizedSegment`, `WindowResult`, `JobSnapshot`, and `JobResult`, each with deterministic `to_dict()`/`from_dict()` methods.
-
-- [ ] **Step 4: Implement context accounting exactly.**
-
-For checkpoint defaults, audio placeholders are `ceil(duration_seconds*12.5)`. For every integer marker second `2,4,...,floor(duration_seconds)` add `len(str(second))` digit-token positions. Total input count = audio placeholders + digit tokens + prompt tokens. Fit iff input + 8192 generation reserve + 512 safety <= context.
-
-- [ ] **Step 5: Implement the chain.**
-
-The next window starts at `previous.end_ms - 5min`. Clip final window to recording end. Do not use a fixed stride when a window has been shrunk.
-
-- [ ] **Step 6: Run tests and commit.**
+- [ ] **Step 6: Verify and commit.**
 
 ```bash
 cd linux/backend && python3 -m pytest tests/test_moss_windowing.py -q
@@ -566,217 +479,209 @@ git commit -m "feat: plan MOSS long-audio windows"
 
 ---
 
-## Task 6: Reproduce MOSS processor semantics and construct external embeddings
+## Task 6: Reproduce MOSS time markers and build `RKLLM_INPUT_EMBED`
 
 **Files:**
 - Create: `linux/backend/requirements-moss-rk3588.txt`
 - Create: `linux/backend/moss_worker/embedding_builder.py`
-- Create: `linux/backend/tests/test_moss_embedding_builder.py`
+- Test: `linux/backend/tests/test_moss_embedding_builder.py`
 
-**Interfaces:**
-- `TokenEmbeddingTable(path: Path, metadata_path: Path)` memory-maps FP16 weights.
-- `MossEmbeddingBuilder.build_audio_span_ids(audio_seq_len: int) -> list[int]`.
-- `MossEmbeddingBuilder.build(prompt: str, audio_embeds: np.ndarray) -> BuiltEmbeddings`.
+**Interfaces:** `TokenEmbeddingTable.lookup(ids) -> float32[n,1024]`; `MossEmbeddingBuilder.build_audio_span_ids`; `build_from_ids`; `build(prompt,audio_embeds)`.
 
-- [ ] **Step 1: Add board-only dependencies.**
+- [ ] **Step 1: Add production-only dependencies.**
 
 ```text
 numpy>=1.26,<3
 tokenizers>=0.20,<1
 ```
 
-Do not add PyTorch or Transformers to the production backend environment.
-
-- [ ] **Step 2: Write failing tests for marker insertion and masked replacement.**
+- [ ] **Step 2: Write failing self-contained tests.**
 
 ```python
-def test_markers_do_not_consume_audio_features(fake_builder):
-    ids = fake_builder.build_audio_span_ids(50)
-    assert ids.count(fake_builder.audio_token_id) == 50
-    assert fake_builder.digit_token_ids["2"] in ids
-    assert fake_builder.digit_token_ids["4"] in ids
+import numpy as np
+from moss_worker.embedding_builder import MossEmbeddingBuilder
+
+class FakeTable:
+    def lookup(self, ids): return np.asarray([[float(i)]*8 for i in ids], dtype=np.float32)
+
+class FakeTokenizer:
+    def encode(self, text): return [10] if text else []
 
 
-def test_only_audio_positions_are_replaced(fake_builder):
-    audio = np.arange(32, dtype=np.float32).reshape(4, 8)
-    built = fake_builder.build_from_ids([10,99,11,99,99,99,12], audio)
-    np.testing.assert_allclose(built.embeds[built.audio_positions], audio)
+def builder():
+    return MossEmbeddingBuilder(FakeTokenizer(), FakeTable(), hidden_size=8,
+        audio_token_id=99, digit_token_ids={str(i):200+i for i in range(10)},
+        audio_tokens_per_second=12.5, time_marker_every_seconds=2)
+
+def test_markers_do_not_consume_audio_slots():
+    b=builder(); ids=b.build_audio_span_ids(50)
+    assert ids.count(99)==50 and 202 in ids and 204 in ids
+
+def test_only_audio_ids_are_replaced():
+    b=builder(); a=np.arange(32,dtype=np.float32).reshape(4,8)
+    x=b.build_from_ids([10,99,11,99,99,99,12], a)
+    np.testing.assert_allclose(x.embeds[x.audio_positions], a)
 ```
 
-- [ ] **Step 3: Implement FP16 mmap lookup.**
+- [ ] **Step 3: Verify failure.** Run: `cd linux/backend && python3 -m pytest tests/test_moss_embedding_builder.py -q`
 
-Reject out-of-range token IDs; gather only requested rows; convert selected rows to C-contiguous FP32.
+- [ ] **Step 4: Implement FP16 mmap table and exact audio-span insertion.** Reject out-of-range IDs; gather requested rows only; convert selected rows to C-contiguous FP32. Marker digits add token positions without reducing audio placeholder count.
 
-- [ ] **Step 4: Port MOSS audio-span insertion exactly.**
+- [ ] **Step 5: Implement final build/context guard.** Tokenize exact MOSS prompt, expand audio placeholder, inject audio embeddings only at `audio_token_id`, and raise `MOSS_CONTEXT_OVERFLOW` if input+generation reserve+safety exceeds manifest context.
 
-Load `audio_tokens_per_second`, `time_marker_every_seconds`, `audio_token_id`, and digit-token IDs from bundle configs. Number marker token positions must not reduce the number of audio placeholders.
-
-- [ ] **Step 5: Build final embeddings and enforce context guard.**
-
-Tokenize the MOSS chat prompt, expand the audio span, lookup normal/digit embeddings, replace only audio placeholder positions in order, and reject if `n_tokens + generation_reserve + safety_margin > max_context_len` with `MOSS_CONTEXT_OVERFLOW` details.
-
-- [ ] **Step 6: Run tests and commit.**
+- [ ] **Step 6: Verify and commit.**
 
 ```bash
 cd linux/backend && python3 -m pytest tests/test_moss_embedding_builder.py tests/test_moss_windowing.py -q
 cd ../..
 git add linux/backend/requirements-moss-rk3588.txt linux/backend/moss_worker/embedding_builder.py linux/backend/tests/test_moss_embedding_builder.py
-git commit -m "feat: construct MOSS RKLLM embeddings"
+git commit -m "feat: construct MOSS external embeddings"
 ```
 
 ---
 
-## Task 7: Parse MOSS generations into absolute-time normalized segments
+## Task 7: Parse generation into absolute-time segments
 
 **Files:**
 - Create: `linux/backend/moss_worker/parser.py`
-- Create: `linux/backend/tests/test_moss_parser.py`
+- Test: `linux/backend/tests/test_moss_parser.py`
 
-**Interfaces:**
-- `parse_generation(raw: str, window: WindowSpec) -> ParsedGeneration`.
-- `ParsedGeneration` contains `valid_segments`, `invalid_fragments`, and raw text.
+**Interfaces:** `parse_generation(raw: str, window: WindowSpec) -> ParsedGeneration`; parser module defines `ParsedGeneration(valid_segments, invalid_fragments, raw_generation)`.
 
-- [ ] **Step 1: Write failing parser tests.**
+- [ ] **Step 1: Write failing tests with a local window helper.**
 
 ```python
-def test_parser_offsets_time(window_30m):
-    out = parse_generation("[12.0][S01]你好[13.5]", window_30m)
-    s = out.valid_segments[0]
-    assert s.start_ms == 30 * 60_000 + 12_000
-    assert s.end_ms == 30 * 60_000 + 13_500
+from moss_worker.parser import parse_generation
+from moss_worker.types import WindowSpec, ParseStatus
+
+def w(): return WindowSpec("w2",2,0,30*60_000,60*60_000,30*60_000,5*60_000,0)
+
+def test_absolute_offset():
+    s=parse_generation("[12.0][S01]你好[13.5]", w()).valid_segments[0]
+    assert (s.start_ms,s.end_ms)==(30*60_000+12_000,30*60_000+13_500)
     assert s.parse_status is ParseStatus.VALID
 
-
-def test_missing_end_repairs_from_next_start(window_30m):
-    out = parse_generation("[1.0][S01]第一句[2.5][S02]第二句[3.0]", window_30m)
-    assert out.valid_segments[0].end_ms == 30 * 60_000 + 2_500
-    assert out.valid_segments[0].parse_status is ParseStatus.REPAIRED
+def test_missing_end_repairs_from_next_start():
+    s=parse_generation("[1.0][S01]第一句[2.5][S02]第二句[3.0]", w()).valid_segments[0]
+    assert s.end_ms==30*60_000+2_500 and s.parse_status is ParseStatus.REPAIRED
 ```
 
-- [ ] **Step 2: Verify failure.**
+- [ ] **Step 2: Verify failure.** Run: `cd linux/backend && python3 -m pytest tests/test_moss_parser.py -q`
 
-```bash
-cd linux/backend && python3 -m pytest tests/test_moss_parser.py -q
-```
+- [ ] **Step 3: Implement strict parser.** Accept `S` + >=2 digits, non-negative monotonic timestamps, non-empty text, end>=start; convert local seconds to absolute ms immediately.
 
-- [ ] **Step 3: Implement strict parsing.**
+- [ ] **Step 4: Implement deterministic repair only.** Missing end can use next start. Final unbounded fragment becomes INVALID and stays outside authoritative timeline.
 
-Accept `S` plus at least two digits, non-negative monotonic timestamps, non-empty Unicode-trimmed text, and `end>=start`. Convert to absolute milliseconds immediately.
-
-- [ ] **Step 4: Implement only deterministic repair.**
-
-A missing end may use the next segment start. A final segment with no reliable end is `INVALID`; retain its raw fragment and exclude it from the authoritative timeline.
-
-- [ ] **Step 5: Run tests and commit.**
+- [ ] **Step 5: Verify and commit.**
 
 ```bash
 cd linux/backend && python3 -m pytest tests/test_moss_parser.py -q
 cd ../..
 git add linux/backend/moss_worker/parser.py linux/backend/tests/test_moss_parser.py
-git commit -m "feat: parse MOSS diarized output"
+git commit -m "feat: parse MOSS diarized generations"
 ```
 
 ---
 
-## Task 8: Preserve anonymous speakers across windows and deduplicate overlap
+## Task 8: Map local speakers to global speakers and merge overlap
 
 **Files:**
 - Create: `linux/backend/moss_worker/speaker_remap.py`
 - Create: `linux/backend/moss_worker/merger.py`
-- Create: `linux/backend/tests/test_moss_speaker_remap.py`
-- Create: `linux/backend/tests/test_moss_merger.py`
+- Test: `linux/backend/tests/test_moss_speaker_remap.py`
+- Test: `linux/backend/tests/test_moss_merger.py`
 
-**Interfaces:**
-- `SpeakerRemapper.map_adjacent(previous: WindowResult, current: WindowResult, state: GlobalSpeakerState) -> SpeakerMappingResult`.
-- `merge_adjacent(previous: list[NormalizedSegment], current: list[NormalizedSegment], mapping: SpeakerMappingResult) -> MergeResult`.
+**Interfaces:** `segment_match_score(a,b,order_score) -> float`; `SpeakerRemapper.map_adjacent`; `merge_adjacent`.
 
-- [ ] **Step 1: Write failing one-to-one correspondence tests.**
-
-Create scripted overlap where previous `S01` matches current `S03` repeatedly and previous `S02` matches current `S01`. Assert distinct current speakers cannot map to the same prior `GSxx`.
-
-- [ ] **Step 2: Implement segment scoring.**
+- [ ] **Step 1: Write failing scoring/one-to-one tests.**
 
 ```python
-score = (
-    0.45 * time_iou
-    + 0.35 * text_similarity
-    + 0.10 * duration_similarity
-    + 0.10 * order_similarity
-)
+from moss_worker.speaker_remap import segment_match_score
+
+def test_identical_overlap_is_strong():
+    a={"start_ms":1_000,"end_ms":2_000,"text":"你几点到的"}
+    b={"start_ms":1_020,"end_ms":2_010,"text":"你是几点到的"}
+    assert segment_match_score(a,b,1.0) > 0.80
 ```
 
-Normalize text with Unicode NFKC, whitespace collapse, and punctuation removal; use `difflib.SequenceMatcher` for text similarity.
+Add a second test with a 2x2 correspondence matrix and assert the assignment contains two distinct global labels.
 
-- [ ] **Step 3: Implement deterministic maximum-weight one-to-one assignment.**
+- [ ] **Step 2: Verify failure.** Run both Task 8 test files.
 
-Enumerate permutations of the smaller speaker set; maximize total correspondence score; lexicographic local-speaker order is the tie breaker. Do not add SciPy.
+- [ ] **Step 3: Implement score exactly.** `0.45*time_iou + 0.35*text_similarity + 0.10*duration_similarity + 0.10*order_similarity`; NFKC + punctuation/space normalization; `difflib.SequenceMatcher` for text.
 
-- [ ] **Step 4: Implement confidence policy.**
+- [ ] **Step 4: Implement deterministic maximum-weight one-to-one assignment.** Enumerate permutations of the smaller speaker set; lexicographic speaker order is tie-breaker. `>=0.85` inherits; lower confidence allocates new `GSxx`.
 
-`>=0.85` inherits existing `GSxx`; lower scores allocate a new `GSxx` and store candidate evidence. Never retroactively rewrite earlier segment speaker labels.
+- [ ] **Step 5: Write failing merge test and implement midpoint ownership.**
 
-- [ ] **Step 5: Write and implement overlap merger tests.**
+```python
+def test_conflicting_overlap_preserves_alternate(merger_fixture):
+    merged = merger_fixture("我十点半到的", "我十点到的")
+    assert merged.primary.merge_conflict is True
+    assert merged.primary.alternate_text in {"我十点半到的","我十点到的"}
+```
 
-For overlap `30:00-35:00`, midpoint ownership is `32:30`. Never split a segment crossing that boundary. Prefer the complete segment farther from its source-window edge. Materially different matched text stores `alternate_text` and `merge_conflict=True`.
+For 30-35m overlap boundary=32:30. Never split a crossing utterance; choose complete version farther from source-window edge.
 
-- [ ] **Step 6: Run tests and commit.**
+- [ ] **Step 6: Verify and commit.**
 
 ```bash
 cd linux/backend && python3 -m pytest tests/test_moss_speaker_remap.py tests/test_moss_merger.py -q
 cd ../..
 git add linux/backend/moss_worker/speaker_remap.py linux/backend/moss_worker/merger.py linux/backend/tests/test_moss_speaker_remap.py linux/backend/tests/test_moss_merger.py
-git commit -m "feat: merge MOSS speakers across windows"
+git commit -m "feat: preserve MOSS speakers across windows"
 ```
 
 ---
 
-## Task 9: Add durable spool storage and crash-safe checkpoints
+## Task 9: Add durable spool/checkpoints
 
 **Files:**
 - Create: `linux/backend/moss_worker/storage.py`
-- Create: `linux/backend/tests/test_moss_storage.py`
+- Test: `linux/backend/tests/test_moss_storage.py`
 
-**Interfaces:**
-- `MossSpool(root: Path)`.
-- Methods: `create_job`, `load_job`, `save_job`, `save_window_result`, `load_completed_windows`, `save_speaker_state`, `save_merged_segments`.
+**Interfaces:** `MossSpool.create_job/load_job/save_job/save_window_result/load_completed_windows/save_speaker_state/save_merged_segments`.
 
-- [ ] **Step 1: Write failing atomic-write tests.**
+- [ ] **Step 1: Write failing atomic-write test.**
 
-Assert writes use a temporary sibling file, flush + `os.fsync`, then `os.replace`; if serialization fails before replace, the previous destination remains valid.
+```python
+from moss_worker.storage import atomic_write_json
 
-- [ ] **Step 2: Implement exact job layout.**
-
-```text
-/var/lib/suspect-interrogation/moss/jobs/<job_id>/
-├─ job.json
-├─ windows.json
-├─ speaker_state.json
-├─ merged_segments.jsonl
-├─ raw_generations/<window_id>.txt
-├─ checkpoints/<window_id>.json
-└─ logs/events.jsonl
+def test_atomic_json_keeps_previous_file_on_serialization_error(tmp_path):
+    p=tmp_path/"job.json"; atomic_write_json(p,{"state":"QUEUED"})
+    try: atomic_write_json(p,{"bad":object()})
+    except TypeError: pass
+    assert '"QUEUED"' in p.read_text()
 ```
 
-- [ ] **Step 3: Enforce audio integrity.**
+- [ ] **Step 2: Verify failure.** Run: `cd linux/backend && python3 -m pytest tests/test_moss_storage.py -q`
 
-Hash original WAV on creation and again on resume. If it changes, fail with `MOSS_AUDIO_CHANGED`.
+- [ ] **Step 3: Implement `tmp -> flush -> fsync -> os.replace` and exact layout.**
 
-- [ ] **Step 4: Preserve revisions.**
+```text
+jobs/JOB/job.json
+jobs/JOB/windows.json
+jobs/JOB/speaker_state.json
+jobs/JOB/merged_segments.jsonl
+jobs/JOB/raw_generations/WINDOW.txt
+jobs/JOB/checkpoints/WINDOW.json
+jobs/JOB/logs/events.jsonl
+```
 
-A rerun under a different manifest always gets a new job ID/directory even when audio SHA matches.
+- [ ] **Step 4: Implement source integrity/revisions.** Hash WAV at creation/resume; mismatch raises `MOSS_AUDIO_CHANGED`. Same audio under another model manifest gets a new job ID; never overwrite a completed revision.
 
-- [ ] **Step 5: Run tests and commit.**
+- [ ] **Step 5: Verify and commit.**
 
 ```bash
 cd linux/backend && python3 -m pytest tests/test_moss_storage.py -q
 cd ../..
 git add linux/backend/moss_worker/storage.py linux/backend/tests/test_moss_storage.py
-git commit -m "feat: persist MOSS checkpoints"
+git commit -m "feat: persist MOSS job checkpoints"
 ```
 
 ---
 
-## Task 10: Implement RKNN/RKLLM wrappers and one-window child-process inference
+## Task 10: Implement one-window RKNN/RKLLM runtime in a child process
 
 **Files:**
 - Create: `linux/backend/moss_worker/audio_frontend.py`
@@ -784,45 +689,34 @@ git commit -m "feat: persist MOSS checkpoints"
 - Create: `linux/backend/moss_worker/rkllm_decoder.py`
 - Create: `linux/backend/moss_worker/runtime.py`
 - Create: `linux/backend/moss_worker/child.py`
-- Create: `linux/backend/tests/test_moss_runtime_contract.py`
+- Test: `linux/backend/tests/test_moss_runtime_contract.py`
 
-**Interfaces:**
-- `AudioFrontend.micro_chunks(wav_path: Path, start_ms: int, end_ms: int) -> Iterator[AudioMicroChunk]`.
-- Phase 1 accepted source format: **PCM16, mono, 16,000 Hz WAV only**. Any other format fails with `MOSS_AUDIO_UNSUPPORTED_FORMAT`; no implicit resampler is added in this plan.
-- `RknnAudioEncoder.encode(input_features: np.ndarray, valid_tokens: int) -> np.ndarray`.
-- `RkllmDecoder.generate(embeds: np.ndarray, max_new_tokens: int) -> DecodeResult`.
-- `MossRuntime.infer_window(window: WindowSpec, wav_path: Path) -> WindowResult`.
+**Interfaces:** accepted Phase-1 WAV is PCM16/mono/16000 Hz; other formats raise `MOSS_AUDIO_UNSUPPORTED_FORMAT`. `MossRuntime.infer_window(window,wav)->WindowResult`.
 
-- [ ] **Step 1: Write a failing fake-runtime ordering test.**
+- [ ] **Step 1: Write failing orchestration test with explicit fakes.**
 
 ```python
-def test_window_runtime_orders_stages(fake_runtime, window, wav):
-    result = fake_runtime.infer_window(window, wav)
-    assert fake_runtime.trace == ["ENCODING", "BUILDING_EMBEDS", "DECODING", "PARSING"]
-    assert result.segments[0].global_speaker is None
+class Enc:
+    def encode(self,x,n): return np.zeros((n,8),np.float32)
+class Dec:
+    def generate(self,x,max_new_tokens): return type("R",(),{"text":"[0.0][S01]你好[1.0]"})()
+
+def test_runtime_pipeline_order(fake_frontend, fake_builder, window, wav):
+    rt=MossRuntime(fake_frontend,Enc(),fake_builder,Dec()); rt.infer_window(window,wav)
+    assert rt.trace==["ENCODING","BUILDING_EMBEDS","DECODING","PARSING"]
 ```
 
-- [ ] **Step 2: Implement exact audio contract and 30-second slicing.**
+- [ ] **Step 2: Verify failure.** Run runtime contract test.
 
-Use Python `wave`; require sample width 2, one channel, 16000 Hz. Convert PCM16 to float32 `[-1,1]`. Use Whisper preprocessing constants copied into `processor_config.json` by Task 4. Pad the last acoustic micro-chunk to 30 seconds and compute `valid_tokens` from real sample count.
+- [ ] **Step 3: Implement audio frontend.** Use `wave`; require sample width=2, channels=1, rate=16000; float32 normalize; compute Whisper log-mel using values exported in `processor_config.json`; pad each 30s chunk and calculate valid adapted tokens from real sample count.
 
-- [ ] **Step 3: Implement the RKNN wrapper.**
+- [ ] **Step 4: Implement RKNN wrapper.** Load once, `NPU_CORE_0_1_2`, finite/shape checks, slice valid token prefix.
 
-Load once with `RKNNLite`, initialize `NPU_CORE_0_1_2`, require output last dimension 1024, reject NaN/Inf, and return only `output[:, :valid_tokens, :]`.
+- [ ] **Step 5: Implement RKLLM 1.3.0 ctypes wrapper.** Require C-contiguous `float32[n,1024]`, input type EMBED, thinking false, history false; expose generated text and perf counters; convert non-zero native results to structured MOSS errors.
 
-- [ ] **Step 4: Implement an RKLLM 1.3.0 ctypes wrapper.**
+- [ ] **Step 6: Implement `infer_window` and startup self-test.** Serial RKNN micro-chunks -> concat -> embedding builder -> RKLLM -> parser. On child startup run Task 4 encoder/decoder self-tests; failure exits non-zero/NOT_READY.
 
-Bind only functions/structures used by the pinned header. Require C-contiguous float32 `[n_tokens,1024]`, `RKLLM_INPUT_EMBED`, `role="user"`, `enable_thinking=False`, `keep_history=0`. Raise `MOSS_RKLLM_INFERENCE_FAILED` with native return code/state on failure.
-
-- [ ] **Step 5: Implement `infer_window`.**
-
-Serially encode all 30-second micro-chunks, concatenate valid audio embeddings, build Task 6 input, decode with RKLLM, parse Task 7 output, and record per-stage durations plus RKLLM performance counters.
-
-- [ ] **Step 6: Implement child startup self-test using Task 4 assets.**
-
-Run `selftest/encoder_input.npy` through RKNN and require expected shape/finite values. Run `selftest/decoder_input.f32` through RKLLM and apply structural checks from `decoder_expected.json`. Failure returns `NOT_READY` and exits non-zero.
-
-- [ ] **Step 7: Run tests and commit.**
+- [ ] **Step 7: Verify and commit.**
 
 ```bash
 cd linux/backend && python3 -m pytest tests/test_moss_runtime_contract.py tests/test_moss_embedding_builder.py tests/test_moss_parser.py -q
@@ -833,43 +727,41 @@ git commit -m "feat: add isolated MOSS NPU runtime"
 
 ---
 
-## Task 11: Add job supervisor, queueing, retry ladder, cancellation, and native-crash recovery
+## Task 11: Add supervisor queue, retries, cancellation, and child recovery
 
 **Files:**
 - Create: `linux/backend/moss_worker/supervisor.py`
-- Create: `linux/backend/tests/test_moss_supervisor.py`
+- Test: `linux/backend/tests/test_moss_supervisor.py`
 
-**Interfaces:**
-- `submit(JobRequest) -> JobSnapshot`
-- `get_job(job_id: str) -> JobSnapshot`
-- `get_result(job_id: str) -> JobResult`
-- `cancel(job_id: str) -> JobSnapshot`
+**Interfaces:** `submit`, `get_job`, `get_result`, `cancel`; one active job/child call.
 
-- [ ] **Step 1: Write failing queue/crash tests.**
+- [ ] **Step 1: Write failing crash-resume test.**
 
-Use a fake child that exits on `w0002`. Assert `w0001` stays DONE, child restart occurs, and a second job stays QUEUED while the first is active.
+```python
+class CrashOnceChild:
+    def __init__(self): self.calls=[]; self.crashed=False
+    def infer(self,w):
+        self.calls.append(w.window_id)
+        if w.window_id=="w0002" and not self.crashed:
+            self.crashed=True; raise ChildExited(signal=11)
+        return scripted_result(w)
 
-- [ ] **Step 2: Implement allowed job transitions.**
-
-```text
-QUEUED -> PREPARING -> ENCODING -> BUILDING_EMBEDS -> DECODING -> PARSING -> REMAPPING -> MERGING -> COMPLETED
+def test_completed_window_is_not_recomputed_after_child_crash(spool, windows):
+    child=CrashOnceChild(); s=MossSupervisor(spool, lambda:child)
+    s.run_scripted(windows)
+    assert child.calls.count("w0001")==1
+    assert child.calls.count("w0002")==2
 ```
 
-Any non-terminal state may enter FAILED or CANCELLED when policy allows. Reject transitions out of COMPLETED/FAILED/CANCELLED.
+- [ ] **Step 2: Verify failure.** Run supervisor test.
 
-- [ ] **Step 3: Implement retry ladder.**
+- [ ] **Step 3: Implement state transitions/serialization.** Only the spec states are legal; terminal states cannot transition out.
 
-Only `MOSS_CONTEXT_OVERFLOW` and recoverable `MOSS_OOM` trigger 35->30->25->20 minute replanning. Recompute following starts as `successful_end - 5min`.
+- [ ] **Step 4: Implement retry policy.** Context/OOM: 35->30->25->20 replanning; native crash: restart/self-test child and retry same window once; second crash fails job.
 
-- [ ] **Step 4: Implement native-crash recovery.**
+- [ ] **Step 5: Implement cancellation.** QUEUED immediate; RUNNING sets cancel flag; 10s native cancellation grace then kill/restart child; preserve completed checkpoints.
 
-Record exit status/signal, reap child, start a clean child, reload/self-test models, retry the current window once. A second native crash on the same window fails the job.
-
-- [ ] **Step 5: Implement cancellation.**
-
-QUEUED jobs cancel immediately. Running jobs set `cancel_requested` and stop at the next safe boundary; if the native call exceeds the configured 10-second cancel grace, terminate/restart the child and mark job CANCELLED while preserving completed checkpoints.
-
-- [ ] **Step 6: Run tests and commit.**
+- [ ] **Step 6: Verify and commit.**
 
 ```bash
 cd linux/backend && python3 -m pytest tests/test_moss_supervisor.py tests/test_moss_storage.py -q
@@ -880,7 +772,7 @@ git commit -m "feat: supervise durable MOSS jobs"
 
 ---
 
-## Task 12: Expose the MOSS job API over a local Unix socket
+## Task 12: Add Unix socket server/client
 
 **Files:**
 - Create: `linux/backend/moss_worker/protocol.py`
@@ -888,57 +780,42 @@ git commit -m "feat: supervise durable MOSS jobs"
 - Create: `linux/backend/app/ai/moss/__init__.py`
 - Create: `linux/backend/app/ai/moss/types.py`
 - Create: `linux/backend/app/ai/moss/client.py`
-- Create: `linux/backend/tests/test_moss_protocol.py`
-- Create: `linux/backend/tests/test_moss_client_server.py`
+- Test: `linux/backend/tests/test_moss_protocol.py`
+- Test: `linux/backend/tests/test_moss_client_server.py`
 
-**Interfaces:**
-- Socket: `/run/suspect-interrogation/moss.sock`.
-- Ops: `health`, `submit_job`, `get_job`, `get_result`, `cancel_job`.
-- Wire envelope matches existing speech worker: `request_id`, `ok`, `result` or structured `error`.
+**Interfaces:** `/run/suspect-interrogation/moss.sock`; ops `health`, `submit_job`, `get_job`, `get_result`, `cancel_job`; 4-byte big-endian JSON framing; max 16 MiB.
 
-- [ ] **Step 1: Write failing framing tests.**
+- [ ] **Step 1: Write failing framing test.**
 
-Use 4-byte big-endian JSON length prefix; `MAX_MESSAGE_BYTES=16*1024*1024`; reject truncated, oversized, and non-object JSON messages.
-
-- [ ] **Step 2: Define exact worker errors.**
-
-```text
-MOSS_MODEL_LOAD_FAILED
-MOSS_RKNN_INFERENCE_FAILED
-MOSS_RKLLM_INFERENCE_FAILED
-MOSS_CONTEXT_OVERFLOW
-MOSS_OOM
-MOSS_INVALID_GENERATION
-MOSS_AUDIO_CORRUPT
-MOSS_AUDIO_UNSUPPORTED_FORMAT
-MOSS_AUDIO_CHANGED
-MOSS_CANCELLED
-MOSS_JOB_NOT_FOUND
-MOSS_WORKER_CRASHED
+```python
+def test_frame_round_trip(socket_pair):
+    a,b=socket_pair
+    send_frame(a,{"request_id":"1","op":"health"})
+    assert recv_frame(b)=={"request_id":"1","op":"health"}
 ```
 
-- [ ] **Step 3: Implement stale-socket-safe server binding.**
+Also test oversized/truncated/non-object JSON rejection.
 
-Refuse to unlink a non-socket path; probe existing socket before removing stale socket; chmod the new socket `0660`; never remove an active listener.
+- [ ] **Step 2: Verify failure.** Run both protocol/client-server tests.
 
-- [ ] **Step 4: Implement `MossWorkerClient`.**
+- [ ] **Step 3: Implement protocol and exact errors.** Include model/RKNN/RKLLM/context/OOM/invalid-generation/audio-corrupt/unsupported/audio-changed/cancelled/job-not-found/worker-crashed codes.
+
+- [ ] **Step 4: Implement stale-socket-safe server.** Refuse non-socket path, probe active socket, remove only proven stale socket, bind/chmod 0660.
+
+- [ ] **Step 5: Implement client.**
 
 ```python
 class MossWorkerClient:
-    def health(self) -> dict[str, object]: ...
-    def submit_job(self, audio_path: str, audio_sha256: str | None = None) -> MossJobSnapshot: ...
-    def get_job(self, job_id: str) -> MossJobSnapshot: ...
-    def get_result(self, job_id: str) -> MossJobResult: ...
-    def cancel_job(self, job_id: str) -> MossJobSnapshot: ...
+    def health(self)->dict[str,object]: ...
+    def submit_job(self,audio_path:str,audio_sha256:str|None=None)->MossJobSnapshot: ...
+    def get_job(self,job_id:str)->MossJobSnapshot: ...
+    def get_result(self,job_id:str)->MossJobResult: ...
+    def cancel_job(self,job_id:str)->MossJobSnapshot: ...
 ```
 
-Validate request IDs and structured errors exactly as `app/ai/speech/client.py` does.
+Validate request ID/`ok` exactly like existing speech client.
 
-- [ ] **Step 5: Add fake-supervisor integration tests.**
-
-Start server on a temporary Unix socket, exercise all five ops, malformed responses, and two concurrent clients.
-
-- [ ] **Step 6: Run tests and commit.**
+- [ ] **Step 6: Verify and commit.**
 
 ```bash
 cd linux/backend && python3 -m pytest tests/test_moss_protocol.py tests/test_moss_client_server.py -q
@@ -949,7 +826,7 @@ git commit -m "feat: expose MOSS worker socket API"
 
 ---
 
-## Task 13: Integrate settings, model registry, service layer, and optional health capability
+## Task 13: Integrate settings, registry, service layer, and health
 
 **Files:**
 - Modify: `linux/backend/app/ai/settings.py`
@@ -957,45 +834,35 @@ git commit -m "feat: expose MOSS worker socket API"
 - Modify: `linux/backend/config/model-registry.yaml`
 - Create: `linux/backend/app/services/moss_transcription.py`
 - Modify: `linux/backend/app/health.py`
-- Create: `linux/backend/tests/test_moss_settings_registry.py`
-- Create: `linux/backend/tests/test_moss_service.py`
-- Modify: `linux/backend/tests/test_health_contract.py`
-- Modify: `linux/backend/tests/test_capability_health.py`
+- Test: `linux/backend/tests/test_moss_settings_registry.py`
+- Test: `linux/backend/tests/test_moss_service.py`
+- Modify test: `linux/backend/tests/test_health_contract.py`
+- Modify test: `linux/backend/tests/test_capability_health.py`
 
-**Interfaces:**
-- Settings: `moss_enabled`, `moss_socket`, `moss_spool_root`, `moss_model_id`.
-- `MossTranscriptionService` exposes submit/status/result/cancel; it never maps `GSxx` to a named person.
+- [ ] **Step 1: Write failing defaults test.**
 
-- [ ] **Step 1: Write failing settings/registry tests.**
-
-Assert defaults:
-
-```text
-MOSS_ENABLED=0
-SUSPECT_MOSS_SOCKET=/run/suspect-interrogation/moss.sock
-MOSS_SPOOL_ROOT=/var/lib/suspect-interrogation/moss
-MOSS_MODEL_ID=moss.default
+```python
+def test_moss_defaults(monkeypatch):
+    for k in ("MOSS_ENABLED","SUSPECT_MOSS_SOCKET","MOSS_SPOOL_ROOT","MOSS_MODEL_ID"): monkeypatch.delenv(k,raising=False)
+    s=AISettings()
+    assert s.moss_enabled is False
+    assert str(s.moss_socket)=="/run/suspect-interrogation/moss.sock"
+    assert str(s.moss_spool_root)=="/var/lib/suspect-interrogation/moss"
+    assert s.moss_model_id=="moss.default"
 ```
 
-Add `moss` to allowed registry kinds; do not repurpose `asr.default` or `llm.default`.
+- [ ] **Step 2: Verify failure.** Run the four Task 13 test files.
 
-- [ ] **Step 2: Register `moss.default`.**
+- [ ] **Step 3: Add settings + registry kind `moss` and `moss.default`.** Registry required files come from Task 4; capabilities are transcription/diarization/timestamps/long_audio; device=npu; context equals verified manifest value.
 
-Use the verified Task 4 bundle metadata. Required files include both NPU models, token embedding metadata/data, tokenizer, processor config, and manifest. Capabilities: `transcription`, `diarization`, `timestamps`, `long_audio`. Device: `npu`.
+- [ ] **Step 4: Implement `MossTranscriptionService`.** Resolve audio path/hash, call worker client, return typed snapshots/results, never person-identify `GSxx`.
 
-- [ ] **Step 3: Implement `MossTranscriptionService`.**
+- [ ] **Step 5: Add optional health capability.** `MOSS_ENABLED=0` reports disabled and does not change readiness. Enabled MOSS reports worker/model/manifest/queue/active job/runtime/last error as non-required capability; realtime ASR remains independent.
 
-Resolve/check the audio path, hash it when no hash is supplied, submit through `MossWorkerClient`, and return typed job/result snapshots only.
-
-- [ ] **Step 4: Add optional MOSS health.**
-
-When `MOSS_ENABLED=0`, `/health/ready` remains ready/degraded according to existing checks and reports MOSS disabled. When enabled, add a non-required `moss` capability containing worker state, model readiness, manifest SHA, queue depth, active job, runtime versions, and last error. MOSS failure must not silently disable realtime ASR.
-
-- [ ] **Step 5: Run exact tests and commit.**
+- [ ] **Step 6: Verify and commit.**
 
 ```bash
-cd linux/backend
-python3 -m pytest tests/test_moss_settings_registry.py tests/test_moss_service.py tests/test_health_contract.py tests/test_capability_health.py -q
+cd linux/backend && python3 -m pytest tests/test_moss_settings_registry.py tests/test_moss_service.py tests/test_health_contract.py tests/test_capability_health.py -q
 cd ../..
 git add linux/backend/app/ai/settings.py linux/backend/app/ai/registry.py linux/backend/config/model-registry.yaml linux/backend/app/services/moss_transcription.py linux/backend/app/health.py linux/backend/tests/test_moss_settings_registry.py linux/backend/tests/test_moss_service.py linux/backend/tests/test_health_contract.py linux/backend/tests/test_capability_health.py
 git commit -m "feat: integrate MOSS backend capability"
@@ -1003,7 +870,7 @@ git commit -m "feat: integrate MOSS backend capability"
 
 ---
 
-## Task 14: Add systemd deployment and offline RK3588 health probe
+## Task 14: Add systemd/offline deployment integration
 
 **Files:**
 - Create: `systemd/moss-worker.service`
@@ -1011,55 +878,32 @@ git commit -m "feat: integrate MOSS backend capability"
 - Modify: `.github/workflows/rk3588-production-redeploy.yml`
 - Modify: `.github/workflows/linux-ai-runtime-rk3588.yml`
 - Create: `scripts/ci/probe-moss-rk3588.py`
-- Create: `tests/release/test_moss_systemd_and_deploy.py`
+- Test: `tests/release/test_moss_systemd_and_deploy.py`
 - Modify: `docs/release/RK3588-EVIDENCE.md`
 
-**Interfaces:**
-- Service user/group: `suspect-interrogation`.
-- Model root: `/opt/suspect-interrogation/models/moss-rk3588`.
-- Spool: `/var/lib/suspect-interrogation/moss`.
-- Native libs: `/lib/librknnrt.so`, `/lib/librkllmrt.so`.
-- Environment: `/etc/suspect-interrogation/moss-worker.env`.
+- [ ] **Step 1: Write failing unit-file contract test.**
 
-- [ ] **Step 1: Write failing systemd/deploy contract tests.**
-
-Assert `User=suspect-interrogation`, `Group=suspect-interrogation`, `RuntimeDirectory=suspect-interrogation`, `Restart=on-failure`, no TCP/8000 binding, read/write access only to `/run/suspect-interrogation`, `/var/lib/suspect-interrogation`, `/var/log/suspect-interrogation`, and read-only model/runtime paths.
-
-- [ ] **Step 2: Create `moss-worker.service`.**
-
-Required service body includes:
-
-```text
-User=suspect-interrogation
-Group=suspect-interrogation
-WorkingDirectory=/opt/suspect-interrogation/current/linux/backend
-EnvironmentFile=/etc/suspect-interrogation/runtime.env
-EnvironmentFile=-/etc/suspect-interrogation/moss-worker.env
-Environment=SUSPECT_MOSS_SOCKET=/run/suspect-interrogation/moss.sock
-Environment=MOSS_MODEL_ROOT=/opt/suspect-interrogation/models/moss-rk3588
-RuntimeDirectory=suspect-interrogation
-ExecStart=/opt/suspect-interrogation/current/.venv/bin/python -m moss_worker.main
-Restart=on-failure
-RestartSec=5s
-ReadWritePaths=/run/suspect-interrogation /var/lib/suspect-interrogation /var/log/suspect-interrogation
-ReadOnlyPaths=-/opt/suspect-interrogation/models/moss-rk3588 -/lib/librknnrt.so -/lib/librkllmrt.so
+```python
+from pathlib import Path
+UNIT=Path("systemd/moss-worker.service")
+def test_unit_is_local_restricted_and_not_tcp8000():
+    t=UNIT.read_text()
+    assert "User=suspect-interrogation" in t and "Group=suspect-interrogation" in t
+    assert "RuntimeDirectory=suspect-interrogation" in t
+    assert "Restart=on-failure" in t
+    assert "8000" not in t
+    assert "/opt/suspect-interrogation/models/moss-rk3588" in t
 ```
 
-Retain the same hardening directives used by `ai-worker.service` (`NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict`, kernel/control-group protections, empty capability bounding set).
+- [ ] **Step 2: Verify failure.** Run: `python3 -m pytest tests/release/test_moss_systemd_and_deploy.py -q`
 
-- [ ] **Step 3: Implement read-only probe.**
+- [ ] **Step 3: Implement `moss-worker.service`.** Use same hardening as `ai-worker.service`, exact user/group, current backend working directory, runtime/moss env files, socket/model env, `ExecStart=/opt/suspect-interrogation/current/.venv/bin/python -m moss_worker.main`, restart-on-failure, writable run/var-lib/var-log, read-only model and `/lib` runtime files.
 
-`probe-moss-rk3588.py` verifies bundle hashes, both `/lib` native libraries, socket health, architecture `aarch64`, model state, queue depth, manifest SHA, and runtime versions. It never submits case audio and never downloads anything.
+- [ ] **Step 4: Implement read-only RK3588 probe.** Verify bundle hashes, `/lib/librknnrt.so`, `/lib/librkllmrt.so`, aarch64, socket health, model state, manifest SHA, queue depth, runtime versions; never submit case audio or download anything.
 
-- [ ] **Step 4: Integrate bootstrap.**
+- [ ] **Step 5: Modify bootstrap/redeploy workflows.** Create spool with correct owner, install/enable service, install MOSS Python deps only from pre-staged offline wheel source, restart MOSS on atomic redeploy when enabled, preserve shared model/spool directories, leave TCP/8000 owner untouched.
 
-Create spool directory owned by `suspect-interrogation`, install the service, daemon-reload, and enable it. Install `requirements-moss-rk3588.txt` only from the repository/runner's pre-staged offline wheel source; workflow must not call public package indexes.
-
-- [ ] **Step 5: Integrate production redeploy.**
-
-Restart `moss-worker.service` during the atomic release transition when MOSS is enabled; preserve shared model and spool directories across releases. Do not touch the service/process owning TCP/8000.
-
-- [ ] **Step 6: Run tests and commit.**
+- [ ] **Step 6: Verify and commit.**
 
 ```bash
 python3 -m pytest tests/release/test_moss_systemd_and_deploy.py -q
@@ -1069,58 +913,50 @@ git commit -m "ops: deploy MOSS worker on RK3588"
 
 ---
 
-## Task 15: Add end-to-end long-audio acceptance and complete production verification
+## Task 15: Long-audio acceptance and production verification
 
 **Files:**
 - Create: `linux/backend/tests/fixtures/moss/README.md`
 - Create: `linux/backend/tests/test_moss_e2e_mock.py`
 - Create: `scripts/ci/moss-rk3588-acceptance.py`
 - Create: `.github/workflows/rk3588-moss-acceptance.yml`
-- Create: `tests/release/test_rk3588_moss_acceptance_workflow.py`
+- Test: `tests/release/test_rk3588_moss_acceptance_workflow.py`
 - Modify: `docs/release/RK3588-EVIDENCE.md`
 
-**Interfaces:**
-- Real acceptance audio lives outside Git at `/opt/moss-acceptance/audio`.
-- Acceptance output is JSON with audio SHA, manifest SHA, duration, window count, RTF, GS speaker stats, mapping confidence, conflicts, retries, and terminal status.
+- [ ] **Step 1: Write failing mock 125-minute acceptance test.**
 
-- [ ] **Step 1: Write deterministic mock long-audio tests.**
-
-Use a fake runtime for a virtual 125-minute recording and assert: cross-hour overlap, local-speaker relabeling but stable strong-evidence `GSxx`, overlap deduplication, alternate text preservation, crash resume without recomputing prior windows, and cancellation preserving checkpoints.
-
-- [ ] **Step 2: Define the fixed external hardware corpus.**
-
-```text
-/opt/moss-acceptance/audio/
-├─ 01_single_speaker_05m.wav
-├─ 02_two_speaker_30m.wav
-├─ 03_two_speaker_60m.wav
-├─ 04_three_speaker_65m.wav
-├─ 05_overlap_boundary_70m.wav
-├─ 06_silence_noise_30m.wav
-└─ 07_two_speaker_120m.wav
+```python
+def test_125m_mock_keeps_global_speaker_and_resume(orchestrator_fixture):
+    r=orchestrator_fixture.run(total_minutes=125, crash_once_at="w0003")
+    assert r.completed is True
+    assert r.recomputed_windows==[]
+    assert r.cross_hour_continuity is True
+    assert any(s.merge_conflict for s in r.segments)
 ```
 
-Each file is PCM16 mono 16 kHz and has a same-basename `.json` sidecar recording expected minimum speaker count, language, duration, and whether cross-hour continuity is required. Workflow fails clearly when corpus is absent; it does not download substitutes.
+Fixture scripts local S labels to change between windows while strong overlap evidence points to the same global speakers.
 
-- [ ] **Step 3: Implement hardware acceptance runner.**
+- [ ] **Step 2: Verify failure.** Run `linux/backend/tests/test_moss_e2e_mock.py` plus workflow contract test.
 
-For each fixture: submit through MOSS socket, poll to terminal state, calculate `RTF=processing_seconds/audio_seconds`, verify timestamps are finite/monotonic/in range, record `GSxx` count, mapping-confidence distribution, parse repairs/invalids, conflicts, retries, and manifest SHA.
-
-- [ ] **Step 4: Enforce Phase 1 acceptance gates.**
+- [ ] **Step 3: Define external PCM16/mono/16k corpus.**
 
 ```text
-30-minute two-speaker fixture: RTF <= 1.0
-60-minute fixture: completes without crash/OOM and yields one merged timeline
-65/70-minute fixtures: demonstrate speaker continuity across hour boundary
-120-minute fixture: completes through chained windows
-all completed segments: absolute timestamps monotonic and in range
-all completed segments: source window_id and model_manifest_sha256 present
-workflow: no network download command
+/opt/moss-acceptance/audio/01_single_speaker_05m.wav
+/opt/moss-acceptance/audio/02_two_speaker_30m.wav
+/opt/moss-acceptance/audio/03_two_speaker_60m.wav
+/opt/moss-acceptance/audio/04_three_speaker_65m.wav
+/opt/moss-acceptance/audio/05_overlap_boundary_70m.wav
+/opt/moss-acceptance/audio/06_silence_noise_30m.wav
+/opt/moss-acceptance/audio/07_two_speaker_120m.wav
 ```
 
-`RTF<=0.5` is recorded as the next optimization target, not a Phase 1 gate.
+Each has same-basename JSON sidecar with duration, language, minimum speakers, cross-hour requirement. Workflow fails if corpus absent; no download substitutes.
 
-- [ ] **Step 5: Run software suites.**
+- [ ] **Step 4: Implement hardware runner.** Submit/poll each job, compute `RTF=processing_seconds/audio_seconds`, validate timestamps finite/monotonic/in-range, record GS count, confidence distribution, repairs/invalids, conflicts, retries, audio SHA and manifest SHA.
+
+- [ ] **Step 5: Enforce Phase-1 gates.** 30m two-speaker RTF<=1.0; 60m completes no crash/OOM; 65/70m demonstrate cross-hour speaker continuity; 120m completes chained windows; all authoritative segments have source `window_id` + `model_manifest_sha256`. RTF<=0.5 is only the later optimization target.
+
+- [ ] **Step 6: Run software verification.**
 
 ```bash
 cd linux/backend && python3 -m pytest tests/test_moss_*.py -q
@@ -1128,54 +964,48 @@ cd ../..
 python3 -m pytest tests/tools/test_moss_*.py tests/release/test_moss_*.py tests/release/test_rk3588_moss_*.py -q
 ```
 
-Expected: PASS.
-
-- [ ] **Step 6: Commit acceptance coverage.**
+- [ ] **Step 7: Commit acceptance harness, then run real RK3588 acceptance.**
 
 ```bash
 git add linux/backend/tests/fixtures/moss linux/backend/tests/test_moss_e2e_mock.py scripts/ci/moss-rk3588-acceptance.py .github/workflows/rk3588-moss-acceptance.yml tests/release/test_rk3588_moss_acceptance_workflow.py docs/release/RK3588-EVIDENCE.md
 git commit -m "test: add MOSS RK3588 acceptance coverage"
 ```
 
-- [ ] **Step 7: Run the real RK3588 MOSS acceptance workflow.**
+Record exact workflow run/evidence in `docs/release/RK3588-EVIDENCE.md`.
 
-Gate A and Gate B must still pass for the exact model artifacts used by the final source revision. Save workflow run ID and acceptance JSON reference in `docs/release/RK3588-EVIDENCE.md`.
-
-- [ ] **Step 8: Complete the exact production Definition of Done from `AGENTS.md`.**
-
-For the exact final commit SHA:
+- [ ] **Step 8: Complete `AGENTS.md` production Definition of Done for exact final SHA.**
 
 ```text
-1. Relevant CI gates are green.
-2. RK3588 Production Redeploy ran for that exact SHA.
-3. Frontend/backend release is atomically installed from that SHA.
-4. https://192.168.0.9:18080 validates with the project LAN CA; do not use -k.
+1. Relevant CI green.
+2. RK3588 Production Redeploy ran for exact SHA.
+3. Atomic release installed from exact SHA.
+4. https://192.168.0.9:18080 validates with project LAN CA; no -k.
 5. /health/live and /health/ready validate with TLS verification.
-6. MOSS capability reports ready and the expected manifest SHA.
-7. A short production-host offline MOSS fixture returns timestamped GSxx output.
-8. Browser audio endpoints still derive wss:// from HTTPS origin.
-9. Deployed release SHA equals GitHub final commit SHA.
+6. MOSS capability ready with expected manifest SHA.
+7. Short offline production MOSS fixture returns timestamped GSxx output.
+8. Browser audio still derives wss:// from HTTPS origin.
+9. Deployed release SHA equals GitHub SHA.
 10. TCP/8000 remains listening and owned by the pre-existing FunASR service.
 ```
 
-Do not report complete before all ten checks pass. If source is committed but production deployment fails, report exactly: **code committed, production deployment incomplete**.
+Do not report implementation complete before all ten checks pass. If source is committed but deployment is incomplete, report exactly: **code committed, production deployment incomplete**.
 
 ---
 
 ## Execution Gates
 
 ```text
-Task 1  PyTorch golden reference + MOSS Qwen repack
-  -> Task 2 Gate A: real MOSS external embeddings on RKLLM
-  -> Task 3 Gate B: MOSS acoustic graph parity on RKNN
-  -> Task 4 reproducible model bundle
-  -> Tasks 5-12 worker correctness/durability/IPC
-  -> Tasks 13-14 app + system deployment
+Task 1  Golden reference + MOSS Qwen repack
+  -> Task 2 Gate A: real MOSS inputs_embeds on RKLLM
+  -> Task 3 Gate B: acoustic RKNN parity
+  -> Task 4 reproducible runtime bundle
+  -> Tasks 5-12 runtime/windowing/persistence/IPC
+  -> Tasks 13-14 application + system deployment
   -> Task 15 long-audio acceptance + production verification
 ```
 
-**Stop after Task 2** if `RKLLM_INPUT_EMBED` cannot reproduce structurally valid MOSS diarized output. Do not hide the failure with stock Qwen or CPU inference.
+**Stop at Gate A** if external embeddings do not yield structurally valid MOSS output. No stock-Qwen/CPU fallback.
 
-**Stop after Task 3** if RKNN FP16 cannot meet acoustic parity. Do not use INT8 as a workaround.
+**Stop at Gate B** if FP16 RKNN does not meet parity. No acoustic INT8 workaround.
 
-**Do not add ERes2Net identity binding in this plan.** That is a separately reviewed fusion phase after the standalone MOSS path is proven.
+**Do not add ERes2Net identity binding in this plan.** Fusion is a separately reviewed phase after the standalone MOSS path is proven.
