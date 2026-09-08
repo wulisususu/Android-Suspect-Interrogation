@@ -88,8 +88,8 @@ def test_checked_in_registry_matches_observed_rk3588_funasr_assets(tmp_path: Pat
     assert vad.required_files == ("model.pt", "config.yaml", "configuration.json", "am.mvn")
 
     speaker = registry.get("speaker.default")
-    assert speaker.backend == "funasr"
-    assert speaker.path == "xvector"
-    assert speaker.architecture == "xvector"
+    assert speaker.backend == "modelscope"
+    assert speaker.path == "speech_eres2net_large_200k_sv_zh-cn_16k-common"
+    assert speaker.architecture == "eres2net_large"
     assert speaker.device == "cpu"
-    assert speaker.required_files == ("sv.pth", "sv.yaml", "configuration.json")
+    assert speaker.required_files == ("configuration.json", "pretrained_eres2net.pt")

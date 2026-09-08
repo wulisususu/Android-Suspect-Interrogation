@@ -10,17 +10,19 @@ MODEL_SLUG = "speech_eres2net_large_200k_sv_zh-cn_16k-common"
 
 def test_registry_locks_real_rk3588_eres2net_package_contract():
     payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
-    spec = payload["models"]["speaker.eres2net_large"]
+    default_spec = payload["models"]["speaker.default"]
+    explicit_spec = payload["models"]["speaker.eres2net_large"]
 
-    assert spec["kind"] == "speaker"
-    assert spec["path"] == MODEL_SLUG
-    assert spec["architecture"] == "eres2net_large"
-    assert spec["required_files"] == [
-        "configuration.json",
-        "pretrained_eres2net.pt",
-    ]
-    assert spec["device"] == "cpu"
-    assert "embedding" in spec["capabilities"]
+    for spec in (default_spec, explicit_spec):
+        assert spec["kind"] == "speaker"
+        assert spec["path"] == MODEL_SLUG
+        assert spec["architecture"] == "eres2net_large"
+        assert spec["required_files"] == [
+            "configuration.json",
+            "pretrained_eres2net.pt",
+        ]
+        assert spec["device"] == "cpu"
+        assert "embedding" in spec["capabilities"]
 
 
 def test_registry_does_not_require_non_runtime_modelscope_assets():

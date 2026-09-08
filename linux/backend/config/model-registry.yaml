@@ -24,13 +24,13 @@
     },
     "speaker.default": {
       "kind": "speaker",
-      "backend": "funasr",
-      "path": "xvector",
-      "architecture": "xvector",
-      "required_files": ["sv.pth", "sv.yaml", "configuration.json"],
+      "backend": "modelscope",
+      "path": "speech_eres2net_large_200k_sv_zh-cn_16k-common",
+      "architecture": "eres2net_large",
+      "required_files": ["configuration.json", "pretrained_eres2net.pt"],
       "device": "cpu",
       "context": 0,
-      "memory_mb": 256,
+      "memory_mb": 0,
       "capabilities": ["embedding"]
     },
     "speaker.eres2net_large": {
