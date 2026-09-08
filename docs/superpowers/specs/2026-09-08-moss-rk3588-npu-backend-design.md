@@ -2,7 +2,9 @@
 
 Date: 2026-09-08
 Branch: `linux-adaptation`
-Status: Approved design, pending implementation-plan review
+Status: Approved design; 16K window/generation policy revised with user approval
+
+Approved revision (2026-09-08): retain the Gate A/Gate B validated RKNN/RKLLM toolchain. Model context is 16,384 tokens, generation reserve 5,120, safety margin 512; model windows use 12/10/8 minutes with 2-minute overlap. The 60-minute logical chunk is unchanged. More than 16K context is a non-blocking optimization Spike, not a reason to replace the primary toolchain.
 
 ## 1. Objective
 
@@ -39,7 +41,7 @@ The repository already isolates speech inference behind an independent Unix-sock
 
 - MOSS performs long-window batch inference rather than low-latency streaming.
 - RKNN and RKLLM native runtimes can hold large NPU resources for extended periods.
-- A 30–35 minute MOSS window can take long enough that sharing the realtime worker lock would stall interactive speech processing.
+- A 12-minute MOSS window can take long enough that sharing the realtime worker lock would stall interactive speech processing.
 - Native RKNN/RKLLM failures must not crash the FastAPI service or the existing speech worker.
 
 Therefore MOSS is implemented as a new process family rather than being inserted into `speech_worker`.
@@ -54,8 +56,8 @@ MOSS Job Orchestrator
     |
     +-- 60 min logical chunks
     |
-    +-- target 35 min model windows
-    |       with 5 min overlap
+    +-- target 12 min model windows
+    |       with 2 min overlap
     v
 moss_worker supervisor
     |
@@ -107,7 +109,8 @@ linux/backend/
 │  ├─ embedding_builder.py        # MOSS processor semantics + embed injection
 │  ├─ rkllm_decoder.py            # RKLLM wrapper
 │  ├─ context_budget.py           # maximum-safe-window planning
-│  ├─ windowing.py                # 60m logical / ~35m model windows / overlap
+│  ├─ windowing.py                # 60m logical / 12/10/8m model windows / 2m overlap
+│  ├─ generation_policy.py        # fail-closed generation completion checks
 │  ├─ parser.py                   # generated text -> typed segments
 │  ├─ speaker_remap.py            # local Sxx -> global GSxx
 │  ├─ merger.py                   # overlap ownership and conflict handling
@@ -215,11 +218,11 @@ The table remains FP16 and can be memory-mapped. Only selected token rows are ex
 
 ## 7. Internal Audio Data Flow
 
-A target 35-minute model window is not sent to RKNN as one tensor. It is split into 30-second acoustic micro-chunks.
+A target 12-minute model window is not sent to RKNN as one tensor. It is split into 30-second acoustic micro-chunks.
 
 ```text
-35 min window
-  -> approximately 70 x 30 s blocks
+12 min window
+  -> 24 x 30 s blocks
   -> CPU log-mel extraction
   -> RKNN audio encoder, serially
   -> keep valid adapted-token prefix for each block
@@ -255,12 +258,12 @@ This is the board-side equivalent of MOSS's `masked_scatter` operation.
 
 ## 9. Context Budget Planner
 
-A 35-minute window is a target, not a hard constant.
+A 12-minute window is a target, not a hard constant. The actual tokenizer/processor expansion for the specific candidate interval is authoritative; a duration-only estimate must never authorize execution.
 
 At 12.5 audio tokens/second:
 
 ```text
-2100 s * 12.5 ~= 26,250 audio tokens
+720 s * 12.5 = 9,000 audio tokens
 ```
 
 MOSS time-marker digits, system/user prompt, assistant prefix, and generated transcript consume additional positions. Therefore every window must pass a context-budget calculation before inference.
@@ -268,9 +271,12 @@ MOSS time-marker digits, system/user prompt, assistant prefix, and generated tra
 Configuration starts with:
 
 ```text
-target_window_minutes = 35
-target_overlap_minutes = 5
-generation_reserve_tokens = 8192
+max_context_len = 16384
+target_window_minutes = 12
+fallback_window_minutes = 10
+minimum_window_minutes = 8
+target_overlap_minutes = 2
+generation_reserve_tokens = 5120
 safety_margin_tokens = 512
 ```
 
@@ -283,13 +289,23 @@ expanded_input_tokens
 <= rkllm_max_context_len
 ```
 
-If the target window does not fit, the planner shrinks it while preserving overlap. The first fallback ladder is:
+Count the complete actual expanded input, including the exact MOSS template, special tokens, time markers, audio placeholders and assistant prefix. With these reserves, at most 10,752 expanded input tokens fit; 10,753 does not. The diagnostic estimate for 12 minutes (9,000 audio + 1,027 marker digits + assumed 512 prompt + 5,120 generation + 512 safety = 16,171) is not a substitute for the real count. Recount after clipping at a recording/hour boundary and before every submission.
+
+An actual official-processor check with the default prompt and repeated synthetic engineering fixture produced expanded counts 6,354 / 7,926 / 9,498 for 8/10/12 minutes respectively. These are fixture evidence, not constants for execution; different prompts/processor versions must be recounted.
+
+If the target window does not fit, directly try 10 minutes, then 8 minutes, with the same output/safety reservations and 2-minute overlap:
 
 ```text
-35 min -> 30 min -> 25 min -> 20 min
+12 min -> 10 min -> 8 min
 ```
 
-A window that cannot run at 20 minutes is treated as a real failure rather than being silently fragmented without bound.
+A window that cannot run at 8 minutes fails explicitly. A shorter recording/logical-boundary tail is allowed, but is not a further fallback size. Never shrink reserve or safety to force a fit. The model manifest must reflect the compiled context: the initial 4,096-token Gate A artifact is not eligible for this policy; rebuild at 16,384 with the same toolkit and repeat Gate A before bundling it.
+
+### 9.1 Generation completion and bounded retry
+
+Each decoder result must carry its actual generated-token count and normal-termination evidence from token IDs/native completion metadata, separately from decoded text. A successful native callback alone is not evidence of EOS. If the generated count reaches 5,120, normal termination is absent, or the timestamped output has an incomplete tail/extra unparsed suffix, mark `GENERATION_LIMIT_REACHED`. This precedence applies before parser repairs: never publish a plausible prefix as a complete transcript.
+
+Retain raw output, token count, termination metadata and failed window interval as diagnostic evidence, but do not mark that attempt DONE or add its partial segments to the authoritative timeline. Re-execute the entire failed coverage interval with 10-minute windows after a 12-minute failure, then 8-minute windows after a 10-minute failure, preserving overlap and exact context checks. Retries must cover the original interval without gaps and must not recompute unrelated completed windows. A failed 8-minute attempt is terminal; a short clipped retry tail inherits its configured tier and cannot restart the ladder indefinitely. Retries use new attempt IDs and preserve the original provenance.
 
 ## 10. Long-Audio Windowing
 
@@ -298,14 +314,17 @@ The user-visible scheduling unit is one hour, but model windows overlap across b
 Nominal sequence:
 
 ```text
-W1 = 00:00-35:00
-W2 = 30:00-60:00
-W3 = 55:00-90:00
-W4 = 85:00-120:00
+W1 = 00:00-12:00
+W2 = 10:00-22:00
+W3 = 20:00-32:00
+W4 = 30:00-42:00
+W5 = 40:00-52:00
+W6 = 50:00-60:00
+W7 = 58:00-70:00
 ...
 ```
 
-Thus every adjacent model window normally shares five minutes of real audio. A one-hour logical boundary never resets the speaker-continuity state.
+Thus every adjacent model window normally shares two minutes of real audio. A one-hour logical boundary never resets the speaker-continuity state. For non-first windows, logical ownership starts at window start plus two minutes; W7 belongs to logical chunk 1 despite starting at minute 58.
 
 Logical one-hour chunks exist for:
 
@@ -333,7 +352,7 @@ These labels are local to that model run and cannot be assumed stable across win
 
 ### 11.2 Overlap segment matching
 
-Within the shared five-minute overlap, duplicate utterances from neighboring windows are matched using a weighted score based on:
+Within the shared two-minute overlap, duplicate utterances from neighboring windows are matched using a weighted score based on:
 
 - interval/time overlap: 0.45;
 - normalized text similarity: 0.35;
@@ -370,11 +389,11 @@ No global label is silently rewritten based on weak later evidence.
 
 After speaker remapping, the overlap still contains duplicate transcript copies.
 
-The default ownership rule is overlap midpoint ownership. For a 30:00-35:00 overlap:
+The default ownership rule is overlap midpoint ownership. For a 10:00-12:00 overlap:
 
 ```text
-Window A owns < 32:30
-Window B owns >= 32:30
+Window A owns < 11:00
+Window B owns >= 11:00
 ```
 
 A segment that crosses the ownership boundary is never split mid-utterance. The merger selects one complete segment, preferring the version that:
@@ -663,6 +682,7 @@ MOSS_MODEL_LOAD_FAILED
 MOSS_RKNN_INFERENCE_FAILED
 MOSS_RKLLM_INFERENCE_FAILED
 MOSS_CONTEXT_OVERFLOW
+GENERATION_LIMIT_REACHED
 MOSS_OOM
 MOSS_INVALID_GENERATION
 MOSS_AUDIO_CORRUPT
@@ -672,10 +692,10 @@ MOSS_CANCELLED
 Recoverable context/OOM conditions use the window-size ladder:
 
 ```text
-35 -> 30 -> 25 -> 20 minutes
+12 -> 10 -> 8 minutes
 ```
 
-with the configured overlap preserved whenever possible.
+with the configured two-minute overlap and fixed 5,120/512 generation/safety reservations. `GENERATION_LIMIT_REACHED` also uses this bounded ladder, re-executing the failed coverage interval rather than accepting a truncated prefix.
 
 Persistent failure at the minimum supported model window fails the window/job and is surfaced explicitly.
 
@@ -847,6 +867,10 @@ The MOSS backend itself remains anonymous-diarization-first and should not need 
 
 Adopt a standalone `moss_worker` on one offline RK3588 32 GB system. Use a fused Whisper-Medium + 4x merge + MOSS VQAdaptor RKNN FP16 acoustic encoder and a MOSS-checkpoint Qwen3-0.6B RKLLM W8A8 decoder. Reproduce upstream MOSS processor semantics on CPU and feed complete embeddings through `RKLLM_INPUT_EMBED`.
 
-Use one-hour logical scheduling units, target ~35-minute model windows with five-minute overlap, and a context-budget guard that can shrink model windows without changing the external job model. Normalize local speaker labels into conservative global anonymous `GSxx` labels using overlap evidence, retain conflicts and provenance, and support durable checkpoint/restart semantics plus native-runtime process isolation.
+Use one-hour logical scheduling units, target 12-minute model windows with two-minute overlap and 10/8-minute fallback, and a real-tokenizer context guard under 16,384 tokens with fixed 5,120 generation reserve and 512 safety margin. Reject incomplete/limit-hit generations and retry their full coverage intervals. Normalize local speaker labels into conservative global anonymous `GSxx` labels using overlap evidence, retain conflicts and provenance, and support durable checkpoint/restart semantics plus native-runtime process isolation.
 
 This design is the approved basis for the implementation plan. No implementation work should begin until the implementation plan derived from this specification is reviewed.
+
+## 31. Non-blocking optimization Spike: context greater than 16K
+
+Investigate official support, memory/performance cost and exact MOSS parity for context greater than 16,384 only after the primary 16K path is functional. Record results separately. This Spike neither blocks Phase 1 nor authorizes replacing the validated primary toolchain, changing RoPE, silently extending the compiled context, or relaxing the window/generation gates.

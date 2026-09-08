@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-08-moss-rk3588-npu-backend-design.md`
 
+**Approved revision (2026-09-08):** retain the validated RKNN/RKLLM toolchain. Use context 16,384, generation reserve 5,120, safety 512, 12/10/8-minute windows and 2-minute overlap. Tasks 1–3 hardware gates passed on the short fixture; they do not establish long-window acceptance. Execute the explicit policy revision and same-toolchain 16K rebuild below before Task 4. Greater than 16K context is a non-blocking optimization Spike.
+
 ## Global Constraints
 
 - Hardware: one RK3588, 32 GB RAM.
@@ -19,8 +21,10 @@
 - Acoustic graph: MOSS Whisper-Medium -> 4x time merge -> VQAdaptor, RKNN FP16.
 - Decoder: **MOSS-tuned** Qwen3-0.6B, RKLLM W8A8. Stock Qwen3 weights are forbidden as a fallback.
 - Decoder input: `RKLLM_INPUT_EMBED`, complete host-built `float32[n_tokens,1024]`.
-- Logical progress boundary: 60 minutes. Target model window: 35 minutes. Adjacent windows overlap 5 minutes.
-- Context fallback ladder: 35 -> 30 -> 25 -> 20 minutes; failure at 20 minutes is explicit.
+- Logical progress boundary: 60 minutes. Target model window: 12 minutes. Adjacent windows overlap 2 minutes.
+- Context fallback ladder: 12 -> 10 -> 8 minutes; failure at 8 minutes is explicit. Short recording/logical-boundary tails are allowed, but are not extra fallback tiers.
+- Context 16,384; fixed generation reserve 5,120 and safety 512. Require actual tokenizer/processor expanded input for the candidate interval: count+5120+512<=16384. Duration estimates cannot authorize execution.
+- Generated count >=5120, missing normal termination, or incomplete output tail produces `GENERATION_LIMIT_REACHED`. Retain diagnostics, publish no partial authoritative result, and re-execute the failed coverage interval using 10/8-minute windows; tier 8 failure is terminal.
 - Acoustic micro-chunk: 30 seconds, RKNN input `[1,80,3000]`; padded tail keeps only valid adapted tokens.
 - `max_concurrent_moss_jobs=1`, `max_concurrent_rknn_runs=1`, `max_concurrent_rkllm_runs=1`.
 - Raw WAV + SHA-256 is immutable source evidence; every model product is derived/versioned.
@@ -54,7 +58,8 @@ tools/moss_rk3588/
 linux/backend/moss_worker/
   types.py                      # shared immutable job/window/segment types
   context_budget.py             # exact MOSS input-token budgeting
-  windowing.py                  # 60m logical boundaries, target 35m/5m overlap
+  windowing.py                  # 60m logical boundaries, target 12m/2m overlap
+  generation_policy.py          # fail-closed generation completion checks
   embedding_builder.py          # tokenizer/time markers/masked audio injection
   parser.py                     # generation -> absolute-time segments
   speaker_remap.py              # local Sxx -> global GSxx
@@ -336,6 +341,33 @@ git commit -m "feat: convert MOSS audio encoder to RKNN"
 
 ---
 
+## Approved revision before Task 4: window policy and 16K rebuild
+
+**Files:** `linux/backend/moss_worker/{__init__,context_budget,windowing,generation_policy}.py`; tests `linux/backend/tests/test_moss_context_budget.py`, `test_moss_windowing.py`, `test_moss_generation_limit.py`; modify `tools/moss_rk3588/build_rkllm.py` and its conversion tests. No application or existing speech-worker changes.
+
+- [ ] **Step 1: Run failing policy tests, then implement pure policy functions.** `ContextBudget(max_context_len=16384)` fixes reserve=5120 and safety=512. `plan_windows(duration_ms, expanded_input_tokens, budget)` requires a callable `(start_ms,end_ms)->int` from actual tokenizer/processor expansion; no default estimate. `classify_generation(text, token_count, normal_termination)` returns `GENERATION_LIMIT_REACHED` if any completion guard fails. `plan_retry_windows(failed_window, expanded_input_tokens, budget)` covers the entire failed interval at the next tier with two-minute overlap.
+
+```python
+assert ContextBudget().fits(10752)
+assert not ContextBudget().fits(10753)
+assert classify_generation('[0.0][S01]你好[1.0]', 5119, True) is None
+assert classify_generation('[0.0][S01]你好[1.0]', 5120, True) == 'GENERATION_LIMIT_REACHED'
+assert classify_generation('[0.0][S01]你好[1.0]', 1, False) == 'GENERATION_LIMIT_REACHED'
+assert classify_generation('[0.0][S01]你好', 1, True) == 'GENERATION_LIMIT_REACHED'
+```
+
+- [ ] **Step 2: Verify exact-count, logical-boundary and retry coverage tests.** Include exact-fit/one-token overflow, interval-dependent counts, 60/65/125-minute chains, clipped tails, and failed-interval 12->10->8 coverage without gaps or recomputing unrelated windows. Carry the configured tier even on short tails. Run `cd linux/backend && python3 -m pytest tests/test_moss_context_budget.py tests/test_moss_windowing.py tests/test_moss_generation_limit.py -q`.
+
+- [ ] **Step 3: Rebuild decoder with the same RKLLM 1.3.0 toolchain.** Add/test explicit `--max-context 16384` passed as `max_context` to `RKLLM.build`; reject unsupported values before conversion. Preserve the 4096-context artifact. Keep the same MOSS repack, calibration, W8A8 and source hashes.
+
+```bash
+python3 tools/moss_rk3588/build_rkllm.py --model /opt/moss-build/moss-qwen3-repacked --dataset /opt/moss-build/calibration-zh-2spk-45s/inputs.json --max-context 16384 --output /opt/moss-build/context-16k/moss_qwen3_0.6b_w8a8_rk3588.rkllm
+```
+
+- [ ] **Step 4: Verify the new artifact on RK3588.** Verify full SHA, runtime log `max_context_limit: 16384`, and repeat Gate A on unchanged captured embeddings. Record a new artifact hash; do not relabel the old binary or claim 12-minute acceptance from a short fixture. Bundle only the rebuilt, verified 16K artifact.
+
+- [ ] **Step 5: Review and commit the revision, then continue Task 4.** Real-count adapter and decoder completion metadata integration remain mandatory in Tasks 6/10/11. Pure policy tests do not replace integration.
+
 ## Task 4: Build and validate the production model bundle
 
 **Files:**
@@ -394,7 +426,7 @@ selftest/decoder_input.f32
 selftest/decoder_expected.json
 ```
 
-Verify hashes, `rows*1024*2` embedding bytes, audio token, time-marker config, and positive decoder context.
+Verify hashes, `rows*1024*2` embedding bytes, audio token, time-marker config, and actually compiled/board-verified context 16,384. Record reserve=5120, safety=512 and the window/overlap policy. Reject the original 4096-context artifact for this bundle.
 
 - [ ] **Step 6: Verify and commit.**
 
@@ -416,57 +448,62 @@ git commit -m "feat: define MOSS RK3588 runtime bundle"
 - Test: `linux/backend/tests/test_moss_windowing.py`
 
 **Interfaces:**
-- `ContextBudgetPlanner(max_context_len=40960, generation_reserve_tokens=8192, safety_margin_tokens=512, prompt_token_count=512)`.
-- `plan_duration_ms(remaining_ms: int) -> int` selects 35/30/25/20m based on context.
-- `build_window_chain(total_ms: int, planner) -> list[WindowSpec]`.
+- Reuse `ContextBudget(max_context_len=16384)` with fixed reserve=5120 and safety=512 from the approved revision; do not add a second planner with different defaults.
+- `plan_windows(duration_ms, expanded_input_tokens, budget)` selects 12/10/8m using the required actual interval-specific input counter.
+- Retain tested `WindowSpec(start_ms,end_ms,logical_chunk_index,window_minutes)`; the last field preserves retry tier even on clipped tails.
 - For a non-first window, ownership begins at `start_ms + overlap_ms`; `logical_chunk_index = ownership_start_ms // 3_600_000`.
 
 - [ ] **Step 1: Write failing exact-count/window tests.**
 
 ```python
-from moss_worker.context_budget import ContextBudgetPlanner
-from moss_worker.windowing import build_window_chain
+from moss_worker.context_budget import ContextBudget
+from moss_worker.windowing import plan_windows
 
-def test_35m_audio_span_count_matches_moss():
-    p = ContextBudgetPlanner(prompt_token_count=0)
-    assert p.estimate_expanded_input_tokens(35*60_000) == 26_250 + 3_648
+def test_exact_count_boundary():
+    p = ContextBudget()
+    assert p.fits(10752)
+    assert not p.fits(10753)
 
 def test_nominal_chain_clips_at_hour_boundaries():
-    p = ContextBudgetPlanner(prompt_token_count=512)
-    w = build_window_chain(120*60_000, p)
-    assert [(x.start_ms//60_000, x.end_ms//60_000) for x in w[:4]] == [(0,35),(30,60),(55,90),(85,120)]
-    assert w[2].logical_chunk_index == 1
+    w = plan_windows(120*60_000, lambda start,end: 10000, ContextBudget())
+    assert [(x.start_ms//60_000, x.end_ms//60_000) for x in w[:7]] == [(0,12),(10,22),(20,32),(30,42),(40,52),(50,60),(58,70)]
+    assert w[6].logical_chunk_index == 1
 
 def test_smaller_context_uses_approved_ladder():
-    p = ContextBudgetPlanner(max_context_len=34_000, prompt_token_count=512)
-    assert p.plan_duration_ms(60*60_000)//60_000 in {30,25,20}
+    count = lambda start,end: 10753 if end-start > 10*60_000 else 9000
+    w = plan_windows(60*60_000, count, ContextBudget())
+    assert w[0].end_ms == 10*60_000
 ```
 
 - [ ] **Step 2: Verify failure.** Run: `cd linux/backend && python3 -m pytest tests/test_moss_windowing.py -q`
 
 - [ ] **Step 3: Define immutable enums/dataclasses.**
 
-`types.py`: `JobState`, `WindowState`, `ParseStatus`, `MergeStatus`, `WindowSpec`, `NormalizedSegment`, `WindowResult`, `JobSnapshot`, `JobResult`, with deterministic `to_dict/from_dict`.
+`types.py`: `JobState`, `WindowState`, `ParseStatus`, `MergeStatus`, `NormalizedSegment`, `WindowResult`, `JobSnapshot`, `JobResult`, with deterministic `to_dict/from_dict`. Import/re-export policy `WindowSpec`, do not create an incompatible duplicate. Add IDs/provenance without breaking approved window/retry tests.
 
 - [ ] **Step 4: Implement exact token accounting.**
 
-Audio placeholders = `ceil(seconds*12.5)`. For marker seconds `2,4,...,floor(seconds)` add `len(str(second))` digit tokens. Total = audio + marker digits + prompt count; fit iff total+8192+512 <= max context.
+Actual complete expanded input IDs determine fit: `expanded_input + 5120 + 512 <= 16384`. Duration-only audio/marker formulas are diagnostic, never execution authorization. The required counter is wired to the real tokenizer/processor path in Task 6; do not silently substitute an estimated prompt count.
 
 - [ ] **Step 5: Implement logical-boundary clipping.**
 
 ```python
 start = 0
 while start < total_ms:
-    duration = planner.plan_duration_ms(total_ms-start)
     ownership_start = start if not windows else start + overlap_ms
     logical_end = ((ownership_start // HOUR_MS) + 1) * HOUR_MS
-    end = min(start + duration, logical_end, total_ms)
+    for minutes in (12, 10, 8):
+        end = min(start + minutes*60_000, logical_end, total_ms)
+        if budget.fits(expanded_input_tokens(start, end)):
+            break
+    else:
+        raise RuntimeError('MOSS_CONTEXT_OVERFLOW')
     append_window(start, end, ownership_start // HOUR_MS)
     if end == total_ms: break
     start = end - overlap_ms
 ```
 
-This produces `0-35, 30-60, 55-90, 85-120` at the default budget and still works when a target window shrinks.
+With overlap=2m, this produces `0-12, 10-22, 20-32, 30-42, 40-52, 50-60, 58-70`. Require forward progress, recount clipped intervals and preserve overlap under 10/8-minute tiers.
 
 - [ ] **Step 6: Verify and commit.**
 
@@ -527,7 +564,7 @@ def test_only_audio_ids_are_replaced():
 
 - [ ] **Step 4: Implement FP16 mmap table and exact audio-span insertion.** Reject out-of-range IDs; gather requested rows only; convert selected rows to C-contiguous FP32. Marker digits add token positions without reducing audio placeholder count.
 
-- [ ] **Step 5: Implement final build/context guard.** Tokenize exact MOSS prompt, expand audio placeholder, inject audio embeddings only at `audio_token_id`, and raise `MOSS_CONTEXT_OVERFLOW` if input+generation reserve+safety exceeds manifest context.
+- [ ] **Step 5: Implement final build/context guard.** Tokenize exact MOSS prompt, expand audio placeholder, inject only at `audio_token_id`, and require actual input+5120+512<=16384. Supply the planner's interval counter from the same builder/tokenizer path. Compare 8/10/12-minute full input IDs/counts against the official processor on the conversion workstation. Test an estimate that fits while the actual prompt does not: directly select 10, not 12 minutes. Repeat the count guard at native submission.
 
 - [ ] **Step 6: Verify and commit.**
 
@@ -554,7 +591,7 @@ git commit -m "feat: construct MOSS external embeddings"
 from moss_worker.parser import parse_generation
 from moss_worker.types import WindowSpec, ParseStatus
 
-def w(): return WindowSpec("w2",2,0,30*60_000,60*60_000,30*60_000,5*60_000,0)
+def w(): return WindowSpec(30*60_000,42*60_000,0,12)
 
 def test_absolute_offset():
     s=parse_generation("[12.0][S01]你好[13.5]", w()).valid_segments[0]
@@ -621,7 +658,7 @@ def test_conflicting_overlap_preserves_alternate(merger_fixture):
     assert merged.primary.alternate_text in {"我十点半到的","我十点到的"}
 ```
 
-For 30-35m overlap boundary=32:30. Never split a crossing utterance; choose complete version farther from source-window edge.
+For 10-12m overlap boundary=11:00. Never split a crossing utterance; choose complete version farther from source-window edge.
 
 - [ ] **Step 6: Verify and commit.**
 
@@ -712,9 +749,9 @@ def test_runtime_pipeline_order(fake_frontend, fake_builder, window, wav):
 
 - [ ] **Step 4: Implement RKNN wrapper.** Load once, `NPU_CORE_0_1_2`, finite/shape checks, slice valid token prefix.
 
-- [ ] **Step 5: Implement RKLLM 1.3.0 ctypes wrapper.** Require C-contiguous `float32[n,1024]`, input type EMBED, thinking false, history false; expose generated text and perf counters; convert non-zero native results to structured MOSS errors.
+- [ ] **Step 5: Implement RKLLM 1.3.0 ctypes wrapper.** Require C-contiguous `float32[n,1024]`, EMBED, thinking false, history false; expose generated text, actual generated-token count, normal termination evidence and perf counters. Set max_new_tokens=5120. Inspect actual SDK token/finish metadata: native FINISH alone is not EOS proof. If normal termination cannot be established, fail closed with `GENERATION_LIMIT_REACHED`. Convert native errors to structured MOSS errors.
 
-- [ ] **Step 6: Implement `infer_window` and startup self-test.** Serial RKNN micro-chunks -> concat -> embedding builder -> RKLLM -> parser. On child startup run Task 4 encoder/decoder self-tests; failure exits non-zero/NOT_READY.
+- [ ] **Step 6: Implement `infer_window` and startup self-test.** Serial RKNN chunks -> concat -> builder -> exact context guard -> RKLLM -> `classify_generation` -> parser. Retain raw output/metadata but reject authoritative partials on `GENERATION_LIMIT_REACHED`; parser repairs cannot hide a limit-hit or incomplete tail. Test 5119 complete tokens, 5120 tokens, missing EOS, incomplete tail and no DONE checkpoint for failed attempts. On child startup run Task 4 self-tests; failure exits non-zero/NOT_READY.
 
 - [ ] **Step 7: Verify and commit.**
 
@@ -757,7 +794,7 @@ def test_completed_window_is_not_recomputed_after_child_crash(spool, windows):
 
 - [ ] **Step 3: Implement state transitions/serialization.** Only the spec states are legal; terminal states cannot transition out.
 
-- [ ] **Step 4: Implement retry policy.** Context/OOM: 35->30->25->20 replanning; native crash: restart/self-test child and retry same window once; second crash fails job.
+- [ ] **Step 4: Implement retry policy.** Context/OOM or `GENERATION_LIMIT_REACHED`: 12->10->8 with 2-minute overlap and fixed reserve/safety. `plan_retry_windows` covers the full failed interval, preserving raw failed attempts and unrelated completed windows; only completed replacements enter the authoritative timeline. Test full coverage, repeated failures, tier 8 terminal and no infinite clipped-tail retry. Native crash: restart/self-test child and retry same window once; second crash fails job.
 
 - [ ] **Step 5: Implement cancellation.** QUEUED immediate; RUNNING sets cancel flag; 10s native cancellation grace then kill/restart child; preserve completed checkpoints.
 
@@ -798,7 +835,7 @@ Also test oversized/truncated/non-object JSON rejection.
 
 - [ ] **Step 2: Verify failure.** Run both protocol/client-server tests.
 
-- [ ] **Step 3: Implement protocol and exact errors.** Include model/RKNN/RKLLM/context/OOM/invalid-generation/audio-corrupt/unsupported/audio-changed/cancelled/job-not-found/worker-crashed codes.
+- [ ] **Step 3: Implement protocol and exact errors.** Include model/RKNN/RKLLM/context/OOM/invalid-generation/audio-corrupt/unsupported/audio-changed/cancelled/job-not-found/worker-crashed codes and exact `GENERATION_LIMIT_REACHED`; preserve failed interval, attempt tier and termination metadata for status/results.
 
 - [ ] **Step 4: Implement stale-socket-safe server.** Refuse non-socket path, probe active socket, remove only proven stale socket, bind/chmod 0660.
 
@@ -1009,3 +1046,7 @@ Task 1  Golden reference + MOSS Qwen repack
 **Stop at Gate B** if FP16 RKNN does not meet parity. No acoustic INT8 workaround.
 
 **Do not add ERes2Net identity binding in this plan.** Fusion is a separately reviewed phase after the standalone MOSS path is proven.
+
+## Non-blocking Spike: more than 16K context
+
+After the 16K primary path works, separately record official longer-context support, memory/performance and MOSS parity. This investigation must not block current tasks, replace the validated primary toolchain, alter RoPE, or expand the approved window ladder without new approval.
