@@ -12,6 +12,8 @@
 
 **Approved revision (2026-09-08):** retain the validated RKNN/RKLLM toolchain. Use context 16,384, generation reserve 5,120, safety 512, 12/10/8-minute windows and 2-minute overlap. Tasks 1–3 hardware gates passed on the short fixture; they do not establish long-window acceptance. Execute the explicit policy revision and same-toolchain 16K rebuild below before Task 4. Greater than 16K context is a non-blocking optimization Spike.
 
+**Implementation checkpoint (2026-09-08):** Task 4 (`1bb64e8`) passed 40 bundle tests and validation on the conversion workstation, local E: storage, and RK3588; bundle manifest SHA-256 is `a50ce60b04e3715a4ce9d05381336fd95072f359c7883115e946d55321657e69`. Task 5 (`6521c80`) adds immutable shared records without replacing the approved planner. Task 6 (`3421c61`) passed 69 combined MOSS tests and full input-ID parity with the official processor for 8/10/12-minute engineering fixtures and a one-sample tail. A real-tokenizer long-prompt case planned 10 minutes after rejecting 12 minutes (10,798 expanded tokens vs. 9,226 at 10 minutes). Native submission guards, completion metadata, durable generation-limit retries, and long-window NPU acceptance remain pending Tasks 10/11 and acceptance tasks. These are local commits, not a production deployment; TCP/8000 remains unchanged.
+
 ## Global Constraints
 
 - Hardware: one RK3588, 32 GB RAM.
