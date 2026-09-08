@@ -524,6 +524,8 @@ FastAPI
 
 A native segmentation fault, abort, or runtime crash in the inference child must not terminate the supervisor or FastAPI service.
 
+Retain the exact private runtime builds verified by Gate A/B: RKLLM 1.3.0 and RKNN Runtime / RKNNLite 2.3.2. Select absolute library paths explicitly and verify their hashes and the actually loaded library path; do not replace or retarget shared `/lib` or `/usr/lib` libraries. The current board's shared RKLLM link still points to 1.2.3 and is not the validated decoder runtime. Current gate artifacts reside under `/home/youyeetoo/moss-build/sdk-1.3.0` and `/home/youyeetoo/moss-build/rknn-2.3.2`; deployment must stage the same verified binaries in service-readable private storage. The native child uses an isolated Python 3.10 environment matching the verified RKNNLite wheel; the supervisor keeps the application's existing Python environment. Configure child Python and library paths explicitly rather than modifying the existing speech service.
+
 On child failure, the supervisor:
 
 1. records the current window failure;

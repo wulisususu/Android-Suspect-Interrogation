@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the existing realtime `speech_worker` unchanged. Add a separate `moss_worker` supervisor behind `/run/suspect-interrogation/moss.sock`; isolate RKNN/RKLLM native inference in a child process. Prove `inputs_embeds -> RKLLM_INPUT_EMBED` first, prove the acoustic RKNN graph second, then implement long-audio windows, overlap/speaker merge, durable jobs, application integration, and RK3588 deployment.
 
-**Tech Stack:** Python 3.11/3.12, NumPy, `tokenizers`, PyTorch/Transformers only on the conversion workstation, RKNN Toolkit2/RKNN Runtime, RKLLM Toolkit **1.3.0**/RKLLM Runtime **1.3.0**, Unix sockets, FastAPI, systemd, GitHub Actions self-hosted RK3588 runner.
+**Tech Stack:** existing application Python 3.11/3.12 plus an isolated native-child Python 3.10 environment matching the verified RKNNLite 2.3.2 wheel; NumPy, `tokenizers`, PyTorch/Transformers only on the conversion workstation, RKNN Toolkit2/RKNN Runtime **2.3.2**, RKLLM Toolkit **1.3.0**/RKLLM Runtime **1.3.0**, Unix sockets, FastAPI, systemd, GitHub Actions self-hosted RK3588 runner.
 
 **Spec:** `docs/superpowers/specs/2026-09-08-moss-rk3588-npu-backend-design.md`
 
@@ -34,7 +34,7 @@
 - Native inference runs in a child; its crash must not terminate the supervisor/FastAPI.
 - Never commit model/checkpoint binaries, `.rknn`, `.rkllm`, token embedding tables, calibration tensors, or real/large acceptance audio.
 - Production service account is exactly `suspect-interrogation:suspect-interrogation`, matching `systemd/ai-worker.service`.
-- Production native libraries are `/lib/librknnrt.so` and `/lib/librkllmrt.so` for the current RK3588 image; probes fail closed if absent.
+- Use explicit, hash-verified private RKNN 2.3.2 / RKLLM 1.3.0 runtime paths and an isolated Python 3.10 child. Never replace or retarget shared `/lib` or `/usr/lib` libraries. Missing or mismatched configured libraries fail closed; `LD_LIBRARY_PATH` alone is not proof of the library actually selected by RKNNLite.
 - Every task begins with a failing test or failing hardware gate, then minimal implementation, focused verification, and an independent commit.
 - `AGENTS.md` production Definition of Done applies to the exact final source SHA.
 
@@ -262,7 +262,7 @@ Reject raw-file byte-count mismatch before native inference; accumulate callback
 
 - [ ] **Step 6: Add the manual self-hosted workflow.**
 
-It requires pre-staged model/reference files plus `/lib/librkllmrt.so`, compiles against RKLLM 1.3.0 headers, runs with no install/download step, and saves generation text.
+It requires pre-staged model/reference files plus an explicitly selected private RKLLM 1.3.0 runtime, compiles against the matching verified headers, runs with no install/download step, and saves generation text. Do not change shared runtime symlinks.
 
 - [ ] **Step 7: Enforce Gate A.**
 
@@ -711,7 +711,7 @@ jobs/JOB/checkpoints/WINDOW.json
 jobs/JOB/logs/events.jsonl
 ```
 
-- [ ] **Step 4: Implement source integrity/revisions.** Hash WAV at creation/resume; mismatch raises `MOSS_AUDIO_CHANGED`. Same audio under another model manifest gets a new job ID; never overwrite a completed revision.
+- [ ] **Step 4: Implement source integrity/revisions.** Hash WAV at creation/resume; mismatch raises `MOSS_AUDIO_CHANGED`. Same audio under another model manifest gets a new job ID; never overwrite a completed revision. Persisted DONE and FAILED window attempts are immutable: retries use fresh attempt IDs, and replacing the active plan must not overwrite their raw/checkpoint evidence or rebind their IDs to another interval.
 
 - [ ] **Step 5: Verify and commit.**
 
@@ -755,7 +755,7 @@ def test_runtime_pipeline_order(fake_frontend, fake_builder, window, wav):
 
 - [ ] **Step 3: Implement audio frontend.** Use `wave`; require sample width=2, channels=1, rate=16000; float32 normalize; compute Whisper log-mel using values exported in `processor_config.json`; pad each 30s chunk and calculate valid adapted tokens from real sample count.
 
-- [ ] **Step 4: Implement RKNN wrapper.** Load once, `NPU_CORE_0_1_2`, finite/shape checks, slice valid token prefix.
+- [ ] **Step 4: Implement RKNN wrapper.** Load once, `NPU_CORE_0_1_2`, finite/shape checks, slice valid token prefix. Use the explicit private 2.3.2 runtime selection verified in Gate B and inspect the actual loaded library path; never patch installed SDK files or shared libraries. Run the child with the matching isolated Python 3.10 interpreter.
 
 - [ ] **Step 5: Implement RKLLM 1.3.0 ctypes wrapper.** Require C-contiguous `float32[n,1024]`, EMBED, thinking false, history false; expose generated text, actual generated-token count, normal termination evidence and perf counters. Set max_new_tokens=5120. Inspect actual SDK token/finish metadata: native FINISH alone is not EOS proof. If normal termination cannot be established, fail closed with `GENERATION_LIMIT_REACHED`. Convert native errors to structured MOSS errors.
 
@@ -942,9 +942,9 @@ def test_unit_is_local_restricted_and_not_tcp8000():
 
 - [ ] **Step 2: Verify failure.** Run: `python3 -m pytest tests/release/test_moss_systemd_and_deploy.py -q`
 
-- [ ] **Step 3: Implement `moss-worker.service`.** Use same hardening as `ai-worker.service`, exact user/group, current backend working directory, runtime/moss env files, socket/model env, `ExecStart=/opt/suspect-interrogation/current/.venv/bin/python -m moss_worker.main`, restart-on-failure, writable run/var-lib/var-log, read-only model and `/lib` runtime files.
+- [ ] **Step 3: Implement `moss-worker.service`.** Use same hardening as `ai-worker.service`, exact user/group, current backend working directory, runtime/moss env files, socket/model env, `ExecStart=/opt/suspect-interrogation/current/.venv/bin/python -m moss_worker.main`, restart-on-failure, writable run/var-lib/var-log, read-only model and private runtime files. Explicitly configure the isolated Python 3.10 child interpreter and service-readable verified private library paths.
 
-- [ ] **Step 4: Implement read-only RK3588 probe.** Verify bundle hashes, `/lib/librknnrt.so`, `/lib/librkllmrt.so`, aarch64, socket health, model state, manifest SHA, queue depth, runtime versions; never submit case audio or download anything.
+- [ ] **Step 4: Implement read-only RK3588 probe.** Verify bundle hashes, configured private RKNN/RKLLM library hashes and actual selection, aarch64, socket health, model state, manifest SHA, queue depth, runtime versions; never submit case audio or download anything. Confirm shared runtime symlinks and TCP/8000 remain unchanged.
 
 - [ ] **Step 5: Modify bootstrap/redeploy workflows.** Create spool with correct owner, install/enable service, install MOSS Python deps only from pre-staged offline wheel source, restart MOSS on atomic redeploy when enabled, preserve shared model/spool directories, leave TCP/8000 owner untouched.
 
