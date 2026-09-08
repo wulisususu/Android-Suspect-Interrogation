@@ -30,12 +30,14 @@ def test_complete_coverage_with_fixed_overlap(minutes, allowed):
 
 
 def test_hour_boundary_keeps_overlap_into_next_logical_chunk():
-    windows = plan_windows(125 * MINUTE, counter(12))
+    windows = plan_windows(120 * MINUTE, counter(12))
     assert [(w.start_ms // MINUTE, w.end_ms // MINUTE, w.logical_chunk_index)
             for w in windows[:7]] == [
         (0, 12, 0), (10, 22, 0), (20, 32, 0), (30, 42, 0),
         (40, 52, 0), (50, 60, 0), (58, 70, 1),
     ]
+    assert all(w.logical_chunk_index == (w.start_ms + 2 * MINUTE) // (60 * MINUTE)
+               for w in windows[1:])
 
 
 def test_actual_interval_count_controls_each_selection():
