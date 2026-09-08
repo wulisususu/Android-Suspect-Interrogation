@@ -81,6 +81,14 @@ def test_native_uses_130_callback_and_embed_contract():
     assert content.index('raw byte size mismatch') < content.index('rkllm_init(')
 
 
+def test_native_probe_exposes_optional_actual_callback_metadata():
+    content = (ROOT / 'tools/moss_rk3588/native/rkllm_embed_probe.cpp').read_text()
+    for required in ('--metadata', 'result->token_id', 'result->perf.generate_tokens',
+                     'sizeof(RKLLMInput)', 'offsetof(RKLLMResult, perf)',
+                     'output.metadata.flush()'):
+        assert required in content
+
+
 def test_build_rejects_wrong_identity_before_toolkit_import(tmp_path):
     module = tool('build_rkllm')
     (tmp_path / 'repack_manifest.json').write_text(json.dumps({'architecture': 'Qwen3ForCausalLM',

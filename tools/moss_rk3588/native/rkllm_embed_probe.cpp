@@ -9,10 +9,26 @@
 #include <string>
 #include <vector>
 
-struct Result { std::string bytes; bool failed = false; bool finished = false; };
+struct Result {
+    std::string bytes;
+    bool failed = false;
+    bool finished = false;
+    std::ofstream metadata;
+};
 
 static int callback(RKLLMResult* result, void* data, LLMCallState state) {
     auto& output = *static_cast<Result*>(data);
+    if (output.metadata.is_open()) {
+        output.metadata << "{\"state\":" << state;
+        if (result) {
+            output.metadata << ",\"token_id\":" << result->token_id
+                            << ",\"generate_tokens\":" << result->perf.generate_tokens
+                            << ",\"prefill_tokens\":" << result->perf.prefill_tokens;
+        }
+        output.metadata << "}\n";
+        output.metadata.flush();
+        if (!output.metadata) output.failed = true;
+    }
     if (state == RKLLM_RUN_ERROR) output.failed = true;
     if (state == RKLLM_RUN_FINISH) output.finished = true;
     if ((state == RKLLM_RUN_NORMAL || state == RKLLM_RUN_WAITING) && result && result->text)
@@ -30,7 +46,7 @@ static int positive(const std::string& value) {
 int main(int argc, char** argv) {
     LLMHandle handle = nullptr;
     try {
-        std::string model, raw, output;
+        std::string model, raw, output, metadata;
         int tokens = 0, max_new_tokens = 2048;
         for (int i = 1; i < argc; i += 2) {
             if (i + 1 == argc) throw std::runtime_error("Missing argument value");
@@ -40,6 +56,7 @@ int main(int argc, char** argv) {
             else if (key == "--tokens") tokens = positive(value);
             else if (key == "--max-new-tokens") max_new_tokens = positive(value);
             else if (key == "--output") output = value;
+            else if (key == "--metadata") metadata = value;
             else throw std::runtime_error("Unknown argument: " + key);
         }
         if (model.empty() || raw.empty() || output.empty() || tokens <= 0)
@@ -70,6 +87,21 @@ int main(int argc, char** argv) {
         param.ignore_eos_token = false;
         param.is_async = false;
         Result result;
+        if (!metadata.empty()) {
+            result.metadata.open(metadata, std::ios::out | std::ios::trunc);
+            if (!result.metadata) throw std::runtime_error("Cannot write callback metadata");
+            result.metadata << "{\"abi\":{\"param\":" << sizeof(RKLLMParam)
+                            << ",\"extend\":" << sizeof(RKLLMExtendParam)
+                            << ",\"input\":" << sizeof(RKLLMInput)
+                            << ",\"infer\":" << sizeof(RKLLMInferParam)
+                            << ",\"result\":" << sizeof(RKLLMResult)
+                            << ",\"callback\":" << sizeof(RKLLMCallback)
+                            << ",\"result_perf_offset\":" << offsetof(RKLLMResult, perf)
+                            << ",\"input_embed_offset\":" << offsetof(RKLLMInput, embed_input)
+                            << "}}\n";
+            result.metadata.flush();
+            if (!result.metadata) throw std::runtime_error("Cannot write callback metadata");
+        }
         RKLLMCallback callbacks{};
         callbacks.result_callback = callback;
         callbacks.result_userdata = &result;
