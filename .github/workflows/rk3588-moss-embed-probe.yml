@@ -1,4 +1,4 @@
-name: RK3588 MOSS embedding Gate A
+name: RK3588 MOSS embedding Gates A and B
 
 on:
   workflow_dispatch:
@@ -13,6 +13,16 @@ on:
         required: true
         default: /lib
         type: string
+      rknn_runtime_directory:
+        description: Offline private RKNN 2.3.2 runtime directory
+        required: true
+        default: /opt/moss-build/rknn-2.3.2
+        type: string
+      rknn_python:
+        description: Offline Python with RKNNLite 2.3.2 and NumPy installed
+        required: true
+        default: /opt/moss-build/rknn-venv/bin/python
+        type: string
 
 permissions:
   contents: read
@@ -24,6 +34,8 @@ jobs:
     env:
       BUILD_ROOT: ${{ inputs.build_root }}
       RUNTIME_DIRECTORY: ${{ inputs.runtime_directory }}
+      RKNN_RUNTIME_DIRECTORY: ${{ inputs.rknn_runtime_directory }}
+      RKNN_PYTHON: ${{ inputs.rknn_python }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify offline assets and compile RKLLM_INPUT_EMBED probe
@@ -67,3 +79,38 @@ jobs:
         with:
           name: moss-embed-gate-a-${{ github.sha }}
           path: gate-a-evidence/
+      - name: Gate B verify prestaged audio encoder assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RKNN_RUNTIME_DIRECTORY" = /* && "$RKNN_PYTHON" = /* ]]
+          [[ "$RKNN_RUNTIME_DIRECTORY" != *$'\n'* && "$RKNN_PYTHON" != *$'\n'* ]]
+          test -x "$RKNN_PYTHON"
+          test -f "$RKNN_RUNTIME_DIRECTORY/librknnrt.so"
+          mkdir -p gate-b-evidence
+          printf '%s  %s\n' 'd31fc19c85b85f6091b2bd0f6af9d962d5264a4e410bfb536402ec92bac738e8' "$RKNN_RUNTIME_DIRECTORY/librknnrt.so" | sha256sum -c -
+          "$RKNN_PYTHON" - <<'PY'
+          import hashlib, json, os
+          from importlib.metadata import version
+          from pathlib import Path
+          assert version('rknn-toolkit-lite2') == '2.3.2'
+          p = Path(os.environ['BUILD_ROOT']) / 'audio-encoder'
+          m = json.loads((p / 'manifest.json').read_text())
+          assert m['model_fingerprint'] == 'sha256:2617e17cfec24f24b17979b7ba6d607ce259f727224757e8e5f88b6894b74855'
+          assert m['input_shape'] == [1, 80, 3000] and m['output_shape'] == [1, 375, 1024]
+          assert m['onnx_validation']['passed'] is True
+          for name in ('input_features.npy', 'pytorch_output.npy'):
+              assert hashlib.sha256((p / name).read_bytes()).hexdigest() == m['artifacts'][name]
+          PY
+          sha256sum "$RKNN_RUNTIME_DIRECTORY/librknnrt.so" "$BUILD_ROOT/audio-encoder/moss_audio_encoder_fp16_rk3588.rknn" "$BUILD_ROOT/audio-encoder/manifest.json" > gate-b-evidence/assets.sha256
+      - name: Gate B run three-core RKNN and compare PyTorch embeddings
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RKNN_PYTHON" tools/moss_rk3588/compare_pytorch_rknn.py --runtime-library "$RKNN_RUNTIME_DIRECTORY/librknnrt.so" --model "$BUILD_ROOT/audio-encoder/moss_audio_encoder_fp16_rk3588.rknn" --input-features "$BUILD_ROOT/audio-encoder/input_features.npy" --reference "$BUILD_ROOT/audio-encoder/pytorch_output.npy" --save-output gate-b-evidence/rknn_output.npy --output gate-b-evidence/comparison.json 2>&1 | tee gate-b-evidence/native.log
+      - name: Save Gate B evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: moss-audio-gate-b-${{ github.sha }}
+          path: gate-b-evidence/
