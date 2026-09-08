@@ -592,7 +592,7 @@ class InstantChild:
             audio_sha,
             "manifest",
             "[0.0][S01]你好[1.0]",
-            (segment(segment_id=f"{window_id}-s1", window_id=window_id, global_speaker="GS01"),),
+            (segment(segment_id=f"{window_id}-s1", window_id=window_id),),
             ParseStatus.VALID,
             None,
             2,
