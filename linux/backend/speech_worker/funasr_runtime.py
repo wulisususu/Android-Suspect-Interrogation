@@ -314,9 +314,9 @@ class FunASRSpeechRuntime:
         self._speaker_embedding_backend = None
         self._speaker_backends = {}
         self.speaker_backend = None
-        self.speaker_backend_key = SpeakerBackendKey.XVECTOR
+        self.speaker_backend_key = SpeakerBackendKey.ERES2NET_LARGE
         self.speaker_model_id = self.speaker_backend_key.value
-        self.speaker_model_version = os.environ.get("SUSPECT_XVECTOR_MODEL_VERSION", "local")
+        self.speaker_model_version = os.environ.get("SUSPECT_ERES2NET_MODEL_VERSION", "local")
         self.speaker_model_fingerprint = None
 
 

@@ -183,6 +183,22 @@ def test_missing_eres_backend_is_explicit_and_never_falls_back_to_xvector(tmp_pa
         runtime.speaker_embedding(pcm, 16000, backend_key="xvector")
 
 
+def test_clearing_models_keeps_eres2net_metadata_for_degraded_health(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("SUSPECT_ERES2NET_MODEL_VERSION", "eres-test-version")
+    runtime = _loaded_runtime(tmp_path)
+
+    runtime._clear_models()
+
+    health = runtime.health()
+    assert health["speaker_backend"] is None
+    assert health["speaker_backend_key"] == "eres2net_large"
+    assert health["speaker_model_id"] == "eres2net_large"
+    assert health["speaker_model_version"] == "eres-test-version"
+
+
 def test_legacy_xvector_assets_are_not_loaded_by_the_eres_runtime(tmp_path: Path):
     root = tmp_path / "funasr"
     for name in ("paraformer", "fsmn-vad", "xvector"):
