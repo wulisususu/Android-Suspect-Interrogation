@@ -16,6 +16,19 @@ describe('LinuxHttpWsAdapter', () => {
     expect(calls[0].params).toEqual({ limit: 100, query: '3201011' })
   })
 
+  it('omits an empty case-list query so FastAPI can use its default listing', async () => {
+    const calls: Array<{ params?: Record<string, unknown> }> = []
+    const adapter = new LinuxHttpWsAdapter({
+      request: async (config) => {
+        calls.push({ params: config.params })
+        return { data: { ok: true, data: [] } }
+      },
+    })
+
+    await adapter.invoke('case.list', { limit: 50, query: '' })
+    expect(calls[0].params).toEqual({ limit: 50 })
+  })
+
   it('routes Linux operations through /api/v1 and preserves identity case binding', async () => {
     const calls: Array<{ method: string; url: string; data?: unknown }> = []
     const adapter = new LinuxHttpWsAdapter({
