@@ -33,8 +33,11 @@ def test_ai_worker_is_optional_non_root_and_sandboxed_for_funasr():
     assert "EnvironmentFile=-/etc/suspect-interrogation/ai-worker.env" in unit
     assert "Restart=on-failure" in unit
     assert "ConditionPathExists=/opt/suspect-interrogation/current/linux/backend" in unit
-    assert "RuntimeDirectory=suspect-interrogation" in unit
-    assert "RuntimeDirectoryMode=0750" in unit
+    # /run/suspect-interrogation is shared with moss-worker.service: a
+    # RuntimeDirectory declaration here would make every ai-worker stop GC the
+    # directory and orphan the other unit's bound socket. The tmpfiles fragment
+    # (deploy/tmpfiles-suspect-interrogation.conf) creates it instead.
+    assert "RuntimeDirectory" not in unit
     assert "ProtectHome=true" in unit
     assert "ReadWritePaths=/run/suspect-interrogation /var/lib/suspect-interrogation /var/log/suspect-interrogation" in unit
     assert "ReadOnlyPaths=/opt/suspect-interrogation/models/funasr /opt/suspect-interrogation/runtime/funasr-env" in unit

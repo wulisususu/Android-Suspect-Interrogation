@@ -11,8 +11,11 @@ WorkingDirectory=/opt/suspect-interrogation/current/linux/backend
 EnvironmentFile=/etc/suspect-interrogation/runtime.env
 EnvironmentFile=-/etc/suspect-interrogation/ai-worker.env
 Environment=SUSPECT_SPEECH_SOCKET=/run/suspect-interrogation/speech.sock
-RuntimeDirectory=suspect-interrogation
-RuntimeDirectoryMode=0750
+# No runtime directory declaration here on purpose: /run/suspect-interrogation
+# is shared with moss-worker.service, and systemd GCs the directory whenever a
+# declaring unit stops, orphaning the other service's bound socket (this
+# removed moss.sock on every redeploy). The directory is created by
+# /etc/tmpfiles.d/suspect-interrogation-moss.conf instead.
 ExecStart=/opt/suspect-interrogation/current/scripts/ai-worker-start.sh
 Restart=on-failure
 RestartSec=5s
