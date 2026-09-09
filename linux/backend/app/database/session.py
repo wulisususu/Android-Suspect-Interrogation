@@ -37,7 +37,7 @@ def make_session_factory(engine: Engine) -> sessionmaker[Session]:
 def init_database(engine: Engine) -> None:
     # Import modular tables before create_all so fresh/dev databases receive the
     # same schema that Alembic creates in deployed environments.
-    from app.database import recognition_models, voiceprint_models  # noqa: F401
+    from app.database import moss_models, recognition_models, voiceprint_models  # noqa: F401
 
     Base.metadata.create_all(engine)
 

@@ -30,11 +30,15 @@ RECOGNITION_EVIDENCE_TABLES = {
 QWEN_ROUTING_TABLES = {
     "qa_units", "qa_unit_fragments",
 }
+MOSS_TRANSCRIPTION_TABLES = {
+    "moss_transcriptions", "moss_transcription_revisions", "moss_speaker_mappings",
+}
 REQUIRED_TABLES = (
     CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES | OFFICER_LIBRARY_TABLES |
-    CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES | QWEN_ROUTING_TABLES
+    CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES | QWEN_ROUTING_TABLES |
+    MOSS_TRANSCRIPTION_TABLES
 )
-ALEMBIC_HEAD = "0012_mark_xvector_voiceprints_for_reenrollment"
+ALEMBIC_HEAD = "0013_moss_transcription_integration"
 
 
 def _run_alembic(tmp_path, target: str):
@@ -144,6 +148,17 @@ def test_alembic_upgrade_head_builds_required_schema(tmp_path):
         assert "speaker_backend_key" in snapshot_columns
         formal_columns = {item["name"] for item in inspector.get_columns("case_questions")}
         assert {"section_type", "template_key", "template_item_key", "locked", "formal_answer_text", "first_asked_at"} <= formal_columns
+        moss_columns = {item["name"] for item in inspector.get_columns("moss_transcriptions")}
+        assert {
+            "case_id", "audio_path", "audio_sha256", "job_id",
+            "model_manifest_sha256", "state", "error", "windows_json",
+        } <= moss_columns
+        moss_revision_columns = {item["name"] for item in inspector.get_columns("moss_transcription_revisions")}
+        assert {
+            "transcription_id", "revision_no", "segments_json", "provenance_json", "mapping_snapshot_json",
+        } <= moss_revision_columns
+        moss_mapping_columns = {item["name"] for item in inspector.get_columns("moss_speaker_mappings")}
+        assert {"case_id", "global_speaker", "role"} <= moss_mapping_columns
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
         assert revision == ALEMBIC_HEAD
