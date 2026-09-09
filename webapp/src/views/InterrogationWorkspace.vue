@@ -9,6 +9,7 @@ import {
 import AiSettingsPanel from '../components/AiSettingsPanel.vue'
 import CaseOverviewPage from '../components/CaseOverviewPage.vue'
 import CaseProfilePage from '../components/CaseProfilePage.vue'
+import MossTranscriptionPanel from '../components/MossTranscriptionPanel.vue'
 import SessionControls from '../components/SessionControls.vue'
 import TemplateDrivenInterrogationPage from '../components/TemplateDrivenInterrogationPage.vue'
 import { voiceprintStartGuard } from '../components/VoiceprintPreparationPanel.vue'
@@ -24,7 +25,7 @@ import type {
   RoundReassociateInput,
 } from '../types/templateInterrogation'
 
-type WorkspacePage = 'profile' | 'overview' | 'interrogation'
+type WorkspacePage = 'profile' | 'overview' | 'interrogation' | 'moss'
 
 const props = defineProps<{ caseId: string }>()
 defineEmits<{ back: [] }>()
@@ -237,6 +238,9 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
         <button :class="{ active: activePage === 'interrogation' }" @click="openInterrogation">
           <b>C</b><span>审讯记录</span>
         </button>
+        <button :class="{ active: activePage === 'moss' }" @click="activePage = 'moss'">
+          <b>D</b><span>MOSS 转写</span>
+        </button>
         <SessionControls
           :session="store.session"
           :start-disabled="voiceprintGuard.disabled || questionDictationActive || questionDictationBusy"
@@ -257,6 +261,8 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
         <CaseProfilePage v-if="activePage === 'profile'" :summary="store.caseSummary" :facts="store.facts" @saved="refreshCaseWorkspace" />
 
         <CaseOverviewPage v-else-if="activePage === 'overview'" :timeline="store.timeline" :facts="store.facts" />
+
+        <MossTranscriptionPanel v-else-if="activePage === 'moss'" :case-id="store.caseId || props.caseId" />
 
         <div v-else class="interrogation-workspace-stack">
           <TemplateDrivenInterrogationPage
