@@ -156,3 +156,69 @@ $ python3 -m pytest tests/test_moss_protocol.py tests/test_moss_client_server.py
 - `docs/release/RK3588-EVIDENCE.md`（本文件）
 
 板上产物：`/opt/suspect-interrogation/models/moss-rk3588`（root 只读，dr-xr-xr-x）、`/etc/suspect-interrogation/moss-worker.env`（640 root:suspect-interrogation）、`/etc/systemd/system/moss-worker.service`、`/etc/tmpfiles.d/suspect-interrogation-moss.conf`、`/var/lib/suspect-interrogation/moss`（0750）、`/opt/suspect-interrogation/runtime/moss-env`。
+
+---
+
+# 755cc01 redeploy（阶段二收尾）
+
+- 日期：2026-09-09 16:08–16:40（+08:00）；部署源 HEAD=`755cc013b78f1a77aee23e7969863d09bd33bd1e`（含阶段二全部修复：requirements/SupplementaryGroups/EVIDENCE/workflows/probe）
+- 同步方式：Windows 端 `git bundle create … f831d9c..linux-adaptation`（35,919 B）→ 板端 `git fetch <bundle> linux-adaptation && git reset --hard FETCH_HEAD` → `git rev-parse HEAD` = `755cc013b78f…`，`git status` 干净，`bash -n deploy/control.sh …` 通过
+
+## 部署与 stamp
+
+```
+$ sudo -n env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+    GIT_CONFIG_VALUE_0=/home/youyeetoo/moss-build/task14-deploy \
+    SUSPECT_HEALTH_BASE_URL=https://127.0.0.1:18080 \
+    bash deploy/control.sh deploy /home/youyeetoo/moss-build/task14-deploy
+…
+/opt/suspect-interrogation/releases/20260909T081038Z-755cc013b78f
+__RC__0
+```
+
+- 新 release stamp：**`20260909T081038Z-755cc013b78f`**（后续因运行时目录 GC 修复又部署一次 → 最终 stamp **`20260909T082843Z-755cc013b78f`**，同一 HEAD）
+- **门槛 9 证据（D2 经仓库路径生效）**：新 release venv pip 清单包含 `numpy-2.2.6 / jinja2-3.1.6 / tokenizers-0.23.2`（来自提交后的 `linux/backend/requirements.txt`，非手工离线注入）
+- unit 一致性：`sudo diff /etc/systemd/system/moss-worker.service <repo>/systemd/moss-worker.service` → 无差异（含 `SupplementaryGroups=video`）；`is-active`→active；socket `660 suspect-interrogation:suspect-interrogation`
+- TCP/8000 全程 pid 恒为 `1073/3374/3375`（mqw-backend 未受影响）
+
+## submit 冒烟（D2 生效证明，全程 <1 分钟）
+
+```
+$ MossWorkerClient(socket).submit_job('/var/lib/suspect-interrogation/window12-drill.wav')
+SMOKE_SUBMITTED 310ed11855f7411899f905d02d8716ff QUEUED
+state QUEUED → state PREPARING          # 原生状态到达 = 主进程计数路径（numpy/tokenizers/jinja2）在新 venv 工作
+cancel_job → MOSS_CANCEL_REQUESTED → 终态 CANCELLED
+HEALTH_FINAL status=ok queue_depth=0 active_job=null
+```
+
+## 事故与修复：共享 RuntimeDirectory GC 使 speech.sock 变孤儿（已修复并复验）
+
+- 现象：755cc01 首次部署后 `/health/ready` 中 asr/vad/speaker 全部 ERROR（基线为 AVAILABLE）；`/run/suspect-interrogation/` 内仅剩 moss.sock
+- 根因：`moss-worker.service` 与 `ai-worker.service` **都声明 `RuntimeDirectory=suspect-interrogation`**；任一声明单元 stop 时 systemd 会 GC 共享目录——moss 每次 stop/restart 都会把 ai-worker 已绑定的 speech.sock 变成孤儿路径（客户端 ENOENT → AI supervisor 报 ERROR）。回溯确认首次部署（13:36 moss 单元重装重启）即已触发
+- 修复（工作区未提交）：`systemd/moss-worker.service` 移除 `RuntimeDirectory=*` 两行（目录由 tmpfiles fragment 保证，moss 停止不再 GC）；`tests/release/test_moss_systemd_and_deploy.py` 断言反转（`"RuntimeDirectory" not in t` 防回归）。板上安装后 `daemon-reload` + `systemd-tmpfiles --create` + 重启 moss（restart 前 daemon-reload，stop 不再 GC）
+- 语音恢复：重跑一次 `control.sh deploy`（同一 HEAD，其链内 `try-restart ai-worker` 重绑 speech.sock）→ 最终 stamp `20260909T082843Z-755cc013b78f`
+- 复验：`/run/suspect-interrogation/` 同时存在 `speech.sock`（16:30）与 `moss.sock`（16:35）；`/health/ready`：`asr AVAILABLE/AVAILABLE`、`vad AVAILABLE`、`speaker AVAILABLE`、`moss DISABLED (MOSS_ENABLED=0)`、overall `ready`
+- 影响窗口如实记录：业务语音能力（asr/vad/speaker）自 13:36 起至 16:30 恢复期间处于 ERROR
+
+## 收尾复验（最终状态）
+
+```
+$ python3 scripts/ci/probe-moss-rk3588.py --expect-manifest-sha256 b735dc2d…57fb1
+"success": true   # PROBE_EXIT=0；unit active(3199055)/enabled；socket 0660；
+                  # bundle 13/13 artifacts、policy [10,8,8]、SHA 匹配；
+                  # 双库 SHA 批准匹配；health ok/idle/manifest 匹配；
+                  # release 20260909T082843Z-755cc013b78f；TCP/8000 pid 1073/3374/3375
+$ curl /health/live  → {"status":"alive"}
+$ curl /health/ready → "status": "ready"；capabilities.moss = DISABLED（MOSS_ENABLED=0）
+$ MossWorkerClient health → status=ok, manifest_sha256=b735dc2d…, queue_depth=0, active_job=null
+```
+
+## 追加变更清单（收尾，均未提交）
+
+- `systemd/moss-worker.service`：移除 `RuntimeDirectory=*`（防共享目录 GC，注释说明）
+- `tests/release/test_moss_systemd_and_deploy.py`：RuntimeDirectory 断言反转为禁止声明
+- 本地验证：`pytest tests/release/test_moss_systemd_and_deploy.py tests/release/test_systemd_units.py` → **11 passed**（`test_speech_worker_launcher` 3 项失败经 stash 排除法确认为本机 WSL2 环境问题，与本改动无关）
+
+## 755cc01 之后的部署机制说明（门槛 9 达成路径）
+
+`AGENTS.md` 规定 `linux-adaptation` 为持续部署分支："Every push … must trigger `.github/workflows/rk3588-production-redeploy.yml`"；该 workflow 触发器为 `push: branches:[linux-adaptation]`（+`workflow_dispatch` 手动兜底），runs-on `[self-hosted, rk3588]`。门槛 9（部署 SHA=推送 SHA）由 CI 结构性保证：workflow 将 `$GITHUB_SHA` 写入 `.suspect-source-sha`，部署后断言 `test "$(cat current/.suspect-source-sha)" = "$GITHUB_SHA"`。本次手动重部署与该机制一致（同 HEAD、同 control.sh 链）；push 后应检查 workflow run 的部署摘要 `deployed_source_sha == workflow_target_sha`。

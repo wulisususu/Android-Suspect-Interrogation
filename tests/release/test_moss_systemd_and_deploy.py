@@ -41,7 +41,11 @@ OLD_POLICY = {
 def test_unit_is_local_restricted_and_not_tcp8000():
     t = UNIT.read_text(encoding="utf-8")
     assert "User=suspect-interrogation" in t and "Group=suspect-interrogation" in t
-    assert "RuntimeDirectory=suspect-interrogation" in t
+    # The MOSS unit must NOT declare RuntimeDirectory=suspect-interrogation:
+    # ai-worker.service declares the same shared directory, and systemd GCs
+    # it whenever a declaring unit stops, orphaning ai-worker's bound
+    # speech.sock. The directory is created by the tmpfiles fragment instead.
+    assert "RuntimeDirectory" not in t
     assert "Restart=on-failure" in t
     assert "8000" not in t
     assert "/opt/suspect-interrogation/models/moss-rk3588" in t

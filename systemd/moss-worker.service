@@ -19,8 +19,12 @@ Environment=MOSS_SPOOL_ROOT=/var/lib/suspect-interrogation/moss
 Environment=MOSS_MODEL_BUNDLE=/opt/suspect-interrogation/models/moss-rk3588
 Environment=MOSS_CHILD_PYTHON=/opt/suspect-interrogation/runtime/moss-env/bin/python
 Environment=MOSS_CANCEL_GRACE=10
-RuntimeDirectory=suspect-interrogation
-RuntimeDirectoryMode=0750
+# No runtime directory declaration here on purpose: the AI worker unit
+# declares the same shared /run/suspect-interrogation directory, and systemd
+# GCs it whenever a declaring unit stops, orphaning the other service's
+# bound socket until it restarts. This unit relies on
+# /etc/tmpfiles.d/suspect-interrogation-moss.conf to create the directory;
+# stopping or restarting this worker must never remove it.
 ExecStart=/opt/suspect-interrogation/current/.venv/bin/python -m moss_worker.main
 Restart=on-failure
 RestartSec=5s
