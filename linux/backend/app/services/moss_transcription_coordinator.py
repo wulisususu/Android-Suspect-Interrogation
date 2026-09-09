@@ -8,8 +8,11 @@ Task 16 (2026-09-09, user-approved). The coordinator is the only writer of the
   the file to the worker as an async job (never blocking recording or the
   realtime ASR path).
 - A background poll task owned by the app lifespan polls active jobs, writes
-  state/window snapshots back, appends an append-only transcript revision on
-  ``COMPLETED`` (with provenance and the current mapping snapshot) and settles
+  state/window snapshots back, appends append-only transcript revisions — an
+  incremental partial revision whenever the worker has published more segments
+  for its DONE windows (user requirement ⑤: 完成一个窗口就可以追加显示结果),
+  plus the authoritative final revision on ``COMPLETED`` (with provenance and
+  the current mapping snapshot) — and settles
   ``FAILED``/``CANCELLED``/``RECOVERY_REQUIRED`` rows.
 - ``resubmit`` is the explicit V1 recovery path: it is rejected while the last
   submission is active and enforces the identical ``audio_sha256`` (409 on
@@ -81,6 +84,40 @@ def _windows_payload(windows) -> list[dict]:
             "state": window.state,
             "segmentCount": int(window.segment_count or 0),
         })
+    return payload
+
+
+def _provenance_payload(windows, *, partial: bool) -> list[dict]:
+    """Per-window provenance; partial revisions mark every entry partial=True."""
+    payload = []
+    for window in windows or ():
+        entry = {
+            "windowId": window.window_id,
+            "startMs": window.start_ms,
+            "endMs": window.end_ms,
+            "state": window.state,
+            "segmentCount": int(window.segment_count or 0),
+        }
+        if partial:
+            entry["partial"] = True
+        payload.append(entry)
+    return payload
+
+
+def _published_segments(windows) -> list[dict]:
+    """Flatten the segments the worker already published for its DONE windows.
+
+    Windows arrive ordered by the worker (start_ms, window_id) and each window's
+    segments in generation order, so the concatenation is deterministic. The
+    cross-window duplicates the final merge deduplicates may appear here; the
+    COMPLETED revision remains the authoritative display set.
+    """
+    payload: list[dict] = []
+    for window in windows or ():
+        if str(window.state) != "DONE":
+            continue
+        for segment in window.segments or ():
+            payload.append(_segment_payload(segment))
     return payload
 
 
@@ -243,7 +280,7 @@ class MossTranscriptionCoordinator:
                 windows=_windows_payload(snapshot.windows),
             )
             db.commit()
-            return self._status_payload(row)
+            return self._status_payload(row, db)
 
     def status(self, case_id: str) -> dict:
         self._require_enabled()
@@ -254,9 +291,10 @@ class MossTranscriptionCoordinator:
                 raise DomainError(
                     "MOSS_TRANSCRIPTION_NOT_FOUND", "该案件还没有 MOSS 转写提交", 404
                 )
-            return self._status_payload(row)
+            return self._status_payload(row, db)
 
-    def _status_payload(self, row) -> dict:
+    def _status_payload(self, row, db) -> dict:
+        revision = moss_repo.latest_revision(db, row.id)
         return {
             "caseId": row.case_id,
             "transcriptionId": row.id,
@@ -267,6 +305,11 @@ class MossTranscriptionCoordinator:
             "audioSha256": row.audio_sha256,
             "modelManifestSha256": row.model_manifest_sha256,
             "windows": json.loads(row.windows_json or "[]"),
+            # Task 16 (additive): monotonically increasing transcript revision
+            # number; None until the first revision exists. A larger value than
+            # the previously observed one means fresh text is available from
+            # GET .../moss-transcription/transcript.
+            "revisionNo": None if revision is None else int(revision.revision_no),
             "createdAt": row.created_at.isoformat() if row.created_at is not None else None,
             "updatedAt": row.updated_at.isoformat() if row.updated_at is not None else None,
         }
@@ -306,6 +349,11 @@ class MossTranscriptionCoordinator:
             # Raises (typed AIError) on worker/storage inconsistency; the row
             # stays untouched and is retried on the next tick.
             result = self.transcription_service.get_result(job_id)
+        # Task 16 incremental display (⑤: 完成一个窗口就可以追加显示结果):
+        # while the job can still progress, collect what the worker already
+        # published for its DONE windows so the poller can append a partial
+        # revision when the published set grows.
+        partial_segments = _published_segments(snapshot.windows) if state in ACTIVE_POLL_STATES else []
         with self.session_factory() as db:
             row = db.get(moss_repo.MossTranscription, transcription_id)
             if row is None or row.state in SETTLED_STATES:
@@ -329,20 +377,46 @@ class MossTranscriptionCoordinator:
                     audio_sha256=result.audio_sha256,
                     model_manifest_sha256=result.model_manifest_sha256,
                     segments=[_segment_payload(segment) for segment in result.segments],
-                    provenance=[
-                        {
-                            "windowId": window.window_id,
-                            "startMs": window.start_ms,
-                            "endMs": window.end_ms,
-                            "state": window.state,
-                            "segmentCount": int(window.segment_count or 0),
-                        }
-                        for window in snapshot.windows
-                    ],
+                    provenance=_provenance_payload(snapshot.windows, partial=False),
                     mapping_snapshot=mapping,
                 )
+            else:
+                self._append_partial_revision_if_grown(db, row, job_id, snapshot, partial_segments)
             db.commit()
             return True
+
+    def _append_partial_revision_if_grown(self, db, row, job_id, snapshot, partial_segments: list[dict]) -> None:
+        """Append an incremental transcript revision when more text arrived.
+
+        Trigger: the total number of published DONE-window segments exceeds the
+        segment count of the latest persisted revision. Append-only: a new
+        ``revision_no`` (max+1) row is written; existing revisions are never
+        rewritten. The final COMPLETED revision is still appended afterwards —
+        even with an unchanged segment count — so the authoritative merged
+        segment set and non-partial provenance carry the terminal semantics.
+        """
+        if not partial_segments:
+            return
+        latest = moss_repo.latest_revision(db, row.id)
+        known = 0
+        if latest is not None:
+            known = len(json.loads(latest.segments_json or "[]"))
+        if len(partial_segments) <= known:
+            return
+        mapping = {
+            item.global_speaker: item.role
+            for item in moss_repo.list_mappings(db, row.case_id)
+        }
+        moss_repo.append_revision(
+            db,
+            transcription=row,
+            job_id=job_id,
+            audio_sha256=str(snapshot.audio_sha256 or row.audio_sha256),
+            model_manifest_sha256=str(snapshot.model_manifest_sha256 or row.model_manifest_sha256 or ""),
+            segments=partial_segments,
+            provenance=_provenance_payload(snapshot.windows, partial=True),
+            mapping_snapshot=mapping,
+        )
 
     # ------------------------------------------------------------------
     # Speaker mapping (display-only; GSxx stays anonymous)

@@ -271,6 +271,73 @@ def test_get_job_dispatch_includes_job_and_window_evidence():
     assert result["windows"][0]["error"] == "GENERATION_LIMIT_REACHED"
 
 
+def test_get_job_windows_publish_segments_only_for_done_windows():
+    # Task 16 incremental transcript (additive): a DONE window additionally
+    # carries "segments" serialized exactly like the get_result payload; a
+    # non-DONE window must not carry the key at all.
+    from test_moss_types import segment
+
+    done = WindowResult(
+        "w0001",
+        WindowSpec(0, 720000, 0, 12),
+        WindowState.DONE,
+        "audio-sha",
+        "manifest",
+        "[0.0][S01]你好",
+        (
+            segment(segment_id="w0001-s1", window_id="w0001"),
+            segment(segment_id="w0001-s2", window_id="w0001", start_ms=12000, end_ms=30000, text="继续说"),
+        ),
+        ParseStatus.VALID,
+        None,
+        128,
+        True,
+    )
+    running = WindowResult(
+        "w0002",
+        WindowSpec(600000, 1320000, 1, 12),
+        WindowState.RUNNING,
+        "audio-sha",
+        "manifest",
+        "raw",
+        (),
+        ParseStatus.INVALID,
+        None,
+        None,
+        None,
+    )
+    supervisor = FakeSupervisor(job=_snapshot(state=JobState.DECODING), spool=FakeSpool([done, running]))
+
+    payload = _server(supervisor)._dispatch({"op": "get_job", "job_id": "job-1"})
+
+    windows = payload["windows"]
+    assert [w["state"] for w in windows] == ["DONE", "RUNNING"]
+    expected_segments = JobResult("job-1", "audio-sha", "manifest", done.segments).to_dict()["segments"]
+    assert windows[0]["segments"] == expected_segments
+    assert windows[0]["segment_count"] == 2
+    assert "segments" not in windows[1]
+
+
+def test_get_result_windows_also_carry_done_window_segments():
+    from test_moss_types import segment
+
+    done = WindowResult(
+        "w0001", WindowSpec(0, 720000, 0, 12), WindowState.DONE,
+        "audio-sha", "manifest", "[0.0][S01]你好",
+        (segment(segment_id="w0001-s1", window_id="w0001"),),
+        ParseStatus.VALID, None, 64, True,
+    )
+    supervisor = FakeSupervisor(
+        job=_snapshot(state=JobState.COMPLETED),
+        result=JobResult("job-1", "audio-sha", "manifest", done.segments),
+        spool=FakeSpool([done]),
+    )
+
+    payload = _server(supervisor)._dispatch({"op": "get_result", "job_id": "job-1"})
+
+    assert payload["result"]["segments"] == payload["windows"][0]["segments"]
+
+
 def test_get_result_dispatch_returns_none_for_unfinished_job():
     supervisor = FakeSupervisor(job=_snapshot(state=JobState.DECODING))
 
@@ -559,6 +626,96 @@ def test_client_parses_snapshot_with_window_evidence():
     assert snapshot.windows[0].error == "GENERATION_LIMIT_REACHED"
     assert snapshot.windows[0].token_count == 5120
     assert snapshot.windows[0].normal_termination is False
+
+
+def test_client_parses_done_window_segments_into_typed_snapshot():
+    payload = {
+        "job_id": "job-1",
+        "state": "DECODING",
+        "audio_sha256": "a",
+        "model_manifest_sha256": "m",
+        "progress": 0.5,
+        "error": None,
+        "windows": [
+            {
+                "window_id": "w0001",
+                "start_ms": 0,
+                "end_ms": 720000,
+                "window_minutes": 12,
+                "state": "DONE",
+                "parse_status": "VALID",
+                "error": None,
+                "token_count": 128,
+                "normal_termination": True,
+                "segment_count": 1,
+                "segments": [
+                    {
+                        "segment_id": "w0001-s1",
+                        "window_id": "w0001",
+                        "start_ms": 0,
+                        "end_ms": 12000,
+                        "local_speaker": "S01",
+                        "global_speaker": "GS01",
+                        "text": "你好",
+                        "speaker_mapping_confidence": 0.91,
+                        "parse_status": "VALID",
+                        "merge_status": "PRIMARY",
+                        "alternate": None,
+                        "model_manifest_sha256": "m",
+                        "repair_reason": None,
+                        "repair_original_end_ms": None,
+                    }
+                ],
+            }
+        ],
+    }
+
+    snapshot = _client()._snapshot(payload)
+
+    window = snapshot.windows[0]
+    assert isinstance(window.segments, tuple) and len(window.segments) == 1
+    parsed = window.segments[0]
+    assert type(parsed).__name__ == "MossTranscriptSegment"
+    assert parsed.segment_id == "w0001-s1"
+    assert parsed.window_id == "w0001"
+    assert (parsed.start_ms, parsed.end_ms) == (0, 12000)
+    assert parsed.local_speaker == "S01"
+    assert parsed.global_speaker == "GS01"
+    assert parsed.text == "你好"
+    assert parsed.speaker_mapping_confidence == 0.91
+    assert parsed.parse_status == "VALID"
+    assert parsed.merge_status == "PRIMARY"
+    assert parsed.model_manifest_sha256 == "m"
+
+
+def test_client_snapshot_windows_without_segments_key_default_empty():
+    # Older worker builds (and non-DONE windows) omit "segments": parse
+    # tolerance requires an empty tuple instead of a failure.
+    payload = {
+        "job_id": "job-1",
+        "state": "FAILED",
+        "audio_sha256": "a",
+        "model_manifest_sha256": "m",
+        "progress": 1.0,
+        "error": "GENERATION_LIMIT_REACHED",
+        "windows": [
+            {
+                "window_id": "w1",
+                "start_ms": 600000,
+                "end_ms": 1320000,
+                "window_minutes": 10,
+                "state": "FAILED",
+                "parse_status": "INVALID",
+                "error": "GENERATION_LIMIT_REACHED",
+                "token_count": 5120,
+                "normal_termination": False,
+            }
+        ],
+    }
+
+    snapshot = _client()._snapshot(payload)
+
+    assert snapshot.windows[0].segments == ()
 
 
 def test_client_rejects_malformed_snapshot():

@@ -10,7 +10,7 @@ import json
 from dataclasses import replace
 
 from moss_worker.storage import MossSpool
-from moss_worker.types import JobState, ParseStatus, WindowResult, WindowState
+from moss_worker.types import JobResult, JobState, ParseStatus, WindowResult, WindowState
 from moss_worker.windowing import WindowSpec
 
 from test_moss_supervisor import ScriptedChild, audio, make_supervisor, supervisor_module
@@ -153,4 +153,25 @@ def test_window_status_segment_count_is_zero_for_failed_attempts(tmp_path):
         supervisor.get_job(job.job_id)
     )
     assert payload["windows"][0]["segment_count"] == 0
+    assert "segments" not in payload["windows"][0]
+    supervisor.close()
+
+
+def test_done_window_payload_segments_match_get_result_serialization(tmp_path):
+    # Task 16: the per-window "segments" list must be field-for-field the same
+    # serialization a get_result payload carries (NormalizedSegment.to_dict
+    # via JobResult.to_dict) so clients parse both with one code path.
+    supervisor = make_supervisor(tmp_path, ScriptedChild())
+    job = supervisor.submit(audio(tmp_path, 1))
+    window_result = done_window(supervisor, job)
+    supervisor.spool.save_window_result(job.job_id, window_result)
+
+    from moss_worker.main import MossWorkerServer
+    payload = MossWorkerServer(tmp_path / "moss.sock", supervisor)._job_payload(
+        supervisor.get_job(job.job_id)
+    )
+    expected = JobResult(
+        job.job_id, job.audio_sha256, job.model_manifest_sha256, window_result.segments
+    ).to_dict()["segments"]
+    assert payload["windows"][0]["segments"] == expected
     supervisor.close()

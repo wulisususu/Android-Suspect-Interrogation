@@ -33,11 +33,20 @@ def _snapshot(job_id: str, state: str, *, error: str | None = None, windows=(), 
     )
 
 
-def _window(window_id: str, state: str, segment_count: int) -> MossWindowStatus:
+def _window(window_id: str, state: str, segment_count: int, *, start_ms: int = 0, end_ms: int = 60_000) -> MossWindowStatus:
     return MossWindowStatus(
-        window_id=window_id, start_ms=0, end_ms=60_000, window_minutes=10,
+        window_id=window_id, start_ms=start_ms, end_ms=end_ms, window_minutes=10,
         state=state, parse_status=None, error=None, token_count=None,
         normal_termination=None, segment_count=segment_count,
+    )
+
+
+def _window_with_segments(window_id: str, *segments: MossTranscriptSegment, start_ms: int = 0, end_ms: int = 60_000) -> MossWindowStatus:
+    """DONE window carrying the worker-published segments (Task 16 additive)."""
+    return MossWindowStatus(
+        window_id=window_id, start_ms=start_ms, end_ms=end_ms, window_minutes=10,
+        state="DONE", parse_status="VALID", error=None, token_count=None,
+        normal_termination=True, segment_count=len(segments), segments=tuple(segments),
     )
 
 
@@ -216,9 +225,180 @@ def test_poll_updates_running_state_and_windows_snapshot(tmp_path):
     assert polled == 1
     status = coordinator.status("CASE-MOSS")
     assert status["state"] == "DECODING"
+    # Task 16 (additive): no revision exists yet, so the status payload pins
+    # revisionNo as None for frontends polling for fresh transcript text.
+    assert status["revisionNo"] is None
     assert status["windows"] == [
         {"windowId": "w0001", "state": "RUNNING", "segmentCount": 0, "startMs": 0, "endMs": 60_000}
     ]
+    engine.dispose()
+
+
+def test_poll_in_flight_done_window_appends_partial_revision(tmp_path):
+    engine, factory = _factory(tmp_path)
+    _seed_case(factory)
+    fake = FakeTranscriptionService()
+    coordinator = _coordinator(factory, fake)
+    _wav, job_id = _submitted(tmp_path, fake, coordinator)
+    coordinator.put_mapping("CASE-MOSS", [{"globalSpeaker": "GS01", "role": "民警"}])
+    fake.snapshots[job_id] = _snapshot(
+        job_id, "PARSING", audio_sha256=fake.last_sha,
+        windows=(
+            _window("w0001", "RUNNING", 0),
+            _window_with_segments(
+                "w0002", _segment(segment_id="w0002-s1", window_id="w0002", start_ms=60_000, end_ms=72_000),
+                start_ms=60_000, end_ms=120_000,
+            ),
+        ),
+    )
+
+    assert coordinator.poll_once() == 1
+
+    status = coordinator.status("CASE-MOSS")
+    assert status["state"] == "PARSING"
+    assert status["revisionNo"] == 1
+    with factory() as db:
+        row = moss_repo.get_latest(db, "CASE-MOSS")
+        revisions = list(row.revisions)
+        assert [r.revision_no for r in revisions] == [1]
+        assert revisions[0].job_id == job_id
+        assert revisions[0].audio_sha256 == row.audio_sha256
+        assert revisions[0].model_manifest_sha256 == "manifest"
+        segments = json.loads(revisions[0].segments_json)
+        assert len(segments) == 1
+        assert segments[0]["segmentId"] == "w0002-s1"
+        assert segments[0]["windowId"] == "w0002"
+        assert segments[0]["startMs"] == 60_000
+        assert segments[0]["gs"] == "GS01"
+        assert segments[0]["text"] == "你好"
+        provenance = json.loads(revisions[0].provenance_json)
+        assert provenance == [
+            {"windowId": "w0001", "startMs": 0, "endMs": 60_000, "state": "RUNNING", "segmentCount": 0, "partial": True},
+            {"windowId": "w0002", "startMs": 60_000, "endMs": 120_000, "state": "DONE", "segmentCount": 1, "partial": True},
+        ]
+        assert json.loads(revisions[0].mapping_snapshot_json) == {"GS01": "民警"}
+    engine.dispose()
+
+
+def test_poll_growing_done_windows_append_revisions_until_completed_final(tmp_path):
+    engine, factory = _factory(tmp_path)
+    _seed_case(factory)
+    fake = FakeTranscriptionService()
+    coordinator = _coordinator(factory, fake)
+    _wav, job_id = _submitted(tmp_path, fake, coordinator)
+    fake.snapshots[job_id] = _snapshot(
+        job_id, "PARSING",
+        windows=(
+            _window("w0001", "RUNNING", 0),
+            _window_with_segments(
+                "w0002", _segment(segment_id="w0002-s1", window_id="w0002", start_ms=60_000, end_ms=72_000),
+                start_ms=60_000, end_ms=120_000,
+            ),
+        ),
+    )
+    assert coordinator.poll_once() == 1
+
+    # More windows complete: the published set grows 1 -> 3, so a second
+    # incremental revision (revision_no=2) is appended.
+    fake.snapshots[job_id] = _snapshot(
+        job_id, "DECODING",
+        windows=(
+            _window_with_segments(
+                "w0001", _segment(), _segment(segment_id="s2", text="继续说", start_ms=12_000, end_ms=30_000),
+            ),
+            _window_with_segments(
+                "w0002", _segment(segment_id="w0002-s1", window_id="w0002", start_ms=60_000, end_ms=72_000),
+                start_ms=60_000, end_ms=120_000,
+            ),
+        ),
+    )
+    assert coordinator.poll_once() == 1
+    status = coordinator.status("CASE-MOSS")
+    assert status["revisionNo"] == 2
+
+    # COMPLETED: the authoritative merged result replaces the display set with
+    # a final revision even though its segment count equals the last partial
+    # one (append-only allows same-count rewrite semantics via a new revision;
+    # the final provenance is not marked partial).
+    fake.snapshots[job_id] = _snapshot(
+        job_id, "COMPLETED",
+        windows=(
+            _window("w0001", "DONE", 2),
+            _window("w0002", "DONE", 1, start_ms=60_000, end_ms=120_000),
+        ),
+    )
+    fake.results[job_id] = _result(job_id, [
+        _segment(segment_id="m1"),
+        _segment(segment_id="m2", text="继续说", start_ms=12_000, end_ms=30_000),
+        _segment(segment_id="m3", window_id="w0002", start_ms=60_000, end_ms=72_000),
+    ])
+    assert coordinator.poll_once() == 1
+
+    status = coordinator.status("CASE-MOSS")
+    assert status["state"] == "COMPLETED"
+    assert status["revisionNo"] == 3
+    with factory() as db:
+        row = moss_repo.get_latest(db, "CASE-MOSS")
+        revisions = list(row.revisions)
+        assert [r.revision_no for r in revisions] == [1, 2, 3]
+        assert [len(json.loads(r.segments_json)) for r in revisions] == [1, 3, 3]
+        final_segments = json.loads(revisions[2].segments_json)
+        assert [s["segmentId"] for s in final_segments] == ["m1", "m2", "m3"]
+        final_provenance = json.loads(revisions[2].provenance_json)
+        assert final_provenance == [
+            {"windowId": "w0001", "startMs": 0, "endMs": 60_000, "state": "DONE", "segmentCount": 2},
+            {"windowId": "w0002", "startMs": 60_000, "endMs": 120_000, "state": "DONE", "segmentCount": 1},
+        ]
+        partial_provenance = json.loads(revisions[1].provenance_json)
+        assert all(entry["partial"] is True for entry in partial_provenance)
+    transcript = coordinator.transcript("CASE-MOSS")
+    assert transcript["revisionNo"] == 3
+    assert [s["segmentId"] for s in transcript["segments"]] == ["m1", "m2", "m3"]
+    engine.dispose()
+
+
+def test_poll_skips_partial_revision_when_published_segment_count_unchanged(tmp_path):
+    engine, factory = _factory(tmp_path)
+    _seed_case(factory)
+    fake = FakeTranscriptionService()
+    coordinator = _coordinator(factory, fake)
+    _wav, job_id = _submitted(tmp_path, fake, coordinator)
+    windows = (
+        _window_with_segments("w0001", _segment()),
+    )
+    fake.snapshots[job_id] = _snapshot(job_id, "PARSING", windows=windows)
+    assert coordinator.poll_once() == 1
+
+    fake.snapshots[job_id] = _snapshot(job_id, "REMAPPING", windows=windows)
+    assert coordinator.poll_once() == 1
+
+    with factory() as db:
+        row = moss_repo.get_latest(db, "CASE-MOSS")
+        assert [r.revision_no for r in row.revisions] == [1]
+    assert coordinator.status("CASE-MOSS")["revisionNo"] == 1
+    engine.dispose()
+
+
+def test_poll_terminal_failure_ignores_partial_segments_and_writes_no_revision(tmp_path):
+    # DONE-window segments must only become revisions while the job can still
+    # progress (or at COMPLETED); a terminal failure settles with no transcript.
+    engine, factory = _factory(tmp_path)
+    _seed_case(factory)
+    fake = FakeTranscriptionService()
+    coordinator = _coordinator(factory, fake)
+    _wav, job_id = _submitted(tmp_path, fake, coordinator)
+    fake.snapshots[job_id] = _snapshot(
+        job_id, "FAILED", error="MOSS_WINDOW_FAILED",
+        windows=(_window_with_segments("w0001", _segment()),),
+    )
+
+    assert coordinator.poll_once() == 1
+
+    assert coordinator.status("CASE-MOSS")["revisionNo"] is None
+    with factory() as db:
+        row = moss_repo.get_latest(db, "CASE-MOSS")
+        assert row.state == "FAILED"
+        assert row.revisions == []
     engine.dispose()
 
 

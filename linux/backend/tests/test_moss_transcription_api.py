@@ -122,6 +122,7 @@ def test_submit_status_transcript_and_mapping_contract(tmp_path):
         assert status.status_code == 200
         assert status.json()["data"]["state"] == "QUEUED"
         assert status.json()["data"]["windows"] == []
+        assert status.json()["data"]["revisionNo"] is None
 
         mapping = client.put(
             "/api/v1/cases/CASE-MOSS/moss-speaker-mapping",
@@ -169,6 +170,10 @@ def test_submit_status_transcript_and_mapping_contract(tmp_path):
         assert status.json()["data"]["windows"] == [
             {"windowId": "w0001", "state": "DONE", "segmentCount": 1, "startMs": 0, "endMs": 60_000}
         ]
+        # Task 16 (additive): the status payload exposes the latest transcript
+        # revision so frontends can poll cheaply and refetch the transcript
+        # only when the number grows.
+        assert status.json()["data"]["revisionNo"] == 1
     engine.dispose()
 
 

@@ -81,9 +81,21 @@ class MossWindowStatus:
     # Task 16 (additive): worker publishes the per-window published segment
     # count; None when an older worker build omits it.
     segment_count: int | None = None
+    # Task 16 (additive): DONE windows additionally carry their published
+    # segments in the worker's get_result serialization; () when an older
+    # worker build (or a non-DONE window) omits the key.
+    segments: tuple["MossTranscriptSegment", ...] = ()
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "MossWindowStatus":
+        # Missing key (older worker build / non-DONE window) or explicit null
+        # tolerates to an empty tuple; anything else non-list is a contract
+        # violation.
+        segments = payload.get("segments")
+        if segments is None:
+            segments = ()
+        elif not isinstance(segments, list):
+            raise ValueError("segments must be a JSON array")
         return cls(
             window_id=str(payload["window_id"]),
             start_ms=int(payload["start_ms"]),
@@ -95,6 +107,7 @@ class MossWindowStatus:
             token_count=_optional_int(payload.get("token_count")),
             normal_termination=_optional_bool(payload.get("normal_termination")),
             segment_count=_optional_int(payload.get("segment_count")),
+            segments=tuple(MossTranscriptSegment.from_dict(item) for item in segments),
         )
 
 

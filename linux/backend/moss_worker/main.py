@@ -19,6 +19,7 @@ from app.ai.errors import AIError, ResourceBusyError
 from .protocol import ProtocolError, recv_frame, send_frame
 from .storage import MossSpool
 from .supervisor import MossSupervisor
+from .types import WindowState
 
 
 DEFAULT_SOCKET_PATH = Path("/run/suspect-interrogation/moss.sock")
@@ -242,7 +243,7 @@ class MossWorkerServer:
     def _window_statuses(self, job_id: str) -> list[dict[str, Any]]:
         statuses = []
         for result in self.supervisor.spool.load_window_results(job_id):
-            statuses.append({
+            status = {
                 "window_id": result.window_id,
                 "start_ms": result.window.start_ms,
                 "end_ms": result.window.end_ms,
@@ -256,7 +257,16 @@ class MossWorkerServer:
                 # layer render per-window incremental transcript progress
                 # without fetching full segment payloads per poll.
                 "segment_count": len(result.segments),
-            })
+            }
+            # Task 16 incremental transcript (additive, backward compatible):
+            # DONE windows additionally publish their already-produced segments
+            # serialized exactly like the get_result payload (the very same
+            # NormalizedSegment.to_dict that JobResult.to_dict uses), so the
+            # business layer can append visible text while the job is still
+            # running. Non-DONE windows keep the key absent.
+            if result.state is WindowState.DONE:
+                status["segments"] = [segment.to_dict() for segment in result.segments]
+            statuses.append(status)
         return statuses
 
     @staticmethod
