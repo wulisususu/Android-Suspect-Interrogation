@@ -202,6 +202,13 @@ jobs:
           if systemctl is-enabled --quiet moss-worker.service 2>/dev/null; then
             sudo -n systemctl restart moss-worker.service
             systemctl is-active moss-worker.service
+            # The worker binds the socket shortly after systemd reports the
+            # unit active (and a deploy concurrently restarts ai-worker whose
+            # stop can take a while) -- poll instead of racing the bind.
+            for _ in $(seq 1 60); do
+              sudo -n test -S /run/suspect-interrogation/moss.sock && break
+              sleep 1
+            done
             sudo -n test -S /run/suspect-interrogation/moss.sock
             echo 'moss_worker=restarted_after_atomic_switch'
           else
@@ -268,7 +275,7 @@ jobs:
           grep -q "base.protocol === 'https:' ? 'wss:' : 'ws:'" /opt/suspect-interrogation/current/webapp/src/audio/browserVoiceprintCapture.ts
 
           sudo -n bash -c 'set -a; source /etc/suspect-interrogation/runtime.env; set +a; cd /opt/suspect-interrogation/current/linux/backend; PYTHONPATH=/opt/suspect-interrogation/current/linux/backend /opt/suspect-interrogation/current/.venv/bin/python -m alembic -c alembic.ini current' | tee /tmp/suspect-alembic-current.txt
-          grep -q '0012_mark_xvector_voiceprints_for_reenrollment (head)' /tmp/suspect-alembic-current.txt
+          grep -q '0013_moss_transcription_integration (head)' /tmp/suspect-alembic-current.txt
 
           sudo -n -u suspect-interrogation env \
             PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \
@@ -336,8 +343,11 @@ jobs:
           set -euo pipefail
           if systemctl is-active --quiet moss-worker.service; then
             python3 -m py_compile scripts/ci/probe-moss-rk3588.py
+            # sudo strips the runner environment, so pass the probe's explicit
+            # output guard instead of relying on GITHUB_WORKSPACE/RUNNER_TEMP.
             sudo -n python3 scripts/ci/probe-moss-rk3588.py \
-              --output "$RUNNER_TEMP/moss-worker-probe.json"
+              --output "$RUNNER_TEMP/moss-worker-probe.json" \
+              --allow-any-output
           else
             echo 'moss_worker=not_active (probe skipped; capability stays DISABLED in the app)'
           fi

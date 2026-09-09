@@ -326,8 +326,11 @@ jobs:
           # permissions, AF_UNIX health op, TCP/8000 listener. Never submits
           # audio and never downloads anything.
           if systemctl is-active --quiet moss-worker.service; then
+            # sudo strips the runner environment, so pass the probe's explicit
+            # output guard instead of relying on GITHUB_WORKSPACE/RUNNER_TEMP.
             sudo -n python3 scripts/ci/probe-moss-rk3588.py \
-              --output "$RUNNER_TEMP/moss-worker-probe.json"
+              --output "$RUNNER_TEMP/moss-worker-probe.json" \
+              --allow-any-output
           else
             echo 'moss_worker=not_active (read-only probe skipped; no MOSS mutation performed)'
             sudo -n ss -ltnp 'sport = :8000' || true
