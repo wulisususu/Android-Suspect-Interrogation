@@ -1,105 +1,158 @@
-# RK3588 CI Evidence
+# RK3588 MOSS 部署证据（Task 14 阶段二）
 
-This file is updated only from actual GitHub Actions evidence; it must not claim a successful hardware run from static review alone.
+- 执行日期：2026-09-09（+08:00），目标板 RK3588-32G（Ubuntu 22.04.5，kernel 6.1.75，hostname `RK3588-32G`）
+- 仓库 HEAD：`f831d9c3d8c3444c3690bfa8ca1829afa52497be`（linux-adaptation），板端工作树 `git reset --hard` 后与 HEAD 一致、0 dirty
+- 执行通道：`ssh -p 600 youyeetoo@124.223.176.99`；全程只读触碰现网服务（仅 `systemctl is-active`/`show`/`ss`/`journalctl`）
+- 红线遵守：未启用 `MOSS_ENABLED`；未触碰 FunASR/TCP:8000/mqw-backend/interrogation-api/ai-worker；未删除或修改 bundle-v2；无 push、无 commit
 
-## Validated workflow
+## 结果总览
 
-- PR: `#15` (`linux-release-hardening` -> `linux-adaptation`)
-- workflow: `Linux CI`
-- workflow run ID: `32950118034`
-- head commit under test: `7d6b5d1f610ea736bb94693de197ce4771225bf4`
-- PR merge SHA checked out by Actions: `e34657d914be8cf8998490704f1e5cff529c534b`
-- hosted job ID: `98119415395` — **success**
-- RK3588 job ID: `98119624222` — **success**
+| 项 | 旧（bundle-v2，在役） | 新（bundle-v3，本次部署） |
+| --- | --- | --- |
+| manifest SHA-256 | `a50ce60b04e3715a4ce9d05381336fd95072f359c7883115e946d55321657e69` | `b735dc2daa1d6313c4524fd04e1fa4597a3f08074e7b8bd097be890973b57fb1` |
+| 窗口策略 | 12/10/8（未批准） | **10/8/8（已批准）** |
+| `validate_bundle` | fail（"Unapproved context/window policy; compiled context must be 16384"） | **pass**（`{"valid": true, "errors": []}`） |
 
-The hosted gate completed backend import, Python tests, DB/backup compatibility, API contracts, hardware mock, AI mock, Vue tests, Vue typecheck, Vue production build, shell syntax/contract checks, and release/E2E/reliability tests before the RK3588 job was allowed to run.
+等值校验（v3 vs v2）：`checkpoint_fingerprint` 相等、`provenance` 相等、`artifacts` 全部相等、`checkpoint_config_sha256` 相等；差异仅为批准策略与派生字段。upstream source commit `61bc29cd4120be7b5d3b761b64cd5dff57263642`，`dirty: false`。
 
-## Runner identity
+## 生产门 1：模型包合法性（旧包必须失败、新包必须通过）
 
-Actual runner log values:
+```
+$ python3 -m tools.moss_rk3588.validate_bundle /home/youyeetoo/moss-build/bundle-v2
+{"valid": false, "errors": ["Unapproved context/window policy; compiled context must be 16384"]}
+$ python3 -m tools.moss_rk3588.validate_bundle /opt/suspect-interrogation/models/moss-rk3588
+{"valid": true, "errors": []}          # 即 bundle-v3 安装位
+```
 
-- runner name: `rk3588-android-suspect`
-- runner group: `Default`
-- machine/hostname: `RK3588-32G`
-- runner OS: `Linux`
-- runner architecture: `ARM64`
-- `uname` architecture: `aarch64`
-- kernel: `Linux RK3588-32G 6.1.75 ... aarch64 GNU/Linux`
-- Git: `2.34.1`
-- Python: `3.10.12`
-- Node: `v22.22.2`
+重建命令（离线可复现）：
 
-## Checkout evidence
+```
+python3 -m tools.moss_rk3588.build_manifest \
+  --assets /home/youyeetoo/moss-build/assets-v2-raw \
+  --source /home/youyeetoo/moss-build/source/MOSS-Transcribe-Diarize-upstream \
+  --checkpoint /home/youyeetoo/moss-build/source/MOSS-Transcribe-Diarize \
+  --provenance /home/youyeetoo/moss-build/provenance.json \
+  --output /home/youyeetoo/moss-build/bundle-v3
+rebuilt bundle is valid; manifest sha256: b735dc2d…57fb1
+```
 
-The RK3588 job used:
+说明（偏差 D1）：README §1 建议 `--assets bundle-v2`，但 bundle 内 `tokenizer_config.json` 是预处理产物（含 chat_template，sha `33622992…`），构建器要求 assets 中为 checkpoint 原始文件（sha `61d04c96…`，与 `token_embedding.json.tokenizer_source_files` 一致）。故以 bundle-v2 硬链接 + 原始 `tokenizer_config.json` 组装 `assets-v2-raw` staging（bundle-v2 未改动，构建器只读）。
 
-- partial clone: `--filter=blob:none`;
-- sparse checkout: `.github linux webapp deploy scripts systemd tests docs`;
-- maximum five fetch attempts;
-- 120 second timeout per fetch attempt;
-- `http.version HTTP/1.1`;
-- `http.lowSpeedLimit 1024`;
-- `http.lowSpeedTime 15`;
-- exact `GITHUB_SHA` verification after checkout.
+## 生产门 2：NPU 运行时与库指纹
 
-Actual result:
+- 子环境 venv：`/opt/suspect-interrogation/runtime/moss-env`（python 3.10.12；numpy 1.26.4、jinja2 3.1.6、tokenizers 0.23.2、rknn-toolkit-lite2 2.3.2 全部离线 wheel 安装；目录已 `go-w` 加固）
+- 原生库（root:root 0644，SHA 与 `moss_worker/runtime.py` 批准值逐字节一致）：
+  - `librknnrt.so` = `d31fc19c85b85f6091b2bd0f6af9d962d5264a4e410bfb536402ec92bac738e8`
+  - `librkllmrt.so` = `6a9e4fc5324c68921c3a900340361e107af7599fe34dc8fa7759b2c5ae22a6e6`
+- 板端实测：RKNNLite init rc=0，`librknnrt version: 2.3.2 (429f97ae6b@2025-04-09)`, `RKNN Driver Information, version: 0.9.8`，模型 `target platform: rk3588, static_shape`
+- 12 分钟真机作业证据：RKNN 编码 → RKLLM 双窗口解码全部成功（预填充 7926 tokens/119.5s，生成 3633 tokens/3174s，峰值内存 4331 MB）
 
-- `fetch attempt 1/5` succeeded;
-- fetched SHA: `e34657d914be8cf8998490704f1e5cff529c534b`;
-- detached checkout landed on that exact PR merge SHA;
-- no retry beyond attempt 1 was required.
+## 生产门 3：systemd 单元
 
-## Runtime smoke evidence
+```
+$ sudo systemctl daemon-reload && sudo systemctl enable --now moss-worker.service
+Created symlink /etc/systemd/system/multi-user.target.wants/moss-worker.service → …
+$ systemctl is-active moss-worker.service; echo $?
+active
+0
+$ stat -c '%a %U:%G' /run/suspect-interrogation/moss.sock
+660 suspect-interrogation:suspect-interrogation
+$ systemctl is-enabled moss-worker.service
+enabled
+```
 
-The RK3588 smoke reported the API readiness snapshot as `status=ready` with:
+- 单元含 `ConditionPathExists`（current/linux/backend + models/moss-rk3588/manifest.json），但验收以显式 `systemctl is-active` 断言为准（修复 Review Minor #2，README §3 已同步）
+- 偏差 D3：单元新增 `SupplementaryGroups=video`——RK3588 Ubuntu 的 NPU 节点 `/dev/mpp_service` 为 `root:video 0660`，无该补充组时子进程 `init_runtime` 返回 `MOSS_RKNN_INIT_FAILED:-1`（`failed to open rknn device`），属阶段二实测集成缺口
 
-- storage: `READY` (`free_mb=39761` at test time);
-- database: `READY` (initialization path writable);
-- hardware: `UNAVAILABLE`, `required=false` because no physical device was configured for this CI smoke;
-- AI: `NOT_INSTALLED`, `required=false` because model assets were intentionally not installed by this workstream.
+## 生产门 4：MOSS_ENABLED 保持关闭
 
-This demonstrates the release contract that optional device/model capability absence does not make the core API unhealthy.
+```
+$ curl -sk https://127.0.0.1:18080/health/ready
+"capabilities": { "moss": { "state": "DISABLED", "required": false,
+  "detail": "MOSS long-audio transcription is disabled (MOSS_ENABLED=0)" } }, "status": "ready"
+```
 
-## Mock E2E evidence
+- `/etc/suspect-interrogation/moss-worker.env` 不含 `MOSS_ENABLED`（grep exit 1）；API 运行时配置亦无该键
+- 门 4 基线与终态一致：MOSS 在 API 能力面保持 DISABLED，仅 worker 单元先行投产待命
 
-The RK3588 job executed the full release-side mock lifecycle and emitted all expected events:
+## 生产门 5：health 操作（AF_UNIX）
 
-`boot -> case_created -> identity_read -> session_start -> recording_mock -> asr_mock -> message_added -> ai_mock -> message_edit -> revision_created -> message_marked -> session_pause -> session_resume -> session_finish -> freeze -> signature_mock -> report_created -> service_restart -> data_verified -> backup_created -> restore_verified`
+```
+$ MossWorkerClient('/run/suspect-interrogation/moss.sock').health()
+{ "status": "ok",
+  "manifest_sha256": "b735dc2daa1d6313c4524fd04e1fa4597a3f08074e7b8bd097be890973b57fb1",
+  "runtime_versions": {"rknn": "2.3.2", "rkllm": "1.3.0", "python": "3.10"},
+  "queue_depth": 0, "active_job": null, "run_failures": {}, "scheduler_error": null }
+```
 
-Recorded evidence:
+## 生产门 6：崩溃恢复演练（kill -9）
 
-- frozen SHA-256: `9787b349eb22bd2e3a08829f40d7056ea19b18eb1324ba9cd1c56f74a4044673`;
-- signature binding: `mock-sha256:9787b349eb22bd2e3a08829f40d7056ea19b18eb1324ba9cd1c56f74a4044673`;
-- restored SQLite integrity: `ok`;
-- model downloads performed by the test: `0`.
+对象：12 分钟 PCM16/mono/16k 音频（sha256 `bd4776d6…3b998`），作业 `6d72b377c9cb46a6a9b41f0e209536f5`，2 窗口（0–600s、480–720s，重叠 120s）。
 
-## Frontend evidence
+时间线（journalctl -u moss-worker）：
 
-On the RK3588 runner:
+```
+15:53:19  kill -9 MainPID 3132292（w0001 已完成 checkpoint，w0002 飞行中）
+15:53:20  Main process exited, code=killed, status=9/KILL
+15:53:25  Scheduled restart job, restart counter is at 1
+15:53:25  Started Suspect Interrogation MOSS RK3588 NPU Worker   → 5 秒恢复
++8s      systemctl is-active → active（NRestarts=1）
+```
 
-- npm dependencies installed successfully;
-- audit result: `0 vulnerabilities`;
-- `npm run typecheck`: success;
-- `npm run build`: success;
-- Vite transformed 115 modules and produced the production `dist/` bundle;
-- final smoke line: `rk3588 smoke: ok`.
+断言结果：
 
-## FunASR discovery probe gate
+| 断言 | 结果 |
+| --- | --- |
+| systemd ~5s 自动拉起 | ✅ 15:53:20 → 15:53:25 |
+| get_job 从 spool 恢复可见 | ✅ state=DECODING，revision（窗口计划/生成参数/runtime_versions）完整 |
+| 已完成窗口不丢 | ✅ w0001 checkpoint `9fbbdf1e…` 保留于 spool（3634 tokens，含 perf） |
+| 不自动重排（需人工重新提交） | ✅ 重启后 health `queue_depth=0, active_job=null`；作业保持非终态，等待人工 `resume()` |
+| 已完成作业不受影响 | ✅ `0ed3ac65…`（COMPLETED，双窗全程 60 分钟）`get_result` 仍返回 119 段 |
 
-The approved speech-pipeline work adds `scripts/ci/probe-funasr-runtime.py` as a read-only hardware discovery gate for the existing RK3588-local model root `/home/youyeetoo/funasr-models`.
+spool 结构：`job.json`、`windows.json`、`checkpoints/`、`raw_generations/`、`speaker_state.json`、`logs/events.jsonl`。
 
-The probe contract requires:
+## 生产门 7：现网服务零影响
 
-- local-only `AutoModel` construction with `device="cpu"` and `disable_update=True`;
-- separate validation of `paraformer`, `fsmn-vad`, and `xvector` directories;
-- no model downloads and no writes under the model root;
-- optional Paraformer/VAD speech inference and XVector `spk_embedding` shape inspection when sample WAV files are explicitly supplied;
-- JSON evidence written only under the Actions workspace or runner temporary directory.
+全程 TCP/8000 监听者 pid 恒为 `1073 / 3374 / 3375`（mqw-backend.service，FunASR 独立单元，MainPID=1073）：
 
-TDD RED evidence for PR `#21`: hosted Actions run `33037785535`, job `98404277509`, failed exactly at `test_probe_exists_and_is_offline_and_non_destructive` because `scripts/ci/probe-funasr-runtime.py` did not yet exist (`1 failed, 12 passed`). This proves the new contract test detects the missing probe before implementation.
+```
+LISTEN 0 0 0.0.0.0:8000 0.0.0.0:* users:(("python",pid=3375,…),("python",pid=3374,…),("python",pid=1073,…))
+mqw-backend=active interrogation-api=active ai-worker=active kiosk=activating(预存自愈循环，仅记录)
+/health/live → {"status":"alive"}；/health/ready → status=ready（storage free_mb=15529，sqlite quick_check=ok）
+```
 
-A successful real-model load is **not claimed in this section yet**. The `Linux AI Runtime RK3588` workflow now targets `linux-adaptation`; after the implementation reaches that branch, the self-hosted runner will probe the already-installed local models when a FunASR-capable interpreter is available. The existing TCP/8000 service is not called, stopped, restarted, reconfigured, or used as the probe target.
+## 生产门 8：AF_UNIX 板端回归
 
-## Conclusion
+```
+$ python3 -m pytest tests/test_moss_protocol.py tests/test_moss_client_server.py -q
+.........................................................                [100%]
+57 passed in 2.01s
+```
 
-The implementation commit above passed both the hosted Linux release gate and the real RK3588 self-hosted smoke chain. Subsequent documentation/configuration-only commits must still pass the PR gate before merge; the final PR status is the authoritative merge criterion.
+57 = 9（protocol）+ 48（client_server），其中含 HEAD 新增的 queue/active 断言（`-k 'queue or active'` → 4 项）；README 的 53 为基线数，57 与当前 HEAD 一致。
+
+## 探针自测（scripts/ci/probe-moss-rk3588.py，板端以 root 执行）
+
+`--expect-manifest-sha256 b735dc2d…` → **`"success": true`，exit 0**：aarch64、unit active/enabled、socket 0660/属主匹配、bundle 13/13 artifacts 校验通过且策略 [10,8,8]、两原生库 SHA 与批准值一致、health ok/idle/manifest 与 env 钉扎一致、TCP/8000 在监、models 目录仅 `funasr` + `moss-rk3588`。
+
+## 部署偏差与事故记录
+
+- D1（README §1）：`--assets` 需原始源文件而非 bundle 产物，用 `assets-v2-raw` staging 解决（详见门 1）
+- D2（requirements.txt）：MOSS 主进程计数路径（`_actual_counter` → numpy/jinja2/tokenizers）依赖未在 `linux/backend/requirements.txt` 声明，部署后 `submit_job` 返回 WORKER_CRASHED；已在工作区补依赖（未提交），板上以预置离线 wheel（同 pinned 版本）装入发布 venv——下次按提交后 requirements 重新部署时自动复现
+- D3（systemd/moss-worker.service）：新增 `SupplementaryGroups=video`（详见门 3），板上已同步安装
+- 构建器兼容：`capture_input_embeds.sha256_file` 使用 `hashlib.file_digest`（Python≥3.11），板上以 miniforge python 3.13.13 + torch 2.14.0+cpu 专用 venv 执行构建（指纹计算与解释器无关，fingerprint/provenance/artifacts 与 v2 全等已证明）
+- 事故：首次 `control.sh deploy` 因本地驱动崩溃重复派发，产生两次 release；已核验终态一致（current → `20260909T043624Z-f831d9c3d8c3`，保留 3 个 release，TCP/8000 pid 未变）
+- kiosk.service 在部署前即处于 activating 自愈循环，非本次改动所致，仅记录
+
+## 变更清单（工作区，未提交）
+
+- `scripts/ci/probe-moss-rk3588.py`（新增）
+- `deploy/README.md` §3（`systemctl is-active` 显式断言）
+- `systemd/moss-worker.service`（SupplementaryGroups=video）
+- `linux/backend/requirements.txt`（numpy/tokenizers/jinja2 + 注释）
+- `.github/workflows/rk3588-service-bootstrap.yml`（MOSS 布局/单元/探针步骤）
+- `.github/workflows/rk3588-production-redeploy.yml`（MOSS 重启/探针/诊断）
+- `.github/workflows/linux-ai-runtime-rk3588.yml`（路径触发、compileall、探针步骤）
+- `docs/release/RK3588-EVIDENCE.md`（本文件）
+
+板上产物：`/opt/suspect-interrogation/models/moss-rk3588`（root 只读，dr-xr-xr-x）、`/etc/suspect-interrogation/moss-worker.env`（640 root:suspect-interrogation）、`/etc/systemd/system/moss-worker.service`、`/etc/tmpfiles.d/suspect-interrogation-moss.conf`、`/var/lib/suspect-interrogation/moss`（0750）、`/opt/suspect-interrogation/runtime/moss-env`。

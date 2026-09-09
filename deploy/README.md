@@ -127,6 +127,9 @@ sudo test ! -e /opt/suspect-interrogation/models/moss-rk3588 && \
   sudo mv /opt/suspect-interrogation/models/moss-rk3588-new /opt/suspect-interrogation/models/moss-rk3588
 sudo systemctl daemon-reload
 sudo systemctl enable --now moss-worker.service
+# Review Minor #2: assert the unit is really active — ConditionPathExists can
+# otherwise skip the start silently (a skipped unit reports "inactive").
+systemctl is-active moss-worker.service
 ```
 
 `RuntimeDirectory=suspect-interrogation` (mode 0750) plus the tmpfiles

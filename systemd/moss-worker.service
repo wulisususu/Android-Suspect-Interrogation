@@ -8,6 +8,9 @@ ConditionPathExists=/opt/suspect-interrogation/models/moss-rk3588/manifest.json
 Type=simple
 User=suspect-interrogation
 Group=suspect-interrogation
+# RK3588 Ubuntu exposes the NPU at /dev/mpp_service as root:video 0660; the
+# worker child cannot init RKNN (MOSS_RKNN_INIT_FAILED:-1) without it.
+SupplementaryGroups=video
 WorkingDirectory=/opt/suspect-interrogation/current/linux/backend
 EnvironmentFile=/etc/suspect-interrogation/runtime.env
 EnvironmentFile=-/etc/suspect-interrogation/moss-worker.env

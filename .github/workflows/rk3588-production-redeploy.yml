@@ -182,6 +182,34 @@ jobs:
           sudo -n systemctl enable ai-worker.service
           sudo -n systemctl restart ai-worker.service
 
+      - name: Restart MOSS worker on the atomic redeploy when enabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Shared MOSS layout is never rebuilt here: the model bundle under
+          # /opt/suspect-interrogation/models/moss-rk3588 and the durable spool
+          # under /var/lib/suspect-interrogation/moss survive every redeploy.
+          sudo -n test -d /var/lib/suspect-interrogation/moss || \
+            sudo -n install -d -o suspect-interrogation -g suspect-interrogation -m 0750 /var/lib/suspect-interrogation/moss
+          if sudo -n test -f /etc/systemd/system/moss-worker.service; then
+            sudo -n install -m 0644 systemd/moss-worker.service /etc/systemd/system/moss-worker.service
+            if sudo -n test -f /etc/tmpfiles.d/suspect-interrogation-moss.conf; then
+              sudo -n install -m 0644 deploy/tmpfiles-suspect-interrogation.conf /etc/tmpfiles.d/suspect-interrogation-moss.conf
+              sudo -n systemd-tmpfiles --create /etc/tmpfiles.d/suspect-interrogation-moss.conf
+            fi
+            sudo -n systemctl daemon-reload
+          fi
+          if systemctl is-enabled --quiet moss-worker.service 2>/dev/null; then
+            sudo -n systemctl restart moss-worker.service
+            systemctl is-active moss-worker.service
+            sudo -n test -S /run/suspect-interrogation/moss.sock
+            echo 'moss_worker=restarted_after_atomic_switch'
+          else
+            echo 'moss_worker=not_enabled (skipping restart; enablement stays an explicit operator step)'
+          fi
+          echo 'TCP/8000 owner is not touched by the MOSS restart:'
+          sudo -n ss -ltnp 'sport = :8000' || true
+
       - name: Verify deployed HTTPS frontend backend database and AI runtime
         shell: bash
         run: |
@@ -302,6 +330,18 @@ jobs:
           fi
           echo 'tcp8000_identity=preserved'
 
+      - name: Probe MOSS worker when it is active
+        shell: bash
+        run: |
+          set -euo pipefail
+          if systemctl is-active --quiet moss-worker.service; then
+            python3 -m py_compile scripts/ci/probe-moss-rk3588.py
+            sudo -n python3 scripts/ci/probe-moss-rk3588.py \
+              --output "$RUNNER_TEMP/moss-worker-probe.json"
+          else
+            echo 'moss_worker=not_active (probe skipped; capability stays DISABLED in the app)'
+          fi
+
       - name: Restart and verify kiosk when graphical session is available
         shell: bash
         run: |
@@ -338,8 +378,13 @@ jobs:
           sudo -n systemctl --no-pager --full status interrogation-api.service ai-worker.service kiosk.service || true
           echo '--- sockets and ports ---'
           sudo -n ss -xlpn | grep speech.sock || true
+          sudo -n ss -xlpn | grep moss.sock || true
           sudo -n ss -ltnp 'sport = :18080' || true
           sudo -n ss -ltnp 'sport = :8000' || true
+          echo '--- MOSS worker ---'
+          systemctl is-enabled moss-worker.service 2>/dev/null || true
+          systemctl is-active moss-worker.service 2>/dev/null || true
+          sudo -n journalctl -u moss-worker.service -n 80 --no-pager || true
           echo '--- API journal ---'
           sudo -n journalctl -u interrogation-api.service -n 80 --no-pager || true
           echo '--- AI journal ---'
