@@ -12,7 +12,8 @@ def segment(**changes):
                   local_speaker='S01', global_speaker=None, text='你好',
                   speaker_mapping_confidence=None, parse_status=types.ParseStatus.VALID,
                   merge_status=types.MergeStatus.PRIMARY, alternate=None,
-                  model_manifest_sha256='manifest')
+                  model_manifest_sha256='manifest',
+                  repair_reason=None, repair_original_end_ms=None)
     return types.NormalizedSegment(**(fields | changes))
 
 
@@ -44,10 +45,26 @@ def test_segment_roundtrip_preserves_complete_alternate_and_enums():
         restored.text = 'changed'
 
 
+def test_repair_metadata_roundtrip_and_legacy_checkpoint_compat():
+    original = segment(parse_status=types.ParseStatus.REPAIRED,
+                       repair_reason='END_TIMESTAMP_CLAMPED_TO_WINDOW_END',
+                       repair_original_end_ms=2520010)
+    encoded = json.loads(json.dumps(original.to_dict()))
+    assert encoded['repair_reason'] == 'END_TIMESTAMP_CLAMPED_TO_WINDOW_END'
+    assert encoded['repair_original_end_ms'] == 2520010
+    restored = types.NormalizedSegment.from_dict(encoded)
+    assert restored == original
+    assert restored.to_dict() == encoded
+    # Checkpoints written before the repair fields existed must keep loading.
+    legacy = {key: value for key, value in encoded.items() if not key.startswith('repair_')}
+    tolerant = types.NormalizedSegment.from_dict(legacy)
+    assert tolerant.repair_reason is None and tolerant.repair_original_end_ms is None
+
+
 def test_window_and_job_records_roundtrip_and_detach_mutable_inputs():
     segments = [segment()]
     window = types.WindowResult(
-        window_id='w1', window=WindowSpec(0, 720000, 0, 12),
+        window_id='w1', window=WindowSpec(0, 720000, 0, 10),
         state=types.WindowState.DONE, audio_sha256='audio',
         model_manifest_sha256='manifest', raw_generation='raw output',
         segments=segments, parse_status=types.ParseStatus.VALID, error=None)

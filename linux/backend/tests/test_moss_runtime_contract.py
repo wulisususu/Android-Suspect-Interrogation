@@ -37,7 +37,7 @@ def make_runtime(tmp_path, *, text='[0.0][S01]你好[1.0]', count=5119, normal=T
 
 def test_serial_orchestration_and_provenance(tmp_path):
     runtime, trace, wav = make_runtime(tmp_path)
-    result = runtime.infer_window(WindowSpec(1000, 3000, 0, 12), wav)
+    result = runtime.infer_window(WindowSpec(1000, 3000, 0, 10), wav)
     assert trace == ['ENCODING', 'BUILDING_EMBEDS', 'DECODING', 'PARSING']
     assert result.state == WindowState.DONE
     assert result.segments[0].start_ms == 1000
@@ -57,7 +57,7 @@ def test_python_allocation_oom_is_explicit_failed_attempt(tmp_path, monkeypatch,
     else:
         owner = {'encode': runtime.encoder, 'build': runtime.builder, 'decode': runtime.decoder}[stage]
         monkeypatch.setattr(owner, stage, oom)
-    result = runtime.infer_window(WindowSpec(0, 3000, 0, 12), wav)
+    result = runtime.infer_window(WindowSpec(0, 3000, 0, 10), wav)
     assert result.state is WindowState.FAILED
     assert result.error == 'MOSS_OOM'
     assert result.raw_generation == ('[0.0][S01]你好[1.0]' if stage == 'parse' else '')
@@ -70,7 +70,7 @@ def test_python_allocation_oom_is_explicit_failed_attempt(tmp_path, monkeypatch,
 ])
 def test_limit_classification_precedes_parser_and_preserves_raw(tmp_path, text, count, normal):
     runtime, trace, wav = make_runtime(tmp_path, text=text, count=count, normal=normal)
-    result = runtime.infer_window(WindowSpec(0, 3000, 0, 12), wav)
+    result = runtime.infer_window(WindowSpec(0, 3000, 0, 10), wav)
     assert 'PARSING' not in trace
     assert result.state == WindowState.FAILED and result.segments == ()
     assert result.error == 'GENERATION_LIMIT_REACHED'
@@ -278,7 +278,7 @@ def test_frontend_reads_only_requested_interval(tmp_path):
     wav = tmp_path / 'recording.wav'
     write_wav(wav, np.concatenate([np.full(16000, -32768, '<i2'), np.zeros(16000, '<i2')]).tobytes())
     frontend = AudioFrontend(dict(feature_extractor=FEATURE, audio_merge_size=4))
-    window = WindowSpec(1000, 2000, 0, 12)
+    window = WindowSpec(1000, 2000, 0, 10)
     chunks = list(frontend.chunks(wav, window))
     assert len(chunks) == 1 and chunks[0].valid_tokens == 13
     np.testing.assert_allclose(chunks[0].features, -1.5)
@@ -286,12 +286,12 @@ def test_frontend_reads_only_requested_interval(tmp_path):
 
 def test_runtime_maps_native_failure_and_clears_previous_metadata(tmp_path):
     runtime, trace, wav = make_runtime(tmp_path)
-    result = runtime.infer_window(WindowSpec(0, 3000, 0, 12), wav)
+    result = runtime.infer_window(WindowSpec(0, 3000, 0, 10), wav)
     assert runtime.last_generation.token_count == result.token_count
     def fail(chunk):
         raise RuntimeError('MOSS_RKNN_RUN_FAILED:-1')
     runtime.encoder.encode = fail
-    result = runtime.infer_window(WindowSpec(0, 3000, 0, 12), wav)
+    result = runtime.infer_window(WindowSpec(0, 3000, 0, 10), wav)
     assert result.state == WindowState.FAILED and result.error == 'MOSS_RKNN_RUN_FAILED:-1'
     assert runtime.last_generation is None and result.raw_generation == ''
 
@@ -299,7 +299,7 @@ def test_runtime_maps_native_failure_and_clears_previous_metadata(tmp_path):
 def test_runtime_exact_context_guard_blocks_native_call(tmp_path):
     runtime, trace, wav = make_runtime(tmp_path)
     runtime.builder.build = lambda prompt, audio: SimpleNamespace(embeds=np.zeros((10753, 1024), np.float32))
-    result = runtime.infer_window(WindowSpec(0, 3000, 0, 12), wav)
+    result = runtime.infer_window(WindowSpec(0, 3000, 0, 10), wav)
     assert result.error == 'MOSS_CONTEXT_BUDGET_EXCEEDED'
     assert 'DECODING' not in trace
 
@@ -355,7 +355,7 @@ def test_child_protocol_infer_preserves_request_id_and_result(tmp_path):
     from moss_worker.child import serve
     runtime, trace, wav = make_runtime(tmp_path)
     commands = [dict(type='infer', request_id='attempt-2', wav=str(wav),
-                     window=dict(start_ms=0, end_ms=3000, logical_chunk_index=0, window_minutes=12)),
+                     window=dict(start_ms=0, end_ms=3000, logical_chunk_index=0, window_minutes=10)),
                 dict(type='shutdown')]
     output = io.StringIO()
     assert serve(io.StringIO(''.join(json.dumps(c) + '\n' for c in commands)), output, lambda: runtime) == 0
@@ -381,9 +381,9 @@ def test_audio_window_rejects_ghost_tail_but_accepts_submillisecond_tail(tmp_pat
     wav = tmp_path / 'short.wav'
     write_wav(wav, np.zeros(16001, '<i2').tobytes())
     frontend = AudioFrontend(dict(feature_extractor=FEATURE, audio_merge_size=4))
-    assert len(frontend.read_samples(wav, WindowSpec(1000, 1001, 0, 12))) == 1
+    assert len(frontend.read_samples(wav, WindowSpec(1000, 1001, 0, 10))) == 1
     with pytest.raises(ValueError, match='MOSS_INVALID_AUDIO_WINDOW'):
-        frontend.read_samples(wav, WindowSpec(1000, 1002, 0, 12))
+        frontend.read_samples(wav, WindowSpec(1000, 1002, 0, 10))
 
 
 def test_selftest_rejects_speaker_collapse(tmp_path):
@@ -407,7 +407,7 @@ def test_child_result_keeps_unprovable_perf_as_json_null(tmp_path):
     runtime.decoder.decode = lambda embeds: SimpleNamespace(text='[0][S01]hello[1]', token_count=2,
                               normal_termination=False, perf={'generate_time_ms': float('nan')}, error=None)
     request = dict(type='infer', request_id='x', window_id='fresh-attempt', wav=str(wav),
-                   window=dict(start_ms=0, end_ms=3000, logical_chunk_index=0, window_minutes=12))
+                   window=dict(start_ms=0, end_ms=3000, logical_chunk_index=0, window_minutes=10))
     output = io.StringIO()
     assert serve(io.StringIO(json.dumps(request) + '\n'), output, lambda: runtime) == 0
     result = next(json.loads(line) for line in output.getvalue().splitlines() if json.loads(line)['type'] == 'result')
@@ -418,7 +418,7 @@ def test_child_result_keeps_unprovable_perf_as_json_null(tmp_path):
 
 def test_runtime_attempt_identity_reaches_every_segment(tmp_path):
     runtime, trace, wav = make_runtime(tmp_path)
-    result = runtime.infer_window(WindowSpec(0, 3000, 0, 12), wav, window_id='attempt-3')
+    result = runtime.infer_window(WindowSpec(0, 3000, 0, 10), wav, window_id='attempt-3')
     assert result.window_id == 'attempt-3'
     assert all(segment.window_id == 'attempt-3' and segment.segment_id.startswith('attempt-3:') for segment in result.segments)
 
@@ -452,7 +452,7 @@ def test_child_nonfinite_request_id_does_not_break_error_transport(tmp_path, inv
     from moss_worker.child import serve
     runtime, trace, wav = make_runtime(tmp_path)
     valid_request = dict(type='infer', request_id='valid-after-error', wav=str(wav),
-                         window=dict(start_ms=0, end_ms=3000, logical_chunk_index=0, window_minutes=12))
+                         window=dict(start_ms=0, end_ms=3000, logical_chunk_index=0, window_minutes=10))
     source = io.StringIO('{"type":"infer","request_id":' + invalid_id + '}\n'
                          + json.dumps(valid_request) + '\n{"type":"shutdown"}\n')
     output = io.StringIO()

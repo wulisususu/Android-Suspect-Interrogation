@@ -17,8 +17,8 @@ REQUIRED = {ENCODER, DECODER, EMBEDDING, 'token_embedding.json', 'tokenizer.json
             'selftest/encoder_expected.json', 'selftest/decoder_input.f32',
             'selftest/decoder_expected.json'}
 POLICY = {'compiled_context_limit': 16384, 'generation_reserve': 5120,
-          'safety_margin': 512, 'target_window_minutes': 12,
-          'fallback_window_minutes': 10, 'minimum_window_minutes': 8,
+          'safety_margin': 512, 'target_window_minutes': 10,
+          'fallback_window_minutes': 8, 'minimum_window_minutes': 8,
           'overlap_minutes': 2, 'logical_chunk_minutes': 60}
 
 

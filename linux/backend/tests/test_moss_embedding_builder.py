@@ -64,7 +64,7 @@ def test_actual_context_boundary(count, fits):
             builder().build_from_ids([10] * count, np.empty((0, 8)))
 
 
-def test_real_interval_counter_rejects_twelve_and_counts_clipped_tail():
+def test_real_interval_counter_selects_target_tier_and_counts_clipped_tail():
     class ExpensiveTokenizer(FakeTokenizer):
         def encode(self, text, add_special_tokens=False):
             return [10] * 1500 if text else []
@@ -78,7 +78,7 @@ def test_real_interval_counter_rejects_twelve_and_counts_clipped_tail():
     assert 1500 + 12 * 60 * 12.5 < 10752  # Estimate misses timestamp digits.
     windows = plan_windows(13 * 60000, counter)
     assert windows[0].window_minutes == 10
-    assert calls[:2] == [(0, 720000), (0, 600000)]
+    assert calls[:2] == [(0, 600000), (480000, 780000)]
     assert calls[-1] == (480000, 780000)
     assert counter(0, 30001) == len(subject.expand_input_ids('before<|audio_pad|>', 376))
 

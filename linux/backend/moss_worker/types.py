@@ -52,6 +52,8 @@ class NormalizedSegment:
     merge_status: MergeStatus
     alternate: 'NormalizedSegment | None'
     model_manifest_sha256: str
+    repair_reason: str | None = None
+    repair_original_end_ms: int | None = None
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -67,6 +69,9 @@ class NormalizedSegment:
         fields['merge_status'] = MergeStatus(fields['merge_status'])
         alternate = fields['alternate']
         fields['alternate'] = cls.from_dict(alternate) if alternate is not None else None
+        # Checkpoints written before the repair fields existed load as None.
+        fields.setdefault('repair_reason', None)
+        fields.setdefault('repair_original_end_ms', None)
         return cls(**fields)
 
 

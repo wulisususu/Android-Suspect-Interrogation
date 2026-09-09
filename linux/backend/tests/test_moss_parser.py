@@ -3,7 +3,7 @@ import pytest
 from moss_worker.types import MergeStatus, ParseStatus, WindowSpec
 
 
-WINDOW = WindowSpec(30 * 60000, 42 * 60000, 0, 12)
+WINDOW = WindowSpec(30 * 60000, 42 * 60000, 0, 10)
 
 
 def parse(raw, **kwargs):
@@ -22,6 +22,8 @@ def test_complete_segment_has_absolute_times_and_unknown_provenance():
     assert segment.global_speaker is segment.alternate is None
     assert segment.speaker_mapping_confidence is None
     assert segment.model_manifest_sha256 == ''
+    assert segment.repair_reason is None
+    assert segment.repair_original_end_ms is None
     assert result.raw_generation == raw
     assert not result.invalid_fragments
 
@@ -31,7 +33,10 @@ def test_shared_boundary_is_explicit_repair():
     first, second = result.valid_segments
     assert first.end_ms == second.start_ms == 1802500
     assert first.parse_status is ParseStatus.REPAIRED
+    assert first.repair_reason == 'END_MISSING_REPAIRED_FROM_NEXT_START'
+    assert first.repair_original_end_ms is None
     assert second.parse_status is ParseStatus.VALID
+    assert second.repair_reason is None
     assert not result.invalid_fragments
 
 
@@ -83,7 +88,92 @@ def test_round_half_up_and_exact_order_before_rounding():
     segment, = parse('[0.0005][S01]甲[0.0015]').valid_segments
     assert (segment.start_ms, segment.end_ms) == (1800001, 1800002)
     assert not parse('[0.0005][S01]甲[0.0004]').valid_segments
-    assert not parse('[719][S01]甲[720.0001]').valid_segments
+    clamped, = parse('[719][S01]甲[720.0001]').valid_segments
+    assert clamped.parse_status is ParseStatus.REPAIRED
+    assert clamped.end_ms == 2520000
+    assert clamped.repair_reason == 'END_TIMESTAMP_CLAMPED_TO_WINDOW_END'
+
+
+def test_end_overshoot_within_model_raster_tolerance_is_clamped():
+    # User-approved 2026-09-09: a segment end may land at most one 10 ms model
+    # raster step past the window end; the parser clamps it to the window
+    # end and records the original value for audit.
+    for raw, original_end_ms in (('[719.99][S01]甲[720.009]', 2520009),
+                                 ('[719.99][S01]甲[720.01]', 2520010)):
+        segment, = parse(raw).valid_segments
+        assert segment.end_ms == 2520000
+        assert segment.parse_status is ParseStatus.REPAIRED
+        assert segment.repair_reason == 'END_TIMESTAMP_CLAMPED_TO_WINDOW_END'
+        assert segment.repair_original_end_ms == original_end_ms
+
+
+def test_end_overshoot_beyond_model_raster_tolerance_is_not_forgiven():
+    for raw in ('[719][S01]甲[720.011]', '[719][S01]甲[720.1]', '[719][S01]甲[721]'):
+        result = parse(raw)
+        assert not result.valid_segments
+        assert result.invalid_fragments[0].raw == raw
+        assert result.invalid_fragments[0].parse_status is ParseStatus.INVALID
+
+
+def test_start_timestamp_overshoot_is_never_clamped():
+    result = parse('[720.005][S01]甲[720.5]')
+    assert not result.valid_segments
+    assert result.invalid_fragments[0].reason == 'Start timestamp is decreasing or outside the window'
+
+
+def test_exact_window_boundary_stays_valid_without_repair_metadata():
+    segment, = parse('[720][S01]甲[720]').valid_segments
+    assert segment.parse_status is ParseStatus.VALID
+    assert segment.repair_reason is None
+    assert segment.repair_original_end_ms is None
+
+
+def test_dangling_trailing_timestamp_is_downgraded_to_terminal_drop():
+    result = parse('[0][S01]甲[1][2.5]')
+    assert [s.text for s in result.valid_segments] == ['甲']
+    assert not result.invalid_fragments
+    assert result.repair_reason == 'DANGLING_TRAILING_TIMESTAMP_DROPPED'
+    assert result.repair_original_text == '[2.5]'
+    assert result.raw_generation == '[0][S01]甲[1][2.5]'
+
+
+def test_dangling_out_of_window_timestamp_without_content_is_dropped():
+    result = parse('[0][S01]甲[1][721]')
+    assert [s.text for s in result.valid_segments] == ['甲']
+    assert not result.invalid_fragments
+    assert result.repair_reason == 'DANGLING_TRAILING_TIMESTAMP_DROPPED'
+    assert result.repair_original_text == '[721]'
+
+
+def test_dangling_trailing_timestamp_keeps_whitespace_verbatim():
+    result = parse('[0][S01]甲[1][2.5] \n')
+    assert [s.text for s in result.valid_segments] == ['甲']
+    assert not result.invalid_fragments
+    assert result.repair_reason == 'DANGLING_TRAILING_TIMESTAMP_DROPPED'
+    assert result.repair_original_text == '[2.5] \n'
+
+
+def test_lone_trailing_timestamp_drops_without_segments():
+    result = parse('[5]')
+    assert not result.valid_segments
+    assert not result.invalid_fragments
+    assert result.repair_reason == 'DANGLING_TRAILING_TIMESTAMP_DROPPED'
+    assert result.repair_original_text == '[5]'
+
+
+def test_trailing_fragment_with_speaker_is_never_dropped():
+    result = parse('[0][S01]甲[1][2][S01]')
+    assert result.valid_segments[0].text == '甲'
+    assert result.invalid_fragments[0].raw == '[2][S01]'
+    assert result.repair_reason is None
+
+
+def test_content_segment_overshoot_beyond_tolerance_stays_invalid():
+    result = parse('[0][S01]甲[719.99][S02]乙[720.11]')
+    assert [s.text for s in result.valid_segments] == ['甲']
+    assert result.invalid_fragments[0].raw == '[719.99][S02]乙[720.11]'
+    assert result.invalid_fragments[0].reason == 'End timestamp is decreasing or outside the window'
+    assert result.repair_reason is None
 
 
 def test_exact_window_boundary_and_zero_duration_are_valid():
@@ -112,7 +202,7 @@ def test_shared_boundary_with_unbounded_tail_retains_tail_verbatim():
     assert result.invalid_fragments[0].raw == '[1][S02]未结束'
 
 
-@pytest.mark.parametrize('window', [WindowSpec(-1, 1000, 0, 12), WindowSpec(2, 1, 0, 12)])
+@pytest.mark.parametrize('window', [WindowSpec(-1, 1000, 0, 10), WindowSpec(2, 1, 0, 10)])
 def test_invalid_window_bounds_are_programming_errors(window):
     from moss_worker.parser import parse_generation
     with pytest.raises(ValueError, match='bounds'):

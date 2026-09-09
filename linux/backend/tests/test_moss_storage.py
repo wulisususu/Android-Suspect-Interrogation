@@ -28,7 +28,7 @@ def make_job(tmp_path, model='manifest'):
     if not wav.exists():
         wav.write_bytes(b'original audio bytes')
     spool = storage().MossSpool(tmp_path / 'spool')
-    record = spool.create_job(wav, model, {'w:0': WindowSpec(0, 1000, 0, 12)},
+    record = spool.create_job(wav, model, {'w:0': WindowSpec(0, 1000, 0, 10)},
                              duration_ms=1000, runtime_versions={'python': 'test'},
                              windowing_params={'overlap_ms': 120000},
                              generation_params={'temperature': 0}, created_at='2026-09-08T00:00:00Z')
@@ -37,7 +37,7 @@ def make_job(tmp_path, model='manifest'):
 
 def result(record, state=WindowState.DONE):
     snap = record['snapshot']
-    return WindowResult('w:0', WindowSpec(0, 1000, 0, 12), state,
+    return WindowResult('w:0', WindowSpec(0, 1000, 0, 10), state,
                         snap['audio_sha256'], snap['model_manifest_sha256'],
                         '你好 raw', (), ParseStatus.VALID, None)
 
@@ -45,7 +45,7 @@ def result(record, state=WindowState.DONE):
 def test_supervisor_public_reads_and_durable_events(tmp_path):
     spool, record, _ = make_job(tmp_path)
     job_id = record['snapshot']['job_id']
-    assert spool.load_windows(job_id) == {'w:0': WindowSpec(0, 1000, 0, 12)}
+    assert spool.load_windows(job_id) == {'w:0': WindowSpec(0, 1000, 0, 10)}
     assert spool.load_speaker_state(job_id) == {}
     assert spool.load_merged_segments(job_id) == ()
     assert spool.load_window_results(job_id) == ()
@@ -74,7 +74,7 @@ def test_revision_metadata_layout_and_new_model_revision(tmp_path):
     root = tmp_path / 'spool' / 'jobs' / job_id
     assert {p.name for p in root.iterdir()} == {'job.json', 'windows.json', 'speaker_state.json', 'merged_segments.jsonl', 'raw_generations', 'checkpoints', 'logs'}
     assert (root / 'logs/events.jsonl').exists()
-    assert json.loads((root / 'windows.json').read_text())['w:0']['window_minutes'] == 12
+    assert json.loads((root / 'windows.json').read_text())['w:0']['window_minutes'] == 10
     assert wav.read_bytes() == b'original audio bytes'
 
 
@@ -181,7 +181,7 @@ def test_retry_plan_retains_failed_evidence_and_unrelated_done(tmp_path):
     spool, record, _ = make_job(tmp_path)
     job_id = record['snapshot']['job_id']
     snap = JobSnapshot.from_dict(record['snapshot'])
-    other = WindowSpec(1000, 2000, 0, 12)
+    other = WindowSpec(1000, 2000, 0, 10)
     spool.save_job(job_id, snap, windows={'w:0': result(record).window, 'failed': other})
     spool.save_window_result(job_id, result(record))
     failed = replace(result(record, WindowState.FAILED), window_id='failed', window=other,
@@ -192,6 +192,21 @@ def test_retry_plan_retains_failed_evidence_and_unrelated_done(tmp_path):
     spool.save_job(job_id, snap, windows={'w:0': result(record).window, 'retry': WindowSpec(1000, 2000, 0, 10)})
     assert {p.name: p.read_bytes() for p in (root / 'checkpoints').iterdir()} == before
     assert spool.load_completed_windows(job_id) == [result(record)]
+
+
+def test_repair_metadata_survives_checkpoint_roundtrip(tmp_path):
+    spool, record, _ = make_job(tmp_path)
+    job_id = record['snapshot']['job_id']
+    repaired = segment(window_id='w:0', parse_status=ParseStatus.REPAIRED,
+                       repair_reason='END_TIMESTAMP_CLAMPED_TO_WINDOW_END',
+                       repair_original_end_ms=2520010)
+    spool.save_window_result(job_id, replace(result(record), segments=(repaired,)))
+    loaded, = spool.load_completed_windows(job_id)
+    assert loaded.segments == (repaired,)
+    checkpoint = next((tmp_path / 'spool/jobs' / job_id / 'checkpoints').glob('*.json'))
+    data = json.loads(checkpoint.read_text(encoding='utf-8'))
+    assert data['segments'][0]['repair_reason'] == 'END_TIMESTAMP_CLAMPED_TO_WINDOW_END'
+    assert data['segments'][0]['repair_original_end_ms'] == 2520010
 
 
 def test_speaker_and_merged_segment_roundtrip(tmp_path):

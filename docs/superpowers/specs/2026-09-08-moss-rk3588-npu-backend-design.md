@@ -6,6 +6,8 @@ Status: Approved design; 16K window/generation policy revised with user approval
 
 Approved revision (2026-09-08): retain the Gate A/Gate B validated RKNN/RKLLM toolchain. Model context is 16,384 tokens, generation reserve 5,120, safety margin 512; model windows use 12/10/8 minutes with 2-minute overlap. The 60-minute logical chunk is unchanged. More than 16K context is a non-blocking optimization Spike, not a reason to replace the primary toolchain.
 
+Approved revision (2026-09-09, user-approved final tiering): window policy is re-tiered to target 10 minutes, fallback 8 minutes, minimum 8 minutes (retry ladder 10 -> 8 -> terminal failure); fallback_window == minimum_window == 8 minutes, an 8-minute window failing again is a terminal failure (`RetryExhausted`) with no further automatic down-scaling, and adding smaller tiers (6m/4m/…) below the minimum is forbidden. The 2-minute overlap, 16,384 context, 5,120 generation reserve and 512 safety margin are unchanged. The same approval fixes the parser boundary semantics: a segment end at most one 10 ms model-raster half-step past the window end is clamped to the window end (`END_TIMESTAMP_CLAMPED_TO_WINDOW_END`, original value retained for audit), and a terminal fragment that is only a dangling timestamp is dropped (`DANGLING_TRAILING_TIMESTAMP_DROPPED`, verbatim text retained); any larger overshoot, any start-timestamp overshoot, and any fragment carrying speaker or text stays INVALID (`MOSS_INVALID_GENERATION`). Verified against the verbatim board capture `gradient-8m-w1` (audio sha256 `bd4776d6b321e7f5fd4d140576e3b2c9ffbe52d03acc9d149ec8fa707c53b998`): the run that previously published 0 segments now yields 74 VALID + 1 REPAIRED segments.
+
 ## 1. Objective
 
 Introduce a standalone, fully offline `MOSS-RK3588 NPU backend` for long-form transcription plus anonymous speaker diarization on a single RK3588 32 GB device.
@@ -41,7 +43,7 @@ The repository already isolates speech inference behind an independent Unix-sock
 
 - MOSS performs long-window batch inference rather than low-latency streaming.
 - RKNN and RKLLM native runtimes can hold large NPU resources for extended periods.
-- A 12-minute MOSS window can take long enough that sharing the realtime worker lock would stall interactive speech processing.
+- A 10-minute MOSS window can take long enough that sharing the realtime worker lock would stall interactive speech processing.
 - Native RKNN/RKLLM failures must not crash the FastAPI service or the existing speech worker.
 
 Therefore MOSS is implemented as a new process family rather than being inserted into `speech_worker`.
@@ -56,7 +58,7 @@ MOSS Job Orchestrator
     |
     +-- 60 min logical chunks
     |
-    +-- target 12 min model windows
+    +-- target 10 min model windows
     |       with 2 min overlap
     v
 moss_worker supervisor
@@ -109,7 +111,7 @@ linux/backend/
 │  ├─ embedding_builder.py        # MOSS processor semantics + embed injection
 │  ├─ rkllm_decoder.py            # RKLLM wrapper
 │  ├─ context_budget.py           # maximum-safe-window planning
-│  ├─ windowing.py                # 60m logical / 12/10/8m model windows / 2m overlap
+│  ├─ windowing.py                # 60m logical / 10/8m model windows / 2m overlap
 │  ├─ generation_policy.py        # fail-closed generation completion checks
 │  ├─ parser.py                   # generated text -> typed segments
 │  ├─ speaker_remap.py            # local Sxx -> global GSxx
@@ -218,11 +220,11 @@ The table remains FP16 and can be memory-mapped. Only selected token rows are ex
 
 ## 7. Internal Audio Data Flow
 
-A target 12-minute model window is not sent to RKNN as one tensor. It is split into 30-second acoustic micro-chunks.
+A target 10-minute model window is not sent to RKNN as one tensor. It is split into 30-second acoustic micro-chunks.
 
 ```text
-12 min window
-  -> 24 x 30 s blocks
+10 min window
+  -> 20 x 30 s blocks
   -> CPU log-mel extraction
   -> RKNN audio encoder, serially
   -> keep valid adapted-token prefix for each block
@@ -258,12 +260,12 @@ This is the board-side equivalent of MOSS's `masked_scatter` operation.
 
 ## 9. Context Budget Planner
 
-A 12-minute window is a target, not a hard constant. The actual tokenizer/processor expansion for the specific candidate interval is authoritative; a duration-only estimate must never authorize execution.
+A 10-minute window is a target, not a hard constant. The actual tokenizer/processor expansion for the specific candidate interval is authoritative; a duration-only estimate must never authorize execution.
 
 At 12.5 audio tokens/second:
 
 ```text
-720 s * 12.5 = 9,000 audio tokens
+600 s * 12.5 = 7,500 audio tokens
 ```
 
 MOSS time-marker digits, system/user prompt, assistant prefix, and generated transcript consume additional positions. Therefore every window must pass a context-budget calculation before inference.
@@ -272,8 +274,8 @@ Configuration starts with:
 
 ```text
 max_context_len = 16384
-target_window_minutes = 12
-fallback_window_minutes = 10
+target_window_minutes = 10
+fallback_window_minutes = 8
 minimum_window_minutes = 8
 target_overlap_minutes = 2
 generation_reserve_tokens = 5120
@@ -293,19 +295,19 @@ Count the complete actual expanded input, including the exact MOSS template, spe
 
 An actual official-processor check with the default prompt and repeated synthetic engineering fixture produced expanded counts 6,354 / 7,926 / 9,498 for 8/10/12 minutes respectively. These are fixture evidence, not constants for execution; different prompts/processor versions must be recounted.
 
-If the target window does not fit, directly try 10 minutes, then 8 minutes, with the same output/safety reservations and 2-minute overlap:
+If the target window does not fit, directly try the 8-minute fallback, with the same output/safety reservations and 2-minute overlap:
 
 ```text
-12 min -> 10 min -> 8 min
+10 min -> 8 min
 ```
 
-A window that cannot run at 8 minutes fails explicitly. A shorter recording/logical-boundary tail is allowed, but is not a further fallback size. Never shrink reserve or safety to force a fit. The model manifest must reflect the compiled context: the initial 4,096-token Gate A artifact is not eligible for this policy; rebuild at 16,384 with the same toolkit and repeat Gate A before bundling it.
+A window that cannot run at 8 minutes fails explicitly. The 8-minute fallback is also the minimum: fallback == minimum == 8 minutes, a failed 8-minute attempt is terminal (`RetryExhausted`), no tier exists below the minimum, and adding smaller tiers (6m/4m/…) is forbidden. A shorter recording/logical-boundary tail is allowed, but is not a further fallback size. Never shrink reserve or safety to force a fit. The model manifest must reflect the compiled context: the initial 4,096-token Gate A artifact is not eligible for this policy; rebuild at 16,384 with the same toolkit and repeat Gate A before bundling it.
 
 ### 9.1 Generation completion and bounded retry
 
 Each decoder result must carry its actual generated-token count and normal-termination evidence from token IDs/native completion metadata, separately from decoded text. A successful native callback alone is not evidence of EOS. If the generated count reaches 5,120, normal termination is absent, or the timestamped output has an incomplete tail/extra unparsed suffix, mark `GENERATION_LIMIT_REACHED`. This precedence applies before parser repairs: never publish a plausible prefix as a complete transcript.
 
-Retain raw output, token count, termination metadata and failed window interval as diagnostic evidence, but do not mark that attempt DONE or add its partial segments to the authoritative timeline. Re-execute the entire failed coverage interval with 10-minute windows after a 12-minute failure, then 8-minute windows after a 10-minute failure, preserving overlap and exact context checks. Retries must cover the original interval without gaps and must not recompute unrelated completed windows. A failed 8-minute attempt is terminal; a short clipped retry tail inherits its configured tier and cannot restart the ladder indefinitely. Retries use new attempt IDs and preserve the original provenance.
+Retain raw output, token count, termination metadata and failed window interval as diagnostic evidence, but do not mark that attempt DONE or add its partial segments to the authoritative timeline. Re-execute the entire failed coverage interval with 8-minute windows after a 10-minute failure, preserving overlap and exact context checks. Retries must cover the original interval without gaps and must not recompute unrelated completed windows. A failed 8-minute attempt is terminal; a short clipped retry tail inherits its configured tier and cannot restart the ladder indefinitely. Retries use new attempt IDs and preserve the original provenance.
 
 ## 10. Long-Audio Windowing
 
@@ -314,17 +316,19 @@ The user-visible scheduling unit is one hour, but model windows overlap across b
 Nominal sequence:
 
 ```text
-W1 = 00:00-12:00
-W2 = 10:00-22:00
-W3 = 20:00-32:00
-W4 = 30:00-42:00
-W5 = 40:00-52:00
-W6 = 50:00-60:00
-W7 = 58:00-70:00
+W1 = 00:00-10:00
+W2 = 08:00-18:00
+W3 = 16:00-26:00
+W4 = 24:00-34:00
+W5 = 32:00-42:00
+W6 = 40:00-50:00
+W7 = 48:00-58:00
+W8 = 56:00-60:00
+W9 = 58:00-68:00
 ...
 ```
 
-Thus every adjacent model window normally shares two minutes of real audio. A one-hour logical boundary never resets the speaker-continuity state. For non-first windows, logical ownership starts at window start plus two minutes; W7 belongs to logical chunk 1 despite starting at minute 58.
+Thus every adjacent model window normally shares two minutes of real audio. A one-hour logical boundary never resets the speaker-continuity state. For non-first windows, logical ownership starts at window start plus two minutes; W9 belongs to logical chunk 1 despite starting at minute 58.
 
 Logical one-hour chunks exist for:
 
@@ -442,7 +446,7 @@ REPAIRED
 INVALID
 ```
 
-Examples of recoverable errors may include a missing end time that can be bounded by the next valid segment. Any repair is explicitly recorded.
+Examples of recoverable errors include a missing end time that can be bounded by the next valid segment, a segment end at most one 10 ms model-raster half-step past the window end (clamped to the window end, 2026-09-09 approval), and a terminal fragment that is only a dangling timestamp (dropped without semantic guessing). Every repair is explicitly recorded with its `repair_reason` and the retained original value/text.
 
 Unreliable generations are retained in raw form but excluded from the authoritative normalized timeline.
 
@@ -869,7 +873,7 @@ The MOSS backend itself remains anonymous-diarization-first and should not need 
 
 Adopt a standalone `moss_worker` on one offline RK3588 32 GB system. Use a fused Whisper-Medium + 4x merge + MOSS VQAdaptor RKNN FP16 acoustic encoder and a MOSS-checkpoint Qwen3-0.6B RKLLM W8A8 decoder. Reproduce upstream MOSS processor semantics on CPU and feed complete embeddings through `RKLLM_INPUT_EMBED`.
 
-Use one-hour logical scheduling units, target 12-minute model windows with two-minute overlap and 10/8-minute fallback, and a real-tokenizer context guard under 16,384 tokens with fixed 5,120 generation reserve and 512 safety margin. Reject incomplete/limit-hit generations and retry their full coverage intervals. Normalize local speaker labels into conservative global anonymous `GSxx` labels using overlap evidence, retain conflicts and provenance, and support durable checkpoint/restart semantics plus native-runtime process isolation.
+Use one-hour logical scheduling units, target 10-minute model windows with two-minute overlap and an 8-minute fallback (2026-09-09 final tiering), and a real-tokenizer context guard under 16,384 tokens with fixed 5,120 generation reserve and 512 safety margin. Reject incomplete/limit-hit generations and retry their full coverage intervals. Normalize local speaker labels into conservative global anonymous `GSxx` labels using overlap evidence, retain conflicts and provenance, and support durable checkpoint/restart semantics plus native-runtime process isolation.
 
 This design is the approved basis for the implementation plan. No implementation work should begin until the implementation plan derived from this specification is reviewed.
 

@@ -1,3 +1,10 @@
+"""Long-audio window ladder and 60-minute logical chunking.
+
+User-approved final tiering (2026-09-09): target_window == 10 minutes and
+fallback_window == minimum_window == 8 minutes. A failed 8-minute attempt is
+a terminal failure (``RetryExhausted``): there is no automatic down-scaling
+below the minimum, and adding smaller tiers (6m/4m/...) is forbidden.
+"""
 from dataclasses import dataclass
 from typing import Callable
 
@@ -23,6 +30,11 @@ class WindowSpec:
 MINUTE_MS = 60000
 LOGICAL_CHUNK_MS = 60 * MINUTE_MS
 OVERLAP_MS = 2 * MINUTE_MS
+# User-approved final tiering (2026-09-09): target 10 minutes;
+# fallback_window == minimum_window == 8. A failed 8-minute attempt raises
+# RetryExhausted — terminal, no automatic down-scaling, and adding smaller
+# tiers (6m/4m/...) below the minimum is forbidden.
+WINDOW_LADDER_MINUTES = (10, 8)
 ExpandedInputCounter = Callable[[int, int], int]
 
 
@@ -54,7 +66,7 @@ def plan_windows(
         logical_index = covered_until // LOGICAL_CHUNK_MS
         boundary = min(duration_ms, (logical_index + 1) * LOGICAL_CHUNK_MS)
         start = max(0, covered_until - OVERLAP_MS) if windows else 0
-        window = _select(start, boundary, logical_index, (12, 10, 8),
+        window = _select(start, boundary, logical_index, WINDOW_LADDER_MINUTES,
                          expanded_input_tokens, budget)
         windows.append(window)
         covered_until = window.end_ms
@@ -68,10 +80,14 @@ def plan_retry_windows(
     """Replace only the failed interval; caller retains other committed windows.
 
     Carry window_minutes into subsequent failure retries, including clipped tails,
-    so retry progression is bounded by 12 -> 10 -> 8 -> terminal failure.
+    so retry progression is bounded by 10 -> 8 -> terminal failure. Because
+    fallback == minimum == 8 minutes, a failing 8-minute window has no next
+    tier and raises RetryExhausted.
     """
-    candidates = tuple(m for m in (10, 8) if m < failed.window_minutes)
+    candidates = tuple(m for m in WINDOW_LADDER_MINUTES[1:] if m < failed.window_minutes)
     if not candidates:
+        # fallback == minimum == 8m: an 8-minute failure is terminal. There is
+        # deliberately no tier below the minimum to fall back to.
         raise RetryExhausted('Generation failed at the minimum eight-minute policy')
     windows = []
     start = failed.start_ms

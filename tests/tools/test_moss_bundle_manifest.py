@@ -16,6 +16,16 @@ def test_runtime_hashing_supports_python310(tmp_path, monkeypatch):
     assert sha256_file(path) == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def test_window_policy_tiering_matches_2026_09_09_user_approval():
+    # User-approved final tiering: target 10 min, fallback 8 min, minimum 8 min;
+    # context 16384 / reserve 5120 / safety 512 are unchanged.
+    from tools.moss_rk3588.validate_bundle import POLICY
+    assert POLICY == {'compiled_context_limit': 16384, 'generation_reserve': 5120,
+                      'safety_margin': 512, 'target_window_minutes': 10,
+                      'fallback_window_minutes': 8, 'minimum_window_minutes': 8,
+                      'overlap_minutes': 2, 'logical_chunk_minutes': 60}
+
+
 def test_export_exact_little_endian_table(tmp_path):
     assert importlib.util.find_spec('tools.moss_rk3588.export_token_embedding') is not None
     from tools.moss_rk3588.export_token_embedding import export_table

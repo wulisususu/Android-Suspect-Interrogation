@@ -173,7 +173,7 @@ class MossSupervisor:
         frontend = AudioFrontend(manifest['processor_config'])
         builder = MossEmbeddingBuilder.from_bundle(self.bundle)
         return builder.interval_counter(render_prompt(self.bundle),
-            lambda start, end: len(frontend.read_samples(wav, WindowSpec(start, end, 0, 12))))
+            lambda start, end: len(frontend.read_samples(wav, WindowSpec(start, end, 0, 10))))
 
     def submit(self, wav):
         wav = Path(wav).resolve(strict=True)
@@ -187,7 +187,7 @@ class MossSupervisor:
                    enumerate(plan_windows(duration, self.counter_factory(wav)), 1)}
         record = self.spool.create_job(wav, self.manifest_sha256, windows,
             duration_ms=duration, runtime_versions=self.runtime_versions,
-            windowing_params=dict(target_minutes=12, fallback_minutes=10, minimum_minutes=8,
+            windowing_params=dict(target_minutes=10, fallback_minutes=8, minimum_minutes=8,
                                   overlap_ms=120000, logical_chunk_ms=3600000),
             generation_params=dict(context_length=16384, max_new_tokens=5120, safety_margin=512,
                 top_k=1, top_p=1, temperature=1, repeat_penalty=1, frequency_penalty=0,

@@ -58,7 +58,7 @@ def run_selftests(bundle, encoder, decoder):
     generation = decoder.decode(inputs)
     if generation.error or classify_generation(generation.text, generation.token_count, generation.normal_termination):
         raise RuntimeError('MOSS_SELFTEST_FAILED:decoder_termination')
-    window = WindowSpec(0, 60000, 0, 12)
+    window = WindowSpec(0, 60000, 0, 10)
     parsed = parse_generation(generation.text, window)
     reference = parse_generation(expected['output_text'], window)
     def normalized(segments):

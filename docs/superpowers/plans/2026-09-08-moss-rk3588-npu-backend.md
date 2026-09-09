@@ -12,6 +12,8 @@
 
 **Approved revision (2026-09-08):** retain the validated RKNN/RKLLM toolchain. Use context 16,384, generation reserve 5,120, safety 512, 12/10/8-minute windows and 2-minute overlap. Tasks 1–3 hardware gates passed on the short fixture; they do not establish long-window acceptance. Execute the explicit policy revision and same-toolchain 16K rebuild below before Task 4. Greater than 16K context is a non-blocking optimization Spike.
 
+**Approved revision (2026-09-09, user-approved final tiering):** window policy is re-tiered to target 10 minutes, fallback 8 minutes, minimum 8 minutes (retry ladder 10 -> 8 -> terminal failure); fallback_window == minimum_window == 8 minutes, an 8-minute window failing again is a terminal failure (`RetryExhausted`) with no further automatic down-scaling, and adding smaller tiers (6m/4m/…) below the minimum is forbidden. The 2-minute overlap, context 16,384, generation reserve 5,120 and safety margin 512 are unchanged. The same approval fixes the parser boundary semantics: a segment end at most one 10 ms model-raster half-step past the window end is clamped to the window end (`END_TIMESTAMP_CLAMPED_TO_WINDOW_END`, original value retained for audit), and a terminal fragment that is only a dangling timestamp is dropped (`DANGLING_TRAILING_TIMESTAMP_DROPPED`, verbatim text retained); any larger overshoot, any start-timestamp overshoot, and any fragment carrying speaker or text stays INVALID (`MOSS_INVALID_GENERATION`). Verified against the verbatim board capture `gradient-8m-w1` (audio sha256 `bd4776d6b321e7f5fd4d140576e3b2c9ffbe52d03acc9d149ec8fa707c53b998`): the run that previously published 0 segments now yields 74 VALID + 1 REPAIRED segments.
+
 **Implementation checkpoint (2026-09-08):** Task 4 (`1bb64e8`) passed 40 bundle tests and validation on the conversion workstation, local E: storage, and RK3588; bundle manifest SHA-256 is `a50ce60b04e3715a4ce9d05381336fd95072f359c7883115e946d55321657e69`. Task 5 (`6521c80`) adds immutable shared records without replacing the approved planner. Task 6 (`3421c61`) passed 69 combined MOSS tests and full input-ID parity with the official processor for 8/10/12-minute engineering fixtures and a one-sample tail. A real-tokenizer long-prompt case planned 10 minutes after rejecting 12 minutes (10,798 expanded tokens vs. 9,226 at 10 minutes). Native submission guards, completion metadata, durable generation-limit retries, and long-window NPU acceptance remain pending Tasks 10/11 and acceptance tasks. These are local commits, not a production deployment; TCP/8000 remains unchanged.
 
 Tasks 7–9 are locally committed: parser `131da3f`, anonymous speaker remap/merge `e994517`, and durable spool `6da5824`. Task 9 passed both independent reviews, 139 combined backend MOSS tests on Windows (one symlink-creation test skipped), and all 26 storage tests on Linux. Retained FAILED/DONE attempts cannot be overwritten or rebound during retries, and nested alternate segments must retain the same model revision. Production deployment remains incomplete; no push has occurred.
@@ -25,10 +27,10 @@ Tasks 7–9 are locally committed: parser `131da3f`, anonymous speaker remap/mer
 - Acoustic graph: MOSS Whisper-Medium -> 4x time merge -> VQAdaptor, RKNN FP16.
 - Decoder: **MOSS-tuned** Qwen3-0.6B, RKLLM W8A8. Stock Qwen3 weights are forbidden as a fallback.
 - Decoder input: `RKLLM_INPUT_EMBED`, complete host-built `float32[n_tokens,1024]`.
-- Logical progress boundary: 60 minutes. Target model window: 12 minutes. Adjacent windows overlap 2 minutes.
-- Context fallback ladder: 12 -> 10 -> 8 minutes; failure at 8 minutes is explicit. Short recording/logical-boundary tails are allowed, but are not extra fallback tiers.
+- Logical progress boundary: 60 minutes. Target model window: 10 minutes (2026-09-09 final tiering). Adjacent windows overlap 2 minutes.
+- Context fallback ladder: 10 -> 8 minutes; failure at 8 minutes is explicit. fallback == minimum == 8 minutes: a failed 8-minute window is terminal (`RetryExhausted`), no tier exists below the minimum, and adding smaller tiers (6m/4m/…) is forbidden. Short recording/logical-boundary tails are allowed, but are not extra fallback tiers.
 - Context 16,384; fixed generation reserve 5,120 and safety 512. Require actual tokenizer/processor expanded input for the candidate interval: count+5120+512<=16384. Duration estimates cannot authorize execution.
-- Generated count >=5120, missing normal termination, or incomplete output tail produces `GENERATION_LIMIT_REACHED`. Retain diagnostics, publish no partial authoritative result, and re-execute the failed coverage interval using 10/8-minute windows; tier 8 failure is terminal.
+- Generated count >=5120, missing normal termination, or incomplete output tail produces `GENERATION_LIMIT_REACHED`. Retain diagnostics, publish no partial authoritative result, and re-execute the failed coverage interval using 8-minute windows; tier 8 failure is terminal.
 - Acoustic micro-chunk: 30 seconds, RKNN input `[1,80,3000]`; padded tail keeps only valid adapted tokens.
 - `max_concurrent_moss_jobs=1`, `max_concurrent_rknn_runs=1`, `max_concurrent_rkllm_runs=1`.
 - Raw WAV + SHA-256 is immutable source evidence; every model product is derived/versioned.
@@ -62,7 +64,7 @@ tools/moss_rk3588/
 linux/backend/moss_worker/
   types.py                      # shared immutable job/window/segment types
   context_budget.py             # exact MOSS input-token budgeting
-  windowing.py                  # 60m logical boundaries, target 12m/2m overlap
+  windowing.py                  # 60m logical boundaries, target 10m/2m overlap
   generation_policy.py          # fail-closed generation completion checks
   embedding_builder.py          # tokenizer/time markers/masked audio injection
   parser.py                     # generation -> absolute-time segments
@@ -455,7 +457,7 @@ git commit -m "feat: define MOSS RK3588 runtime bundle"
 
 **Interfaces:**
 - Reuse `ContextBudget(max_context_len=16384)` with fixed reserve=5120 and safety=512 from the approved revision; do not add a second planner with different defaults.
-- `plan_windows(duration_ms, expanded_input_tokens, budget)` selects 12/10/8m using the required actual interval-specific input counter.
+- `plan_windows(duration_ms, expanded_input_tokens, budget)` selects 10/8m using the required actual interval-specific input counter (2026-09-09 final tiering).
 - Retain tested `WindowSpec(start_ms,end_ms,logical_chunk_index,window_minutes)`; the last field preserves retry tier even on clipped tails.
 - For a non-first window, ownership begins at `start_ms + overlap_ms`; `logical_chunk_index = ownership_start_ms // 3_600_000`.
 
@@ -498,6 +500,8 @@ start = 0
 while start < total_ms:
     ownership_start = start if not windows else start + overlap_ms
     logical_end = ((ownership_start // HOUR_MS) + 1) * HOUR_MS
+    # Historical pseudocode as originally planned (ladder was (12, 10, 8));
+    # superseded by the 2026-09-09 approved revision: ladder is now (10, 8).
     for minutes in (12, 10, 8):
         end = min(start + minutes*60_000, logical_end, total_ms)
         if budget.fits(expanded_input_tokens(start, end)):
@@ -808,7 +812,7 @@ def test_completed_window_is_not_recomputed_after_child_crash(spool, windows):
 
 - [ ] **Step 3: Implement state transitions/serialization.** Only the spec states are legal; terminal states cannot transition out.
 
-- [ ] **Step 4: Implement retry policy.** Context/OOM or `GENERATION_LIMIT_REACHED`: 12->10->8 with 2-minute overlap and fixed reserve/safety. `plan_retry_windows` covers the full failed interval, preserving raw failed attempts and unrelated completed windows; only completed replacements enter the authoritative timeline. Test full coverage, repeated failures, tier 8 terminal and no infinite clipped-tail retry. Native crash: restart/self-test child and retry same window once; second crash fails job.
+- [ ] **Step 4: Implement retry policy.** Context/OOM or `GENERATION_LIMIT_REACHED`: 10->8 with 2-minute overlap and fixed reserve/safety (2026-09-09 final tiering). `plan_retry_windows` covers the full failed interval, preserving raw failed attempts and unrelated completed windows; only completed replacements enter the authoritative timeline. Test full coverage, repeated failures, tier 8 terminal and no infinite clipped-tail retry. Native crash: restart/self-test child and retry same window once; second crash fails job.
 
 - [ ] **Step 5: Implement cancellation.** QUEUED immediate; RUNNING sets cancel flag; 10s native cancellation grace then kill/restart child; preserve completed checkpoints.
 

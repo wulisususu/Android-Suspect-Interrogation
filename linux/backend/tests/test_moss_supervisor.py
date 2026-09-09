@@ -59,7 +59,7 @@ def test_crash_resume_preserves_done_and_retries_same_coverage_once(tmp_path):
     supervisor.run_pending()
     assert supervisor.get_job(job.job_id).state is JobState.COMPLETED
     counts = Counter((w.start_ms, w.end_ms) for _, w in child.calls)
-    assert counts == {(0, 720000): 1, (600000, 780000): 2}
+    assert counts == {(0, 600000): 1, (480000, 780000): 2}
     assert len({identity for identity, _ in child.calls}) == 3
     assert child.starts == 2
     supervisor.close()
@@ -106,17 +106,27 @@ def test_retry_covers_entire_interval_and_preserves_raw_attempts(tmp_path, error
     supervisor.close()
 
 
+def test_submit_records_approved_window_policy_revision(tmp_path):
+    supervisor = make_supervisor(tmp_path, ScriptedChild())
+    job = supervisor.submit(audio(tmp_path, 1))
+    record = supervisor.spool.load_job(job.job_id)
+    assert record['revision']['windowing_params'] == dict(
+        target_minutes=10, fallback_minutes=8, minimum_minutes=8,
+        overlap_ms=120000, logical_chunk_ms=3600000)
+    supervisor.close()
+
+
 def test_minimum_and_clipped_tail_failure_is_terminal(tmp_path):
     child = ScriptedChild(lambda window: 'GENERATION_LIMIT_REACHED')
     supervisor = make_supervisor(tmp_path, child)
     job = supervisor.submit(audio(tmp_path, 1))
     supervisor.run_pending()
-    assert [w.window_minutes for _, w in child.calls] == [12, 10, 8]
+    assert [w.window_minutes for _, w in child.calls] == [10, 8]
     assert supervisor.get_job(job.job_id).state is JobState.FAILED
     assert supervisor.get_result(job.job_id) is None
     supervisor.resume(job.job_id)
     supervisor.run_pending()
-    assert len(child.calls) == 3
+    assert len(child.calls) == 2
     supervisor.close()
 
 
@@ -457,7 +467,7 @@ def test_invalid_nonterminal_window_result_fails_without_retry(tmp_path):
 
 def test_first_window_partial_replacements_never_publish_authoritative_output(tmp_path):
     def failure(window):
-        if window.window_minutes == 12 or window.start_ms:
+        if window.window_minutes == 10 or window.start_ms:
             return 'GENERATION_LIMIT_REACHED'
     child = ScriptedChild(failure)
     supervisor = make_supervisor(tmp_path, child)
@@ -475,8 +485,10 @@ def test_speaker_merge_replay_after_checkpoint_is_stable(tmp_path, monkeypatch):
     class SpeakingChild(ScriptedChild):
         def infer(self, *args):
             result, metadata = super().infer(*args)
+            # 590000 sits inside both planned windows' shared overlap region
+            # (W1 0-10min, W2 8-13min) so the merger deduplicates across windows.
             utterance = segment(window_id=result.window_id, segment_id=result.window_id + '-s1',
-                start_ms=610000, end_ms=611000)
+                start_ms=590000, end_ms=591000)
             return replace(result, segments=(utterance,)), metadata
     child = SpeakingChild()
     supervisor = make_supervisor(tmp_path, child)
@@ -519,7 +531,7 @@ def test_changed_audio_does_not_strand_unrelated_queued_job(tmp_path):
 
 
 def test_explicit_oom_releases_child_before_smaller_retry(tmp_path):
-    child = ScriptedChild(lambda window: 'MOSS_OOM' if window.window_minutes == 12 else None)
+    child = ScriptedChild(lambda window: 'MOSS_OOM' if window.window_minutes == 10 else None)
     supervisor = make_supervisor(tmp_path, child)
     job = supervisor.submit(audio(tmp_path, 1))
     supervisor.run_pending()
