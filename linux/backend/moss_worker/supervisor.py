@@ -28,6 +28,7 @@ class ChildCancelled(RuntimeError):
 
 TERMINAL = {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
 NATIVE_STATES = {JobState.ENCODING, JobState.BUILDING_EMBEDS, JobState.DECODING, JobState.PARSING}
+RECOVERY_ERROR = 'MOSS_RECOVERY_REQUIRED: nonterminal job found after restart'
 
 
 class ProcessChild:
@@ -163,6 +164,47 @@ class MossSupervisor:
         self._active_job = None
         self._cancel = {}
         self._serial, self._lock = Lock(), RLock()
+        self._recovery_failures = {}
+        # V1 crash-recovery ruling: never auto-resume. Jobs that a restart
+        # found mid-flight become explicitly RECOVERY_REQUIRED (persisted);
+        # COMPLETED/FAILED/CANCELLED evidence is left exactly as it is.
+        self._recover_spool()
+
+    def _recover_spool(self):
+        """Startup scan: mark every non-terminal spool job RECOVERY_REQUIRED.
+
+        Best effort per job: unreadable or audio-mismatched records keep their
+        existing behavior (get_job reports them verbatim) and are recorded in
+        ``recovery_failures`` instead of aborting the scan. Terminal states are
+        skipped via a cheap job.json peek so a restart neither recomputes nor
+        re-hashes large completed evidence files.
+        """
+        jobs_root = Path(self.spool.root) / 'jobs'
+        if not jobs_root.is_dir():
+            return
+        for entry in sorted(jobs_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            job_id = entry.name
+            try:
+                peeked = self._peek_state(job_id)
+                if peeked is not None and peeked in TERMINAL | {JobState.RECOVERY_REQUIRED}:
+                    continue
+                if self.get_job(job_id).state in TERMINAL | {JobState.RECOVERY_REQUIRED}:
+                    continue
+                self._state(job_id, JobState.RECOVERY_REQUIRED, RECOVERY_ERROR)
+            except (ValueError, OSError) as exc:
+                self._recovery_failures[job_id] = str(exc)
+
+    def _peek_state(self, job_id):
+        """Best-effort state read without integrity/hash work (scan fast path)."""
+        try:
+            record = json.loads(
+                (Path(self.spool.root) / 'jobs' / job_id / 'job.json').read_text(encoding='utf-8')
+            )
+            return str(record['snapshot']['state'])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
 
     def _actual_counter(self, wav):
         from .audio_frontend import AudioFrontend
@@ -211,6 +253,15 @@ class MossSupervisor:
         """
         with self._lock:
             return len(self._queue), self._active_job
+
+    @property
+    def recovery_failures(self):
+        """Jobs the startup scan could not mark (e.g. MOSS_AUDIO_CHANGED).
+
+        Those records keep their existing verbatim get_job failure behavior;
+        this mapping is diagnostic only.
+        """
+        return dict(self._recovery_failures)
 
     def resume(self, job_id):
         with self._lock:

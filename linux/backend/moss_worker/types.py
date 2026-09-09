@@ -17,6 +17,11 @@ class JobState(str, Enum):
     COMPLETED = 'COMPLETED'
     FAILED = 'FAILED'
     CANCELLED = 'CANCELLED'
+    # Set only by the startup spool scan: a restart found this job in a
+    # non-terminal state. Persisted and reported verbatim; the worker never
+    # auto-resumes it (V1 ruling) — resolution is an explicit business-layer
+    # resubmission on the same immutable audio, or cancel_job.
+    RECOVERY_REQUIRED = 'RECOVERY_REQUIRED'
 
 
 class WindowState(str, Enum):

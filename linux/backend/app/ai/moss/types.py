@@ -78,6 +78,9 @@ class MossWindowStatus:
     error: str | None
     token_count: int | None
     normal_termination: bool | None
+    # Task 16 (additive): worker publishes the per-window published segment
+    # count; None when an older worker build omits it.
+    segment_count: int | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "MossWindowStatus":
@@ -91,6 +94,7 @@ class MossWindowStatus:
             error=_optional_str(payload.get("error")),
             token_count=_optional_int(payload.get("token_count")),
             normal_termination=_optional_bool(payload.get("normal_termination")),
+            segment_count=_optional_int(payload.get("segment_count")),
         )
 
 

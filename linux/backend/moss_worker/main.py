@@ -252,6 +252,10 @@ class MossWorkerServer:
                 "error": result.error,
                 "token_count": result.token_count,
                 "normal_termination": result.normal_termination,
+                # Task 16 (additive, backward compatible): lets the business
+                # layer render per-window incremental transcript progress
+                # without fetching full segment payloads per poll.
+                "segment_count": len(result.segments),
             })
         return statuses
 

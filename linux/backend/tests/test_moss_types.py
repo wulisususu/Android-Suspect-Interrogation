@@ -19,9 +19,12 @@ def segment(**changes):
 
 def test_contract_exports_existing_window_spec_and_exact_states():
     assert types.WindowSpec is WindowSpec
+    # Task 16: RECOVERY_REQUIRED is the persisted restart-scan state (V1
+    # explicit-recovery ruling); it is terminal-adjacent and never auto-resumed.
     assert [s.name for s in types.JobState] == [
         'QUEUED', 'PREPARING', 'ENCODING', 'BUILDING_EMBEDS', 'DECODING',
-        'PARSING', 'REMAPPING', 'MERGING', 'COMPLETED', 'FAILED', 'CANCELLED']
+        'PARSING', 'REMAPPING', 'MERGING', 'COMPLETED', 'FAILED', 'CANCELLED',
+        'RECOVERY_REQUIRED']
     assert [s.name for s in types.WindowState] == ['PENDING', 'RUNNING', 'DONE', 'FAILED']
     assert [s.name for s in types.ParseStatus] == ['VALID', 'REPAIRED', 'INVALID']
     for enum in (types.JobState, types.WindowState, types.ParseStatus, types.MergeStatus):
