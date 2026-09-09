@@ -429,6 +429,8 @@ def test_health_reports_worker_model_manifest_runtime_queue_and_active_job(tmp_p
         "status": "ok",
         "manifest_sha256": "a50ce60b",
         "runtime_versions": {"rknn": "2.3.2", "rkllm": "1.3.0"},
+        "queue_depth": 2,
+        "active_job": "job-7",
         "run_failures": {},
         "scheduler_error": None,
     }
@@ -439,11 +441,24 @@ def test_health_reports_worker_model_manifest_runtime_queue_and_active_job(tmp_p
     assert snapshot["model"] == "INSTALLED"
     assert snapshot["manifest_sha256"] == "a50ce60b"
     assert snapshot["runtime_versions"] == {"rknn": "2.3.2", "rkllm": "1.3.0"}
-    # The worker health op does not publish queue depth / active job yet;
-    # the service reports them explicitly instead of inventing values.
+    # Task 14: the worker health op publishes queue depth / active job now;
+    # the service passes the worker-reported values through verbatim.
+    assert snapshot["queue_depth"] == 2
+    assert snapshot["active_job"] == "job-7"
+    assert snapshot["last_error"] is None
+
+
+def test_health_reports_null_queue_and_active_job_when_worker_omits_them():
+    service, created = _make_service()
+    short, _long = created
+    assert "queue_depth" not in short.health_payload
+    assert "active_job" not in short.health_payload
+
+    snapshot = service.health()
+
+    # Older worker builds without the Task 14 health fields stay compatible.
     assert snapshot["queue_depth"] is None
     assert snapshot["active_job"] is None
-    assert snapshot["last_error"] is None
 
 
 def test_health_last_error_prefers_scheduler_error_then_run_failures():

@@ -233,8 +233,8 @@ class MossTranscriptionService:
             "model": self.model_state(),
             "manifest_sha256": None,
             "runtime_versions": None,
-            # The worker health op does not publish queue depth or the active
-            # job id yet; report them explicitly until the contract grows them.
+            # Defaults until (and unless) the worker health payload provides
+            # the Task 14 queue_depth/active_job values below.
             "queue_depth": None,
             "active_job": None,
             "last_error": None,
@@ -247,6 +247,11 @@ class MossTranscriptionService:
         snapshot["worker"] = "AVAILABLE"
         snapshot["manifest_sha256"] = payload.get("manifest_sha256")
         snapshot["runtime_versions"] = payload.get("runtime_versions")
+        # Task 14: the worker health op publishes queue_depth/active_job
+        # (design §22); pass worker-reported values through and keep None when
+        # an older worker build omits them.
+        snapshot["queue_depth"] = payload.get("queue_depth")
+        snapshot["active_job"] = payload.get("active_job")
         snapshot["last_error"] = _last_worker_error(payload)
         return snapshot
 

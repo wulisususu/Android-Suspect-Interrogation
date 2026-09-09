@@ -416,6 +416,30 @@ def test_simultaneous_runners_are_serial_and_queued_cancel_stays_available(tmp_p
     supervisor.close()
 
 
+def test_queue_status_counts_queued_jobs_and_names_the_active_job(tmp_path):
+    entered, release = Event(), Event()
+    class BlockingChild(ScriptedChild):
+        def infer(self, *args):
+            entered.set()
+            assert release.wait(5)
+            return super().infer(*args)
+    supervisor = make_supervisor(tmp_path, BlockingChild())
+    wav = audio(tmp_path, 1)
+    first, second = supervisor.submit(wav), supervisor.submit(wav)
+    assert supervisor.queue_status() == (2, None)
+    runner = Thread(target=supervisor.run_pending)
+    runner.start()
+    try:
+        assert entered.wait(5)
+        assert supervisor.queue_status() == (1, first.job_id)
+    finally:
+        release.set()
+        runner.join(5)
+        assert not runner.is_alive()
+    assert supervisor.queue_status() == (0, None)
+    supervisor.close()
+
+
 def test_startup_timeout_is_bounded_and_child_reaped():
     module = supervisor_module()
     child = module.ProcessChild([sys.executable, '-c', 'import time; time.sleep(60)'],

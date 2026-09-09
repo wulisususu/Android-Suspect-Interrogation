@@ -9,6 +9,7 @@ import re
 import signal
 import socket
 import stat
+import sys
 import threading
 import wave
 from pathlib import Path
@@ -166,10 +167,16 @@ class MossWorkerServer:
 
     def _route(self, op: str, request: dict[str, Any]) -> Any:
         if op == "health":
+            # Design §22: queue_depth counts jobs not yet started (QUEUED) and
+            # active_job names the job the scheduler is draining (else None);
+            # both derive from the same supervisor state the ops read.
+            queue_depth, active_job = self.supervisor.queue_status()
             return {
                 "status": "ok",
                 "manifest_sha256": str(self.supervisor.manifest_sha256),
                 "runtime_versions": dict(self.supervisor.runtime_versions),
+                "queue_depth": int(queue_depth),
+                "active_job": None if active_job is None else str(active_job),
                 "run_failures": dict(self._last_run_failures),
                 "scheduler_error": self._last_scheduler_error,
             }
@@ -322,6 +329,9 @@ def main() -> int:
     if not rknn_library or not rkllm_library:
         raise SystemExit("MOSS_RKNN_LIBRARY and MOSS_RKLLM_LIBRARY are required")
     cancel_grace = float(os.environ.get("MOSS_CANCEL_GRACE", "10"))
+    # Native inference must run in the isolated Python 3.10 deployment env;
+    # production systemd units set MOSS_CHILD_PYTHON explicitly.
+    child_python = os.environ.get("MOSS_CHILD_PYTHON", sys.executable)
 
     supervisor = MossSupervisor(
         MossSpool(spool_root),
@@ -329,6 +339,7 @@ def main() -> int:
         manifest_sha256=manifest_sha256,
         runtime_versions=runtime_versions,
         cancel_grace=cancel_grace,
+        python_executable=child_python,
         rknn_library=rknn_library,
         rkllm_library=rkllm_library,
     )

@@ -202,6 +202,16 @@ class MossSupervisor:
     def get_job(self, job_id):
         return JobSnapshot.from_dict(self.spool.load_job(job_id)['snapshot'])
 
+    def queue_status(self):
+        """Read-only health view: (queued job count, active job id or None).
+
+        Queued jobs are submitted/resumed but not yet picked up by the
+        scheduler thread; the active job is the one currently drained by
+        run_pending. Read under the same lock that maintains both fields.
+        """
+        with self._lock:
+            return len(self._queue), self._active_job
+
     def resume(self, job_id):
         with self._lock:
             record = self.spool.load_job(job_id)

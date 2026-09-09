@@ -91,17 +91,32 @@ class FakeSpool:
 class FakeSupervisor:
     """Server-facing stand-in mirroring the MossSupervisor public surface."""
 
-    def __init__(self, *, job=None, result=None, spool=None, run_failures=None):
+    def __init__(
+        self,
+        *,
+        job=None,
+        result=None,
+        spool=None,
+        run_failures=None,
+        queue_depth=0,
+        active_job=None,
+    ):
         self.manifest_sha256 = "manifest"
         self.runtime_versions = {"python": "test"}
         self.job = job
         self.result = result
         self.spool = spool or FakeSpool()
         self.run_failures = dict(run_failures or {})
+        self.queue_depth = int(queue_depth)
+        self.active_job = active_job
         self.run_pending_calls = 0
         self.errors: dict = {}
         self.submitted: list = []
         self.cancelled: list = []
+
+    def queue_status(self):
+        """Mirror MossSupervisor.queue_status(): (queued count, active job id)."""
+        return self.queue_depth, self.active_job
 
     def fail(self, op, exc):
         self.errors[op] = exc
@@ -177,6 +192,22 @@ def test_scheduler_error_is_surfaced_and_not_silently_swallowed():
     health = server._dispatch({"op": "health"})
 
     assert "MOSS_CHILD_CRASHED" in health["scheduler_error"]
+
+
+def test_health_reports_queue_depth_and_active_job_from_supervisor_state():
+    supervisor = FakeSupervisor(queue_depth=2, active_job="job-7")
+
+    health = _server(supervisor)._dispatch({"op": "health"})
+
+    assert health["queue_depth"] == 2
+    assert health["active_job"] == "job-7"
+
+
+def test_health_reports_empty_queue_and_no_active_job_when_worker_is_idle():
+    health = _server(FakeSupervisor())._dispatch({"op": "health"})
+
+    assert health["queue_depth"] == 0
+    assert health["active_job"] is None
 
 
 def test_submit_job_preserves_failed_interval_attempt_tier_and_termination_metadata():
@@ -649,6 +680,8 @@ def test_client_and_server_round_trip_full_job_lifecycle(tmp_path):
         assert health["status"] == "ok"
         assert health["manifest_sha256"] == "manifest"
         assert health["runtime_versions"] == {"python": "test"}
+        assert health["queue_depth"] == 0
+        assert health["active_job"] is None
 
         job = client.submit_job(str(wav))
         assert isinstance(job, MossJobSnapshot)
@@ -686,6 +719,10 @@ def test_cancel_running_job_through_client(tmp_path):
         client = MossWorkerClient(socket_path, timeout=2.0)
         job = client.submit_job(str(wav))
         assert entered.wait(5)
+
+        running = client.health()
+        assert running["active_job"] == job.job_id
+        assert running["queue_depth"] == 0
 
         snapshot = client.cancel_job(job.job_id)
         assert snapshot.error == "MOSS_CANCEL_REQUESTED"
@@ -798,3 +835,77 @@ def test_non_socket_path_is_never_deleted_as_stale_socket(tmp_path):
         server.bind()
 
     assert socket_path.read_text(encoding="utf-8") == "do not delete"
+
+
+# --------------------------------------------------------------------------
+# Worker entrypoint environment (systemd deployment surface)
+# --------------------------------------------------------------------------
+
+
+class _EntrypointServed(Exception):
+    pass
+
+
+def _entrypoint_env(monkeypatch, tmp_path, **extra):
+    env = {
+        "SUSPECT_MOSS_SOCKET": str(tmp_path / "moss.sock"),
+        "MOSS_SPOOL_ROOT": str(tmp_path / "spool"),
+        "MOSS_MODEL_BUNDLE": str(tmp_path / "bundle"),
+        "MOSS_MODEL_MANIFEST_SHA256": "a" * 64,
+        "MOSS_RUNTIME_VERSIONS": '{"rknn": "2.3.2", "rkllm": "1.3.0", "python": "3.10"}',
+        "MOSS_RKNN_LIBRARY": str(tmp_path / "librknnrt.so"),
+        "MOSS_RKLLM_LIBRARY": str(tmp_path / "librkllmrt.so"),
+    }
+    env.update(extra)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    for key in ("MOSS_CHILD_PYTHON", "MOSS_CANCEL_GRACE"):
+        if key not in env:
+            monkeypatch.delenv(key, raising=False)
+
+
+def _run_entrypoint_with_stubs(monkeypatch, captured):
+    import moss_worker.main as worker_main
+
+    class RecordingSupervisor:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+    class StubServer:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def bind(self):
+            pass
+
+        def serve_forever(self):
+            raise _EntrypointServed()
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(worker_main, "MossSupervisor", RecordingSupervisor)
+    monkeypatch.setattr(worker_main, "MossWorkerServer", StubServer)
+
+    with pytest.raises(_EntrypointServed):
+        worker_main.main()
+
+
+def test_entrypoint_uses_configured_isolated_child_interpreter(monkeypatch, tmp_path):
+    captured: dict = {}
+    _entrypoint_env(monkeypatch, tmp_path, MOSS_CHILD_PYTHON="/private/python3.10")
+
+    _run_entrypoint_with_stubs(monkeypatch, captured)
+
+    assert captured["python_executable"] == "/private/python3.10"
+
+
+def test_entrypoint_defaults_child_interpreter_to_current_process(monkeypatch, tmp_path):
+    import sys
+
+    captured: dict = {}
+    _entrypoint_env(monkeypatch, tmp_path)
+
+    _run_entrypoint_with_stubs(monkeypatch, captured)
+
+    assert captured["python_executable"] == sys.executable
