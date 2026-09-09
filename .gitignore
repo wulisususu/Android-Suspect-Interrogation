@@ -26,3 +26,5 @@ __pycache__/
 # local pytest/ephemeral context dirs (never audit evidence)
 .pytest-context-*/
 .pytest_cache/
+linux/backend/**/*.db-wal
+linux/backend/**/*.db-shm
