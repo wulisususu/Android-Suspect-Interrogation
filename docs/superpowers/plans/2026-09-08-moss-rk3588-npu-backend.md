@@ -14,6 +14,8 @@
 
 **Approved revision (2026-09-09, user-approved final tiering):** window policy is re-tiered to target 10 minutes, fallback 8 minutes, minimum 8 minutes (retry ladder 10 -> 8 -> terminal failure); fallback_window == minimum_window == 8 minutes, an 8-minute window failing again is a terminal failure (`RetryExhausted`) with no further automatic down-scaling, and adding smaller tiers (6m/4m/…) below the minimum is forbidden. The 2-minute overlap, context 16,384, generation reserve 5,120 and safety margin 512 are unchanged. The same approval fixes the parser boundary semantics: a segment end at most one 10 ms model-raster half-step past the window end is clamped to the window end (`END_TIMESTAMP_CLAMPED_TO_WINDOW_END`, original value retained for audit), and a terminal fragment that is only a dangling timestamp is dropped (`DANGLING_TRAILING_TIMESTAMP_DROPPED`, verbatim text retained); any larger overshoot, any start-timestamp overshoot, and any fragment carrying speaker or text stays INVALID (`MOSS_INVALID_GENERATION`). Verified against the verbatim board capture `gradient-8m-w1` (audio sha256 `bd4776d6b321e7f5fd4d140576e3b2c9ffbe52d03acc9d149ec8fa707c53b998`): the run that previously published 0 segments now yields 74 VALID + 1 REPAIRED segments.
 
+**Implementation checkpoint (2026-09-09, Task 16):** backend wave implemented on the working tree for review (not committed by the implementing agent): worker `RECOVERY_REQUIRED` startup scan (+ additive per-window `segment_count`), tables + Alembic `0013_moss_transcription_integration`, `MossTranscriptionCoordinator` (submit/poll/resubmit/mapping), and the business API with `MOSS_ENABLED=0` disabled semantics. `MOSS_ENABLED` still defaults to `0`; the webapp/UI wave and the `MOSS_ENABLED=1` activation (submit → query → write-back → frontend → on-device smoke → enable) are the next waves; production deployment per `AGENTS.md` remains pending.
+
 **Implementation checkpoint (2026-09-08):** Task 4 (`1bb64e8`) passed 40 bundle tests and validation on the conversion workstation, local E: storage, and RK3588; bundle manifest SHA-256 is `a50ce60b04e3715a4ce9d05381336fd95072f359c7883115e946d55321657e69`. Task 5 (`6521c80`) adds immutable shared records without replacing the approved planner. Task 6 (`3421c61`) passed 69 combined MOSS tests and full input-ID parity with the official processor for 8/10/12-minute engineering fixtures and a one-sample tail. A real-tokenizer long-prompt case planned 10 minutes after rejecting 12 minutes (10,798 expanded tokens vs. 9,226 at 10 minutes). Native submission guards, completion metadata, durable generation-limit retries, and long-window NPU acceptance remain pending Tasks 10/11 and acceptance tasks. These are local commits, not a production deployment; TCP/8000 remains unchanged.
 
 Tasks 7–9 are locally committed: parser `131da3f`, anonymous speaker remap/merge `e994517`, and durable spool `6da5824`. Task 9 passed both independent reviews, 139 combined backend MOSS tests on Windows (one symlink-creation test skipped), and all 26 storage tests on Linux. Retained FAILED/DONE attempts cannot be overwritten or rebound during retries, and nested alternate segments must retain the same model revision. Production deployment remains incomplete; no push has occurred.
@@ -1047,6 +1049,84 @@ Do not report implementation complete before all ten checks pass. If source is c
 
 ---
 
+## Task 16: Wire MOSS transcription into the interrogation workflow (2026-09-09, user-approved)
+
+**Approved scope (2026-09-09, user-approved):** the already-produced MOSS backend is integrated into the interrogation business workflow — the core chain is `审讯录音 → stable WAV/audio revision → MOSS submit_job → background async processing → get_job/get_result → absolute timestamp + GSxx + text → written into the interrogation records → frontend incremental display`. Locked requirements: recording and the existing Paraformer realtime ASR are never blocked; MOSS runs as an async job; page states are 排队/处理中/完成/失败; one completed window is enough to append its segment text; `GS01`/`GS02` stay anonymous speakers with a manual case-level mapping interface (GS01→民警, GS02→嫌疑人); results are saved as transcription revisions with audio hash, model manifest, job id and window provenance; any failure must never overwrite the existing interrogation text (MOSS writes only its own tables/columns).
+
+**Crash recovery ruling (2026-09-09, user-approved, this wave):** V1 does not auto-resume, but recovery must be explicit. After a worker restart, `COMPLETED` jobs stay readable and are never recomputed; spool jobs found in non-terminal states (`QUEUED`/`PREPARING`/`ENCODING`/`DECODING`/…) enter a new persisted state **`RECOVERY_REQUIRED`** that `get_job` reports verbatim; resubmission happens at the business layer and must target the **same immutable WAV/SHA-256** (hash mismatch → 409-class rejection). Automatic recovery is a separately approved V2.
+
+**MOSS_ENABLED order (2026-09-09, user-approved):** the default stays `0`. Business API wiring → submit → query → write-back → frontend → on-device smoke → only then activation. With `MOSS_ENABLED=0` every new endpoint degrades gracefully (503 + explicit error code, never a crash).
+
+**Files:**
+- Create: `linux/backend/app/database/moss_models.py`
+- Create: `linux/backend/alembic/versions/0013_moss_transcription_integration.py`
+- Create: `linux/backend/app/repositories/moss_transcriptions.py`
+- Create: `linux/backend/app/services/moss_transcription_coordinator.py`
+- Create: `linux/backend/app/api/moss_transcription.py`
+- Modify: `linux/backend/app/database/session.py` (import moss models before `create_all`)
+- Modify: `linux/backend/alembic/env.py` (register moss models in migration metadata)
+- Modify: `linux/backend/app/main.py` (coordinator lifecycle + router registration)
+- Modify: `linux/backend/moss_worker/types.py` (`JobState.RECOVERY_REQUIRED`)
+- Modify: `linux/backend/moss_worker/supervisor.py` (startup spool recovery scan)
+- Modify: `linux/backend/moss_worker/main.py` (additive per-window `segment_count`)
+- Test: `linux/backend/tests/test_moss_worker_recovery.py`
+- Test: `linux/backend/tests/test_moss_transcription_models.py`
+- Test: `linux/backend/tests/test_moss_transcription_coordinator.py`
+- Test: `linux/backend/tests/test_moss_transcription_api.py`
+- Modify test: `linux/backend/tests/test_migrations.py`
+
+**Interfaces:**
+- `MossSupervisor(...)` performs a constructor spool scan: every non-terminal job becomes `RECOVERY_REQUIRED` (persisted via the existing atomic job write); `COMPLETED`/`FAILED`/`CANCELLED` are untouched; `cancel` on a `RECOVERY_REQUIRED` job follows the existing idempotent terminal semantics.
+- `POST /api/v1/cases/{case_id}/moss-transcription` (submit), `GET /api/v1/cases/{case_id}/moss-transcription` (status incl. `windows[{windowId,state,segmentCount}]`), `GET /api/v1/cases/{case_id}/moss-transcription/transcript` (revision segments with display `role` plus the anonymous `GSxx` original), `POST /api/v1/cases/{case_id}/moss-transcription/resubmit`, `GET/PUT /api/v1/cases/{case_id}/moss-speaker-mapping`.
+- Tables: `moss_transcriptions` (case, audio path/hash, job id, model manifest, state, error), `moss_transcription_revisions` (append-only segments JSON with `absolute_ms`/`gs`/`text`/`window_id`, provenance, mapping snapshot), `moss_speaker_mappings` (case-level GS→role).
+- `MossTranscriptionCoordinator`: submit (validate case+audio, record hash, call `MossTranscriptionService.submit_job`), background poll loop owned by the app lifespan (`get_job` → state write-back; `COMPLETED` → `get_result` → append revision; `RECOVERY_REQUIRED`/`FAILED`/`CANCELLED` → terminal write-back), resubmit with enforced identical `audio_sha256`, mapping get/put.
+- `MOSS_ENABLED=0` → every endpoint answers `503` with `MOSS_DISABLED`.
+
+- [ ] **Step 1: Write the failing worker recovery tests.**
+
+```python
+def test_restart_marks_nonterminal_jobs_recovery_required(tmp_path):
+    supervisor = make_supervisor(tmp_path, ScriptedChild())
+    job = supervisor.submit(audio(tmp_path, 1))
+    supervisor._state(job.job_id, JobState.DECODING)
+    recovered = make_supervisor(tmp_path, ScriptedChild())
+    assert recovered.get_job(job.job_id).state is JobState.RECOVERY_REQUIRED
+    assert json.loads((tmp_path / 'spool' / 'jobs' / job.job_id / 'job.json').read_text())['snapshot']['state'] == 'RECOVERY_REQUIRED'
+```
+
+Also pin: terminal states survive a new supervisor unchanged, cancel on `RECOVERY_REQUIRED` is idempotent to `CANCELLED`, and `_job_payload` windows carry an additive `segment_count`.
+
+- [ ] **Step 2: Verify failure.** Run: `cd linux/backend && python -m pytest tests/test_moss_worker_recovery.py -q` — expect `AttributeError`/`ValueError` because `RECOVERY_REQUIRED` and the scan do not exist.
+
+- [ ] **Step 3: Implement the worker recovery scan.** Add `JobState.RECOVERY_REQUIRED`; scan in the supervisor constructor (per-job best effort, failures recorded); keep `cancel`/`resume` semantics untouched; add the additive `segment_count` field to `_window_statuses`.
+
+- [ ] **Step 4: Verify worker green.** Run: `cd linux/backend && python -m pytest tests/test_moss_worker_recovery.py tests/test_moss_supervisor.py tests/test_moss_client_server.py tests/test_moss_types.py -q`
+
+- [ ] **Step 5: Write the failing model/migration/coordinator/API tests.** Models + alembic upgrade (temporary-file sqlite via the existing `tests/test_migrations.py` subprocess pattern), coordinator submit/poll/resubmit/mapping with a fake transcription service (monkeypatch, no socket), API contract including the disabled state, 409 hash mismatch, and byte-identical interrogation text after a MOSS failure.
+
+- [ ] **Step 6: Verify failure.** Run: `cd linux/backend && python -m pytest tests/test_moss_transcription_models.py tests/test_moss_transcription_coordinator.py tests/test_moss_transcription_api.py -q` — expect import/404 failures because the modules and routes do not exist.
+
+- [ ] **Step 7: Implement the app side.** Tables + migration `0013_moss_transcription_integration`; repository; coordinator (asyncio poll task started/stopped in the app lifespan, `asyncio.to_thread` around the synchronous socket client); router wired in `app/main.py`; failure isolation: coordinator and endpoints write only `moss_*` tables.
+
+- [ ] **Step 8: Verify green and run the regression groups.**
+
+```bash
+cd linux/backend && python -m pytest tests/test_moss_worker_recovery.py tests/test_moss_transcription_models.py tests/test_moss_transcription_coordinator.py tests/test_moss_transcription_api.py -q
+cd linux/backend && python -m pytest tests -k moss -q
+cd linux/backend && python -m pytest tests/test_migrations.py tests/test_api.py tests/test_api_contract.py tests/test_asr_api.py tests/test_asr_main_wiring.py tests/test_health_contract.py tests/test_capability_health.py tests/test_database.py -q
+```
+
+- [ ] **Step 9: Commit.**
+
+```bash
+git add linux/backend/app linux/backend/alembic linux/backend/moss_worker linux/backend/tests linux/backend/docs
+git commit -m "feat: wire moss transcription into interrogation records"
+```
+
+Production deployment and the `MOSS_ENABLED=1` activation follow `AGENTS.md` and remain part of this task's Definition of Done; webapp/UI work is the second wave and is intentionally not in this task.
+
+---
+
 ## Execution Gates
 
 ```text
@@ -1057,6 +1137,7 @@ Task 1  Golden reference + MOSS Qwen repack
   -> Tasks 5-12 runtime/windowing/persistence/IPC
   -> Tasks 13-14 application + system deployment
   -> Task 15 long-audio acceptance + production verification
+  -> Task 16 interrogation business integration (API/poll/revisions/mapping/RECOVERY_REQUIRED)
 ```
 
 **Stop at Gate A** if external embeddings do not yield structurally valid MOSS output. No stock-Qwen/CPU fallback.

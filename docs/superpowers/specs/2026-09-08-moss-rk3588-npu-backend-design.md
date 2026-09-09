@@ -8,6 +8,8 @@ Approved revision (2026-09-08): retain the Gate A/Gate B validated RKNN/RKLLM to
 
 Approved revision (2026-09-09, user-approved final tiering): window policy is re-tiered to target 10 minutes, fallback 8 minutes, minimum 8 minutes (retry ladder 10 -> 8 -> terminal failure); fallback_window == minimum_window == 8 minutes, an 8-minute window failing again is a terminal failure (`RetryExhausted`) with no further automatic down-scaling, and adding smaller tiers (6m/4m/…) below the minimum is forbidden. The 2-minute overlap, 16,384 context, 5,120 generation reserve and 512 safety margin are unchanged. The same approval fixes the parser boundary semantics: a segment end at most one 10 ms model-raster half-step past the window end is clamped to the window end (`END_TIMESTAMP_CLAMPED_TO_WINDOW_END`, original value retained for audit), and a terminal fragment that is only a dangling timestamp is dropped (`DANGLING_TRAILING_TIMESTAMP_DROPPED`, verbatim text retained); any larger overshoot, any start-timestamp overshoot, and any fragment carrying speaker or text stays INVALID (`MOSS_INVALID_GENERATION`). Verified against the verbatim board capture `gradient-8m-w1` (audio sha256 `bd4776d6b321e7f5fd4d140576e3b2c9ffbe52d03acc9d149ec8fa707c53b998`): the run that previously published 0 segments now yields 74 VALID + 1 REPAIRED segments.
 
+Approved revision (2026-09-09, user-approved interrogation business integration): the produced MOSS backend is wired into the interrogation business workflow as Task 16. The core chain is 审讯录音 → stable WAV/audio revision → MOSS `submit_job` → background async processing → `get_job`/`get_result` → absolute timestamps + anonymous `GSxx` + text → written into the interrogation records → frontend incremental per-window display. Recording and the existing Paraformer realtime ASR path are never blocked; results are persisted as transcription revisions with audio hash, model manifest SHA-256, job id and window provenance; failures never overwrite existing interrogation text. V1 crash recovery is explicit, not automatic: see §32 and the `RECOVERY_REQUIRED` state in §16. `MOSS_ENABLED` keeps the default `0`; activation follows the approved order (business API → submit → query → write-back → frontend → on-device smoke → enable).
+
 ## 1. Objective
 
 Introduce a standalone, fully offline `MOSS-RK3588 NPU backend` for long-form transcription plus anonymous speaker diarization on a single RK3588 32 GB device.
@@ -497,7 +499,10 @@ MERGING
 COMPLETED
 FAILED
 CANCELLED
+RECOVERY_REQUIRED
 ```
+
+`RECOVERY_REQUIRED` (2026-09-09 business-integration approval, §32) is a persisted, explicitly reported state entered only by the supervisor startup scan when a spool job is found in a non-terminal state after a worker restart. It is a settled state: the worker never auto-resumes it (V1 ruling); resolution is a business-layer resubmission against the same immutable audio hash, or an explicit `cancel_job`, which follows the existing idempotent terminal semantics into `CANCELLED`.
 
 Each internal window independently tracks:
 
@@ -880,3 +885,86 @@ This design is the approved basis for the implementation plan. No implementation
 ## 31. Non-blocking optimization Spike: context greater than 16K
 
 Investigate official support, memory/performance cost and exact MOSS parity for context greater than 16,384 only after the primary 16K path is functional. Record results separately. This Spike neither blocks Phase 1 nor authorizes replacing the validated primary toolchain, changing RoPE, silently extending the compiled context, or relaxing the window/generation gates.
+
+## 32. Interrogation Business Integration (2026-09-09, user-approved, Task 16)
+
+This section parallels the worker design above and defines how the produced MOSS backend serves the interrogation workflow. It changes nothing in the parser, windowing, retry ladder or supervisor scheduling except the startup recovery scan defined in §32.6.
+
+### 32.1 Core chain and isolation rules
+
+```text
+审讯录音 → 稳定 WAV/audio revision
+  → POST submit (business API) → MOSS submit_job (async job)
+  → background poll get_job → COMPLETED → get_result
+  → absolute timestamp + GSxx + text → transcription revision (moss_* tables)
+  → status/transcript API → frontend per-window incremental display
+```
+
+Hard rules:
+
+- Submitting and polling MOSS never blocks audio recording nor the existing Paraformer realtime ASR path; all worker I/O happens in a background poller on its own task/thread budget, and the existing `speech_worker`/TCP/8000 surface is untouched.
+- The business database gains only new `moss_*` tables. No existing table used by the realtime ASR path (`messages`, `asr_fragments`, …) is written by the MOSS path; a MOSS failure leaves the interrogation text byte-identical (pinned by tests).
+- `GSxx` labels are stored and returned verbatim as anonymous speakers; person identity is never inferred. A case-level manual mapping (e.g. `GS01→民警`, `GS02→嫌疑人`) is applied only as a display field at read time; the stored revision also snapshots the mapping used when the revision was written.
+
+### 32.2 Data model
+
+Three tables, mirroring the existing modular model style (`recognition_models.py`):
+
+```text
+moss_transcriptions            # one row per submission attempt
+  id, case_id → cases.id (CASCADE, indexed)
+  audio_path, audio_sha256 (immutable after creation)
+  job_id (worker job), model_manifest_sha256
+  state (mirrors §16 job states), error
+  windows_json (last observed per-window snapshot: window_id/state/segment_count)
+  created_at, updated_at
+
+moss_transcription_revisions   # append-only transcript revisions
+  id, transcription_id → moss_transcriptions.id (CASCADE)
+  case_id (indexed), job_id, revision_no (per transcription)
+  audio_sha256, model_manifest_sha256
+  segments_json    # [{segment_id, window_id, start_ms, end_ms, gs, text, parse_status, merge_status, …}]
+  provenance_json  # per-window evidence: window_id, start/end_ms, state, segment_count, manifest
+  mapping_snapshot_json  # GS→role at write time
+  created_at
+
+moss_speaker_mappings          # case-level manual GS→role mapping
+  id, case_id (indexed), global_speaker (GSxx), role
+  UNIQUE (case_id, global_speaker)
+  created_at, updated_at
+```
+
+An Alembic migration (`0013_moss_transcription_integration`, revising `0012_mark_xvector_voiceprints_for_reenrollment`) creates the tables; `init_database`/`env.py` register the models so fresh and migrated databases agree.
+
+### 32.3 API contract
+
+All routes answer the repository envelope (`{ok, code, message, data}`); errors use `DomainError` codes.
+
+```text
+POST /api/v1/cases/{case_id}/moss-transcription          {audioPath, audioSha256?} → submit
+GET  /api/v1/cases/{case_id}/moss-transcription          → {state, jobId, error, windows[{windowId,state,segmentCount}], …}
+GET  /api/v1/cases/{case_id}/moss-transcription/transcript → latest revision segments + role + anonymous GSxx
+POST /api/v1/cases/{case_id}/moss-transcription/resubmit {audioPath} → new job on the same audio only
+GET  /api/v1/cases/{case_id}/moss-speaker-mapping        → [{globalSpeaker, role}]
+PUT  /api/v1/cases/{case_id}/moss-speaker-mapping        {mappings:[{globalSpeaker, role}]} → upsert
+```
+
+Semantic codes: `MOSS_DISABLED` (503, `MOSS_ENABLED=0`), `CASE_NOT_FOUND` (404), `MOSS_TRANSCRIPTION_NOT_FOUND` (404), `MOSS_AUDIO_UNAVAILABLE` (404), `MOSS_AUDIO_HASH_MISMATCH` (409), `MOSS_JOB_ALREADY_ACTIVE` (409); worker-side failures map through the existing AI error taxonomy (model/socket → 503, timeout → 504, audio corrupt/format → 400, audio changed → 409).
+
+With `MOSS_ENABLED=0` every endpoint answers `503 MOSS_DISABLED` and nothing touches the socket or the database. The page states 排队/处理中/完成/失败 map from the job state (`QUEUED` → 排队; `PREPARING`/`ENCODING`/`BUILDING_EMBEDS`/`DECODING`/`PARSING`/`REMAPPING`/`MERGING` → 处理中; `COMPLETED` → 完成; `FAILED`/`CANCELLED`/`RECOVERY_REQUIRED` → 失败/需恢复).
+
+### 32.4 Background polling
+
+`MossTranscriptionCoordinator` is owned by the FastAPI lifespan (started with the loop, stopped on shutdown, mirroring `QARoutingCoordinator`). One asyncio task wakes on a fixed interval and, per transcription row in a working state, runs the synchronous socket client through `asyncio.to_thread`: `get_job` → persist state/windows snapshot; on `COMPLETED` → `get_result` → append a revision; on `RECOVERY_REQUIRED`/`FAILED`/`CANCELLED` → persist the terminal state and stop polling that row. Poll failures (worker down) leave the persisted row untouched and retry on a later tick. A completed window is enough to append its segments to the revision, so the frontend can display per-window increments.
+
+### 32.5 Resubmission and speaker mapping
+
+`resubmit` is the human/policy recovery path: it is rejected with 409 while the latest submission is still active; it recomputes the SHA-256 of the submitted audio and rejects a mismatch against the stored `audio_sha256` with `MOSS_AUDIO_HASH_MISMATCH` (409) so the evidence chain cannot be mixed; on success it creates a new submission (new job id) whose revision history remains append-only. Mapping upserts validate the `GSxx` shape and never rewrite stored revisions; revisions keep their write-time mapping snapshot for audit.
+
+### 32.6 Worker-side explicit recovery (V1 ruling)
+
+The supervisor constructor performs a spool scan (per-job best effort, failures recorded and never fatal): every job in a non-terminal state becomes `RECOVERY_REQUIRED`, persisted with the existing atomic job write; `COMPLETED`/`FAILED`/`CANCELLED` records are untouched so a restart neither recomputes completed work nor hides terminal evidence. `get_job`/`get_result` report the state verbatim (windows evidence included). `cancel` on `RECOVERY_REQUIRED` follows the existing idempotent terminal semantics into `CANCELLED`; `resume` remains an explicit direct-supervisor operation and is not exposed on the business API. Automatic resume/continuation is a separately approved V2 and must not be added in this wave.
+
+### 32.7 Activation order
+
+`MOSS_ENABLED` keeps the default `0`. The approved sequence is: business API wired → submit → query → write-back → frontend (second wave) → on-device smoke → only then enable the flag. Every step above must degrade gracefully with the flag off.
