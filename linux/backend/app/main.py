@@ -25,6 +25,7 @@ from app.api.device_events import router as device_router
 from app.api.errors import install_error_handlers
 from app.api.identity import router as identity_router
 from app.api.interrogation import router as interrogation_router
+from app.api.moss_transcription import router as moss_transcription_router
 from app.api.responses import envelope
 from app.api.signature import router as signature_router
 from app.api.speaker_calibration import router as speaker_calibration_router
@@ -38,6 +39,7 @@ from app.request_audio_context import AudioSourceContextMiddleware
 from app.runtime_settings import RuntimeSettings
 from app.services.audio_capture_service import AudioCaptureService
 from app.services.browser_audio_input import BrowserAudioInput
+from app.services.moss_transcription_coordinator import MossTranscriptionCoordinator
 from app.services.source_aware_asr_capture_service import SourceAwareAsrCaptureService
 from app.services.qa_routing_coordinator import QARoutingCoordinator
 from app.services.speaker_calibration_runtime import resolve_speaker_calibration
@@ -90,6 +92,7 @@ def create_app(
     hardware_manager=None,
     ai_supervisor: AISupervisor | None = None,
     runtime_settings: RuntimeSettings | None = None,
+    moss_coordinator: MossTranscriptionCoordinator | None = None,
 ) -> FastAPI:
     settings = runtime_settings or RuntimeSettings()
     ai_settings = AISettings.from_env()
@@ -226,6 +229,10 @@ def create_app(
             )
             routing_coordinator.start()
         app.state.qa_routing_coordinator = routing_coordinator
+        # Task 16: MOSS business poller is disabled with MOSS_ENABLED=0 and
+        # then never touches the worker socket or the moss_* tables.
+        if moss_coordinator is not None:
+            moss_coordinator.start()
         capture_service = SourceAwareAsrCaptureService(
             session_factory=app.state.session_factory,
             device_manager=manager,
@@ -245,6 +252,8 @@ def create_app(
                 manager.start_monitor()
             yield
         finally:
+            if moss_coordinator is not None:
+                moss_coordinator.shutdown()
             capture_service.shutdown()
             if routing_coordinator is not None:
                 routing_coordinator.shutdown()
@@ -265,6 +274,11 @@ def create_app(
     app.state.runtime_settings = settings
     app.state.engine = engine
     app.state.session_factory = make_session_factory(engine)
+    if moss_coordinator is None:
+        moss_coordinator = MossTranscriptionCoordinator.from_settings(
+            ai_settings, app.state.session_factory
+        )
+    app.state.moss_coordinator = moss_coordinator
     app.state.hardware_manager = manager
     app.state.hardware_gateway = hardware_gateway
     app.state.asr_capture_service = None
@@ -310,6 +324,7 @@ def create_app(
     app.include_router(asr_router, prefix="/api/v1")
     app.include_router(voiceprints_router, prefix="/api/v1")
     app.include_router(speaker_calibration_router, prefix="/api/v1")
+    app.include_router(moss_transcription_router, prefix="/api/v1")
     app.include_router(client_context_router, prefix="/api/v1")
     app.include_router(compat_router)
     app.include_router(websocket_router)
