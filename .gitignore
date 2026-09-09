@@ -22,3 +22,7 @@ __pycache__/
 *.f16
 *.f32
 *token_embedding*.bin
+
+# local pytest/ephemeral context dirs (never audit evidence)
+.pytest-context-*/
+.pytest_cache/
