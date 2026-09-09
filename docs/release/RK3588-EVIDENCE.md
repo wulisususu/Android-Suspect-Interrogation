@@ -222,3 +222,37 @@ $ MossWorkerClient health → status=ok, manifest_sha256=b735dc2d…, queue_dept
 ## 755cc01 之后的部署机制说明（门槛 9 达成路径）
 
 `AGENTS.md` 规定 `linux-adaptation` 为持续部署分支："Every push … must trigger `.github/workflows/rk3588-production-redeploy.yml`"；该 workflow 触发器为 `push: branches:[linux-adaptation]`（+`workflow_dispatch` 手动兜底），runs-on `[self-hosted, rk3588]`。门槛 9（部署 SHA=推送 SHA）由 CI 结构性保证：workflow 将 `$GITHUB_SHA` 写入 `.suspect-source-sha`，部署后断言 `test "$(cat current/.suspect-source-sha)" = "$GITHUB_SHA"`。本次手动重部署与该机制一致（同 HEAD、同 control.sh 链）；push 后应检查 workflow run 的部署摘要 `deployed_source_sha == workflow_target_sha`。
+
+## 2026-09-09 Task 16 审讯业务接入（后端 + 前端 + 逐窗增量 + 激活）
+
+### 提交链（全部经独立评审后推送）
+
+- `671e531` feat(moss-worker): RECOVERY_REQUIRED 重启扫描（评审 PASS 0C/0I）
+- `c4777ac` feat(moss): 三表 + alembic 0013
+- `0ecb53d` feat(moss): coordinator + 6 业务端点 + app wiring
+- `9d6ed6c` docs(moss): Task 16 plan 节 + spec §32
+- `122e6ed` chore: sqlite wal/shm sidecar 忽略
+- `e8f63ea` feat(moss): 处理中增量 revision（用户要求⑤：DONE 窗 segments → partial revision → status.revisionNo）
+- `661c692` feat(webapp): MOSS 智能分人转写面板（第四页签；评审 PASS 附条件，2 处 Important 已修：status.revisionNo 类型 + pollTick MOSS_DISABLED 兜底；COMPLETED 文案对齐钦定「完成」）
+- `8070295` ci(rk3588): runner 首次真实执行暴露三缺陷修复（moss.sock 断言 60s 重试环；sudo 剥环境致 probe fail-closed → --allow-any-output；alembic head 钉 0012→0013 + 契约测试同步）
+
+### 板上全链冒烟（2026-09-09，全部亲测）
+
+- 部署：CI Production Redeploy **success (2m37s)**，release `.suspect-source-sha` = `8070295afdb0…` == 推送 SHA；alembic current = `0013_moss_transcription_integration (head)`；probe success=true（bundle 13/13、策略 10/8/8、双库匹配、moss.sock 0660）
+- 激活（按用户钦定顺序完成）：runtime.env 增 `MOSS_ENABLED=1`、`MODEL_ROOT=/opt/suspect-interrogation/models`（app registry 由此找到 bundle；此前误报 MODEL_NOT_INSTALLED）→ 重启 API → `moss=AVAILABLE, model=INSTALLED`
+- 冒烟案件 `CASE-20260909-81F27B`（MOSS冒烟-勿用）；音频 = 板上 paraformer 示例语音拼接 60s（sha256 `520c39e0…`，落 `/var/lib/suspect-interrogation/moss-smoke.wav` 绕开 PrivateTmp）
+- **状态机实录**：QUEUED → PREPARING → ENCODING → DECODING → COMPLETED（约 60s）
+- **增量实证**：revisionNo=2（窗口 DONE 出部分文本 → COMPLETED 出最终 revision），transcriptionId `e536403b`，jobId `d2a38e32…`
+- 转写 11 段、绝对毫秒时间戳、GS01、真实中文文本；PUT 映射 GS01→民警/GS02→嫌疑人 后 transcript role 即时生效
+- 隔离核验：TCP/8000 pid 恒定（1073/3374/3375）；speech.sock 与 moss.sock 共存 0660；asr/vad/speaker=AVAILABLE；整体 ready
+- 失败隔离与 byte-identical 语义由测试钉住（`test_moss_failure_leaves_existing_interrogation_text_byte_identical`）
+
+### CI 终态（8070295）
+
+- RK3588 Production Redeploy：**success**（部署 SHA 断言 + 全部 verify 步通过）
+- Linux AI Runtime RK3588：**success**（4m1s；修复前 1h37m 失败）
+- Linux CI（GitHub hosted）：failure = 既有 kiosk 截图 QA 404 问题，与本链无关（多次复现，独立存在）
+
+### 生产配置现状（/etc/suspect-interrogation/runtime.env）
+
+`MOSS_ENABLED=1`、`MODEL_ROOT=/opt/suspect-interrogation/models` 为板上运维配置（workflow upsert 列表不含这两键，跨部署持久）。
