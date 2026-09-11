@@ -356,6 +356,18 @@ mixed-turn-src-99.8-105.2 : satisfied
 
 **测试套件说明（透明记录）**：继承来的草稿测试（663 行）**从未绿过**，其合成 fixture 数学自相矛盾（断言"与 SUSPECT 余弦 <0.50"而实际构造出 0.90，且注释与参数不一致），三个 agent 在其上往复震荡（失败数 14↔26）。最终由维护者重写：新套件以**几何自检**固化 fixture（`test_fixture_geometry_matches_the_documented_cosines`），并以**真语料必过点**为主判据。
 
-### 剩余
+### 收官：生产部署与四项板上验收（全部 PASS）
 
-推送 → 生产部署 + DoD → 三项板上验收（`regression-17b2` 真浏览器实时不得整段 SUSPECT、`regression-17b1` 生效模式与注册指标、`regression-17a` 复跑确认无回退）。
+**部署**：`3c3efd62..323b625a` 推送 → CI 生产重部署 → 板上 `.suspect-source-sha` = **323b625a** = 推送 SHA，新发布 `20260911T095824Z-manual`（前后端同发布）。DoD：`/health/live` `HTTP 200 verify=0`（项目 LAN CA 校验，未用 `-k`）；`/health/ready` ready，asr/speaker/moss AVAILABLE、`margin_configured=true`；TCP/8000 pid 1073/3374 + funasr worker **未被触碰**；`dist` 含 `beginFinalize` / `effectiveRecognitionMode` / `recognitionModeDegraded`。
+
+| 验收 | 结果 |
+|---|---|
+| 语料必过点（**已部署模块**，参考模式） | PASS `[99840-102840] 民警 0.107` + `[102840-105240] 嫌疑人 0.752`；45/45 不过切 |
+| 语料必过点（已部署模块，**worker 无参考路径**） | PASS 同上 |
+| `regression-17a`（注册不再假失败 / 重录入口 / 不删库重录） | **6/6 PASS**（顺带可见 `质量：GOOD 有效语音：20.24 秒`，即 17B-1 修的字段丢失已生效） |
+| `regression-17b1`（生效模式 + margin/threshold + 注册指标 + 无退化误报） | **6/6 PASS**（readiness 实测 `effectiveRecognitionMode=SUSPECT_ONLY`、`recognitionModeVerified=true`、`source=DEVICE_CALIBRATION`、`marginConfigured=true`、`degraded=false`；`enrollmentQuality=GOOD`、`usableDurationMs=20040`、`modelId/Key/Version` 齐全） |
+| `regression-17b2`（真浏览器实时：混说不得整段 SUSPECT） | **PASS** 36 片段 / 21 处命中 / **11 条混说片段全部 UNKNOWN**，无一条 SUSPECT |
+
+**17b2 的机制证据**（新片段实测）：混说片段落库为 `speaker=UNKNOWN, speaker_score=None, low_confidence=1, speaker_source='UNASSIGNED'` —— 即策略在打分前短路为"无归属"（切分器给出的 overlap 信号），而不是"打分后勉强判某人"；同一轮中 1.94s 的纯嫌疑人片段被正确判为 `SUSPECT 0.798`。**对比修复前基线**：同一位置是一条 `SUSPECT` 片段、文本把民警问句与嫌疑人答句拼接（`regression-17b2.mjs` 首次运行即捕获该形态作为 before 证据）。
+
+**如实区分两条结论**：实时链路当前对混说 utterance 产出的是 **overlap → UNKNOWN（安全）**，而"**真正切成两个 turn**"是在**部署模块 + 真语料回放**上证明的（切点误差 −470ms）。两者都满足必过要求（切成两段、或交界 UNKNOWN，绝不允许整段 SUSPECT），但不应把前者说成后者。
