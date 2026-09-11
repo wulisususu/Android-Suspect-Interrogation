@@ -14,6 +14,11 @@ from app.repositories import sessions as session_repo
 from app.repositories import voiceprints as voiceprint_repo
 from app.services import asr_capture_service as capture_module
 from app.services.asr_capture_service import AsrCaptureService
+from app.services.speaker_mode import (
+    DEGRADED_REASON_MARGIN_CALIBRATION_MISSING,
+    SUSPECT_PLUS_INTERROGATOR,
+)
+from app.services.speaker_policy import SpeakerRole, decide_speaker
 
 
 def _embedding(*values: float) -> bytes:
@@ -126,7 +131,7 @@ class EventCollector:
         self.ready.set()
 
 
-def _seed_database(tmp_path: Path):
+def _seed_database(tmp_path: Path, *, bind_interrogator: bool = False):
     engine = make_engine(f"sqlite:///{tmp_path / 'capture.db'}")
     init_database(engine)
     factory = make_session_factory(engine)
@@ -143,11 +148,25 @@ def _seed_database(tmp_path: Path):
             enrollment_quality="TEST",
             usable_duration_ms=20_000,
         )
+        officer_id = None
+        if bind_interrogator:
+            voiceprint_repo.enroll_officer(
+                db,
+                officer_id="P-001",
+                officer_name="主审张警官",
+                embedding=_embedding(0.0, 1.0, 0.0, 0.0),
+                embedding_dim=4,
+                model_id="test-xvector",
+                model_version="ref-v1",
+                enrollment_quality="TEST",
+                usable_duration_ms=20_000,
+            )
+            officer_id = "P-001"
         voiceprint_repo.assign_session_roles(
             db,
             session_id=session.id,
             suspect_voiceprint_id=suspect.id,
-            interrogator_officer_id=None,
+            interrogator_officer_id=officer_id,
             recorder_officer_id=None,
         )
         db.commit()
@@ -271,6 +290,148 @@ def test_capture_without_margin_runs_suspect_only_and_preserves_uncalibrated_mar
     assert payload["speaker"] == "SUSPECT"
     assert payload["speakerMargin"] is None
     assert payload["thresholdSource"] == "MODEL_BASELINE"
+    engine.dispose()
+
+
+def _capture_service(factory, speech: FakeSpeechSupervisor, events: EventCollector) -> AsrCaptureService:
+    return AsrCaptureService(
+        session_factory=factory,
+        device_manager=FakeDeviceManager([]),
+        ai_supervisor=speech,
+        publish_event=events,
+        sample_rate=16_000,
+        read_timeout=0.01,
+    )
+
+
+def test_capture_status_declares_the_effective_mode_reported_by_the_shared_rule(tmp_path: Path):
+    """Task 17B-1: the runtime must publish the mode it actually enforces."""
+    engine, factory, case_id, _ = _seed_database(tmp_path, bind_interrogator=True)
+    speech = FakeSpeechSupervisor()
+    chunks = [b"\x01\x00" * 1600, b"\x02\x00" * 1600]
+
+    configured = AsrCaptureService(
+        session_factory=factory,
+        device_manager=FakeDeviceManager(list(chunks)),
+        ai_supervisor=speech,
+        publish_event=EventCollector(),
+        sample_rate=16_000,
+        read_timeout=0.01,
+    )
+    started = configured.start(case_id)
+    assert started["declaredRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
+    assert started["effectiveRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
+    assert started["recognitionModeDegraded"] is False
+    assert started["recognitionModeDegradedReason"] is None
+    configured.stop(case_id)
+
+    speech.speaker_margin = None
+    uncalibrated = AsrCaptureService(
+        session_factory=factory,
+        device_manager=FakeDeviceManager(list(chunks)),
+        ai_supervisor=speech,
+        publish_event=EventCollector(),
+        sample_rate=16_000,
+        read_timeout=0.01,
+    )
+    degraded = uncalibrated.start(case_id)
+    assert degraded["declaredRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
+    assert degraded["effectiveRecognitionMode"] == "SUSPECT_ONLY"
+    assert degraded["recognitionModeDegraded"] is True
+    assert degraded["recognitionModeDegradedReason"] == DEGRADED_REASON_MARGIN_CALIBRATION_MISSING
+    uncalibrated.stop(case_id)
+    engine.dispose()
+
+
+def test_without_a_margin_the_runtime_drops_unbound_officer_candidates(tmp_path: Path):
+    """The narrowing must reuse the shared predicate (single source of truth)."""
+    engine, factory, _case_id, _session_id = _seed_database(tmp_path)
+    speech = FakeSpeechSupervisor()
+    speech.speaker_margin = None
+    service = AsrCaptureService(
+        session_factory=factory,
+        device_manager=None,
+        ai_supervisor=speech,
+        publish_event=lambda *_args: None,
+    )
+    candidates = [
+        {"role": SpeakerRole.SUSPECT, "score": 0.95, "speaker_id": "s", "speaker_name": "张某"},
+        {"role": SpeakerRole.INTERROGATOR, "score": 0.99, "speaker_id": "P-001", "speaker_name": "张警官"},
+    ]
+
+    degraded = service._decide_with_operating_point(
+        candidates=candidates,
+        enabled_roles={SpeakerRole.SUSPECT, SpeakerRole.INTERROGATOR},
+        threshold=0.372,
+        margin=None,
+        usable_duration_ms=1200,
+        overlap=False,
+    )
+    # The higher-scoring interrogator candidate must not win without a calibrated margin.
+    assert degraded.role is SpeakerRole.SUSPECT
+    assert degraded.voiceprint_verified is True
+
+    calibrated = service._decide_with_operating_point(
+        candidates=candidates,
+        enabled_roles={SpeakerRole.SUSPECT, SpeakerRole.INTERROGATOR},
+        threshold=0.372,
+        margin=0.02,
+        usable_duration_ms=1200,
+        overlap=False,
+    )
+    assert calibrated.role is SpeakerRole.INTERROGATOR
+    assert calibrated.speaker_id == "P-001"
+    engine.dispose()
+
+
+def test_degraded_fragment_audit_records_the_shared_mode_rule(tmp_path: Path):
+    """Task 17B-1: a narrowed operating point must leave an auditable reason."""
+    import json
+
+    from app.database.models import AuditLog
+
+    engine, factory, case_id, _ = _seed_database(tmp_path)
+    service = AsrCaptureService(
+        session_factory=factory,
+        device_manager=FakeDeviceManager([]),
+        ai_supervisor=FakeSpeechSupervisor(),
+        publish_event=lambda *_args: None,
+    )
+    decision = decide_speaker(
+        candidates=[{"role": SpeakerRole.SUSPECT, "score": 0.10, "speaker_id": "s"}],
+        enabled_roles={SpeakerRole.SUSPECT},
+        threshold=0.372,
+        margin=0.0,
+        usable_duration_ms=1200,
+        overlap=False,
+    )
+    with factory() as db:
+        service._audit_speaker_decision(
+            db,
+            case_id=case_id,
+            fragment_id="FRAG-1",
+            decision=decision,
+            threshold_source="MODEL_BASELINE",
+            margin=None,
+            usable_duration_ms=1200,
+            decision_roles={SpeakerRole.SUSPECT},
+            declared_mode=SUSPECT_PLUS_INTERROGATOR,
+            asr_event=SpeechEvent(
+                type=SpeechEventType.ASR_FINAL,
+                session_id="SPEECH-1",
+                start_ms=0,
+                end_ms=1200,
+                text="嗯",
+            ),
+        )
+        db.commit()
+        audit = db.query(AuditLog).filter(AuditLog.action == "ASR_SPEAKER_LOW_CONFIDENCE").one()
+        detail = json.loads(audit.detail_json)
+
+    assert detail["declaredRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
+    assert detail["effectiveRecognitionMode"] == "SUSPECT_ONLY"
+    assert detail["recognitionModeDegraded"] is True
+    assert detail["recognitionModeDegradedReason"] == DEGRADED_REASON_MARGIN_CALIBRATION_MISSING
     engine.dispose()
 
 

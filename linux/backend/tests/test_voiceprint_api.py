@@ -154,7 +154,20 @@ def test_suspect_enrollment_changes_readiness_and_allows_session_start(tmp_path)
         case_id = create_identity_ready_case(client)
 
         before = payload(client.get(f"/api/v1/cases/{case_id}/voiceprints/readiness"))
-        assert before == {
+        # Task 17B-1 extended readiness with speaker-mode/degradation fields; the
+        # pre-existing startability contract is asserted unchanged.
+        assert {
+            name: before[name]
+            for name in (
+                "selectedSpeakerBackend",
+                "authoritativeSpeakerBackend",
+                "suspectReady",
+                "interrogatorReady",
+                "recorderReady",
+                "recognitionMode",
+                "canStart",
+            )
+        } == {
             "selectedSpeakerBackend": "eres2net_large",
             "authoritativeSpeakerBackend": "eres2net_large",
             "suspectReady": False,

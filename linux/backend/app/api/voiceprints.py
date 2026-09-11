@@ -12,6 +12,7 @@ from app.api.deps import get_db
 from app.api.responses import envelope
 from app.domain.errors import DomainError
 from app.services.officer_voiceprint_library import OfficerVoiceprintLibraryService
+from app.services.speaker_mode import SpeakerModeConfig
 from app.services.voiceprint_service import VoiceprintService
 from hardware.base import DeviceInfo
 
@@ -72,6 +73,29 @@ def _service(request: Request, db: Session) -> VoiceprintService:
         speaker_model_key=speaker_model_key,
         speaker_authoritative_backend=speaker_authoritative_backend,
     )
+
+
+def _speaker_mode_config(request: Request) -> SpeakerModeConfig:
+    """Resolve the runtime speaker operating point the readiness payload must report.
+
+    Precedence: the live capture runtime (it can run on a session calibration
+    snapshot) -> the AI supervisor -> process settings. The service layer stays free
+    of ``app.state`` access: this is the only place the runtime values are read.
+    """
+
+    sources: list[Any] = []
+    capture_service = getattr(request.app.state, "asr_capture_service", None)
+    status_fn = getattr(capture_service, "status", None)
+    if callable(status_fn):
+        try:
+            # With no case id the capture service reports its most recent capture,
+            # which is the operating point the running interrogation uses.
+            sources.append(status_fn())
+        except Exception:  # pragma: no cover - defensive: never block readiness
+            sources.append(None)
+    sources.append(getattr(request.app.state, "ai_supervisor", None))
+    sources.append(getattr(request.app.state, "runtime_settings", None))
+    return SpeakerModeConfig.from_sources(sources)
 
 
 def _officer_library(request: Request, db: Session) -> OfficerVoiceprintLibraryService:
@@ -139,7 +163,9 @@ def _capture_device_metadata(request: Request, source: str) -> tuple[str, str, s
 
 @router.get("/cases/{case_id}/voiceprints/readiness")
 def readiness(case_id: str, request: Request, db: Session = Depends(get_db)):
-    return envelope(_service(request, db).readiness(case_id))
+    return envelope(
+        _service(request, db).readiness(case_id, speaker_mode=_speaker_mode_config(request))
+    )
 
 
 @router.get("/voiceprints/enrollment/status")

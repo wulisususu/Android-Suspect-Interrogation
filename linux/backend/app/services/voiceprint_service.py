@@ -16,6 +16,13 @@ from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
 from app.repositories import sessions as session_repo
 from app.repositories import voiceprints as voiceprint_repo
+from app.services.speaker_mode import (
+    MODE_DECLARED_KEY,
+    MODE_DEGRADED_KEY,
+    MODE_EFFECTIVE_KEY,
+    MODE_REASON_KEY,
+    SpeakerModeConfig,
+)
 
 
 _SAMPLE_RATE = 16000
@@ -52,7 +59,21 @@ class VoiceprintService:
             raise ValueError("speaker_authoritative_backend must be eres2net_large")
         self.authoritative_speaker_backend = _ERES2NET_LARGE
 
-    def readiness(self, case_id: str) -> dict:
+    def readiness(
+        self,
+        case_id: str,
+        *,
+        speaker_mode: SpeakerModeConfig | None = None,
+    ) -> dict:
+        """Report what the UI declares and what the runtime can actually enforce.
+
+        ``speaker_mode`` is the resolved runtime speaker operating point. Callers
+        outside the API layer may omit it; readiness then reports the declared mode as
+        effective and never invents a degradation. The API route injects it from the
+        live capture runtime / AI supervisor so the service layer never touches
+        ``app.state``.
+        """
+
         case_repo.get(self.db, case_id)
         session = session_repo.active_for_case(self.db, case_id)
         assignment = None
@@ -64,15 +85,60 @@ class VoiceprintService:
         suspect = voiceprint_repo.get_suspect(self.db, case_id, model_key=_ERES2NET_LARGE)
         interrogator_ready = bool(assignment is not None and self._officer_active(assignment.interrogator_officer_id, _ERES2NET_LARGE))
         recorder_ready = bool(assignment is not None and self._officer_active(assignment.recorder_officer_id, _ERES2NET_LARGE))
+        declared_mode = self._recognition_mode(interrogator_ready, recorder_ready)
         return {
             "selectedSpeakerBackend": _ERES2NET_LARGE,
             "authoritativeSpeakerBackend": _ERES2NET_LARGE,
             "suspectReady": suspect is not None,
             "interrogatorReady": interrogator_ready,
             "recorderReady": recorder_ready,
-            "recognitionMode": self._recognition_mode(interrogator_ready, recorder_ready),
+            "recognitionMode": declared_mode,
             "canStart": suspect is not None,
+            **self._suspect_reference_fields(suspect),
+            **self._speaker_mode_fields(declared_mode, speaker_mode),
         }
+
+    @staticmethod
+    def _suspect_reference_fields(suspect: Any | None) -> dict:
+        """Enrollment metrics of the active suspect voiceprint row, or explicit Nones."""
+        if suspect is None:
+            return {
+                "enrollmentQuality": None,
+                "usableDurationMs": None,
+                "modelKey": None,
+                "modelId": None,
+                "modelVersion": None,
+            }
+        return {
+            "enrollmentQuality": suspect.enrollment_quality,
+            "usableDurationMs": suspect.usable_duration_ms,
+            "modelKey": suspect.model_key,
+            "modelId": suspect.model_id,
+            "modelVersion": suspect.model_version,
+        }
+
+    @staticmethod
+    def _speaker_mode_fields(
+        declared_mode: str,
+        speaker_mode: SpeakerModeConfig | None,
+    ) -> dict:
+        """Declared/effective recognition mode plus the operating point behind it."""
+        if speaker_mode is None:
+            # Nothing was injected, so no operating point is known: report the
+            # declaration untouched, keep the runtime fields null rather than
+            # fabricating a margin, and never claim a degradation we cannot prove.
+            return {
+                "speakerMargin": None,
+                "speakerThreshold": None,
+                "thresholdSource": None,
+                "marginConfigured": False,
+                "thresholdConfigured": False,
+                MODE_DECLARED_KEY: declared_mode,
+                MODE_EFFECTIVE_KEY: declared_mode,
+                MODE_DEGRADED_KEY: False,
+                MODE_REASON_KEY: None,
+            }
+        return speaker_mode.as_readiness_fields(declared_mode)
 
     def enroll_suspect(self, case_id: str, pcm: bytes, actor_id: str | None = None) -> dict:
         case_repo.get(self.db, case_id)

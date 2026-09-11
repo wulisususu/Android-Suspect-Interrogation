@@ -32,6 +32,20 @@ from app.services.speaker_backend_compare import (
     SpeakerBackendDiagnostic,
 )
 from app.services.speaker_calibration_runtime import ResolvedSpeakerCalibration
+from app.services.speaker_mode import (
+    MODE_DECLARED_KEY,
+    MODE_DEGRADED_KEY,
+    MODE_EFFECTIVE_KEY,
+    MODE_REASON_KEY,
+    FULL,
+    SUSPECT_ONLY,
+    SUSPECT_PLUS_INTERROGATOR,
+    SUSPECT_PLUS_RECORDER,
+    SpeakerModeConfig,
+    decision_roles,
+    mode_decision_detail,
+    narrow_decision_roles,
+)
 from app.services.speaker_policy import SpeakerRole, SpeakerSource, decide_speaker
 
 
@@ -59,6 +73,12 @@ class _CaptureRuntime:
     authoritative_speaker_backend: str | None = None
     secondary_speaker_backend: str | None = None
     secondary_calibration: ResolvedSpeakerCalibration | None = None
+    #: Roles bound to this session's voice assignment. Kept so the declared
+    #: recognition mode and the effective one are both derived from one place.
+    bound_roles: set[SpeakerRole] = field(default_factory=lambda: {SpeakerRole.SUSPECT})
+    #: The mode this capture declares from its bound roles, captured before the
+    #: operating point narrows anything, so a degradation stays reported as such.
+    declared_recognition_mode: str = SUSPECT_ONLY
     stop_event: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     ordinal: int = 0
@@ -188,6 +208,7 @@ class AsrCaptureService:
             capture_session_id = capture.id
             interrogation_session_id = interrogation_session.id
 
+        bound_roles = self._bound_roles(interrogation_session_id)
         runtime = _CaptureRuntime(
             case_id=case_id,
             interrogation_session_id=interrogation_session_id,
@@ -203,6 +224,8 @@ class AsrCaptureService:
             authoritative_speaker_backend=self.authoritative_speaker_backend,
             secondary_speaker_backend=self.secondary_speaker_backend,
             secondary_calibration=secondary_calibration,
+            bound_roles=bound_roles,
+            declared_recognition_mode=self.declared_mode_for_roles(bound_roles),
         )
 
         speech_open = False
@@ -523,17 +546,24 @@ class AsrCaptureService:
             threshold = float(runtime.speaker_threshold)
             threshold_source = str(runtime.threshold_source)
             persisted_margin = runtime.speaker_margin
+            runtime.bound_roles = set(enabled_roles)
 
             # A calibrated margin is needed only for comparing multiple enrolled
             # references. Without it, formal interrogation remains available but
-            # deliberately degrades to suspect-only verification.
-            decision_roles = enabled_roles
-            decision_candidates = candidates
-            if persisted_margin is None:
-                decision_roles = {SpeakerRole.SUSPECT}
-                decision_candidates = [
-                    item for item in candidates if item.get("role") is SpeakerRole.SUSPECT
-                ]
+            # deliberately degrades to suspect-only verification. The predicate is the
+            # single authoritative rule in app.services.speaker_mode so the readiness
+            # payload and this runtime decision cannot disagree.
+            declared_mode = self.declared_mode_for_roles(enabled_roles)
+            runtime.bound_roles = set(enabled_roles)
+            runtime.declared_recognition_mode = declared_mode
+
+            decision_roles, decision_candidates = self._narrow_decision(
+                declared_mode=declared_mode,
+                margin=persisted_margin,
+                threshold=runtime.speaker_threshold,
+                enabled_roles=enabled_roles,
+                candidates=candidates,
+            )
 
             decision = decide_speaker(
                 candidates=decision_candidates,
@@ -590,6 +620,8 @@ class AsrCaptureService:
                 threshold_source=threshold_source,
                 margin=persisted_margin,
                 usable_duration_ms=max(0, end_ms - start_ms),
+                decision_roles=decision_roles,
+                declared_mode=declared_mode,
                 asr_event=asr_event,
             )
             self._persist_compare_evidence(
@@ -609,6 +641,9 @@ class AsrCaptureService:
             payload["thresholdSource"] = threshold_source
             payload["calibrationId"] = runtime.calibration_id
             payload["calibrationStatus"] = runtime.calibration_status
+            # Task 17B-1: every published fragment carries the mode it was decided in,
+            # so a narrowed operating point is visible to the client and to audit.
+            payload.update(self.speaker_mode_capability(runtime))
 
         runtime.ordinal += 1
         self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)
@@ -806,14 +841,21 @@ class AsrCaptureService:
         margin: float | None,
         usable_duration_ms: int,
         overlap: bool,
+        declared_mode: str | None = None,
     ):
-        decision_roles = enabled_roles
-        decision_candidates = candidates
-        if margin is None:
-            decision_roles = {SpeakerRole.SUSPECT}
-            decision_candidates = [
-                item for item in candidates if item.get("role") is SpeakerRole.SUSPECT
-            ]
+        # Same single authoritative rule as the primary decision path: without a
+        # calibrated margin only the suspect reference may be attributed.
+        decision_roles, decision_candidates = AsrCaptureService._narrow_decision(
+            declared_mode=(
+                declared_mode
+                if declared_mode is not None
+                else AsrCaptureService.declared_mode_for_roles(enabled_roles)
+            ),
+            margin=margin,
+            threshold=threshold,
+            enabled_roles=enabled_roles,
+            candidates=candidates,
+        )
         return decide_speaker(
             candidates=decision_candidates,
             enabled_roles=decision_roles,
@@ -821,6 +863,68 @@ class AsrCaptureService:
             margin=0.0 if margin is None else float(margin),
             usable_duration_ms=int(usable_duration_ms),
             overlap=bool(overlap),
+        )
+
+    @staticmethod
+    def declared_mode_for_roles(enabled_roles: Iterable[SpeakerRole]) -> str:
+        """The recognition mode a bound role set declares to the operator."""
+        roles = {
+            role if isinstance(role, SpeakerRole) else SpeakerRole(str(role))
+            for role in enabled_roles
+        }
+        if SpeakerRole.RECORDER in roles and SpeakerRole.INTERROGATOR in roles:
+            return FULL
+        if SpeakerRole.INTERROGATOR in roles:
+            return SUSPECT_PLUS_INTERROGATOR
+        if SpeakerRole.RECORDER in roles:
+            return SUSPECT_PLUS_RECORDER
+        return SUSPECT_ONLY
+
+    @staticmethod
+    def _narrow_decision(
+        *,
+        declared_mode: str,
+        margin: float | None,
+        threshold: float | None,
+        enabled_roles: set[SpeakerRole],
+        candidates: list[dict[str, Any]],
+    ) -> tuple[set[SpeakerRole], list[dict[str, Any]]]:
+        """Apply the one authoritative mode rule to this fragment's references.
+
+        The runtime behaviour is unchanged: without a calibrated margin only the
+        suspect reference is compared. The predicate now comes from
+        :mod:`app.services.speaker_mode`, so the UI declaration and the runtime
+        enforcement cannot drift apart, and the dropped candidates are logged so the
+        degradation is auditable instead of silent.
+        """
+
+        narrowed_roles, kept_candidates = narrow_decision_roles(
+            declared_mode=declared_mode,
+            margin=margin,
+            threshold=threshold,
+            enabled_roles=enabled_roles,
+            candidates=candidates,
+        )
+        if len(kept_candidates) < len(candidates):
+            detail = mode_decision_detail(
+                declared_mode=declared_mode, margin=margin, threshold=threshold
+            )
+            logger.info(
+                "speaker decision narrowed to %s (declared %s, %s): %d of %d candidate(s) kept",
+                sorted(role.value for role in narrowed_roles),
+                declared_mode,
+                detail[MODE_REASON_KEY],
+                len(kept_candidates),
+                len(candidates),
+            )
+        return narrowed_roles, kept_candidates
+
+    def speaker_mode_capability(self, runtime: _CaptureRuntime) -> dict[str, Any]:
+        """Declared/effective recognition mode of a live capture, from the shared rule."""
+        return mode_decision_detail(
+            declared_mode=runtime.declared_recognition_mode,
+            margin=runtime.speaker_margin,
+            threshold=runtime.speaker_threshold,
         )
 
     @staticmethod
@@ -833,6 +937,8 @@ class AsrCaptureService:
         threshold_source: str,
         margin: float | None,
         usable_duration_ms: int,
+        decision_roles: set[SpeakerRole],
+        declared_mode: str,
         asr_event: SpeechEvent,
     ) -> None:
         if decision.role is SpeakerRole.OFFICER_FALLBACK:
@@ -842,7 +948,6 @@ class AsrCaptureService:
         else:
             return
 
-        event_details = asr_event.details or {}
         detail: dict[str, Any] = {
             "score": decision.score,
             "second_best_score": decision.second_best_score,
@@ -850,7 +955,20 @@ class AsrCaptureService:
             "threshold_source": threshold_source,
             "margin": margin,
             "usable_duration_ms": int(usable_duration_ms),
+            "decision_roles": sorted(role.value for role in decision_roles),
         }
+        # Task 17B-1: the audit row names the mode the decision was actually made in,
+        # so a narrowed operating point can never be mistaken for a full one.
+        detail.update(
+            mode_decision_detail(
+                declared_mode=declared_mode,
+                margin=margin,
+                # The threshold handed to decide_speaker is never null; the missing
+                # threshold channel is reported through the calibration source.
+                threshold=decision.threshold,
+            )
+        )
+        event_details = asr_event.details or {}
         if event_details.get("speaker_unavailable"):
             detail["speaker_unavailable"] = True
             error_code = event_details.get("speaker_error_code")
@@ -992,6 +1110,30 @@ class AsrCaptureService:
             return
         enabled.add(role)
         references.append((role, officer, officer.officer_id, officer.officer_name))
+
+    def _bound_roles(self, interrogation_session_id: str) -> set[SpeakerRole]:
+        """Roles the session's voice assignment enables, resolved against live profiles."""
+        roles: set[SpeakerRole] = {SpeakerRole.SUSPECT}
+        with self.session_factory() as db:
+            assignment = db.scalar(
+                select(SessionVoiceAssignment).where(
+                    SessionVoiceAssignment.session_id == interrogation_session_id
+                )
+            )
+            if assignment is None:
+                return roles
+            for officer_id, role in (
+                (assignment.interrogator_officer_id, SpeakerRole.INTERROGATOR),
+                (assignment.recorder_officer_id, SpeakerRole.RECORDER),
+            ):
+                if not officer_id:
+                    continue
+                officer = voiceprint_repo.get_officer(
+                    db, str(officer_id), model_key=self.authoritative_speaker_backend
+                )
+                if officer is not None:
+                    roles.add(role)
+        return roles
 
     def _resolve_calibration(self, db) -> ResolvedSpeakerCalibration:
         if self.calibration_resolver is not None:
@@ -1184,6 +1326,8 @@ class AsrCaptureService:
             "calibrationId": runtime.calibration_id,
             "calibrationStatus": runtime.calibration_status,
             "lastError": last_error,
+            # Task 17B-1: the mode the runtime really enforces, from the shared rule.
+            **self.speaker_mode_capability(runtime),
         }
 
     def _preparation_status(self, runtime: _PreparationRuntime, *, active: bool) -> dict[str, Any]:
