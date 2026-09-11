@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { VoiceprintAudioSource } from '../api/browserVoiceprint'
 import { voiceprintEnrollmentProgress } from './VoiceprintPreparationPanel.vue'
 import VoiceprintAudioSourceBanner from './VoiceprintAudioSourceBanner.vue'
@@ -56,8 +56,6 @@ const reEnrollLabel = computed(() => (reEnrollFailure.value ? '再次重新录�
 const registeredLabel = computed(() => (reEnrollFailure.value ? '✓ 当前已有声纹仍然有效' : '✓ 已注册'))
 const suspectRowClass = computed(() => (props.compact ? 'suspect-row compact' : 'suspect-row'))
 
-let lastMeasuredUsableSeconds = 0
-
 // Prefer the registered reference measurement from readiness; fall back to whatever this
 // session most recently measured while enrolling.
 const referenceUsableSeconds = computed(() => {
@@ -70,17 +68,34 @@ function measuredUsableSeconds() {
   return measured > 0 ? Number((measured / 1000).toFixed(2)) : 0
 }
 
-// The request-scoped readiness payload does not carry the suspect enrollment metrics yet
-// (17B-1), so the compact card reports the duration it can see and keeps the last known value
-// instead of dropping the line when a later attempt has no measurement.
+// The compact card reports the duration it can see and keeps the last known value instead
+// of dropping the line when a later attempt has no measurement. `watch` (not a `computed`)
+// owns that memory: a computed must stay a pure function of its inputs.
+const lastMeasuredUsableSecondsRef = ref(0)
+watch(() => props.enrollmentState.usableDurationMs, (durationMs) => {
+  const measured = Number(durationMs || 0)
+  if (measured > 0) lastMeasuredUsableSecondsRef.value = Number((measured / 1000).toFixed(2))
+})
+
 const compactUsableSpeechLabel = computed(() => {
   const measured = measuredUsableSeconds()
-  if (measured > 0) lastMeasuredUsableSeconds = measured
-  const seconds = [referenceUsableSeconds.value, measured, lastMeasuredUsableSeconds].find((value) => value > 0) || 0
+  const seconds = [referenceUsableSeconds.value, measured, lastMeasuredUsableSecondsRef.value].find((value) => value > 0) || 0
   return seconds > 0 ? `有效语音：${seconds} 秒` : '有效语音：以本次注册结果为准'
 })
 
 const compactQualityLabel = computed(() => (props.readiness.enrollmentQuality ? `质量：${props.readiness.enrollmentQuality}` : '质量：未知'))
+
+// Task 17B-1: the operator must know when the declared mode is not the enforced one.
+const recognitionModeDegraded = computed(() => props.readiness.recognitionModeDegraded === true)
+const officerRolesBound = computed(() => props.readiness.interrogatorReady === true || props.readiness.recorderReady === true)
+const degradationNotice = computed(() => {
+  if (!recognitionModeDegraded.value || !officerRolesBound.value) return ''
+  const reason = props.readiness.recognitionModeDegradedReason
+  const detail = reason === 'THRESHOLD_NOT_CONFIGURED'
+    ? '设备未配置声纹判定阈值'
+    : '设备未完成 margin 校准'
+  return `已绑定民警声纹，但${detail}，实时识别将退化为仅嫌疑人`
+})
 
 function startOrReRecord() {
   emits('suspectStart')
@@ -110,6 +125,11 @@ function startOrReRecord() {
         <button v-if="!suspectRecording" class="primary" :disabled="busy" @click="startOrReRecord">{{ compact ? reEnrollLabel : '开始录制' }}</button>
         <button v-else class="danger" :disabled="busy" @click="emits('suspectStop')">提前停止并尝试注册</button>
       </div>
+
+      <p v-if="degradationNotice" class="voiceprint-mode-degradation" role="status" aria-live="polite" aria-atomic="true">
+        <span class="voiceprint-mode-degradation-icon" aria-hidden="true">!</span>
+        <span>{{ degradationNotice }}</span>
+      </p>
 
       <details class="optional-officer-binding">
         <summary>可选：绑定民警声纹</summary>
@@ -159,6 +179,8 @@ header p { margin:8px 0 0; color:#607588; }
 .suspect-row > div { display:grid; gap:5px; }
 .suspect-row span { color:#566b7e; font-size:12px; font-weight:700; }
 .suspect-row span.ready { color:#267647; }
+.voiceprint-mode-degradation { display:flex; align-items:flex-start; gap:8px; margin:8px 0 0; padding:8px 10px; border:1px solid #e0b64a; border-left:4px solid #c98a10; border-radius:7px; background:#fff8e6; color:#7a5305; font-size:12px; font-weight:700; }
+.voiceprint-mode-degradation-icon { display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; width:16px; height:16px; border-radius:50%; background:#c98a10; color:#fff; font-size:11px; }
 .optional-officer-binding { margin-top:12px; padding:9px 12px; border:1px solid #d0dde8; border-radius:8px; background:#fff; color:#526b80; }
 .optional-officer-binding summary { cursor:pointer; color:#315d82; font-weight:700; }
 .optional-officer-binding p { margin:9px 0; font-size:12px; }

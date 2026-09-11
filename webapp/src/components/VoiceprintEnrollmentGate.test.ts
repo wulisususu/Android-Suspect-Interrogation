@@ -35,7 +35,7 @@ function compileClientComponent(fileName: string, dependencies: Record<string, u
     .replace('export default', 'return')
     .replace(/Object\.defineProperty\(__returned__, '__isScriptSetup', \{ enumerable: false, value: true \}\)\r?\n/, '')
   const factorySource = `return function createComponent(Vue, dependencies) {
-    const { defineComponent: _defineComponent, computed, unref } = Vue
+    const { defineComponent: _defineComponent, computed, ref, unref, watch } = Vue
     const { voiceprintEnrollmentProgress, VoiceprintAudioSourceBanner, audioInputMode } = dependencies
     ${scriptWithoutImports}
   }`
@@ -319,5 +319,86 @@ describe('VoiceprintEnrollmentGate', () => {
     expect(textContent(root)).toContain('完成嫌疑人声纹注册')
     expect(textContent(root)).toContain('尚未注册')
     expect(buttonLabels(root)).toEqual(['开始录制', '保存本次角色选择'])
+  })
+
+  it('shows the real enrollment quality and no degradation noise while the mode is honoured', () => {
+    const root = mount(
+      { phase: 'IDLE', kind: 'SUSPECT' },
+      {},
+      {
+        readiness: {
+          ...readyReadiness,
+          interrogatorReady: true,
+          recognitionMode: 'SUSPECT_PLUS_INTERROGATOR',
+          declaredRecognitionMode: 'SUSPECT_PLUS_INTERROGATOR',
+          effectiveRecognitionMode: 'SUSPECT_PLUS_INTERROGATOR',
+          recognitionModeDegraded: false,
+          recognitionModeDegradedReason: null,
+          marginConfigured: true,
+          thresholdConfigured: true,
+          speakerMargin: 0.08,
+          speakerThreshold: 0.372,
+        },
+        compact: true,
+      },
+    )
+
+    // Quality comes from the readiness payload instead of the "未知" fallback.
+    expect(textContent(root)).toContain('质量：GOOD')
+    expect(textContent(root)).not.toContain('质量：未知')
+    expect(textContent(root)).not.toContain('实时识别将退化为仅嫌疑人')
+    expect(allNodes(root).filter((item) => item.props.role === 'status' && textContent(item).includes('退化'))).toEqual([])
+  })
+
+  it('warns accessibly that a bound officer voiceprint degrades to suspect-only recognition', () => {
+    const root = mount(
+      { phase: 'IDLE', kind: 'SUSPECT' },
+      {},
+      {
+        readiness: {
+          ...readyReadiness,
+          interrogatorReady: true,
+          recognitionMode: 'SUSPECT_PLUS_INTERROGATOR',
+          declaredRecognitionMode: 'SUSPECT_PLUS_INTERROGATOR',
+          effectiveRecognitionMode: 'SUSPECT_ONLY',
+          recognitionModeDegraded: true,
+          recognitionModeDegradedReason: 'MARGIN_CALIBRATION_MISSING',
+          marginConfigured: false,
+          thresholdConfigured: true,
+          speakerThreshold: 0.372,
+        },
+        compact: true,
+      },
+    )
+
+    expect(textContent(root)).toContain('质量：GOOD')
+    const notice = findNode(
+      root,
+      (item) => item.props.role === 'status' && textContent(item).includes('设备未完成 margin 校准'),
+    )
+    expect(textContent(notice)).toContain('已绑定民警声纹，但设备未完成 margin 校准，实时识别将退化为仅嫌疑人')
+    // Announced to assistive technology, not only painted on screen.
+    expect(notice.props['aria-live']).toBe('polite')
+    expect(notice.props['aria-atomic']).toBe('true')
+  })
+
+  it('does not warn about degradation when the officer role was never bound', () => {
+    const root = mount(
+      { phase: 'IDLE', kind: 'SUSPECT' },
+      {},
+      {
+        readiness: {
+          ...readyReadiness,
+          recognitionModeDegraded: true,
+          recognitionModeDegradedReason: 'MARGIN_CALIBRATION_MISSING',
+          declaredRecognitionMode: 'SUSPECT_ONLY',
+          effectiveRecognitionMode: 'SUSPECT_ONLY',
+          marginConfigured: false,
+        },
+        compact: true,
+      },
+    )
+
+    expect(textContent(root)).not.toContain('已绑定民警声纹')
   })
 })

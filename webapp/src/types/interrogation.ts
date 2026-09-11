@@ -290,11 +290,29 @@ export interface VoiceprintReadiness extends VoiceprintBackendReadiness {
   simulated?: boolean
   /**
    * Registration metrics of the active suspect voiceprint used by the condensed re-record card.
-   * The backend readiness payload does not populate them yet (Task 17B-1), so the UI degrades
-   * gracefully when they are absent.
+   * Task 17B-1 populates them from the backend readiness payload; the card still degrades
+   * gracefully when a deployment returns an older payload.
    */
   enrollmentQuality?: string | null
   usableDurationMs?: number | null
+  modelKey?: SpeakerBackendKey | string | null
+  modelId?: string | null
+  modelVersion?: string | null
+  /** Runtime speaker operating point behind the recognition mode decision. */
+  speakerMargin?: number | null
+  speakerThreshold?: number | null
+  thresholdSource?: string | null
+  marginConfigured?: boolean
+  thresholdConfigured?: boolean
+  /**
+   * `recognitionMode` is what the bound roles declare. The runtime can only honour it when
+   * the device carries a calibrated margin and threshold, so `effectiveRecognitionMode` is
+   * the mode that will really be enforced and `recognitionModeDegraded` says the two differ.
+   */
+  declaredRecognitionMode?: VoiceRecognitionMode
+  effectiveRecognitionMode?: VoiceRecognitionMode
+  recognitionModeDegraded?: boolean
+  recognitionModeDegradedReason?: string | null
 }
 
 export interface OfficerVoiceprint {

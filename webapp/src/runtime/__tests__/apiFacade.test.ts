@@ -93,6 +93,51 @@ describe('application API runtime delegation', () => {
     ])
   })
 
+  it('keeps the Task 17B-1 speaker-mode fields when normalizing readiness', async () => {
+    const { adapter } = fakeAdapter()
+    adapter.invoke = (async <T,>(operation: RuntimeOperation) => {
+      if (operation !== 'voiceprint.readiness') throw new Error(`unexpected ${operation}`)
+      return {
+        suspectReady: true,
+        interrogatorReady: true,
+        recorderReady: false,
+        recognitionMode: 'SUSPECT_PLUS_INTERROGATOR',
+        canStart: true,
+        enrollmentQuality: 'GOOD',
+        usableDurationMs: 24000,
+        modelKey: 'eres2net_large',
+        modelId: 'eres2net_large',
+        modelVersion: 'rk3588-local',
+        speakerMargin: null,
+        speakerThreshold: 0.372,
+        thresholdSource: 'DEVICE_CALIBRATED',
+        marginConfigured: false,
+        thresholdConfigured: true,
+        declaredRecognitionMode: 'SUSPECT_PLUS_INTERROGATOR',
+        effectiveRecognitionMode: 'SUSPECT_ONLY',
+        recognitionModeDegraded: true,
+        recognitionModeDegradedReason: 'MARGIN_CALIBRATION_MISSING',
+      } as T
+    }) as typeof adapter.invoke
+    resetRuntimeAdapterForTests(adapter)
+
+    const readiness = await fetchVoiceprintReadiness('case-1')
+
+    expect(readiness.recognitionMode).toBe('SUSPECT_PLUS_INTERROGATOR')
+    expect(readiness.declaredRecognitionMode).toBe('SUSPECT_PLUS_INTERROGATOR')
+    expect(readiness.effectiveRecognitionMode).toBe('SUSPECT_ONLY')
+    expect(readiness.recognitionModeDegraded).toBe(true)
+    expect(readiness.recognitionModeDegradedReason).toBe('MARGIN_CALIBRATION_MISSING')
+    expect(readiness.enrollmentQuality).toBe('GOOD')
+    expect(readiness.usableDurationMs).toBe(24000)
+    expect(readiness.modelKey).toBe('eres2net_large')
+    expect(readiness.modelVersion).toBe('rk3588-local')
+    expect(readiness.speakerMargin).toBeNull()
+    expect(readiness.speakerThreshold).toBe(0.372)
+    expect(readiness.marginConfigured).toBe(false)
+    expect(readiness.thresholdConfigured).toBe(true)
+  })
+
   it('delegates freeze and signing through the selected runtime', async () => {
     const { adapter, calls } = fakeAdapter()
     resetRuntimeAdapterForTests(adapter)

@@ -105,6 +105,13 @@ function normalizeSessionState(value: unknown, caseId: string): SessionState {
 function normalizeVoiceprintReadiness(value: unknown): VoiceprintReadiness {
   const raw = asRecord(value)
   const mode = String(raw.recognitionMode ?? 'SUSPECT_ONLY') as VoiceRecognitionMode
+  const declared = raw.declaredRecognitionMode === undefined
+    ? undefined
+    : String(raw.declaredRecognitionMode) as VoiceRecognitionMode
+  const effective = raw.effectiveRecognitionMode === undefined
+    ? undefined
+    : String(raw.effectiveRecognitionMode) as VoiceRecognitionMode
+  const degradedReason = raw.recognitionModeDegradedReason === undefined ? undefined : String(raw.recognitionModeDegradedReason)
   return {
     suspectReady: Boolean(raw.suspectReady),
     interrogatorReady: Boolean(raw.interrogatorReady),
@@ -112,6 +119,22 @@ function normalizeVoiceprintReadiness(value: unknown): VoiceprintReadiness {
     recognitionMode: mode,
     canStart: Boolean(raw.canStart),
     ...(raw.simulated === undefined ? {} : { simulated: Boolean(raw.simulated) }),
+    // Task 17B-1: registration metrics and the runtime speaker operating point must
+    // survive normalization, otherwise the card can never prove the effective mode.
+    ...(raw.enrollmentQuality === undefined ? {} : { enrollmentQuality: raw.enrollmentQuality === null ? null : String(raw.enrollmentQuality) }),
+    ...(raw.usableDurationMs === undefined ? {} : { usableDurationMs: nullableNumber(raw.usableDurationMs) }),
+    ...(raw.modelKey === undefined ? {} : { modelKey: raw.modelKey === null ? null : String(raw.modelKey) }),
+    ...(raw.modelId === undefined ? {} : { modelId: raw.modelId === null ? null : String(raw.modelId) }),
+    ...(raw.modelVersion === undefined ? {} : { modelVersion: raw.modelVersion === null ? null : String(raw.modelVersion) }),
+    ...(raw.speakerMargin === undefined ? {} : { speakerMargin: nullableNumber(raw.speakerMargin) }),
+    ...(raw.speakerThreshold === undefined ? {} : { speakerThreshold: nullableNumber(raw.speakerThreshold) }),
+    ...(raw.thresholdSource === undefined ? {} : { thresholdSource: raw.thresholdSource === null ? null : String(raw.thresholdSource) }),
+    ...(raw.marginConfigured === undefined ? {} : { marginConfigured: Boolean(raw.marginConfigured) }),
+    ...(raw.thresholdConfigured === undefined ? {} : { thresholdConfigured: Boolean(raw.thresholdConfigured) }),
+    ...(declared === undefined ? {} : { declaredRecognitionMode: declared }),
+    ...(effective === undefined ? {} : { effectiveRecognitionMode: effective }),
+    ...(raw.recognitionModeDegraded === undefined ? {} : { recognitionModeDegraded: Boolean(raw.recognitionModeDegraded) }),
+    ...(degradedReason === undefined ? {} : { recognitionModeDegradedReason: degradedReason }),
   }
 }
 
