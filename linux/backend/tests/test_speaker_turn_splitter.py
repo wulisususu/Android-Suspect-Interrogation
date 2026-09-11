@@ -307,3 +307,50 @@ def test_gated_utterance_never_embeds_windows():
     assert engine.last_metrics is not None
     assert engine.last_metrics.embedded_windows == 0
     assert utterance.embedder.calls == []
+
+
+# ----------------------------------------------------------------- measured board scenario
+def _window_vector(cos_ref: float, theta: float) -> list[float]:
+    """Vector with the requested cosine to the reference, placed at angle ``theta``."""
+    residual = math.sqrt(max(0.0, 1.0 - cos_ref ** 2))
+    return [cos_ref, residual * math.cos(theta), residual * math.sin(theta), 0.0, 0.0]
+
+
+def test_measured_board_scenario_splits_officer_then_suspect():
+    """The real 5 s utterance, rebuilt from the cosines measured on the RK3588.
+
+    Measured (task17-gate-evidence.json): whole-utterance cos to the enrolled reference 0.4732,
+    sliding cosRef ~0.105 over the officer turn and ~0.722 over the suspect turn, and exactly one
+    dip between them, cosPrev 0.243. Window ``i`` gets the measured reference projection and an
+    angle chosen so the officer/suspect pair reproduces that dip.
+    """
+    cos_officer, cos_suspect, dip = 0.105, 0.722, 0.243
+    phi = math.acos((dip - cos_officer * cos_suspect) / (
+        math.sqrt(1 - cos_officer ** 2) * math.sqrt(1 - cos_suspect ** 2)
+    ))
+    window_vectors = [_window_vector(cos_officer, 0.0)] * 2 + [_window_vector(cos_suspect, phi)] * 3
+
+    # self-check: the geometry really carries the measured cosines
+    assert _cos(window_vectors[0], window_vectors[-1]) == pytest.approx(dip, abs=2e-3)
+    assert _cos(REFERENCE, window_vectors[0]) == pytest.approx(cos_officer, abs=2e-3)
+    assert _cos(REFERENCE, window_vectors[-1]) == pytest.approx(cos_suspect, abs=2e-3)
+
+    utterance = Utterance(["MIXED_FAR"] * len(window_vectors))
+    vectors = iter(window_vectors)
+
+    def embed(_pcm: bytes):
+        return next(vectors)
+
+    whole = [0.4732, math.sqrt(1 - 0.4732 ** 2), 0.0, 0.0, 0.0]
+    engine = SpeakerTurnSplitter()
+    spans = engine.split(utterance.pcm, SAMPLE_RATE, embed, REFERENCE, whole_embedding=whole)
+
+    assert len(spans) == 2, "the mixed utterance must split, never stay one SUSPECT turn"
+    assert spans[0].start_ms == 0
+    assert spans[1].start_ms == 2 * HOP_MS, "the change point sits after the officer windows"
+    assert [span.ambiguous for span in spans] == [False, False]
+    assert engine.last_metrics is not None
+    assert engine.last_metrics.reason == REASON_DEEP_DIP
+    # the two sides are attributable to different people by their reference projection
+    assert engine._role(_cos(REFERENCE, window_vectors[0])) == "OTHER"
+    assert engine._role(_cos(REFERENCE, window_vectors[-1])) == "REFERENCE"
