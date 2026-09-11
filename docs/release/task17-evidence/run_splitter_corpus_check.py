@@ -50,6 +50,11 @@ def main() -> int:
     ap.add_argument("--splitter-file", default=None,
                     help="load SpeakerTurnSplitter from this file instead of the installed package "
                          "(used to prove the harness passes on a correct implementation)")
+    ap.add_argument("--no-reference", action="store_true",
+                    help="run the splitter the way the live speech worker must: without any biometric "
+                         "reference (the worker must never touch the voiceprint database). Roles are then "
+                         "judged downstream; this mode asserts the worker-side invariant instead: never a "
+                         "single SUSPECT turn over a mixed utterance.")
     args = ap.parse_args()
 
     # corpus integrity
@@ -143,7 +148,8 @@ def main() -> int:
     # The annotation splits it into an officer segment and a suspect segment; the VAD utterance
     # did not, which is exactly why production labelled the whole thing SUSPECT.
     mp_pcm = segment_pcm(MUST_PASS["startMs"], MUST_PASS["endMs"])
-    mp_spans = splitter.split(mp_pcm, rate, embed=embed, reference=reference)
+    worker_reference = None if args.no_reference else reference
+    mp_spans = splitter.split(mp_pcm, rate, embed=embed, reference=worker_reference)
     mp_turns = []
     for sp in mp_spans:
         start, end = getattr(sp, "start_ms", 0), getattr(sp, "end_ms", None)
@@ -154,11 +160,18 @@ def main() -> int:
                          "ambiguous": bool(getattr(sp, "ambiguous", False)),
                          "role": role, "cosRef": c})
     detail = {"spans": len(mp_spans), "turns": mp_turns,
-              "windowMs": [MUST_PASS["startMs"], MUST_PASS["endMs"]]}
+              "windowMs": [MUST_PASS["startMs"], MUST_PASS["endMs"]],
+              "mode": "worker-no-reference" if args.no_reference else "reference-assisted"}
     roles = {t["role"] for t in mp_turns if t["role"] != "UNKNOWN"}
     ambiguous = any(t["ambiguous"] for t in mp_turns)
     single_suspect = len(mp_turns) == 1 and mp_turns[0]["role"] == "SUSPECT" and not mp_turns[0]["ambiguous"]
-    ok_must = ((len(mp_turns) >= 2 and len(roles) >= 2) or ambiguous) and not single_suspect
+    if args.no_reference:
+        # Without a reference the worker cannot know who is who, so the required invariant is weaker
+        # but still meaningful: it must not hand the backend one undivided span, and it must never
+        # claim a confident single SUSPECT turn over mixed audio.
+        ok_must = (len(mp_turns) >= 2 or ambiguous) and not single_suspect
+    else:
+        ok_must = ((len(mp_turns) >= 2 and len(roles) >= 2) or ambiguous) and not single_suspect
     clean = [r for r in results if r.get("spans") == 1 and r["annotatedRole"] in ("SUSPECT", "INTERROGATOR")]
     oversplit = [r for r in results
                  if r.get("spans", 1) > 1 and r["annotatedRole"] in ("SUSPECT", "INTERROGATOR")
