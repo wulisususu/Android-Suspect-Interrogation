@@ -299,3 +299,50 @@ $ MossWorkerClient health → status=ok, manifest_sha256=b735dc2d…, queue_dept
 - 首轮 harness 启动失败曾产生 9 个空 T15 案件行（无转写记录），与正式档同名，无功能影响，留待一并清理。
 - runner 轮询上限 6h 对 7+ 窗档偏短（60m 实际 ~7h），终态以 API/spool 为准（本节已按真实终态修正）。
 - 60/70/120m 三档 spool 原始 generation 与窗口证据完整保留于 `/var/lib/suspect-interrogation/moss/jobs/`，供 V2 修复复现。
+
+## 2026-09-11 Task 17 修复与回归（进行中）
+
+### 17A 声纹注册生命周期（已完成并上线）
+
+**两个缺陷（均真机复现）**
+1. 注册成功后 UI 误报失败：后端在 HTTP stop 期间关闭浏览器 WSS，前端 `browserVoiceprintCapture` 只有 `stopped/paused` 两布尔、`pause()` 不置 `stopped`，`onclose` 一律 `onError` → `abortCurrent()` 异步把 `phase` 从 `COMPLETE` 改写成 `ERROR`。真机现象：库中已是 `quality=GOOD / usable_duration_ms=20030`，UI 却显示"浏览器麦克风音频通道已断开，请重新开始声纹录制"。
+2. 已注册嫌疑人失去重录入口：`TemplateDrivenInterrogationPage.vue` 用 `v-if="!readiness.suspectReady"` 卸载整个 Gate，使 `VoiceprintEnrollmentGate` 内早已写好的"重新录制"成为死代码，且 `TemplateDrivenInterrogationPage.test.ts:60-61` 把该错误结构固化为测试契约。后端 `VoiceprintService._upsert_suspect_reference()` 本就支持 REENROLL（先 VAD/质量校验后 `replace_suspect`，失败不动旧声纹），无需删库。
+
+**修复**
+- `browserVoiceprintCapture.ts`：显式生命周期 `CONNECTING/STREAMING/FINALIZING/STOPPED/FAILED` + `beginFinalize()`（停发 PCM、**不关通道**，因为先关会让后端 finally 走 cancel 而丢掉注册）+ attempt token + 终态单向。
+- `useAutoVoiceprintEnrollment.ts`：顺序改为 `beginFinalize() → HTTP stop → refreshVoiceprintState() → capture.stop() → COMPLETE`，并加 `settling`/`cancellingFor` 守卫。
+- 父页面：Gate 常驻 + `:compact="readiness.suspectReady"`，仅 `LiveDialoguePanel` 条件渲染；已注册态紧凑卡显示 `✓ 已注册 / 质量 / 有效语音 / [重新录制]`，重录失败显示"✓ 当前已有声纹仍然有效 + [再次重新录制]"。
+
+**产线验证（DoD）**：三个提交 `5fc2a856` / `553fc57f` / `26ea94da` 推送 → CI 生产重部署 → 板上 SHA `3c3efd62`（祖先含三者）→ `/health/live` HTTP 200 且 `ssl_verify_result=0`（用 `/etc/suspect-interrogation/tls/ca.crt` 校验，未用 `-k`）、`/health/ready` ready（asr/speaker/moss 均 AVAILABLE、`margin_configured=true`）、TCP/8000 pid 1073/3374 未变、dist 含 `beginFinalize` 与（重新录制）文案。
+
+**真 Chrome 回归（部署版，6/6 PASS）**：`regression-17a.mjs` 走真 UI 建案 → 断言语义：未注册显示"开始录制"；注册后**不再出现失败文案**且 readiness `suspectReady=true`；Gate 常驻并出现"重新录制"；点击后**不删库即可重新注册**。报告 `regression-17a.json`。
+
+**独立评审判定"需返工"**：Blocker B1 成立——`refreshVoiceprintState()` 抛错时 `closeBrowserCapture()` 永不被调用（catch 无 close；修复前是"先 close 再 refresh"，属 17A 引入的回归），导致麦克风常亮、`getUserMedia`/`AudioContext` 泄漏、capture 变不可达；且新测试恰好 mock 掉了唯一能暴露它的依赖。评审员用"预修复文件 + 新测试"反向验证：13 例失败（生命周期套件 8/8 全红），证明测试确实打在生产代码上。返工中（另含 `beginFinalize()` 在 try 外、`OfficerVoiceprintLibrary` 守卫、模式 chip 口径）。
+
+### 17B-1 effective speaker mode（已提交，待产线部署）
+
+- 新增 `app/services/speaker_mode.py`：唯一权威规则 `resolve_effective_recognition_mode` + 运行时谓词 `narrow_decision_roles` + `SpeakerModeConfig`（`from_sources` 按 活动 capture runtime → AI supervisor → 进程设置 取第一个携带操作点的源；`MODEL_BASELINE` 视为**非设备校准**）。
+- `asr_capture_service.py` 两处重复 `if persisted_margin is None` 删除，改为复用共享规则（判定行为不变，另加日志与审计字段）；`readiness()` 纯增量补 `enrollmentQuality/usableDurationMs/modelKey/modelId/modelVersion` 与 `speakerMargin/speakerThreshold/thresholdSource/marginConfigured/thresholdConfigured/declaredRecognitionMode/effectiveRecognitionMode/recognitionModeDegraded/recognitionModeDegradedReason`；运行时配置由 API 路由注入（service 不读 `app.state`）。
+- 前端：根因是 `normalizeVoiceprintReadiness` **一直在丢弃 readiness 新字段**（这才是紧凑卡"质量：未知"的原因，不是后端没给）；已透传并新增退化显式提示（`role="status"` + `aria-live="polite"`）。
+- 我独立核验：一致性契约测试**直连生产决策路径**（`AsrCaptureService._decide_with_operating_point`），断言 margin 存在→两侧都放行民警、margin 缺失→两侧都只认嫌疑人；21 例通过。板上实测 margin=0.08 已配置 → 今天两侧一致，本条的目的在于把一致性做成**可证明**、不一致必须显式可见。
+
+### 17B-2 SpeakerTurnSplitter（设计已验证，实现进行中）
+
+**根因**：`speech_worker/session.py:207 _finish_utterance()` 对**整段 utterance 只做一次 ASR（:242）与一次 speaker embedding（:248-276）**；`funasr_runtime.py:14` 的 5s 只是延迟上限（`max_single_segment_time`），回答的是"有没有人说话"而非"换人了吗"。
+
+**板上实测（真 ERes2Net + 真声纹参考，512 维）**
+- 整段 vs 参考：民警段 0.067–0.268、嫌疑段 0.725–0.902；**混说 5s 段 = 0.4732**（滑窗均值仅 0.228 → 会被误判成"确定另一人"，故门控必须用整段单一 embedding）
+- 门控带 `(0.29, 0.70)` 由实测极值导出，**比角色接受阈值 0.372+margin 更严**（后者答"是不是嫌疑人"，前者答"是否只有一人"）
+- 相邻窗余弦：边界处 0.005–0.552、同人段 0.349–0.874（分布重叠 → 单阈值不足，需迟滞与双重确认）
+- 阶段二规则 B（单谷 + 两侧角色相反）为短 utterance 必需：混说段 11 窗仅 1 个低于阈值的窗对（103000ms, cosPrev 0.243）；据此切分误差 **−310ms**（真值 103310ms），左 cosRef 0.105（民警）/ 右 0.722（嫌疑人）
+- 成本：单窗 embedding 中位 **690ms** → 朴素滑窗 RTF≈1.38，故必须两阶段门控（实测 45/45 干净段由阶段一拦下）
+
+**语料与必过回归点**：`linux/backend/tests/fixtures/speaker_turn_corpus/`（manifest 按档 pin sha256，音频按哈希物化不入库；标注为"MOSS 簇 + 文本启发式"的**辅助**标注，45 段，1 段待人工裁听）。必过点 `mixed-turn-src-99.8-105.2`（源文件时钟，含民警问句 99840-103010 + 嫌疑人答句 103610-105240）要求切成两个对立角色 turn 或交界 UNKNOWN，**绝不允许整段单一 SUSPECT**；实时观测条目 `realtime-observation-70.9-75.9` 单列并注明会话时钟比源文件慢 ≈29s。
+
+**验收器**：`run_splitter_corpus_check.py`（真模型 + 真参考，按"一个 VAD utterance"回放必过点，另查 45 段是否被过切）。已用一次性原型自证可行（并借此修掉两个验收器自身缺陷）。
+
+**当前**：WIP 实现在真语料上暴露缺陷——切出 **6ms 退化首段**（`min_turn_ms` 未约束到结果 span），已把证据与期望行为反馈给实现者修正；门控与"不过切"（45/45）已正确。
+
+### 剩余
+
+返工（B1 等）与 17B-2 完成后：推送 → 生产部署 + DoD → 三项板上验收（语料必过点、17B-1 浏览器回归、17A 回归复跑确认无回退）。
