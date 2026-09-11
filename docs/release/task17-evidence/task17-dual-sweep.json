@@ -1,0 +1,2192 @@
+{
+ "wav": "/tmp/t17-21.wav",
+ "window": 1.5,
+ "hop": 0.5,
+ "reference": {
+  "caseId": "CASE-20260911-EBD4BF",
+  "dim": 512,
+  "quality": "GOOD",
+  "usableDurationMs": 20030
+ },
+ "windows": [
+  {
+   "startMs": 0,
+   "endMs": 1500,
+   "cosRef": 0.042,
+   "cosPrev": null
+  },
+  {
+   "startMs": 500,
+   "endMs": 2000,
+   "cosRef": 0.1348,
+   "cosPrev": 0.516
+  },
+  {
+   "startMs": 1000,
+   "endMs": 2500,
+   "cosRef": 0.188,
+   "cosPrev": 0.7749
+  },
+  {
+   "startMs": 1500,
+   "endMs": 3000,
+   "cosRef": 0.1048,
+   "cosPrev": 0.8202
+  },
+  {
+   "startMs": 2000,
+   "endMs": 3500,
+   "cosRef": 0.163,
+   "cosPrev": 0.823
+  },
+  {
+   "startMs": 2500,
+   "endMs": 4000,
+   "cosRef": 0.0054,
+   "cosPrev": 0.7913
+  },
+  {
+   "startMs": 3000,
+   "endMs": 4500,
+   "cosRef": 0.0609,
+   "cosPrev": 0.3866
+  },
+  {
+   "startMs": 3500,
+   "endMs": 5000,
+   "cosRef": 0.1446,
+   "cosPrev": 0.3275
+  },
+  {
+   "startMs": 4000,
+   "endMs": 5500,
+   "cosRef": 0.2878,
+   "cosPrev": 0.8359
+  },
+  {
+   "startMs": 4500,
+   "endMs": 6000,
+   "cosRef": 0.2915,
+   "cosPrev": 0.9286
+  },
+  {
+   "startMs": 5000,
+   "endMs": 6500,
+   "cosRef": 0.1936,
+   "cosPrev": 0.8281
+  },
+  {
+   "startMs": 5500,
+   "endMs": 7000,
+   "cosRef": 0.2762,
+   "cosPrev": 0.8073
+  },
+  {
+   "startMs": 6000,
+   "endMs": 7500,
+   "cosRef": 0.1552,
+   "cosPrev": 0.88
+  },
+  {
+   "startMs": 6500,
+   "endMs": 8000,
+   "cosRef": 0.1935,
+   "cosPrev": 0.8056
+  },
+  {
+   "startMs": 7000,
+   "endMs": 8500,
+   "cosRef": 0.0842,
+   "cosPrev": 0.8429
+  },
+  {
+   "startMs": 7500,
+   "endMs": 9000,
+   "cosRef": 0.2315,
+   "cosPrev": 0.7968
+  },
+  {
+   "startMs": 8000,
+   "endMs": 9500,
+   "cosRef": 0.2273,
+   "cosPrev": 0.8825
+  },
+  {
+   "startMs": 8500,
+   "endMs": 10000,
+   "cosRef": 0.1907,
+   "cosPrev": 0.922
+  },
+  {
+   "startMs": 9000,
+   "endMs": 10500,
+   "cosRef": 0.1784,
+   "cosPrev": 0.9122
+  },
+  {
+   "startMs": 9500,
+   "endMs": 11000,
+   "cosRef": 0.1939,
+   "cosPrev": 0.8851
+  },
+  {
+   "startMs": 10000,
+   "endMs": 11500,
+   "cosRef": 0.2063,
+   "cosPrev": 0.9004
+  },
+  {
+   "startMs": 10500,
+   "endMs": 12000,
+   "cosRef": 0.2528,
+   "cosPrev": 0.9221
+  },
+  {
+   "startMs": 11000,
+   "endMs": 12500,
+   "cosRef": 0.1665,
+   "cosPrev": 0.863
+  },
+  {
+   "startMs": 11500,
+   "endMs": 13000,
+   "cosRef": 0.6286,
+   "cosPrev": 0.3838
+  },
+  {
+   "startMs": 12000,
+   "endMs": 13500,
+   "cosRef": 0.7512,
+   "cosPrev": 0.7771
+  },
+  {
+   "startMs": 12500,
+   "endMs": 14000,
+   "cosRef": 0.7786,
+   "cosPrev": 0.9514
+  },
+  {
+   "startMs": 13000,
+   "endMs": 14500,
+   "cosRef": 0.7923,
+   "cosPrev": 0.9021
+  },
+  {
+   "startMs": 13500,
+   "endMs": 15000,
+   "cosRef": 0.777,
+   "cosPrev": 0.8769
+  },
+  {
+   "startMs": 14000,
+   "endMs": 15500,
+   "cosRef": 0.8247,
+   "cosPrev": 0.8248
+  },
+  {
+   "startMs": 14500,
+   "endMs": 16000,
+   "cosRef": 0.8656,
+   "cosPrev": 0.8845
+  },
+  {
+   "startMs": 15000,
+   "endMs": 16500,
+   "cosRef": 0.8078,
+   "cosPrev": 0.9278
+  },
+  {
+   "startMs": 15500,
+   "endMs": 17000,
+   "cosRef": 0.8165,
+   "cosPrev": 0.9201
+  },
+  {
+   "startMs": 16000,
+   "endMs": 17500,
+   "cosRef": 0.6783,
+   "cosPrev": 0.8029
+  },
+  {
+   "startMs": 16500,
+   "endMs": 18000,
+   "cosRef": 0.7381,
+   "cosPrev": 0.8205
+  },
+  {
+   "startMs": 17000,
+   "endMs": 18500,
+   "cosRef": 0.7678,
+   "cosPrev": 0.881
+  },
+  {
+   "startMs": 17500,
+   "endMs": 19000,
+   "cosRef": 0.843,
+   "cosPrev": 0.9045
+  },
+  {
+   "startMs": 18000,
+   "endMs": 19500,
+   "cosRef": 0.7896,
+   "cosPrev": 0.9151
+  },
+  {
+   "startMs": 18500,
+   "endMs": 20000,
+   "cosRef": 0.4971,
+   "cosPrev": 0.4946
+  },
+  {
+   "startMs": 19000,
+   "endMs": 20500,
+   "cosRef": 0.1282,
+   "cosPrev": 0.2534
+  },
+  {
+   "startMs": 19500,
+   "endMs": 21000,
+   "cosRef": 0.0986,
+   "cosPrev": 0.8902
+  },
+  {
+   "startMs": 20000,
+   "endMs": 21500,
+   "cosRef": 0.1338,
+   "cosPrev": 0.9205
+  },
+  {
+   "startMs": 20500,
+   "endMs": 22000,
+   "cosRef": 0.1121,
+   "cosPrev": 0.901
+  },
+  {
+   "startMs": 21000,
+   "endMs": 22500,
+   "cosRef": 0.1603,
+   "cosPrev": 0.9347
+  },
+  {
+   "startMs": 21500,
+   "endMs": 23000,
+   "cosRef": 0.1763,
+   "cosPrev": 0.9277
+  },
+  {
+   "startMs": 22000,
+   "endMs": 23500,
+   "cosRef": 0.1805,
+   "cosPrev": 0.9324
+  },
+  {
+   "startMs": 22500,
+   "endMs": 24000,
+   "cosRef": 0.1138,
+   "cosPrev": 0.8807
+  },
+  {
+   "startMs": 23000,
+   "endMs": 24500,
+   "cosRef": 0.1199,
+   "cosPrev": 0.9252
+  },
+  {
+   "startMs": 23500,
+   "endMs": 25000,
+   "cosRef": 0.1131,
+   "cosPrev": 0.7944
+  },
+  {
+   "startMs": 24000,
+   "endMs": 25500,
+   "cosRef": 0.1137,
+   "cosPrev": 0.8907
+  },
+  {
+   "startMs": 24500,
+   "endMs": 26000,
+   "cosRef": 0.1023,
+   "cosPrev": 0.9263
+  },
+  {
+   "startMs": 25000,
+   "endMs": 26500,
+   "cosRef": 0.0964,
+   "cosPrev": 0.8923
+  },
+  {
+   "startMs": 25500,
+   "endMs": 27000,
+   "cosRef": 0.0934,
+   "cosPrev": 0.9393
+  },
+  {
+   "startMs": 26000,
+   "endMs": 27500,
+   "cosRef": 0.12,
+   "cosPrev": 0.9003
+  },
+  {
+   "startMs": 26500,
+   "endMs": 28000,
+   "cosRef": 0.1522,
+   "cosPrev": 0.9134
+  },
+  {
+   "startMs": 27000,
+   "endMs": 28500,
+   "cosRef": 0.1254,
+   "cosPrev": 0.915
+  },
+  {
+   "startMs": 27500,
+   "endMs": 29000,
+   "cosRef": 0.1233,
+   "cosPrev": 0.8654
+  },
+  {
+   "startMs": 28000,
+   "endMs": 29500,
+   "cosRef": 0.1836,
+   "cosPrev": 0.1759
+  },
+  {
+   "startMs": 28500,
+   "endMs": 30000,
+   "cosRef": 0.5291,
+   "cosPrev": 0.3286
+  },
+  {
+   "startMs": 29000,
+   "endMs": 30500,
+   "cosRef": 0.6828,
+   "cosPrev": 0.7553
+  },
+  {
+   "startMs": 29500,
+   "endMs": 31000,
+   "cosRef": 0.8325,
+   "cosPrev": 0.7819
+  },
+  {
+   "startMs": 30000,
+   "endMs": 31500,
+   "cosRef": 0.8295,
+   "cosPrev": 0.8956
+  },
+  {
+   "startMs": 30500,
+   "endMs": 32000,
+   "cosRef": 0.8311,
+   "cosPrev": 0.9241
+  },
+  {
+   "startMs": 31000,
+   "endMs": 32500,
+   "cosRef": 0.793,
+   "cosPrev": 0.864
+  },
+  {
+   "startMs": 31500,
+   "endMs": 33000,
+   "cosRef": 0.8326,
+   "cosPrev": 0.899
+  },
+  {
+   "startMs": 32000,
+   "endMs": 33500,
+   "cosRef": 0.8306,
+   "cosPrev": 0.8973
+  },
+  {
+   "startMs": 32500,
+   "endMs": 34000,
+   "cosRef": 0.823,
+   "cosPrev": 0.8904
+  },
+  {
+   "startMs": 33000,
+   "endMs": 34500,
+   "cosRef": 0.8082,
+   "cosPrev": 0.9138
+  },
+  {
+   "startMs": 33500,
+   "endMs": 35000,
+   "cosRef": 0.7829,
+   "cosPrev": 0.9385
+  },
+  {
+   "startMs": 34000,
+   "endMs": 35500,
+   "cosRef": 0.7053,
+   "cosPrev": 0.7634
+  },
+  {
+   "startMs": 34500,
+   "endMs": 36000,
+   "cosRef": 0.6767,
+   "cosPrev": 0.6964
+  },
+  {
+   "startMs": 35000,
+   "endMs": 36500,
+   "cosRef": 0.7941,
+   "cosPrev": 0.7737
+  },
+  {
+   "startMs": 35500,
+   "endMs": 37000,
+   "cosRef": 0.8117,
+   "cosPrev": 0.9275
+  },
+  {
+   "startMs": 36000,
+   "endMs": 37500,
+   "cosRef": 0.8566,
+   "cosPrev": 0.9112
+  },
+  {
+   "startMs": 36500,
+   "endMs": 38000,
+   "cosRef": 0.809,
+   "cosPrev": 0.8744
+  },
+  {
+   "startMs": 37000,
+   "endMs": 38500,
+   "cosRef": 0.8279,
+   "cosPrev": 0.9184
+  },
+  {
+   "startMs": 37500,
+   "endMs": 39000,
+   "cosRef": 0.7739,
+   "cosPrev": 0.8942
+  },
+  {
+   "startMs": 38000,
+   "endMs": 39500,
+   "cosRef": 0.7063,
+   "cosPrev": 0.8979
+  },
+  {
+   "startMs": 38500,
+   "endMs": 40000,
+   "cosRef": 0.5867,
+   "cosPrev": 0.5593
+  },
+  {
+   "startMs": 39000,
+   "endMs": 40500,
+   "cosRef": 0.6704,
+   "cosPrev": 0.7378
+  },
+  {
+   "startMs": 39500,
+   "endMs": 41000,
+   "cosRef": 0.7746,
+   "cosPrev": 0.8852
+  },
+  {
+   "startMs": 40000,
+   "endMs": 41500,
+   "cosRef": 0.7699,
+   "cosPrev": 0.9151
+  },
+  {
+   "startMs": 40500,
+   "endMs": 42000,
+   "cosRef": 0.7678,
+   "cosPrev": 0.8287
+  },
+  {
+   "startMs": 41000,
+   "endMs": 42500,
+   "cosRef": 0.7606,
+   "cosPrev": 0.8605
+  },
+  {
+   "startMs": 41500,
+   "endMs": 43000,
+   "cosRef": 0.7384,
+   "cosPrev": 0.8702
+  },
+  {
+   "startMs": 42000,
+   "endMs": 43500,
+   "cosRef": 0.695,
+   "cosPrev": 0.9016
+  },
+  {
+   "startMs": 42500,
+   "endMs": 44000,
+   "cosRef": 0.482,
+   "cosPrev": 0.573
+  },
+  {
+   "startMs": 43000,
+   "endMs": 44500,
+   "cosRef": 0.156,
+   "cosPrev": 0.2681
+  },
+  {
+   "startMs": 43500,
+   "endMs": 45000,
+   "cosRef": 0.2629,
+   "cosPrev": 0.8448
+  },
+  {
+   "startMs": 44000,
+   "endMs": 45500,
+   "cosRef": 0.2668,
+   "cosPrev": 0.933
+  },
+  {
+   "startMs": 44500,
+   "endMs": 46000,
+   "cosRef": 0.2204,
+   "cosPrev": 0.9426
+  },
+  {
+   "startMs": 45000,
+   "endMs": 46500,
+   "cosRef": 0.123,
+   "cosPrev": 0.8741
+  },
+  {
+   "startMs": 45500,
+   "endMs": 47000,
+   "cosRef": 0.6949,
+   "cosPrev": 0.109
+  },
+  {
+   "startMs": 46000,
+   "endMs": 47500,
+   "cosRef": 0.7372,
+   "cosPrev": 0.9381
+  },
+  {
+   "startMs": 46500,
+   "endMs": 48000,
+   "cosRef": 0.7574,
+   "cosPrev": 0.9323
+  },
+  {
+   "startMs": 47000,
+   "endMs": 48500,
+   "cosRef": 0.2205,
+   "cosPrev": 0.2982
+  },
+  {
+   "startMs": 47500,
+   "endMs": 49000,
+   "cosRef": 0.0799,
+   "cosPrev": 0.8763
+  },
+  {
+   "startMs": 48000,
+   "endMs": 49500,
+   "cosRef": 0.1079,
+   "cosPrev": 0.959
+  },
+  {
+   "startMs": 48500,
+   "endMs": 50000,
+   "cosRef": -0.0001,
+   "cosPrev": 0.9083
+  },
+  {
+   "startMs": 49000,
+   "endMs": 50500,
+   "cosRef": -0.0613,
+   "cosPrev": 0.7394
+  },
+  {
+   "startMs": 49500,
+   "endMs": 51000,
+   "cosRef": 0.0154,
+   "cosPrev": 0.0913
+  },
+  {
+   "startMs": 50000,
+   "endMs": 51500,
+   "cosRef": 0.5272,
+   "cosPrev": 0.1688
+  },
+  {
+   "startMs": 50500,
+   "endMs": 52000,
+   "cosRef": 0.7483,
+   "cosPrev": 0.6853
+  },
+  {
+   "startMs": 51000,
+   "endMs": 52500,
+   "cosRef": 0.8274,
+   "cosPrev": 0.9102
+  },
+  {
+   "startMs": 51500,
+   "endMs": 53000,
+   "cosRef": 0.7902,
+   "cosPrev": 0.8817
+  },
+  {
+   "startMs": 52000,
+   "endMs": 53500,
+   "cosRef": 0.7625,
+   "cosPrev": 0.8841
+  },
+  {
+   "startMs": 52500,
+   "endMs": 54000,
+   "cosRef": 0.7523,
+   "cosPrev": 0.917
+  },
+  {
+   "startMs": 53000,
+   "endMs": 54500,
+   "cosRef": 0.7952,
+   "cosPrev": 0.8896
+  },
+  {
+   "startMs": 53500,
+   "endMs": 55000,
+   "cosRef": 0.7934,
+   "cosPrev": 0.9289
+  },
+  {
+   "startMs": 54000,
+   "endMs": 55500,
+   "cosRef": 0.8456,
+   "cosPrev": 0.8839
+  },
+  {
+   "startMs": 54500,
+   "endMs": 56000,
+   "cosRef": 0.7905,
+   "cosPrev": 0.8388
+  },
+  {
+   "startMs": 55000,
+   "endMs": 56500,
+   "cosRef": 0.7156,
+   "cosPrev": 0.6412
+  },
+  {
+   "startMs": 55500,
+   "endMs": 57000,
+   "cosRef": 0.7239,
+   "cosPrev": 0.9245
+  },
+  {
+   "startMs": 56000,
+   "endMs": 57500,
+   "cosRef": 0.7304,
+   "cosPrev": 0.9397
+  },
+  {
+   "startMs": 56500,
+   "endMs": 58000,
+   "cosRef": 0.7082,
+   "cosPrev": 0.8042
+  },
+  {
+   "startMs": 57000,
+   "endMs": 58500,
+   "cosRef": 0.7526,
+   "cosPrev": 0.672
+  },
+  {
+   "startMs": 57500,
+   "endMs": 59000,
+   "cosRef": 0.7565,
+   "cosPrev": 0.9037
+  },
+  {
+   "startMs": 58000,
+   "endMs": 59500,
+   "cosRef": 0.7853,
+   "cosPrev": 0.9094
+  },
+  {
+   "startMs": 58500,
+   "endMs": 60000,
+   "cosRef": 0.7863,
+   "cosPrev": 0.8995
+  },
+  {
+   "startMs": 59000,
+   "endMs": 60500,
+   "cosRef": 0.7123,
+   "cosPrev": 0.8749
+  },
+  {
+   "startMs": 59500,
+   "endMs": 61000,
+   "cosRef": 0.3001,
+   "cosPrev": 0.3088
+  },
+  {
+   "startMs": 60000,
+   "endMs": 61500,
+   "cosRef": 0.1131,
+   "cosPrev": 0.7027
+  },
+  {
+   "startMs": 60500,
+   "endMs": 62000,
+   "cosRef": 0.1455,
+   "cosPrev": 0.8837
+  },
+  {
+   "startMs": 61000,
+   "endMs": 62500,
+   "cosRef": 0.1649,
+   "cosPrev": 0.9262
+  },
+  {
+   "startMs": 61500,
+   "endMs": 63000,
+   "cosRef": 0.1944,
+   "cosPrev": 0.911
+  },
+  {
+   "startMs": 62000,
+   "endMs": 63500,
+   "cosRef": 0.0686,
+   "cosPrev": 0.8958
+  },
+  {
+   "startMs": 62500,
+   "endMs": 64000,
+   "cosRef": -0.0295,
+   "cosPrev": 0.8357
+  },
+  {
+   "startMs": 63000,
+   "endMs": 64500,
+   "cosRef": 0.0374,
+   "cosPrev": 0.0997
+  },
+  {
+   "startMs": 63500,
+   "endMs": 65000,
+   "cosRef": 0.7284,
+   "cosPrev": 0.096
+  },
+  {
+   "startMs": 64000,
+   "endMs": 65500,
+   "cosRef": 0.7812,
+   "cosPrev": 0.8986
+  },
+  {
+   "startMs": 64500,
+   "endMs": 66000,
+   "cosRef": 0.8231,
+   "cosPrev": 0.9191
+  },
+  {
+   "startMs": 65000,
+   "endMs": 66500,
+   "cosRef": 0.7425,
+   "cosPrev": 0.8848
+  },
+  {
+   "startMs": 65500,
+   "endMs": 67000,
+   "cosRef": 0.7876,
+   "cosPrev": 0.8917
+  },
+  {
+   "startMs": 66000,
+   "endMs": 67500,
+   "cosRef": 0.7788,
+   "cosPrev": 0.9089
+  },
+  {
+   "startMs": 66500,
+   "endMs": 68000,
+   "cosRef": 0.7737,
+   "cosPrev": 0.9161
+  },
+  {
+   "startMs": 67000,
+   "endMs": 68500,
+   "cosRef": 0.7267,
+   "cosPrev": 0.8929
+  },
+  {
+   "startMs": 67500,
+   "endMs": 69000,
+   "cosRef": 0.7266,
+   "cosPrev": 0.825
+  },
+  {
+   "startMs": 68000,
+   "endMs": 69500,
+   "cosRef": 0.7173,
+   "cosPrev": 0.8142
+  },
+  {
+   "startMs": 68500,
+   "endMs": 70000,
+   "cosRef": 0.7325,
+   "cosPrev": 0.8915
+  },
+  {
+   "startMs": 69000,
+   "endMs": 70500,
+   "cosRef": 0.7672,
+   "cosPrev": 0.9034
+  },
+  {
+   "startMs": 69500,
+   "endMs": 71000,
+   "cosRef": 0.7901,
+   "cosPrev": 0.8479
+  },
+  {
+   "startMs": 70000,
+   "endMs": 71500,
+   "cosRef": 0.8004,
+   "cosPrev": 0.8801
+  },
+  {
+   "startMs": 70500,
+   "endMs": 72000,
+   "cosRef": 0.7794,
+   "cosPrev": 0.892
+  },
+  {
+   "startMs": 71000,
+   "endMs": 72500,
+   "cosRef": 0.6444,
+   "cosPrev": 0.8255
+  },
+  {
+   "startMs": 71500,
+   "endMs": 73000,
+   "cosRef": 0.169,
+   "cosPrev": 0.3174
+  },
+  {
+   "startMs": 72000,
+   "endMs": 73500,
+   "cosRef": 0.1912,
+   "cosPrev": 0.9199
+  },
+  {
+   "startMs": 72500,
+   "endMs": 74000,
+   "cosRef": 0.1839,
+   "cosPrev": 0.851
+  },
+  {
+   "startMs": 73000,
+   "endMs": 74500,
+   "cosRef": 0.1558,
+   "cosPrev": 0.9163
+  },
+  {
+   "startMs": 73500,
+   "endMs": 75000,
+   "cosRef": 0.1322,
+   "cosPrev": 0.8884
+  },
+  {
+   "startMs": 74000,
+   "endMs": 75500,
+   "cosRef": 0.1368,
+   "cosPrev": 0.8948
+  },
+  {
+   "startMs": 74500,
+   "endMs": 76000,
+   "cosRef": 0.0497,
+   "cosPrev": 0.9034
+  },
+  {
+   "startMs": 75000,
+   "endMs": 76500,
+   "cosRef": 0.0737,
+   "cosPrev": 0.9082
+  },
+  {
+   "startMs": 75500,
+   "endMs": 77000,
+   "cosRef": 0.1256,
+   "cosPrev": 0.9211
+  },
+  {
+   "startMs": 76000,
+   "endMs": 77500,
+   "cosRef": 0.1573,
+   "cosPrev": 0.9345
+  },
+  {
+   "startMs": 76500,
+   "endMs": 78000,
+   "cosRef": 0.2059,
+   "cosPrev": 0.8894
+  },
+  {
+   "startMs": 77000,
+   "endMs": 78500,
+   "cosRef": 0.1743,
+   "cosPrev": 0.8595
+  },
+  {
+   "startMs": 77500,
+   "endMs": 79000,
+   "cosRef": 0.7007,
+   "cosPrev": 0.1538
+  },
+  {
+   "startMs": 78000,
+   "endMs": 79500,
+   "cosRef": 0.845,
+   "cosPrev": 0.8002
+  },
+  {
+   "startMs": 78500,
+   "endMs": 80000,
+   "cosRef": 0.8219,
+   "cosPrev": 0.9186
+  },
+  {
+   "startMs": 79000,
+   "endMs": 80500,
+   "cosRef": 0.804,
+   "cosPrev": 0.9261
+  },
+  {
+   "startMs": 79500,
+   "endMs": 81000,
+   "cosRef": 0.7873,
+   "cosPrev": 0.9358
+  },
+  {
+   "startMs": 80000,
+   "endMs": 81500,
+   "cosRef": 0.8043,
+   "cosPrev": 0.9082
+  },
+  {
+   "startMs": 80500,
+   "endMs": 82000,
+   "cosRef": 0.6853,
+   "cosPrev": 0.8481
+  },
+  {
+   "startMs": 81000,
+   "endMs": 82500,
+   "cosRef": 0.6818,
+   "cosPrev": 0.9275
+  },
+  {
+   "startMs": 81500,
+   "endMs": 83000,
+   "cosRef": 0.7184,
+   "cosPrev": 0.8188
+  },
+  {
+   "startMs": 82000,
+   "endMs": 83500,
+   "cosRef": 0.8139,
+   "cosPrev": 0.8009
+  },
+  {
+   "startMs": 82500,
+   "endMs": 84000,
+   "cosRef": 0.8268,
+   "cosPrev": 0.9262
+  },
+  {
+   "startMs": 83000,
+   "endMs": 84500,
+   "cosRef": 0.7805,
+   "cosPrev": 0.9454
+  },
+  {
+   "startMs": 83500,
+   "endMs": 85000,
+   "cosRef": 0.6374,
+   "cosPrev": 0.8517
+  },
+  {
+   "startMs": 84000,
+   "endMs": 85500,
+   "cosRef": 0.6677,
+   "cosPrev": 0.5946
+  },
+  {
+   "startMs": 84500,
+   "endMs": 86000,
+   "cosRef": 0.7092,
+   "cosPrev": 0.8496
+  },
+  {
+   "startMs": 85000,
+   "endMs": 86500,
+   "cosRef": 0.7097,
+   "cosPrev": 0.901
+  },
+  {
+   "startMs": 85500,
+   "endMs": 87000,
+   "cosRef": 0.7215,
+   "cosPrev": 0.8957
+  },
+  {
+   "startMs": 86000,
+   "endMs": 87500,
+   "cosRef": 0.6268,
+   "cosPrev": 0.8133
+  },
+  {
+   "startMs": 86500,
+   "endMs": 88000,
+   "cosRef": 0.4512,
+   "cosPrev": 0.7517
+  },
+  {
+   "startMs": 87000,
+   "endMs": 88500,
+   "cosRef": -0.1586,
+   "cosPrev": 0.0048
+  },
+  {
+   "startMs": 87500,
+   "endMs": 89000,
+   "cosRef": -0.1662,
+   "cosPrev": 0.7772
+  },
+  {
+   "startMs": 88000,
+   "endMs": 89500,
+   "cosRef": 0.0433,
+   "cosPrev": 0.7604
+  },
+  {
+   "startMs": 88500,
+   "endMs": 90000,
+   "cosRef": 0.2184,
+   "cosPrev": 0.9073
+  },
+  {
+   "startMs": 89000,
+   "endMs": 90500,
+   "cosRef": 0.2919,
+   "cosPrev": 0.912
+  },
+  {
+   "startMs": 89500,
+   "endMs": 91000,
+   "cosRef": 0.2513,
+   "cosPrev": 0.8822
+  },
+  {
+   "startMs": 90000,
+   "endMs": 91500,
+   "cosRef": 0.0887,
+   "cosPrev": 0.8286
+  },
+  {
+   "startMs": 90500,
+   "endMs": 92000,
+   "cosRef": -0.0511,
+   "cosPrev": 0.7219
+  },
+  {
+   "startMs": 91000,
+   "endMs": 92500,
+   "cosRef": 0.5039,
+   "cosPrev": 0.022
+  },
+  {
+   "startMs": 91500,
+   "endMs": 93000,
+   "cosRef": 0.7925,
+   "cosPrev": 0.6353
+  },
+  {
+   "startMs": 92000,
+   "endMs": 93500,
+   "cosRef": 0.8152,
+   "cosPrev": 0.9145
+  },
+  {
+   "startMs": 92500,
+   "endMs": 94000,
+   "cosRef": 0.8296,
+   "cosPrev": 0.9118
+  },
+  {
+   "startMs": 93000,
+   "endMs": 94500,
+   "cosRef": 0.827,
+   "cosPrev": 0.8979
+  },
+  {
+   "startMs": 93500,
+   "endMs": 95000,
+   "cosRef": 0.8247,
+   "cosPrev": 0.9021
+  },
+  {
+   "startMs": 94000,
+   "endMs": 95500,
+   "cosRef": 0.8508,
+   "cosPrev": 0.9357
+  },
+  {
+   "startMs": 94500,
+   "endMs": 96000,
+   "cosRef": 0.8077,
+   "cosPrev": 0.9056
+  },
+  {
+   "startMs": 95000,
+   "endMs": 96500,
+   "cosRef": 0.775,
+   "cosPrev": 0.9031
+  },
+  {
+   "startMs": 95500,
+   "endMs": 97000,
+   "cosRef": 0.6822,
+   "cosPrev": 0.7279
+  },
+  {
+   "startMs": 96000,
+   "endMs": 97500,
+   "cosRef": 0.0419,
+   "cosPrev": 0.1283
+  },
+  {
+   "startMs": 96500,
+   "endMs": 98000,
+   "cosRef": 0.1198,
+   "cosPrev": 0.6257
+  },
+  {
+   "startMs": 97000,
+   "endMs": 98500,
+   "cosRef": 0.1254,
+   "cosPrev": 0.7807
+  },
+  {
+   "startMs": 97500,
+   "endMs": 99000,
+   "cosRef": 0.0896,
+   "cosPrev": 0.5856
+  },
+  {
+   "startMs": 98000,
+   "endMs": 99500,
+   "cosRef": 0.0741,
+   "cosPrev": 0.8813
+  },
+  {
+   "startMs": 98500,
+   "endMs": 100000,
+   "cosRef": 0.0198,
+   "cosPrev": 0.7204
+  },
+  {
+   "startMs": 99000,
+   "endMs": 100500,
+   "cosRef": -0.0742,
+   "cosPrev": 0.5237
+  },
+  {
+   "startMs": 99500,
+   "endMs": 101000,
+   "cosRef": 0.0321,
+   "cosPrev": 0.7701
+  },
+  {
+   "startMs": 100000,
+   "endMs": 101500,
+   "cosRef": 0.1092,
+   "cosPrev": 0.8742
+  },
+  {
+   "startMs": 100500,
+   "endMs": 102000,
+   "cosRef": 0.1434,
+   "cosPrev": 0.8587
+  },
+  {
+   "startMs": 101000,
+   "endMs": 102500,
+   "cosRef": 0.1137,
+   "cosPrev": 0.8847
+  },
+  {
+   "startMs": 101500,
+   "endMs": 103000,
+   "cosRef": 0.0792,
+   "cosPrev": 0.87
+  },
+  {
+   "startMs": 102000,
+   "endMs": 103500,
+   "cosRef": 0.013,
+   "cosPrev": 0.9129
+  },
+  {
+   "startMs": 102500,
+   "endMs": 104000,
+   "cosRef": 0.1714,
+   "cosPrev": 0.7343
+  },
+  {
+   "startMs": 103000,
+   "endMs": 104500,
+   "cosRef": 0.7073,
+   "cosPrev": 0.243
+  },
+  {
+   "startMs": 103500,
+   "endMs": 105000,
+   "cosRef": 0.7344,
+   "cosPrev": 0.9183
+  },
+  {
+   "startMs": 104000,
+   "endMs": 105500,
+   "cosRef": 0.7426,
+   "cosPrev": 0.9412
+  },
+  {
+   "startMs": 104500,
+   "endMs": 106000,
+   "cosRef": 0.6983,
+   "cosPrev": 0.8243
+  },
+  {
+   "startMs": 105000,
+   "endMs": 106500,
+   "cosRef": 0.7259,
+   "cosPrev": 0.8006
+  },
+  {
+   "startMs": 105500,
+   "endMs": 107000,
+   "cosRef": 0.7729,
+   "cosPrev": 0.9314
+  },
+  {
+   "startMs": 106000,
+   "endMs": 107500,
+   "cosRef": 0.7592,
+   "cosPrev": 0.9335
+  },
+  {
+   "startMs": 106500,
+   "endMs": 108000,
+   "cosRef": 0.7149,
+   "cosPrev": 0.8608
+  },
+  {
+   "startMs": 107000,
+   "endMs": 108500,
+   "cosRef": 0.7192,
+   "cosPrev": 0.9171
+  },
+  {
+   "startMs": 107500,
+   "endMs": 109000,
+   "cosRef": 0.7115,
+   "cosPrev": 0.9056
+  },
+  {
+   "startMs": 108000,
+   "endMs": 109500,
+   "cosRef": 0.7077,
+   "cosPrev": 0.9132
+  },
+  {
+   "startMs": 108500,
+   "endMs": 110000,
+   "cosRef": 0.7359,
+   "cosPrev": 0.8447
+  },
+  {
+   "startMs": 109000,
+   "endMs": 110500,
+   "cosRef": 0.7598,
+   "cosPrev": 0.9358
+  },
+  {
+   "startMs": 109500,
+   "endMs": 111000,
+   "cosRef": 0.7103,
+   "cosPrev": 0.9092
+  },
+  {
+   "startMs": 110000,
+   "endMs": 111500,
+   "cosRef": 0.2105,
+   "cosPrev": 0.3492
+  },
+  {
+   "startMs": 110500,
+   "endMs": 112000,
+   "cosRef": 0.1414,
+   "cosPrev": 0.846
+  },
+  {
+   "startMs": 111000,
+   "endMs": 112500,
+   "cosRef": 0.1766,
+   "cosPrev": 0.9424
+  },
+  {
+   "startMs": 111500,
+   "endMs": 113000,
+   "cosRef": 0.2132,
+   "cosPrev": 0.916
+  },
+  {
+   "startMs": 112000,
+   "endMs": 113500,
+   "cosRef": 0.137,
+   "cosPrev": 0.9052
+  },
+  {
+   "startMs": 112500,
+   "endMs": 114000,
+   "cosRef": 0.051,
+   "cosPrev": 0.8811
+  },
+  {
+   "startMs": 113000,
+   "endMs": 114500,
+   "cosRef": -0.0557,
+   "cosPrev": 0.6374
+  },
+  {
+   "startMs": 113500,
+   "endMs": 115000,
+   "cosRef": 0.5671,
+   "cosPrev": 0.016
+  },
+  {
+   "startMs": 114000,
+   "endMs": 115500,
+   "cosRef": 0.6874,
+   "cosPrev": 0.8718
+  },
+  {
+   "startMs": 114500,
+   "endMs": 116000,
+   "cosRef": 0.7207,
+   "cosPrev": 0.8847
+  },
+  {
+   "startMs": 115000,
+   "endMs": 116500,
+   "cosRef": 0.7061,
+   "cosPrev": 0.8733
+  },
+  {
+   "startMs": 115500,
+   "endMs": 117000,
+   "cosRef": 0.6817,
+   "cosPrev": 0.9192
+  },
+  {
+   "startMs": 116000,
+   "endMs": 117500,
+   "cosRef": 0.7469,
+   "cosPrev": 0.9036
+  },
+  {
+   "startMs": 116500,
+   "endMs": 118000,
+   "cosRef": 0.7799,
+   "cosPrev": 0.8859
+  },
+  {
+   "startMs": 117000,
+   "endMs": 118500,
+   "cosRef": 0.8074,
+   "cosPrev": 0.9075
+  },
+  {
+   "startMs": 117500,
+   "endMs": 119000,
+   "cosRef": 0.7565,
+   "cosPrev": 0.9209
+  },
+  {
+   "startMs": 118000,
+   "endMs": 119500,
+   "cosRef": 0.7049,
+   "cosPrev": 0.8491
+  },
+  {
+   "startMs": 118500,
+   "endMs": 120000,
+   "cosRef": 0.7592,
+   "cosPrev": 0.859
+  },
+  {
+   "startMs": 119000,
+   "endMs": 120500,
+   "cosRef": 0.7455,
+   "cosPrev": 0.9582
+  },
+  {
+   "startMs": 119500,
+   "endMs": 121000,
+   "cosRef": 0.7483,
+   "cosPrev": 0.8247
+  },
+  {
+   "startMs": 120000,
+   "endMs": 121500,
+   "cosRef": 0.6824,
+   "cosPrev": 0.8715
+  },
+  {
+   "startMs": 120500,
+   "endMs": 122000,
+   "cosRef": 0.7327,
+   "cosPrev": 0.9159
+  },
+  {
+   "startMs": 121000,
+   "endMs": 122500,
+   "cosRef": 0.7294,
+   "cosPrev": 0.9054
+  },
+  {
+   "startMs": 121500,
+   "endMs": 123000,
+   "cosRef": 0.6618,
+   "cosPrev": 0.8537
+  },
+  {
+   "startMs": 122000,
+   "endMs": 123500,
+   "cosRef": 0.6482,
+   "cosPrev": 0.8267
+  },
+  {
+   "startMs": 122500,
+   "endMs": 124000,
+   "cosRef": 0.3278,
+   "cosPrev": 0.4756
+  },
+  {
+   "startMs": 123000,
+   "endMs": 124500,
+   "cosRef": -0.0529,
+   "cosPrev": 0.3692
+  },
+  {
+   "startMs": 123500,
+   "endMs": 125000,
+   "cosRef": 0.0562,
+   "cosPrev": 0.8939
+  },
+  {
+   "startMs": 124000,
+   "endMs": 125500,
+   "cosRef": 0.1159,
+   "cosPrev": 0.9419
+  },
+  {
+   "startMs": 124500,
+   "endMs": 126000,
+   "cosRef": 0.1356,
+   "cosPrev": 0.8599
+  },
+  {
+   "startMs": 125000,
+   "endMs": 126500,
+   "cosRef": 0.0669,
+   "cosPrev": 0.5583
+  },
+  {
+   "startMs": 125500,
+   "endMs": 127000,
+   "cosRef": 0.015,
+   "cosPrev": 0.3651
+  },
+  {
+   "startMs": 126000,
+   "endMs": 127500,
+   "cosRef": 0.5565,
+   "cosPrev": 0.1316
+  },
+  {
+   "startMs": 126500,
+   "endMs": 128000,
+   "cosRef": 0.7529,
+   "cosPrev": 0.7561
+  },
+  {
+   "startMs": 127000,
+   "endMs": 128500,
+   "cosRef": 0.7557,
+   "cosPrev": 0.9092
+  },
+  {
+   "startMs": 127500,
+   "endMs": 129000,
+   "cosRef": 0.7622,
+   "cosPrev": 0.9374
+  },
+  {
+   "startMs": 128000,
+   "endMs": 129500,
+   "cosRef": 0.7032,
+   "cosPrev": 0.7812
+  },
+  {
+   "startMs": 128500,
+   "endMs": 130000,
+   "cosRef": 0.7216,
+   "cosPrev": 0.8373
+  },
+  {
+   "startMs": 129000,
+   "endMs": 130500,
+   "cosRef": 0.7033,
+   "cosPrev": 0.9343
+  },
+  {
+   "startMs": 129500,
+   "endMs": 131000,
+   "cosRef": 0.6676,
+   "cosPrev": 0.7229
+  },
+  {
+   "startMs": 130000,
+   "endMs": 131500,
+   "cosRef": 0.744,
+   "cosPrev": 0.8388
+  },
+  {
+   "startMs": 130500,
+   "endMs": 132000,
+   "cosRef": 0.7571,
+   "cosPrev": 0.9223
+  },
+  {
+   "startMs": 131000,
+   "endMs": 132500,
+   "cosRef": 0.7028,
+   "cosPrev": 0.8888
+  },
+  {
+   "startMs": 131500,
+   "endMs": 133000,
+   "cosRef": 0.6712,
+   "cosPrev": 0.9167
+  },
+  {
+   "startMs": 132000,
+   "endMs": 133500,
+   "cosRef": 0.6428,
+   "cosPrev": 0.8166
+  },
+  {
+   "startMs": 132500,
+   "endMs": 134000,
+   "cosRef": 0.6559,
+   "cosPrev": 0.873
+  },
+  {
+   "startMs": 133000,
+   "endMs": 134500,
+   "cosRef": 0.7306,
+   "cosPrev": 0.864
+  },
+  {
+   "startMs": 133500,
+   "endMs": 135000,
+   "cosRef": 0.759,
+   "cosPrev": 0.9043
+  },
+  {
+   "startMs": 134000,
+   "endMs": 135500,
+   "cosRef": 0.7106,
+   "cosPrev": 0.896
+  },
+  {
+   "startMs": 134500,
+   "endMs": 136000,
+   "cosRef": 0.6484,
+   "cosPrev": 0.8191
+  },
+  {
+   "startMs": 135000,
+   "endMs": 136500,
+   "cosRef": 0.1178,
+   "cosPrev": 0.1902
+  },
+  {
+   "startMs": 135500,
+   "endMs": 137000,
+   "cosRef": 0.0938,
+   "cosPrev": 0.904
+  },
+  {
+   "startMs": 136000,
+   "endMs": 137500,
+   "cosRef": 0.0744,
+   "cosPrev": 0.9841
+  },
+  {
+   "startMs": 136500,
+   "endMs": 138000,
+   "cosRef": 0.4449,
+   "cosPrev": 0.4859
+  },
+  {
+   "startMs": 137000,
+   "endMs": 138500,
+   "cosRef": 0.7206,
+   "cosPrev": 0.5906
+  },
+  {
+   "startMs": 137500,
+   "endMs": 139000,
+   "cosRef": 0.7786,
+   "cosPrev": 0.8789
+  },
+  {
+   "startMs": 138000,
+   "endMs": 139500,
+   "cosRef": 0.7617,
+   "cosPrev": 0.9054
+  },
+  {
+   "startMs": 138500,
+   "endMs": 140000,
+   "cosRef": 0.7736,
+   "cosPrev": 0.9223
+  },
+  {
+   "startMs": 139000,
+   "endMs": 140500,
+   "cosRef": 0.7074,
+   "cosPrev": 0.8763
+  },
+  {
+   "startMs": 139500,
+   "endMs": 141000,
+   "cosRef": 0.5218,
+   "cosPrev": 0.7686
+  },
+  {
+   "startMs": 140000,
+   "endMs": 141500,
+   "cosRef": 0.0599,
+   "cosPrev": 0.2344
+  },
+  {
+   "startMs": 140500,
+   "endMs": 142000,
+   "cosRef": 0.141,
+   "cosPrev": 0.7599
+  },
+  {
+   "startMs": 141000,
+   "endMs": 142500,
+   "cosRef": 0.1875,
+   "cosPrev": 0.9319
+  },
+  {
+   "startMs": 141500,
+   "endMs": 143000,
+   "cosRef": 0.2463,
+   "cosPrev": 0.9328
+  },
+  {
+   "startMs": 142000,
+   "endMs": 143500,
+   "cosRef": 0.1791,
+   "cosPrev": 0.801
+  },
+  {
+   "startMs": 142500,
+   "endMs": 144000,
+   "cosRef": 0.0052,
+   "cosPrev": 0.1305
+  },
+  {
+   "startMs": 143000,
+   "endMs": 144500,
+   "cosRef": -0.0033,
+   "cosPrev": 0.5888
+  },
+  {
+   "startMs": 143500,
+   "endMs": 145000,
+   "cosRef": 0.3921,
+   "cosPrev": 0.2528
+  },
+  {
+   "startMs": 144000,
+   "endMs": 145500,
+   "cosRef": 0.557,
+   "cosPrev": 0.5641
+  },
+  {
+   "startMs": 144500,
+   "endMs": 146000,
+   "cosRef": 0.5858,
+   "cosPrev": 0.9258
+  },
+  {
+   "startMs": 145000,
+   "endMs": 146500,
+   "cosRef": 0.7672,
+   "cosPrev": 0.7709
+  },
+  {
+   "startMs": 145500,
+   "endMs": 147000,
+   "cosRef": 0.8199,
+   "cosPrev": 0.8692
+  },
+  {
+   "startMs": 146000,
+   "endMs": 147500,
+   "cosRef": 0.7941,
+   "cosPrev": 0.9155
+  },
+  {
+   "startMs": 146500,
+   "endMs": 148000,
+   "cosRef": 0.7375,
+   "cosPrev": 0.9025
+  },
+  {
+   "startMs": 147000,
+   "endMs": 148500,
+   "cosRef": 0.7363,
+   "cosPrev": 0.8981
+  },
+  {
+   "startMs": 147500,
+   "endMs": 149000,
+   "cosRef": 0.652,
+   "cosPrev": 0.8358
+  },
+  {
+   "startMs": 148000,
+   "endMs": 149500,
+   "cosRef": 0.7048,
+   "cosPrev": 0.9174
+  },
+  {
+   "startMs": 148500,
+   "endMs": 150000,
+   "cosRef": 0.6327,
+   "cosPrev": 0.8783
+  },
+  {
+   "startMs": 149000,
+   "endMs": 150500,
+   "cosRef": 0.5873,
+   "cosPrev": 0.8041
+  },
+  {
+   "startMs": 149500,
+   "endMs": 151000,
+   "cosRef": 0.1359,
+   "cosPrev": 0.2679
+  },
+  {
+   "startMs": 150000,
+   "endMs": 151500,
+   "cosRef": 0.0474,
+   "cosPrev": 0.9008
+  },
+  {
+   "startMs": 150500,
+   "endMs": 152000,
+   "cosRef": 0.0585,
+   "cosPrev": 0.8765
+  },
+  {
+   "startMs": 151000,
+   "endMs": 152500,
+   "cosRef": 0.0725,
+   "cosPrev": 0.873
+  },
+  {
+   "startMs": 151500,
+   "endMs": 153000,
+   "cosRef": 0.0267,
+   "cosPrev": 0.8641
+  },
+  {
+   "startMs": 152000,
+   "endMs": 153500,
+   "cosRef": 0.0342,
+   "cosPrev": 0.1389
+  },
+  {
+   "startMs": 152500,
+   "endMs": 154000,
+   "cosRef": 0.5404,
+   "cosPrev": 0.038
+  },
+  {
+   "startMs": 153000,
+   "endMs": 154500,
+   "cosRef": 0.7029,
+   "cosPrev": 0.8355
+  },
+  {
+   "startMs": 153500,
+   "endMs": 155000,
+   "cosRef": 0.7416,
+   "cosPrev": 0.9426
+  },
+  {
+   "startMs": 154000,
+   "endMs": 155500,
+   "cosRef": 0.7656,
+   "cosPrev": 0.9277
+  },
+  {
+   "startMs": 154500,
+   "endMs": 156000,
+   "cosRef": 0.7132,
+   "cosPrev": 0.8852
+  },
+  {
+   "startMs": 155000,
+   "endMs": 156500,
+   "cosRef": 0.7413,
+   "cosPrev": 0.858
+  },
+  {
+   "startMs": 155500,
+   "endMs": 157000,
+   "cosRef": 0.731,
+   "cosPrev": 0.9461
+  },
+  {
+   "startMs": 156000,
+   "endMs": 157500,
+   "cosRef": 0.7794,
+   "cosPrev": 0.8643
+  },
+  {
+   "startMs": 156500,
+   "endMs": 158000,
+   "cosRef": 0.7798,
+   "cosPrev": 0.8734
+  },
+  {
+   "startMs": 157000,
+   "endMs": 158500,
+   "cosRef": 0.8079,
+   "cosPrev": 0.9314
+  },
+  {
+   "startMs": 157500,
+   "endMs": 159000,
+   "cosRef": 0.754,
+   "cosPrev": 0.8508
+  },
+  {
+   "startMs": 158000,
+   "endMs": 159500,
+   "cosRef": 0.7977,
+   "cosPrev": 0.9079
+  },
+  {
+   "startMs": 158500,
+   "endMs": 160000,
+   "cosRef": 0.7366,
+   "cosPrev": 0.9143
+  },
+  {
+   "startMs": 159000,
+   "endMs": 160500,
+   "cosRef": 0.7183,
+   "cosPrev": 0.7239
+  },
+  {
+   "startMs": 159500,
+   "endMs": 161000,
+   "cosRef": 0.7288,
+   "cosPrev": 0.8587
+  },
+  {
+   "startMs": 160000,
+   "endMs": 161500,
+   "cosRef": 0.7659,
+   "cosPrev": 0.9169
+  },
+  {
+   "startMs": 160500,
+   "endMs": 162000,
+   "cosRef": 0.7267,
+   "cosPrev": 0.8933
+  },
+  {
+   "startMs": 161000,
+   "endMs": 162500,
+   "cosRef": 0.7231,
+   "cosPrev": 0.852
+  },
+  {
+   "startMs": 161500,
+   "endMs": 163000,
+   "cosRef": 0.6032,
+   "cosPrev": 0.9203
+  },
+  {
+   "startMs": 162000,
+   "endMs": 163500,
+   "cosRef": 0.502,
+   "cosPrev": 0.8081
+  },
+  {
+   "startMs": 162500,
+   "endMs": 164000,
+   "cosRef": 0.1843,
+   "cosPrev": 0.4287
+  },
+  {
+   "startMs": 163000,
+   "endMs": 164500,
+   "cosRef": 0.146,
+   "cosPrev": 0.91
+  },
+  {
+   "startMs": 163500,
+   "endMs": 165000,
+   "cosRef": 0.1326,
+   "cosPrev": 0.9569
+  },
+  {
+   "startMs": 164000,
+   "endMs": 165500,
+   "cosRef": 0.1084,
+   "cosPrev": 0.8931
+  },
+  {
+   "startMs": 164500,
+   "endMs": 166000,
+   "cosRef": 0.0169,
+   "cosPrev": 0.0633
+  },
+  {
+   "startMs": 165000,
+   "endMs": 166500,
+   "cosRef": 0.4668,
+   "cosPrev": 0.173
+  },
+  {
+   "startMs": 165500,
+   "endMs": 167000,
+   "cosRef": 0.6855,
+   "cosPrev": 0.7536
+  },
+  {
+   "startMs": 166000,
+   "endMs": 167500,
+   "cosRef": 0.7669,
+   "cosPrev": 0.8672
+  },
+  {
+   "startMs": 166500,
+   "endMs": 168000,
+   "cosRef": 0.8233,
+   "cosPrev": 0.8973
+  },
+  {
+   "startMs": 167000,
+   "endMs": 168500,
+   "cosRef": 0.816,
+   "cosPrev": 0.9134
+  },
+  {
+   "startMs": 167500,
+   "endMs": 169000,
+   "cosRef": 0.7957,
+   "cosPrev": 0.9235
+  },
+  {
+   "startMs": 168000,
+   "endMs": 169500,
+   "cosRef": 0.7757,
+   "cosPrev": 0.8852
+  },
+  {
+   "startMs": 168500,
+   "endMs": 170000,
+   "cosRef": 0.7897,
+   "cosPrev": 0.9453
+  },
+  {
+   "startMs": 169000,
+   "endMs": 170500,
+   "cosRef": 0.7767,
+   "cosPrev": 0.9585
+  },
+  {
+   "startMs": 169500,
+   "endMs": 171000,
+   "cosRef": 0.6559,
+   "cosPrev": 0.7687
+  },
+  {
+   "startMs": 170000,
+   "endMs": 171500,
+   "cosRef": 0.7149,
+   "cosPrev": 0.8774
+  },
+  {
+   "startMs": 170500,
+   "endMs": 172000,
+   "cosRef": 0.7299,
+   "cosPrev": 0.9528
+  },
+  {
+   "startMs": 171000,
+   "endMs": 172500,
+   "cosRef": 0.7237,
+   "cosPrev": 0.9494
+  },
+  {
+   "startMs": 171500,
+   "endMs": 173000,
+   "cosRef": 0.5041,
+   "cosPrev": 0.6908
+  },
+  {
+   "startMs": 172000,
+   "endMs": 173500,
+   "cosRef": 0.2028,
+   "cosPrev": 0.5521
+  },
+  {
+   "startMs": 172500,
+   "endMs": 174000,
+   "cosRef": 0.1829,
+   "cosPrev": 0.9325
+  },
+  {
+   "startMs": 173000,
+   "endMs": 174500,
+   "cosRef": 0.1722,
+   "cosPrev": 0.9162
+  },
+  {
+   "startMs": 173500,
+   "endMs": 175000,
+   "cosRef": 0.2004,
+   "cosPrev": 0.8924
+  },
+  {
+   "startMs": 174000,
+   "endMs": 175500,
+   "cosRef": 0.241,
+   "cosPrev": 0.8469
+  },
+  {
+   "startMs": 174500,
+   "endMs": 176000,
+   "cosRef": 0.1755,
+   "cosPrev": 0.8615
+  },
+  {
+   "startMs": 175000,
+   "endMs": 176500,
+   "cosRef": 0.0423,
+   "cosPrev": 0.058
+  },
+  {
+   "startMs": 175500,
+   "endMs": 177000,
+   "cosRef": 0.3543,
+   "cosPrev": 0.2757
+  },
+  {
+   "startMs": 176000,
+   "endMs": 177500,
+   "cosRef": 0.6893,
+   "cosPrev": 0.6008
+  },
+  {
+   "startMs": 176500,
+   "endMs": 178000,
+   "cosRef": 0.7192,
+   "cosPrev": 0.9214
+  },
+  {
+   "startMs": 177000,
+   "endMs": 178500,
+   "cosRef": 0.7403,
+   "cosPrev": 0.8831
+  },
+  {
+   "startMs": 177500,
+   "endMs": 179000,
+   "cosRef": 0.7531,
+   "cosPrev": 0.878
+  },
+  {
+   "startMs": 178000,
+   "endMs": 179500,
+   "cosRef": 0.7546,
+   "cosPrev": 0.9148
+  },
+  {
+   "startMs": 178500,
+   "endMs": 180000,
+   "cosRef": 0.7449,
+   "cosPrev": 0.8906
+  },
+  {
+   "startMs": 179000,
+   "endMs": 180500,
+   "cosRef": 0.627,
+   "cosPrev": 0.7752
+  },
+  {
+   "startMs": 179500,
+   "endMs": 181000,
+   "cosRef": 0.4102,
+   "cosPrev": 0.6054
+  },
+  {
+   "startMs": 180000,
+   "endMs": 181500,
+   "cosRef": -0.0154,
+   "cosPrev": 0.2215
+  },
+  {
+   "startMs": 180500,
+   "endMs": 182000,
+   "cosRef": 0.0091,
+   "cosPrev": 0.8305
+  },
+  {
+   "startMs": 181000,
+   "endMs": 182500,
+   "cosRef": 0.0825,
+   "cosPrev": 0.5013
+  }
+ ],
+ "embedMsMedian": null
+}

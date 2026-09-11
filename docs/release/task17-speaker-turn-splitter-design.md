@@ -54,7 +54,41 @@
 
 **结论**：干净单人 turn 与混说 utterance 在"整段 vs 参考"空间里天然可分——`0.268 ~ 0.725` 是空档，混说恰好落在正中间 0.473。生产阈值 0.372 + margin 0.08 让 0.473 被判成"确定 SUSPECT"，这才是 bug 的数值本质。
 
-## 4. 设计：两阶段
+## 4. 设计：两阶段（参数已在真数据上验证）
+
+> 验证脚本：`docs/release/task17-evidence/validate_splitter_design.py`
+> 输入：`task17-gate-evidence.json`（整段 vs 参考）+ `task17-dual-sweep.json`（逐窗 cosPrev/cosRef）
+> 结果：阶段一 45/45 干净段正确判定、0 误判；混说段判 AMBIGUOUS；阶段二切点误差 −310ms（真值 103310ms）
+
+### 阶段一（门控）：**必须用整段单一 embedding**，不能用滑窗均值
+
+理由（实测反例）：混说 5s 段的整段 cosRef = **0.4732**（落可疑带），但其滑窗均值仅 **0.228** → 会被误判成"确定另一人"。整段 embedding 是生产链路**本来就在算**的那一个，零额外成本。
+
+门控带（由实测极值导出，与角色接受阈值**不同**）：
+
+| 判定 | 条件 | 依据 |
+|---|---|---|
+| 确定嫌疑人单人 | `cosRef >= 0.70` | 嫌疑段实测 min 0.725 |
+| 确定另一人单人 | `cosRef <= 0.29` | 民警段实测 max 0.268 |
+| **可疑 → 进阶段二** | `0.29 < cosRef < 0.70` | 混说实测 0.4732 |
+
+注意：**门控带 ≠ 生产接受阈值**（0.372 + margin 0.08）。接受阈值回答"这是不是嫌疑人"，门控带回答"这一段是不是只有一个人"——后者必须更严，否则就是本次 bug 的成因（0.473 ≥ 0.372 被当作确定 SUSPECT）。
+
+### 阶段二（仅可疑段）：滑窗切分
+
+```
+1.5s 窗 / 0.5s 步，逐窗计算 cosPrev 与 cosRef
+规则 A（首选，鲁棒）：相邻窗 cosPrev < T_FIRE(0.50) 且连续 ≥2 窗
+规则 B（短 utterance 必需）：单个谷 + 两侧 cosRef 角色证据相反
+        （左均 ≤ 0.29 且右均 ≥ 0.70，或反之）
+```
+
+规则 B 的必要性（实测）：混说 5s 段仅 11 窗，谷只跨 1 个窗对（103000ms, cosPrev 0.243）→ 规则 A 不触发；规则 B 用"谷 + 两侧角色相反"成功切分。
+
+切分后：每个 turn 独立 ASR + 独立 embedding；
+- 两侧角色相反 → 输出两个 turn（实测 turn A cosRef 0.105 民警 / turn B 0.722 嫌疑人）
+- 只有谷没有角色支持 → **不切，标 ambiguous/overlap → UNKNOWN**
+- 谷位置抖动/多重谷 → UNKNOWN
 
 ```
 连续 PCM
@@ -63,15 +97,9 @@ FSMN-VAD（只做 speech / non-speech；5s 仅作延迟上限）
   ↓
 speech utterance
   ↓
-阶段一（零额外成本）：整段 embedding vs 参考
-   cos_ref ≥ HIGH (≈0.72)         → 确定单人，直接出 1 个 turn（今日行为）
-   cos_ref ≤ LOW  (≈0.27)         → 确定另一人/非注册人，直接出 1 个 turn
-   LOW < cos_ref < HIGH（可疑带）  → 进入阶段二
-  ↓
-阶段二（仅可疑段付费）：滑窗 change point 检测
-   相邻窗 cos < T_FIRE（≈0.45~0.50）连续 2 窗确认 + 最小 turn 1s + 迟滞
-   ├─ 稳定边界 → 切成 2+ 个 turn，各自 ASR + 各自 embedding
-   └─ 不稳定/抖动 → overlap/ambiguous = true → 交由 SpeakerPolicy 判 UNKNOWN
+阶段一（零额外成本）：整段 embedding vs 参考 → 确定单人 / 可疑
+  ↓（可疑）
+阶段二（仅可疑段付费）：滑窗 change point（规则 A → 规则 B）
   ↓
 现有 SpeakerPolicy（AsrCaptureService）：继续负责"换成了谁"
 ```
