@@ -1,0 +1,79 @@
+{
+ "corpus": "speaker-turn-splitter golden set (assisted annotation)",
+ "groundTruthStatus": "ASSISTED (MOSS cluster + text heuristic); human ear-verification still required",
+ "tiers": [
+  {
+   "name": "dual-qa-21",
+   "kind": "DUAL_QA",
+   "sourceFile": "新錄音 21.m4a",
+   "wav": "case-zhangming-16k.wav",
+   "sha256": "81133fa420a8902a113e12c7278c1a613ae9bf12bee1b68f18ecaafb7e9d191c",
+   "durationMs": 179880,
+   "segments": 45,
+   "clusters": {
+    "GS01": {
+     "mappedRole": "INTERROGATOR",
+     "textTally": {
+      "UNKNOWN": 3,
+      "INTERROGATOR": 14
+     }
+    },
+    "GS02": {
+     "mappedRole": "SUSPECT",
+     "textTally": {
+      "SUSPECT": 10,
+      "UNKNOWN": 17,
+      "AMBIGUOUS": 1
+     }
+    }
+   }
+  },
+  {
+   "name": "suspect-enroll-zhangming",
+   "kind": "SINGLE_SPEAKER_SUSPECT",
+   "derivedFrom": "dual-qa-21 (GS02 turns concatenated)",
+   "sha256": "81133fa420a8902a113e12c7278c1a613ae9bf12bee1b68f18ecaafb7e9d191c",
+   "note": "built by build_speaker_wav.py; used as browser fake-mic for enrollment"
+  },
+  {
+   "name": "officer-enroll",
+   "kind": "SINGLE_SPEAKER_OFFICER",
+   "status": "MISSING",
+   "note": "no real officer-only recording supplied yet; GS01 turns of dual-qa-21 can serve as a derived placeholder but must be labelled MOSS-derived until a real sample is provided"
+  }
+ ],
+ "ambiguousSegments": 1,
+ "mustPassRegressionPoints": [
+  {
+   "name": "mixed-turn-src-99.8-105.2",
+   "startMs": 99840,
+   "endMs": 105240,
+   "anchoredTo": "SOURCE FILE clock (deterministic, reproducible)",
+   "policy": "MUST_NOT_BE_SINGLE_SPEAKER",
+   "expect": "INTERROGATOR turn [99840-103010] + SUSPECT turn [103610-...], or UNKNOWN at the transition",
+   "contains": [
+    {
+     "startMs": 99840,
+     "endMs": 103010,
+     "role": "INTERROGATOR",
+     "text": "呃，除了李伟以外，当时还有其他人吗？"
+    },
+    {
+     "startMs": 103610,
+     "endMs": 105240,
+     "role": "SUSPECT",
+     "text": "一开始没有，后来。"
+    }
+   ],
+   "origin": "real browser realtime run 2026-09-11: one 5s VAD utterance was emitted as a single SUSPECT fragment whose text concatenated this officer question with the suspect answer"
+  },
+  {
+   "name": "realtime-observation-70.9-75.9",
+   "startMs": 70900,
+   "endMs": 75900,
+   "anchoredTo": "REALTIME SESSION clock (not source file)",
+   "clockNote": "the browser session clock lagged the source file by ≈29s because the fake-mic file kept playing before 开始录音 was pressed; the same utterance is mixed-turn-src-99.8-105.2 once mapped to the source file",
+   "policy": "OBSERVATION_ONLY"
+  }
+ ]
+}

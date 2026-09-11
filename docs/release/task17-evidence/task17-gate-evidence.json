@@ -1,0 +1,386 @@
+{
+ "reference": {
+  "caseId": "CASE-20260911-EBD4BF",
+  "dim": 512,
+  "quality": "GOOD",
+  "usableDurationMs": 20030
+ },
+ "perSegment": [
+  {
+   "startMs": 4280,
+   "endMs": 8240,
+   "role": "INTERROGATOR",
+   "text": "现在开始询问，先确认一下你的基本情况。",
+   "cos": 0.2222
+  },
+  {
+   "startMs": 8440,
+   "endMs": 11880,
+   "role": "INTERROGATOR",
+   "text": "请说一下你的姓名，年龄，还有目前的居住情况。",
+   "cos": 0.2189
+  },
+  {
+   "startMs": 12410,
+   "endMs": 18820,
+   "role": "SUSPECT",
+   "text": "我叫张明，今年二十六岁，现在住在南京江宁那边",
+   "cos": 0.8895
+  },
+  {
+   "startMs": 19740,
+   "endMs": 24160,
+   "role": "INTERROGATOR",
+   "text": "今天我们找你来，主要是想了解一下昨天晚上发生",
+   "cos": 0.1559
+  },
+  {
+   "startMs": 24360,
+   "endMs": 28110,
+   "role": "INTERROGATOR",
+   "text": "你先不要着急，按照你自己记得的情况，从头开始",
+   "cos": 0.1515
+  },
+  {
+   "startMs": 29710,
+   "endMs": 34980,
+   "role": "SUSPECT",
+   "text": "昨晚，昨天晚上大概七点多吧，我下班以后先去吃",
+   "cos": 0.902
+  },
+  {
+   "startMs": 35510,
+   "endMs": 38640,
+   "role": "SUSPECT",
+   "text": "回了一趟住的地方，后来朋友给我发消息。",
+   "cos": 0.8761
+  },
+  {
+   "startMs": 39380,
+   "endMs": 43140,
+   "role": "SUSPECT",
+   "text": "说让我出去坐一会儿，我差不多八点半左右出去。",
+   "cos": 0.8319
+  },
+  {
+   "startMs": 43890,
+   "endMs": 45620,
+   "role": "INTERROGATOR",
+   "text": "你说的这个朋友叫什么？",
+   "cos": 0.2681
+  },
+  {
+   "startMs": 46380,
+   "endMs": 47210,
+   "role": "SUSPECT",
+   "text": "李伟。",
+   "cos": 0.762
+  },
+  {
+   "startMs": 47950,
+   "endMs": 49450,
+   "role": "INTERROGATOR",
+   "text": "你们在哪里见面的？",
+   "cos": 0.0923
+  },
+  {
+   "startMs": 51180,
+   "endMs": 55340,
+   "role": "SUSPECT",
+   "text": "就在小区外面那家便利店旁边，我们先碰了个面，",
+   "cos": 0.8847
+  },
+  {
+   "startMs": 55710,
+   "endMs": 57280,
+   "role": "SUSPECT",
+   "text": "往前走了一段。",
+   "cos": 0.7246
+  },
+  {
+   "startMs": 57820,
+   "endMs": 59950,
+   "role": "SUSPECT",
+   "text": "在一家烧烤店坐了一会儿。",
+   "cos": 0.8165
+  },
+  {
+   "startMs": 60450,
+   "endMs": 63010,
+   "role": "INTERROGATOR",
+   "text": "你能确定是八点半左右出去的吗？",
+   "cos": 0.1451
+  },
+  {
+   "startMs": 64340,
+   "endMs": 68010,
+   "role": "SUSPECT",
+   "text": "应该差不多，具体时间我也记不太清楚，可能。",
+   "cos": 0.8628
+  },
+  {
+   "startMs": 68180,
+   "endMs": 71550,
+   "role": "SUSPECT",
+   "text": "八点二十，也可能八点四十，不会差太多。",
+   "cos": 0.8403
+  },
+  {
+   "startMs": 72210,
+   "endMs": 77610,
+   "role": "INTERROGATOR",
+   "text": "有没有什么东西可以帮助确认时间，比如付款记录",
+   "cos": 0.1878
+  },
+  {
+   "startMs": 78310,
+   "endMs": 82140,
+   "role": "SUSPECT",
+   "text": "有，我之前出去点过一次外卖，后后来在。",
+   "cos": 0.8635
+  },
+  {
+   "startMs": 82410,
+   "endMs": 84140,
+   "role": "SUSPECT",
+   "text": "烧烤店也是我扫的码。",
+   "cos": 0.824
+  },
+  {
+   "startMs": 84740,
+   "endMs": 86910,
+   "role": "SUSPECT",
+   "text": "手机里面应该有，都有记录。",
+   "cos": 0.7366
+  },
+  {
+   "startMs": 88040,
+   "endMs": 90910,
+   "role": "INTERROGATOR",
+   "text": "好，你们在烧烤店待了多长时间？",
+   "cos": 0.1714
+  },
+  {
+   "startMs": 92080,
+   "endMs": 96010,
+   "role": "SUSPECT",
+   "text": "一个多小时吧，我们主要就是聊天，也没喝多少东",
+   "cos": 0.8984
+  },
+  {
+   "startMs": 99840,
+   "endMs": 103010,
+   "role": "INTERROGATOR",
+   "text": "呃，除了李伟以外，当时还有其他人吗？",
+   "cos": 0.1063
+  },
+  {
+   "startMs": 103610,
+   "endMs": 105240,
+   "role": "SUSPECT",
+   "text": "一开始没有，后来。",
+   "cos": 0.7435
+  },
+  {
+   "startMs": 105440,
+   "endMs": 110240,
+   "role": "SUSPECT",
+   "text": "来了一个他认识的人，我不认识，那个人坐了二十",
+   "cos": 0.8228
+  },
+  {
+   "startMs": 110880,
+   "endMs": 113310,
+   "role": "INTERROGATOR",
+   "text": "你还记得那个人大概长什么样吗？",
+   "cos": 0.1821
+  },
+  {
+   "startMs": 114480,
+   "endMs": 120110,
+   "role": "SUSPECT",
+   "text": "男的，三十岁左右，个子比我高一点，穿深色衣服",
+   "cos": 0.8285
+  },
+  {
+   "startMs": 120480,
+   "endMs": 122880,
+   "role": "SUSPECT",
+   "text": "其他的我真没注意。",
+   "cos": 0.7698
+  },
+  {
+   "startMs": 123710,
+   "endMs": 125340,
+   "role": "INTERROGATOR",
+   "text": "他有没有和你说话？",
+   "cos": 0.0904
+  },
+  {
+   "startMs": 126910,
+   "endMs": 130040,
+   "role": "SUSPECT",
+   "text": "说了两句，就是正常打招呼。",
+   "cos": 0.8258
+  },
+  {
+   "startMs": 130310,
+   "endMs": 135040,
+   "role": "SUSPECT",
+   "text": "他问我是不是李伟的同事，我说不是，我们是以前",
+   "cos": 0.8085
+  },
+  {
+   "startMs": 135980,
+   "endMs": 136880,
+   "role": "INTERROGATOR",
+   "text": "之后呢？",
+   "cos": 0.1043
+  },
+  {
+   "startMs": 137580,
+   "endMs": 140080,
+   "role": "SUSPECT",
+   "text": "后来差不多十点左右，我们就走了。",
+   "cos": 0.7972
+  },
+  {
+   "startMs": 140910,
+   "endMs": 142640,
+   "role": "INTERROGATOR",
+   "text": "是谁先提出离开的？",
+   "cos": 0.1973
+  },
+  {
+   "startMs": 144710,
+   "endMs": 149680,
+   "role": "SUSPECT",
+   "text": "是我，第二天还要上班，所以我就说差不多该回去",
+   "cos": 0.8392
+  },
+  {
+   "startMs": 150280,
+   "endMs": 152180,
+   "role": "INTERROGATOR",
+   "text": "你和李伟是一起离开的吗？",
+   "cos": 0.0669
+  },
+  {
+   "startMs": 153540,
+   "endMs": 156610,
+   "role": "SUSPECT",
+   "text": "刚开始一起走了一一小段。",
+   "cos": 0.8071
+  },
+  {
+   "startMs": 156880,
+   "endMs": 159640,
+   "role": "SUSPECT",
+   "text": "走到前面路口，以为我们就分开了。",
+   "cos": 0.8413
+  },
+  {
+   "startMs": 159810,
+   "endMs": 162740,
+   "role": "SUSPECT",
+   "text": "他往另一边走，我自己往家走。",
+   "cos": 0.791
+  },
+  {
+   "startMs": 163180,
+   "endMs": 164740,
+   "role": "INTERROGATOR",
+   "text": "你是步行回去的吗？",
+   "cos": 0.1398
+  },
+  {
+   "startMs": 165840,
+   "endMs": 170080,
+   "role": "SUSPECT",
+   "text": "对，本来想骑共享单车，但是附近没看到车。",
+   "cos": 0.8544
+  },
+  {
+   "startMs": 170480,
+   "endMs": 172010,
+   "role": "SUSPECT",
+   "text": "所以就走回去了。",
+   "cos": 0.7369
+  },
+  {
+   "startMs": 172580,
+   "endMs": 175140,
+   "role": "INTERROGATOR",
+   "text": "从烧烤店走回住处大概需要多久？",
+   "cos": 0.2317
+  },
+  {
+   "startMs": 176610,
+   "endMs": 179880,
+   "role": "SUSPECT",
+   "text": "十五分钟左右吧，如果走得快一点，可能十分钟。",
+   "cos": 0.7833
+  }
+ ],
+ "perRoleStats": {
+  "INTERROGATOR": {
+   "n": 17,
+   "min": 0.0669,
+   "median": 0.1559,
+   "max": 0.2681
+  },
+  "SUSPECT": {
+   "n": 28,
+   "min": 0.7246,
+   "median": 0.8258,
+   "max": 0.902
+  }
+ },
+ "mixedWindow": {
+  "startMs": 99840,
+  "endMs": 105240,
+  "wholeUtteranceCos": 0.4732,
+  "sliding": [
+   {
+    "startMs": 99840,
+    "endMs": 101340,
+    "cos": 0.1103
+   },
+   {
+    "startMs": 100340,
+    "endMs": 101840,
+    "cos": 0.0721
+   },
+   {
+    "startMs": 100840,
+    "endMs": 102340,
+    "cos": 0.1023
+   },
+   {
+    "startMs": 101340,
+    "endMs": 102840,
+    "cos": 0.0797
+   },
+   {
+    "startMs": 101840,
+    "endMs": 103340,
+    "cos": 0.0361
+   },
+   {
+    "startMs": 102340,
+    "endMs": 103840,
+    "cos": 0.0283
+   },
+   {
+    "startMs": 102840,
+    "endMs": 104340,
+    "cos": 0.6697
+   },
+   {
+    "startMs": 103340,
+    "endMs": 104840,
+    "cos": 0.7268
+   }
+  ]
+ }
+}

@@ -1,0 +1,488 @@
+{
+ "segments": [
+  {
+   "startMs": 4280,
+   "endMs": 8240,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "现在开始询问，先确认一下你的基本情况。"
+  },
+  {
+   "startMs": 8440,
+   "endMs": 11880,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "interrogator cue x1",
+   "agrees": true,
+   "text": "请说一下你的姓名，年龄，还有目前的居住情况。"
+  },
+  {
+   "startMs": 12410,
+   "endMs": 18820,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "SUSPECT",
+   "textReason": "answer cue x1",
+   "agrees": true,
+   "text": "我叫张明，今年二十六岁，现在住在南京江宁那边，平时就在附近上班。"
+  },
+  {
+   "startMs": 19740,
+   "endMs": 24160,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "今天我们找你来，主要是想了解一下昨天晚上发生的事情。"
+  },
+  {
+   "startMs": 24360,
+   "endMs": 28110,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "你先不要着急，按照你自己记得的情况，从头开始说。"
+  },
+  {
+   "startMs": 29710,
+   "endMs": 34980,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "昨晚，昨天晚上大概七点多吧，我下班以后先去吃了个饭，然后。"
+  },
+  {
+   "startMs": 35510,
+   "endMs": 38640,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "回了一趟住的地方，后来朋友给我发消息。"
+  },
+  {
+   "startMs": 39380,
+   "endMs": 43140,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "说让我出去坐一会儿，我差不多八点半左右出去。"
+  },
+  {
+   "startMs": 43890,
+   "endMs": 45620,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "question-mark(+2 cue)",
+   "agrees": true,
+   "text": "你说的这个朋友叫什么？"
+  },
+  {
+   "startMs": 46380,
+   "endMs": 47210,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "李伟。"
+  },
+  {
+   "startMs": 47950,
+   "endMs": 49450,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "question-mark(+1 cue)",
+   "agrees": true,
+   "text": "你们在哪里见面的？"
+  },
+  {
+   "startMs": 51180,
+   "endMs": 55340,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "SUSPECT",
+   "textReason": "answer cue x1",
+   "agrees": true,
+   "text": "就在小区外面那家便利店旁边，我们先碰了个面，然后。"
+  },
+  {
+   "startMs": 55710,
+   "endMs": 57280,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "往前走了一段。"
+  },
+  {
+   "startMs": 57820,
+   "endMs": 59950,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "在一家烧烤店坐了一会儿。"
+  },
+  {
+   "startMs": 60450,
+   "endMs": 63010,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "question-mark(+2 cue)",
+   "agrees": true,
+   "text": "你能确定是八点半左右出去的吗？"
+  },
+  {
+   "startMs": 64340,
+   "endMs": 68010,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "SUSPECT",
+   "textReason": "answer cue x2",
+   "agrees": true,
+   "text": "应该差不多，具体时间我也记不太清楚，可能。"
+  },
+  {
+   "startMs": 68180,
+   "endMs": 71550,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "SUSPECT",
+   "textReason": "answer cue x1",
+   "agrees": true,
+   "text": "八点二十，也可能八点四十，不会差太多。"
+  },
+  {
+   "startMs": 72210,
+   "endMs": 77610,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "interrogator cue x1",
+   "agrees": true,
+   "text": "有没有什么东西可以帮助确认时间，比如付款记录，聊天记录或者打车记录。"
+  },
+  {
+   "startMs": 78310,
+   "endMs": 82140,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "有，我之前出去点过一次外卖，后后来在。"
+  },
+  {
+   "startMs": 82410,
+   "endMs": 84140,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "烧烤店也是我扫的码。"
+  },
+  {
+   "startMs": 84740,
+   "endMs": 86910,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "手机里面应该有，都有记录。"
+  },
+  {
+   "startMs": 88040,
+   "endMs": 90910,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "question-mark(+1 cue)",
+   "agrees": true,
+   "text": "好，你们在烧烤店待了多长时间？"
+  },
+  {
+   "startMs": 92080,
+   "endMs": 96010,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "一个多小时吧，我们主要就是聊天，也没喝多少东西。"
+  },
+  {
+   "startMs": 99840,
+   "endMs": 103010,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "question-mark(+2 cue)",
+   "agrees": true,
+   "text": "呃，除了李伟以外，当时还有其他人吗？"
+  },
+  {
+   "startMs": 103610,
+   "endMs": 105240,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "一开始没有，后来。"
+  },
+  {
+   "startMs": 105440,
+   "endMs": 110240,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "SUSPECT",
+   "textReason": "answer cue x1",
+   "agrees": true,
+   "text": "来了一个他认识的人，我不认识，那个人坐了二十分钟就走了。"
+  },
+  {
+   "startMs": 110880,
+   "endMs": 113310,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "question-mark(+2 cue)",
+   "agrees": true,
+   "text": "你还记得那个人大概长什么样吗？"
+  },
+  {
+   "startMs": 114480,
+   "endMs": 120110,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "男的，三十岁左右，个子比我高一点，穿深色衣服。"
+  },
+  {
+   "startMs": 120480,
+   "endMs": 122880,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "其他的我真没注意。"
+  },
+  {
+   "startMs": 123710,
+   "endMs": 125340,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "question-mark(+1 cue)",
+   "agrees": true,
+   "text": "他有没有和你说话？"
+  },
+  {
+   "startMs": 126910,
+   "endMs": 130040,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "说了两句，就是正常打招呼。"
+  },
+  {
+   "startMs": 130310,
+   "endMs": 135040,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "SUSPECT",
+   "textReason": "answer cue x1",
+   "agrees": true,
+   "text": "他问我是不是李伟的同事，我说不是，我们是以前认识的朋友。"
+  },
+  {
+   "startMs": 135980,
+   "endMs": 136880,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "question-mark(+3 cue)",
+   "agrees": true,
+   "text": "之后呢？"
+  },
+  {
+   "startMs": 137580,
+   "endMs": 140080,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "AMBIGUOUS",
+   "textReason": "both cues (officer=['^(问|请|你说|说一下|谈一下|有没有|是不是|为什么|怎么|什么时候|哪里|谁|多少|后来|之后|然后|那|再|第几次)'] suspect=['^(我|我们|他|她|他们|后来|然后|因为|所以|大概|差不多|应该|没有|不是|是的|对|嗯|呃|就|那会儿|当时)'])",
+   "agrees": false,
+   "text": "后来差不多十点左右，我们就走了。",
+   "adjudication": "PENDING_HUMAN"
+  },
+  {
+   "startMs": 140910,
+   "endMs": 142640,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "question-mark(+1 cue)",
+   "agrees": true,
+   "text": "是谁先提出离开的？"
+  },
+  {
+   "startMs": 144710,
+   "endMs": 149680,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "是我，第二天还要上班，所以我就说差不多该回去了。"
+  },
+  {
+   "startMs": 150280,
+   "endMs": 152180,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "question-mark(+2 cue)",
+   "agrees": true,
+   "text": "你和李伟是一起离开的吗？"
+  },
+  {
+   "startMs": 153540,
+   "endMs": 156610,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "刚开始一起走了一一小段。"
+  },
+  {
+   "startMs": 156880,
+   "endMs": 159640,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "UNKNOWN",
+   "textReason": "no cue",
+   "agrees": true,
+   "text": "走到前面路口，以为我们就分开了。"
+  },
+  {
+   "startMs": 159810,
+   "endMs": 162740,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "SUSPECT",
+   "textReason": "answer cue x1",
+   "agrees": true,
+   "text": "他往另一边走，我自己往家走。"
+  },
+  {
+   "startMs": 163180,
+   "endMs": 164740,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "question-mark(+2 cue)",
+   "agrees": true,
+   "text": "你是步行回去的吗？"
+  },
+  {
+   "startMs": 165840,
+   "endMs": 170080,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "SUSPECT",
+   "textReason": "answer cue x1",
+   "agrees": true,
+   "text": "对，本来想骑共享单车，但是附近没看到车。"
+  },
+  {
+   "startMs": 170480,
+   "endMs": 172010,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "SUSPECT",
+   "textReason": "answer cue x1",
+   "agrees": true,
+   "text": "所以就走回去了。"
+  },
+  {
+   "startMs": 172580,
+   "endMs": 175140,
+   "mossGs": "GS01",
+   "mossRole": "INTERROGATOR",
+   "textGuess": "INTERROGATOR",
+   "textReason": "question-mark(+1 cue)",
+   "agrees": true,
+   "text": "从烧烤店走回住处大概需要多久？"
+  },
+  {
+   "startMs": 176610,
+   "endMs": 179880,
+   "mossGs": "GS02",
+   "mossRole": "SUSPECT",
+   "textGuess": "SUSPECT",
+   "textReason": "answer cue x1",
+   "agrees": true,
+   "text": "十五分钟左右吧，如果走得快一点，可能十分钟。"
+  }
+ ],
+ "mustPass": [
+  {
+   "name": "mixed-turn-src-99.8-105.2",
+   "startMs": 99840,
+   "endMs": 105240,
+   "anchoredTo": "SOURCE FILE clock (deterministic, reproducible)",
+   "policy": "MUST_NOT_BE_SINGLE_SPEAKER",
+   "expect": "INTERROGATOR turn [99840-103010] + SUSPECT turn [103610-...], or UNKNOWN at the transition",
+   "contains": [
+    {
+     "startMs": 99840,
+     "endMs": 103010,
+     "role": "INTERROGATOR",
+     "text": "呃，除了李伟以外，当时还有其他人吗？"
+    },
+    {
+     "startMs": 103610,
+     "endMs": 105240,
+     "role": "SUSPECT",
+     "text": "一开始没有，后来。"
+    }
+   ],
+   "origin": "real browser realtime run 2026-09-11: one 5s VAD utterance was emitted as a single SUSPECT fragment whose text concatenated this officer question with the suspect answer"
+  },
+  {
+   "name": "realtime-observation-70.9-75.9",
+   "startMs": 70900,
+   "endMs": 75900,
+   "anchoredTo": "REALTIME SESSION clock (not source file)",
+   "clockNote": "the browser session clock lagged the source file by ≈29s because the fake-mic file kept playing before 开始录音 was pressed; the same utterance is mixed-turn-src-99.8-105.2 once mapped to the source file",
+   "policy": "OBSERVATION_ONLY"
+  }
+ ]
+}
