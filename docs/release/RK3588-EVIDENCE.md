@@ -256,3 +256,46 @@ $ MossWorkerClient health → status=ok, manifest_sha256=b735dc2d…, queue_dept
 ### 生产配置现状（/etc/suspect-interrogation/runtime.env）
 
 `MOSS_ENABLED=1`、`MODEL_ROOT=/opt/suspect-interrogation/models` 为板上运维配置（workflow upsert 列表不含这两键，跨部署持久）。
+
+## 2026-09-11 Task 15 长音频实机验收
+
+### 执行方式
+
+- 板上常驻 runner：`/home/youyeetoo/task15/run_matrix.py`（nohup setsid，独立于会话），9 档串行；素材 manifest `task15/materials.json`（全档 sha256）；逐档结果 `task15/results/*.json` + `matrix.jsonl`；本地副本 `D:\police Android\task15\`。
+- 素材：双人格 = asr_example × sv_example_different（真实两把声音）交替拼接；静音/噪声/重叠为同基料合成变体。每档独立案件 `T15-<档>-勿用`。
+
+### 逐档终态（API 实拉）
+
+| 档 | 终态 | 窗口 | RTF | 段数/要点 |
+|---|---|---|---|---|
+| 5m-single | COMPLETED | 1/1 DONE | 2.03 | 54 段全 VALID，GS01 870ms→299280ms 稳定 |
+| 10m-dual | COMPLETED | 1/1 DONE | 7.37 | 189 VALID+1 REPAIRED；GS01×64+GS02×126 全程二分无漂移 |
+| 30m-dual | COMPLETED | 4/4 DONE | 7.83 | 572 段全 VALID；rev1→4 单调；>5s 缺口=0；重复=0 |
+| 60m-multi | FAILED | 6 DONE+w0007 FAILED | — | MOSS_INVALID_GENERATION |
+| 70m-crosshour | FAILED | 6 DONE+w0007 FAILED | — | MOSS_INVALID_GENERATION |
+| 120m-extreme | FAILED | 6 DONE+w0007 FAILED | — | MOSS_INVALID_GENERATION |
+| silence-10m | FAILED | 10m→8m 降档后仍 FAILED | — | 静音退化输入；降档梯子按设计执行 |
+| noise-10m | COMPLETED | 1/1 DONE | 11.60 | 108 段 |
+| overlap-10m | COMPLETED | 1/1 DONE | 4.85 | 108 段 |
+
+### 核心发现：长档第 7 窗 MOSS_INVALID_GENERATION
+
+60/70/120m 三档**同一模式**：前 6 窗全部 DONE（每窗 generation 顶到 ~4570 token 上限后修复成功，token_count 4557~4574，spool `logs/events.jsonl` 原始 generation 证据完整保留），**第 7 窗修复耗尽 → MOSS_INVALID_GENERATION → 整 job 干净 FAILED**。RSS 峰值 4.46GB 恒定、无 OOM、无崩溃、状态机/证据链完整。模式高度一致指向跨窗状态累积类缺陷（子进程内第 7 次修复），V2 修复第一优先级（候选方向：生成上限/修复策略参数、跨窗子进程状态隔离）。
+
+### 12 门槛判定
+
+①5~120min 均 COMPLETED：**部分 FAIL**（5/9 过；60/70/120m 第 7 窗同因失败；silence 退化输入失败）②时间轴无缺口：PASS（COMPLETED 档 >5s 缺口=0）③时间戳单调在界：PASS ④overlap 无重复正文：PASS（near_duplicates=0）⑤GSxx 跨窗一致：PASS（30m 4 窗实测稳定）⑥跨小时不无故换人：部分（6 窗≈6 小时跨度素材内稳定；完整跨小时随①未达成）⑦REPAIRED 完整证据：PASS（10m 1 处，spool 在案）⑧INVALID 按 10→8 降档：PASS（silence 档降档梯子按设计执行，最终干净 FAILED）⑨增量 revision 不覆盖丢失：PASS（1→2→4→6 单调，append-only）⑩120min 不 OOM 不崩溃：PASS（RSS 4.46G 平稳，worker 全程存活）⑪FunASR 零扰动：PASS（TCP8000 pid 全程恒定）⑫provenance 全链可追溯：PASS（job/audio-sha/manifest/窗口/spool 全链在案）。
+
+**RTF 全程只记录不设门槛**（实测 2.03~11.60，随窗数/人格数变化）。
+
+### 附带实测：双路并发（声纹/实时链 + MOSS 重载同时跑）
+
+- 业务链在 MOSS 解码重载下全链走通：建案件→身份确认→**嫌疑人声纹注册真实成功**（eres2net_large，suspectReady=true）→session/start→capture/start。
+- FunASR 引擎压测（HTTP /asr/recognize，6×60s 真实音频）：延迟 9.7~20.1s/60s（RTF 0.16~0.33），零错误；asr/speaker/moss 全程 AVAILABLE。
+- 结论：审讯实时链与 MOSS 长档转写并发，RK3588 可承受。证据：`task15/concurrent_result.json`、`task15/recognize_load.json`。
+
+### 遗留与清理
+
+- 首轮 harness 启动失败曾产生 9 个空 T15 案件行（无转写记录），与正式档同名，无功能影响，留待一并清理。
+- runner 轮询上限 6h 对 7+ 窗档偏短（60m 实际 ~7h），终态以 API/spool 为准（本节已按真实终态修正）。
+- 60/70/120m 三档 spool 原始 generation 与窗口证据完整保留于 `/var/lib/suspect-interrogation/moss/jobs/`，供 V2 修复复现。
