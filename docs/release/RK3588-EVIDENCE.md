@@ -343,10 +343,19 @@ $ MossWorkerClient health → status=ok, manifest_sha256=b735dc2d…, queue_dept
 
 **语料与必过回归点**：`linux/backend/tests/fixtures/speaker_turn_corpus/`（manifest 按档 pin sha256，音频按哈希物化不入库；标注为"MOSS 簇 + 文本启发式"的**辅助**标注，45 段，1 段待人工裁听）。必过点 `mixed-turn-src-99.8-105.2`（源文件时钟，含民警问句 99840-103010 + 嫌疑人答句 103610-105240）要求切成两个对立角色 turn 或交界 UNKNOWN，**绝不允许整段单一 SUSPECT**；实时观测条目 `realtime-observation-70.9-75.9` 单列并注明会话时钟比源文件慢 ≈29s。
 
-**验收器**：`run_splitter_corpus_check.py`（真模型 + 真参考，按"一个 VAD utterance"回放必过点，另查 45 段是否被过切）。已用一次性原型自证可行（并借此修掉两个验收器自身缺陷）。
+**验收器**：`run_splitter_corpus_check.py`（真模型，按"一个 VAD utterance"回放必过点，另查 45 段是否被过切；`--no-reference` 复刻生产 worker 的无参考路径）。已用一次性原型自证可行（并借此修掉两个验收器自身缺陷：必过点必须作为单一 utterance 回放、file-loaded 模块须先注册 `sys.modules`）。
 
-**当前**：WIP 实现在真语料上暴露缺陷——切出 **6ms 退化首段**（`min_turn_ms` 未约束到结果 span），已把证据与期望行为反馈给实现者修正；门控与"不过切"（45/45）已正确。
+**实现结果（`6346ea61` 分割器 + `d5a25f31` 接入）**：真语料上**两种模式给出同一结果**，且是**真切分**而非保守 UNKNOWN：
+```
+mixed-turn-src-99.8-105.2 : satisfied
+  [99840-102840]  INTERROGATOR  cosRef 0.107
+  [102840-105240] SUSPECT      cosRef 0.752        （切点误差 −470ms，容差 ±1s）
+不过切 : 45/45 干净段保持单 span，0 误切
+```
+`session.py` 接入：`_finish_utterance` 先分段再逐 turn 转写+取 embedding，事件用绝对会话毫秒；仅对 ≥3s 的 utterance 分段（VAD 本身把段限制在 5s，故窗滑成本有界）；无参考路径只用规则 A 与深谷；无法定界的事件带 `overlap=True`（`SpeakerPolicy` 已知会判 UNKNOWN）；分段异常只记日志并保留整段，绝不丢 utterance。单测：分割器 20 例 + 会话接入 3 例新增（长句真切分 / 平段保守 overlap / 短句不付出分段代价），speech 相关套件 45 passed，AF_UNIX/POSIX 的 10 个失败经 `git stash` 复跑证实与本改动无关。
+
+**测试套件说明（透明记录）**：继承来的草稿测试（663 行）**从未绿过**，其合成 fixture 数学自相矛盾（断言"与 SUSPECT 余弦 <0.50"而实际构造出 0.90，且注释与参数不一致），三个 agent 在其上往复震荡（失败数 14↔26）。最终由维护者重写：新套件以**几何自检**固化 fixture（`test_fixture_geometry_matches_the_documented_cosines`），并以**真语料必过点**为主判据。
 
 ### 剩余
 
-返工（B1 等）与 17B-2 完成后：推送 → 生产部署 + DoD → 三项板上验收（语料必过点、17B-1 浏览器回归、17A 回归复跑确认无回退）。
+推送 → 生产部署 + DoD → 三项板上验收（`regression-17b2` 真浏览器实时不得整段 SUSPECT、`regression-17b1` 生效模式与注册指标、`regression-17a` 复跑确认无回退）。
