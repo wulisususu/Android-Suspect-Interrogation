@@ -10,9 +10,41 @@ export interface BrowserVoiceprintCallbacks {
   onTrackEnded?: () => void
 }
 
+/**
+ * Explicit capture lifecycle.
+ *
+ * `CONNECTING`  – start() handshake in flight, nothing may be sent yet.
+ * `STREAMING`   – handshake done, PCM frames are being pushed to the backend.
+ * `FINALIZING`  – the caller handed the capture to the backend's HTTP
+ *                 stop/enroll path: no new PCM frames, but the WebSocket is
+ *                 deliberately kept open so the backend finishes enrollment
+ *                 instead of taking its cancel branch.
+ * `STOPPED`     – stop() completed; the socket and the audio graph are gone.
+ * `FAILED`      – the transport died (or never came up) before finalizing.
+ *
+ * The transport callbacks are only authoritative while the capture is
+ * `STREAMING`; a close during `FINALIZING`/`STOPPED`/`FAILED` is a normal
+ * consequence of the backend tearing its capture down, not a user-visible
+ * failure. Trying to express this with two booleans is what caused the
+ * "registered voiceprint reported as failed" race.
+ */
+export type CaptureLifecycle = 'CONNECTING' | 'STREAMING' | 'FINALIZING' | 'STOPPED' | 'FAILED'
+
 export interface BrowserVoiceprintCapture {
   readonly inputSampleRate: number | null
+  readonly lifecycle: CaptureLifecycle
   start(captureId: string, callbacks?: BrowserVoiceprintCallbacks): Promise<void>
+  /**
+   * Switch to `FINALIZING`: stop the ScriptProcessor and stop sending PCM
+   * frames, without closing the WebSocket. Call this BEFORE the HTTP
+   * stop/enroll request.
+   */
+  beginFinalize(): void
+  /**
+   * Legacy: silences the audio graph. Since the fix it delegates to
+   * `beginFinalize()` so the state machine stays consistent; `stop()` is the
+   * only method that closes the channel.
+   */
   pause(): void
   stop(): Promise<void>
 }
@@ -118,9 +150,11 @@ class BrowserVoiceprintCaptureImpl implements BrowserVoiceprintCapture {
   private mute: GainNode | null = null
   private socket: WebSocket | null = null
   private callbacks: BrowserVoiceprintCallbacks = {}
-  private stopped = false
-  private paused = false
   private resampler: Pcm16Resampler | null = null
+  private state: CaptureLifecycle = 'STOPPED'
+  private paused = false
+  private attemptId = 0
+  private trackHandlers: Array<{ track: MediaStreamTrack; handler: () => void }> = []
 
   constructor(private readonly stream: MediaStream) {}
 
@@ -128,12 +162,18 @@ class BrowserVoiceprintCaptureImpl implements BrowserVoiceprintCapture {
     return this.context?.sampleRate ?? null
   }
 
+  get lifecycle(): CaptureLifecycle {
+    return this.state
+  }
+
   async start(captureId: string, callbacks: BrowserVoiceprintCallbacks = {}): Promise<void> {
     if (!captureId.trim()) throw new Error('浏览器声纹 captureId 不能为空')
     if (this.socket || this.context) throw new Error('浏览器声纹采集已经启动')
+    const attempt = this.nextAttempt()
+
     this.callbacks = callbacks
-    this.stopped = false
     this.paused = false
+    this.state = 'CONNECTING'
 
     const socket = new WebSocket(buildBrowserVoiceprintWebSocketUrl(captureId))
     socket.binaryType = 'arraybuffer'
@@ -142,24 +182,56 @@ class BrowserVoiceprintCaptureImpl implements BrowserVoiceprintCapture {
     await new Promise<void>((resolve, reject) => {
       let settled = false
       socket.onopen = () => {
+        if (!this.isCurrentAttempt(attempt)) return
         settled = true
         resolve()
       }
       socket.onerror = () => {
+        if (!this.isCurrentAttempt(attempt)) return
         if (!settled) {
           settled = true
+          this.state = 'FAILED'
+          this.detachTrackHandlers(attempt)
           reject(new Error('无法建立浏览器麦克风音频通道'))
+          return
+        }
+        if (this.state === 'STREAMING') {
+          this.state = 'FAILED'
+          this.callbacks.onError?.('浏览器麦克风音频通道已断开，请重新开始声纹录制')
         }
       }
       socket.onclose = () => {
+        if (!this.isCurrentAttempt(attempt)) return
         if (!settled) {
           settled = true
+          this.state = 'FAILED'
+          this.detachTrackHandlers(attempt)
           reject(new Error('浏览器麦克风音频通道在启动前已断开'))
           return
         }
-        if (!this.stopped) this.callbacks.onError?.('浏览器麦克风音频通道已断开，请重新开始声纹录制')
+        // Only a close that interrupts an active stream is a real failure. A
+        // close while FINALIZING/STOPPED/FAILED is the backend finishing or
+        // tearing down its capture (AudioCaptureService.stop() closes the
+        // channel) and must stay silent.
+        // Only a close that interrupts an active stream is a real failure. A
+        // close while FINALIZING/STOPPED/FAILED is the backend finishing or
+        // tearing down its capture (AudioCaptureService.stop() closes the
+        // channel) and must stay silent.
+        if (this.state === 'STREAMING') {
+          this.state = 'FAILED'
+          this.callbacks.onError?.('浏览器麦克风音频通道已断开，请重新开始声纹录制')
+        }
+        this.detachTrackHandlers(attempt)
       }
     })
+
+    if (!this.isCurrentAttempt(attempt)) {
+      throw new Error('浏览器声纹采集已被新的采集替换')
+    }
+    if (socket.readyState !== WebSocket.OPEN) {
+      this.socket = null
+      throw new Error('浏览器麦克风音频通道在启动前已断开')
+    }
 
     const AudioContextCtor = window.AudioContext
     if (!AudioContextCtor) throw new Error('当前浏览器不支持 Web Audio')
@@ -177,7 +249,10 @@ class BrowserVoiceprintCaptureImpl implements BrowserVoiceprintCapture {
     this.mute = mute
 
     processor.onaudioprocess = (event: AudioProcessingEvent) => {
-      if (this.stopped || this.paused || socket.readyState !== WebSocket.OPEN || !this.resampler) return
+      // Frames are only valid for the attempt that installed this handler, and
+      // only while that attempt is actually STREAMING.
+      if (attempt !== this.attemptId || this.state !== 'STREAMING' || this.paused) return
+      if (socket.readyState !== WebSocket.OPEN || !this.resampler) return
       const channel = event.inputBuffer.getChannelData(0)
       const pcm = this.resampler.process(channel)
       if (!pcm.length) return
@@ -188,16 +263,44 @@ class BrowserVoiceprintCaptureImpl implements BrowserVoiceprintCapture {
     processor.connect(mute)
     mute.connect(context.destination)
 
+    this.detachTrackHandlers(attempt)
     for (const track of this.stream.getAudioTracks()) {
-      track.onended = () => {
-        if (!this.stopped) this.callbacks.onTrackEnded?.()
+      const handler = () => {
+        if (attempt !== this.attemptId || this.state !== 'STREAMING') return
+        this.callbacks.onTrackEnded?.()
       }
+      try {
+        track.onended = handler
+      } catch {
+        // Detached or unsupported track: the PCM path still works.
+      }
+      this.trackHandlers.push({ track, handler })
     }
+
+    this.state = 'STREAMING'
   }
 
+  /**
+   * Begin finalization: stop producing PCM and silence the graph, but DO NOT
+   * close the WebSocket. Closing early makes the backend's handler run its
+   * cancel path and throw away the enrollment that is being registered.
+   */
+  beginFinalize(): void {
+    if (this.state !== 'STREAMING') return
+    this.state = 'FINALIZING'
+    this.pause()
+  }
+
+  /**
+   * `pause()` is kept for callers that silence the microphone without ending
+   * the enrollment. It must stay consistent with the new state machine: the
+   * audio graph is muted and marked `FINALIZING`, and the channel stays open,
+   * so a later backend close is treated as normal instead of a failure.
+   */
   pause(): void {
-    if (this.stopped || this.paused) return
+    if (this.state === 'STOPPED' || this.state === 'FAILED' || this.paused) return
     this.paused = true
+    if (this.state === 'STREAMING') this.state = 'FINALIZING'
     if (this.processor) this.processor.onaudioprocess = null
     try { this.source?.disconnect() } catch { /* already disconnected */ }
     try { this.processor?.disconnect() } catch { /* already disconnected */ }
@@ -205,12 +308,20 @@ class BrowserVoiceprintCaptureImpl implements BrowserVoiceprintCapture {
   }
 
   async stop(): Promise<void> {
-    if (this.stopped) return
     this.pause()
-    this.stopped = true
+    if (this.state === 'STOPPED') return
+    this.state = 'STOPPED'
+    // Invalidate the attempt so any in-flight transport callback from this
+    // round is dropped instead of leaking into the next recording.
+    this.attemptId += 1
+    this.detachTrackHandlers(0)
     for (const track of this.stream.getTracks()) {
-      track.onended = null
-      track.stop()
+      try {
+        track.onended = null
+      } catch { /* detached track */ }
+      try {
+        track.stop()
+      } catch { /* already stopped */ }
     }
     const socket = this.socket
     this.socket = null
@@ -225,6 +336,35 @@ class BrowserVoiceprintCaptureImpl implements BrowserVoiceprintCapture {
     this.resampler = null
     if (context && context.state !== 'closed') await context.close()
   }
+
+  private nextAttempt(): number {
+    this.attemptId += 1
+    return this.attemptId
+  }
+
+  private isCurrentAttempt(attempt: number): boolean {
+    return attempt === this.attemptId
+  }
+
+  private detachTrackHandlers(attempt: number) {
+    const survivors: Array<{ track: MediaStreamTrack; handler: () => void }> = []
+    for (const entry of this.trackHandlers) {
+      // A handler that is no longer installed was already replaced by a newer
+      // attempt; never clear the newer attempt's handler from an older one.
+      if (attempt !== 0 && entry.track.onended !== entry.handler) {
+        survivors.push(entry)
+        continue
+      }
+      try {
+        entry.track.onended = null
+      } catch { /* detached track */ }
+    }
+    this.trackHandlers = survivors
+  }
+}
+
+export function createBrowserVoiceprintCapture(stream: MediaStream): BrowserVoiceprintCapture {
+  return new BrowserVoiceprintCaptureImpl(stream)
 }
 
 export async function acquireBrowserVoiceprintMic(): Promise<BrowserVoiceprintCapture> {
