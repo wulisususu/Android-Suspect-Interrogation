@@ -327,42 +327,44 @@ async function confirmSignature() {
         />
       </div>
 
-      <VoiceprintEnrollmentGate
-        v-if="!readiness.suspectReady"
-        :suspect-name="summary.suspectName"
-        :readiness="readiness"
-        :officers="officers"
-        :selected-interrogator-officer-id="selectedInterrogatorOfficerId"
-        :selected-recorder-officer-id="selectedRecorderOfficerId"
-        :enrollment-state="voiceprintEnrollmentState"
-        :busy="voiceprintBusy"
-        :source="voiceprintSource"
-        :reason="voiceprintReason"
-        :secure-context="voiceprintSecureContext"
-        @suspect-start="emit('suspectStart')"
-        @suspect-stop="emit('suspectStop')"
-        @select-interrogator="emit('selectInterrogator', $event)"
-        @select-recorder="emit('selectRecorder', $event)"
-        @bind-roles="emit('bindRoles')"
-      />
+      <div class="dialogue-column">
+        <VoiceprintEnrollmentGate
+          :compact="readiness.suspectReady"
+          :suspect-name="summary.suspectName"
+          :readiness="readiness"
+          :officers="officers"
+          :selected-interrogator-officer-id="selectedInterrogatorOfficerId"
+          :selected-recorder-officer-id="selectedRecorderOfficerId"
+          :enrollment-state="voiceprintEnrollmentState"
+          :busy="voiceprintBusy"
+          :source="voiceprintSource"
+          :reason="voiceprintReason"
+          :secure-context="voiceprintSecureContext"
+          @suspect-start="emit('suspectStart')"
+          @suspect-stop="emit('suspectStop')"
+          @select-interrogator="emit('selectInterrogator', $event)"
+          @select-recorder="emit('selectRecorder', $event)"
+          @bind-roles="emit('bindRoles')"
+        />
 
-      <LiveDialoguePanel
-        v-else
-        :dialogue="dialogueHistory"
-        :partial-text="capture.partialText"
-        :pending-questions="workspace.pendingQuestions"
-        :qa-units="workspace.qaUnits"
-        :questions="workspace.questions"
-        :suspect-name="summary.suspectName"
-        :capture-running="capture.running"
-        :capture-busy="captureBusy"
-        :capture-available="nativeCaptureAvailable && canRecord && !documentFrozen"
-        :capture-elapsed-ms="captureElapsedMs"
-        @capture-toggle="toggleCapture"
-        @resolve-pending="(id, resolution) => emit('resolvePending', id, resolution)"
-        @resolve-qa-unit="(id, resolution) => emit('resolveQaUnit', id, resolution)"
-        @correct-fragment="(id, speaker, reason) => emit('correctFragment', id, speaker, reason)"
-      />
+        <LiveDialoguePanel
+          v-if="readiness.suspectReady"
+          :dialogue="dialogueHistory"
+          :partial-text="capture.partialText"
+          :pending-questions="workspace.pendingQuestions"
+          :qa-units="workspace.qaUnits"
+          :questions="workspace.questions"
+          :suspect-name="summary.suspectName"
+          :capture-running="capture.running"
+          :capture-busy="captureBusy"
+          :capture-available="nativeCaptureAvailable && canRecord && !documentFrozen"
+          :capture-elapsed-ms="captureElapsedMs"
+          @capture-toggle="toggleCapture"
+          @resolve-pending="(id, resolution) => emit('resolvePending', id, resolution)"
+          @resolve-qa-unit="(id, resolution) => emit('resolveQaUnit', id, resolution)"
+          @correct-fragment="(id, speaker, reason) => emit('correctFragment', id, speaker, reason)"
+        />
+      </div>
     </div>
 
     <div v-if="signatureRole" class="signature-modal" role="dialog" aria-modal="true" aria-label="电子签名">

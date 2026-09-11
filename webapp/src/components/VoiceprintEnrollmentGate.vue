@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { VoiceprintAudioSource } from '../api/browserVoiceprint'
 import { voiceprintEnrollmentProgress } from './VoiceprintPreparationPanel.vue'
 import VoiceprintAudioSourceBanner from './VoiceprintAudioSourceBanner.vue'
 import type { OfficerVoiceprint, VoiceprintEnrollmentState, VoiceprintReadiness } from '../types/interrogation'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   suspectName: string
   readiness: VoiceprintReadiness
   officers: OfficerVoiceprint[]
@@ -16,9 +16,11 @@ const props = defineProps<{
   source: VoiceprintAudioSource | null
   reason: string
   secureContext: boolean
-}>()
+  /** Registered suspects get the condensed status card instead of the full recording card. */
+  compact?: boolean
+}>(), { compact: false })
 
-defineEmits<{
+const emits = defineEmits<{
   suspectStart: []
   suspectStop: []
   selectInterrogator: [officerId: string | null]
@@ -45,26 +47,68 @@ const liveStatus = computed(() => {
   if (props.enrollmentState.phase === 'COMPLETE') return '声纹注册完成，已解锁正式审讯与实时对话。'
   return props.enrollmentState.message || ''
 })
+
+// A failed re-recording must never read as if the already registered voiceprint was lost: the
+// backend only calls replace_suspect after the new quality checks passed, so the previous
+// reference keeps working. Keep reporting that instead of showing a bare failure.
+const reEnrollFailure = computed(() => props.readiness.suspectReady && props.enrollmentState.phase === 'ERROR')
+const reEnrollLabel = computed(() => (reEnrollFailure.value ? '再次重新录制' : '重新录制'))
+const registeredLabel = computed(() => (reEnrollFailure.value ? '✓ 当前已有声纹仍然有效' : '✓ 已注册'))
+const suspectRowClass = computed(() => (props.compact ? 'suspect-row compact' : 'suspect-row'))
+
+let lastMeasuredUsableSeconds = 0
+
+// Prefer the registered reference measurement from readiness; fall back to whatever this
+// session most recently measured while enrolling.
+const referenceUsableSeconds = computed(() => {
+  const durationMs = Number(props.readiness.usableDurationMs || 0)
+  return durationMs > 0 ? Number((durationMs / 1000).toFixed(2)) : 0
+})
+
+function measuredUsableSeconds() {
+  const measured = Number(props.enrollmentState.usableDurationMs || 0)
+  return measured > 0 ? Number((measured / 1000).toFixed(2)) : 0
+}
+
+// The request-scoped readiness payload does not carry the suspect enrollment metrics yet
+// (17B-1), so the compact card reports the duration it can see and keeps the last known value
+// instead of dropping the line when a later attempt has no measurement.
+const compactUsableSpeechLabel = computed(() => {
+  const measured = measuredUsableSeconds()
+  if (measured > 0) lastMeasuredUsableSeconds = measured
+  const seconds = [referenceUsableSeconds.value, measured, lastMeasuredUsableSeconds].find((value) => value > 0) || 0
+  return seconds > 0 ? `有效语音：${seconds} 秒` : '有效语音：以本次注册结果为准'
+})
+
+const compactQualityLabel = computed(() => (props.readiness.enrollmentQuality ? `质量：${props.readiness.enrollmentQuality}` : '质量：未知'))
+
+function startOrReRecord() {
+  emits('suspectStart')
+}
 </script>
 
 <template>
-  <aside class="voiceprint-enrollment-gate" aria-label="嫌疑人声纹注册">
+  <aside class="voiceprint-enrollment-gate" :class="{ compact }" aria-label="嫌疑人声纹注册">
     <VoiceprintAudioSourceBanner :source="source" :reason="reason" :secure-context="secureContext" />
 
-    <div class="voiceprint-enrollment-content">
-      <header>
+    <div class="voiceprint-enrollment-content" :class="{ 'compact-card': compact }">
+      <header v-if="!compact">
         <span class="section-kicker">正式审讯前置条件</span>
         <h2>完成嫌疑人声纹注册</h2>
         <p>完成声纹注册后，即可解锁正式审讯与实时对话。</p>
       </header>
 
-      <div class="suspect-row">
-        <div>
+      <div :class="suspectRowClass">
+        <div class="suspect-identity">
           <strong>嫌疑人 · {{ suspectName || '待录入姓名' }}</strong>
-          <span :class="{ ready: readiness.suspectReady }">{{ readiness.suspectReady ? '声纹已注册' : '尚未注册' }}</span>
+          <span :class="{ ready: readiness.suspectReady }">{{ compact ? registeredLabel : readiness.suspectReady ? '声纹已注册' : '尚未注册' }}</span>
         </div>
-        <button v-if="!suspectRecording" class="primary" :disabled="busy" @click="$emit('suspectStart')">{{ readiness.suspectReady ? '重新录制' : '开始录制' }}</button>
-        <button v-else class="danger" :disabled="busy" @click="$emit('suspectStop')">提前停止并尝试注册</button>
+        <dl v-if="compact">
+          <dt>{{ compactQualityLabel }}</dt>
+          <dt>{{ compactUsableSpeechLabel }}</dt>
+        </dl>
+        <button v-if="!suspectRecording" class="primary" :disabled="busy" @click="startOrReRecord">{{ compact ? reEnrollLabel : '开始录制' }}</button>
+        <button v-else class="danger" :disabled="busy" @click="emits('suspectStop')">提前停止并尝试注册</button>
       </div>
 
       <details class="optional-officer-binding">
@@ -72,19 +116,19 @@ const liveStatus = computed(() => {
         <p>嫌疑人声纹是唯一必需项；不选择民警声纹仍可开始正式审讯。</p>
         <label>
           主审民警
-          <select :value="selectedInterrogatorOfficerId || ''" :disabled="busy" aria-label="选择主审民警声纹" @change="$emit('selectInterrogator', normalizedSelect($event))">
+          <select :value="selectedInterrogatorOfficerId || ''" :disabled="busy" aria-label="选择主审民警声纹" @change="emits('selectInterrogator', normalizedSelect($event))">
             <option value="">不启用民警声纹</option>
             <option v-for="officer in officers" :key="officer.officerId" :value="officer.officerId">{{ officer.officerName }} · {{ officer.officerId }}</option>
           </select>
         </label>
         <label>
           记录民警
-          <select :value="selectedRecorderOfficerId || ''" :disabled="busy" aria-label="选择记录民警声纹" @change="$emit('selectRecorder', normalizedSelect($event))">
+          <select :value="selectedRecorderOfficerId || ''" :disabled="busy" aria-label="选择记录民警声纹" @change="emits('selectRecorder', normalizedSelect($event))">
             <option value="">不启用民警声纹</option>
             <option v-for="officer in officers" :key="officer.officerId" :value="officer.officerId">{{ officer.officerName }} · {{ officer.officerId }}</option>
           </select>
         </label>
-        <button :disabled="busy" @click="$emit('bindRoles')">保存本次角色选择</button>
+        <button :disabled="busy" @click="emits('bindRoles')">保存本次角色选择</button>
       </details>
 
       <div v-if="showProgress" class="voiceprint-enrollment-progress" :class="enrollmentState.phase.toLowerCase()">
@@ -99,6 +143,7 @@ const liveStatus = computed(() => {
         <span v-else>{{ enrollmentState.message }}</span>
         <small v-if="finalUsableSeconds && enrollmentState.phase !== 'RECORDING'">有效语音 {{ finalUsableSeconds }} 秒</small>
       </div>
+
       <p v-if="showProgress" class="voiceprint-enrollment-status" role="status" aria-live="polite" aria-atomic="true">{{ liveStatus }}</p>
     </div>
   </aside>
@@ -131,5 +176,16 @@ button:disabled { opacity:.5; }
 .voiceprint-capture-meter > i { display:block; height:100%; border-radius:inherit; background:#2476c9; transition:width .25s ease; }
 .voiceprint-enrollment-progress small { margin-left:auto; }
 .voiceprint-enrollment-status { margin:8px 0 0; color:#526b80; font-size:13px; }
+/* Registered suspects keep the same card, condensed: one status row plus a collapsible role drawer. */
+.compact-card { padding:10px 12px; }
+.compact-card .suspect-row { flex-wrap:wrap; gap:8px 14px; margin-top:0; padding:8px 10px; border-left-width:3px; }
+.compact-card .suspect-row dl { display:flex; flex-wrap:wrap; gap:4px 14px; margin:0; color:#566b7e; font-size:12px; font-weight:700; }
+.compact-card .suspect-row dt { margin:0; }
+.compact-card .suspect-identity { flex:1 1 140px; }
+.compact-card button { min-height:30px; padding:0 11px; font-size:12px; }
+.compact-card .optional-officer-binding { margin-top:8px; padding:6px 9px; }
+.compact-card .optional-officer-binding button { margin-top:7px; }
+.compact-card .voiceprint-enrollment-progress { margin-top:8px; padding:7px 9px; font-size:12px; }
+.compact-card .voiceprint-enrollment-status { margin-top:6px; font-size:12px; }
 @media (max-width:980px) { .suspect-row { align-items:flex-start; flex-direction:column; } }
 </style>

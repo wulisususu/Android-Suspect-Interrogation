@@ -57,10 +57,19 @@ describe('template-driven interrogation C-page contract', () => {
 
   it('gates live dialogue on suspect voiceprint enrollment without the legacy preparation stack', () => {
     expect(pageSource).toContain("import VoiceprintEnrollmentGate from './VoiceprintEnrollmentGate.vue'")
-    expect(pageSource).toContain('v-if="!readiness.suspectReady"')
-    expect(pageSource).toContain('v-else')
     expect(workspaceSource).not.toContain('voiceprint-prep-stack')
     expect(workspaceSource).not.toContain('<VoiceprintPreparationPanel')
+  })
+
+  it('keeps the enrolled suspect voiceprint gate mounted so re-recording is reachable', () => {
+    // Only the live dialogue panel is conditional on enrollment; the gate itself must always
+    // render, because the registered-state card inside it is the single entry point for
+    // re-recording an existing suspect voiceprint.
+    expect(pageSource).toContain('<VoiceprintEnrollmentGate')
+    expect(pageSource).not.toContain('v-if="!readiness.suspectReady"')
+    expect(pageSource).toContain('<LiveDialoguePanel')
+    expect(pageSource).toContain('v-if="readiness.suspectReady"')
+    expect(pageSource).toContain(':compact="readiness.suspectReady"')
   })
 
   it('retires the legacy monolithic interrogation C-page', () => {

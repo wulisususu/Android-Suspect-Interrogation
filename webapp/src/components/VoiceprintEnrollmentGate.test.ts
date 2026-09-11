@@ -88,12 +88,15 @@ function mount(
     officers: OfficerVoiceprint[]
     selectedInterrogatorOfficerId: string | null
     selectedRecorderOfficerId: string | null
+    readiness: VoiceprintReadiness
+    compact: boolean
   }> = {},
 ) {
   const root = node('root')
   const app = renderer.createApp(VoiceprintEnrollmentGate, {
     suspectName: '张某',
     readiness,
+    compact: false,
     enrollmentState,
     busy: false,
     source: 'BROWSER',
@@ -108,6 +111,16 @@ function mount(
   app.provide(Vue.ssrContextKey, { modules: new Set<string>() })
   app.mount(root)
   return root
+}
+
+const readyReadiness: VoiceprintReadiness = {
+  suspectReady: true,
+  interrogatorReady: false,
+  recorderReady: false,
+  recognitionMode: 'SUSPECT_ONLY',
+  canStart: true,
+  enrollmentQuality: 'GOOD',
+  usableDurationMs: 20_030,
 }
 
 function textContent(target: TestNode): string {
@@ -126,9 +139,24 @@ function findNode(target: TestNode, predicate: (item: TestNode) => boolean): Tes
   throw new Error('Matching node not found')
 }
 
+function buttonLabels(root: TestNode): string[] {
+  return allNodes(root)
+    .filter((item) => item.type === 'button')
+    .map((item) => textContent(item).trim())
+}
+
 function click(root: TestNode, label: string) {
   const button = findNode(root, (item) => item.type === 'button' && textContent(item).includes(label))
   ;(button.props.onClick as () => void)()
+}
+
+function clickExact(root: TestNode, label: string) {
+  const button = findNode(root, (item) => item.type === 'button' && textContent(item).trim() === label)
+  ;(button.props.onClick as () => void)()
+}
+
+function allNodes(target: TestNode): TestNode[] {
+  return [target, ...target.children.flatMap(allNodes)]
 }
 
 describe('VoiceprintEnrollmentGate', () => {
@@ -209,5 +237,87 @@ describe('VoiceprintEnrollmentGate', () => {
       const liveRegion = findNode(root, (item) => item.props.role === 'status' && item.props['aria-live'] === 'polite')
       expect(textContent(liveRegion)).toContain(status)
     }
+  })
+
+  it('offers re-recording with the registered quality and usable speech on the compact card', () => {
+    const root = mount({ phase: 'IDLE', kind: 'SUSPECT' }, {}, { readiness: readyReadiness, compact: true })
+
+    expect(textContent(root)).toContain('嫌疑人 · 张某')
+    expect(textContent(root)).toContain('✓ 已注册')
+    expect(textContent(root)).toContain('质量：GOOD')
+    expect(textContent(root)).toContain('有效语音：20.03 秒')
+    expect(textContent(root)).toContain('重新录制')
+    expect(textContent(root)).not.toContain('开始录制')
+    expect(textContent(root)).not.toContain('声纹已注册')
+  })
+
+  it('emits suspectStart when the registered suspect voiceprint is re-recorded', () => {
+    const emitted: string[] = []
+    const root = mount(
+      { phase: 'IDLE', kind: 'SUSPECT' },
+      { onSuspectStart: () => emitted.push('suspectStart') },
+      { readiness: readyReadiness, compact: true },
+    )
+
+    clickExact(root, '重新录制')
+
+    expect(emitted).toEqual(['suspectStart'])
+  })
+
+  it('keeps the compact card readable instead of unloading the gate for a registered suspect', () => {
+    const root = mount({ phase: 'IDLE', kind: 'SUSPECT' }, {}, { readiness: readyReadiness, compact: true })
+
+    // The condensed card keeps the registered suspect and the re-recording entry point, while
+    // the first-enrollment headline is gone so the card does not take over the dialogue column.
+    expect(textContent(root)).toContain('嫌疑人 · 张某')
+    expect(textContent(root)).toContain('✓ 已注册')
+    expect(textContent(root)).not.toContain('正式审讯前置条件')
+    expect(textContent(root)).not.toContain('完成嫌疑人声纹注册')
+    const optionalSection = findNode(root, (item) => item.type === 'details' && textContent(item).includes('可选：绑定民警声纹'))
+    expect(optionalSection.props.open).toBeUndefined()
+    // Role binding stays reachable and accessible in the condensed card.
+    findNode(root, (item) => item.type === 'select' && item.props['aria-label'] === '选择主审民警声纹')
+    findNode(root, (item) => item.type === 'select' && item.props['aria-label'] === '选择记录民警声纹')
+  })
+
+  it('states that the existing voiceprint stays valid when re-recording fails', () => {
+    const emitted: string[] = []
+    const root = mount(
+      { phase: 'ERROR', kind: 'SUSPECT', message: '有效语音不足20秒，请重新录制声纹' },
+      { onSuspectStart: () => emitted.push('suspectStart') },
+      { readiness: readyReadiness, compact: true },
+    )
+
+    expect(textContent(root)).toContain('声纹注册失败：有效语音不足')
+    expect(textContent(root)).toContain('✓ 当前已有声纹仍然有效')
+    expect(textContent(root)).toContain('再次重新录制')
+
+    clickExact(root, '再次重新录制')
+
+    expect(emitted).toEqual(['suspectStart'])
+  })
+
+  it('keeps the compact card registered and re-recordable while quality data is unavailable', () => {
+    const root = mount(
+      { phase: 'IDLE', kind: 'SUSPECT' },
+      {},
+      { readiness: { ...readyReadiness, enrollmentQuality: undefined, usableDurationMs: undefined }, compact: true },
+    )
+
+    expect(textContent(root)).toContain('✓ 已注册')
+    expect(textContent(root)).toContain('质量：未知')
+    expect(textContent(root)).toContain('有效语音：以本次注册结果为准')
+    // The re-recording entry point survives the missing metrics, and no first-enrollment button appears.
+    expect(buttonLabels(root)).toContain('重新录制')
+    expect(textContent(root)).not.toContain('开始录制')
+  })
+
+  it('keeps the full recording card for the first enrollment of an unregistered suspect', () => {
+    const root = mount({ phase: 'IDLE', kind: 'SUSPECT' }, {}, { readiness, compact: false })
+
+    expect(textContent(root)).toContain('正式审讯前置条件')
+    expect(textContent(root)).toContain('完成嫌疑人声纹注册')
+    expect(textContent(root)).toContain('尚未注册')
+    expect(buttonLabels(root)).toEqual(['开始录制', '保存本次角色选择'])
   })
 })

@@ -288,6 +288,13 @@ export interface VoiceprintReadiness extends VoiceprintBackendReadiness {
   selectedSpeakerBackend?: SpeakerBackendKey
   authoritativeSpeakerBackend?: SpeakerBackendKey
   simulated?: boolean
+  /**
+   * Registration metrics of the active suspect voiceprint used by the condensed re-record card.
+   * The backend readiness payload does not populate them yet (Task 17B-1), so the UI degrades
+   * gracefully when they are absent.
+   */
+  enrollmentQuality?: string | null
+  usableDurationMs?: number | null
 }
 
 export interface OfficerVoiceprint {
