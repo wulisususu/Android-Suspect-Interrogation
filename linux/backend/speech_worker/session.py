@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 import time
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 
 from app.ai.errors import AIError, WorkerCrashedError
 from app.ai.speech.types import SpeechEvent, SpeechEventType
+from speech_worker.speaker_turn_splitter import SpeakerTurnSplitter, TurnSpan
+
+logger = logging.getLogger(__name__)
 
 
 PCM_SAMPLE_WIDTH_BYTES = 2
@@ -52,6 +56,8 @@ class SpeechSession:
         authoritative_speaker_backend_key: str | None = None,
         chunk_size_ms: int = 200,
         pre_roll_ms: int = 1200,
+        turn_splitter: SpeakerTurnSplitter | None = None,
+        split_min_ms: int = 3000,
     ) -> None:
         if not session_id:
             raise ValueError("session_id is required")
@@ -79,6 +85,12 @@ class SpeechSession:
         self.authoritative_speaker_backend_key = _PRODUCT_SPEAKER_BACKEND
         self.chunk_size_ms = int(chunk_size_ms)
         self.pre_roll_ms = int(pre_roll_ms)
+        # A VAD utterance is not a speaker turn. The splitter only needs neighbouring-window
+        # similarity (no biometric reference ever enters the worker), so it runs on
+        # utterances long enough to actually hold two turns. The VAD caps a segment at 5 s
+        # (``_FORMAL_MAX_SINGLE_SEGMENT_MS``), which also bounds the windowed cost.
+        self.turn_splitter = turn_splitter if turn_splitter is not None else SpeakerTurnSplitter()
+        self.split_min_ms = int(split_min_ms)
 
         self.pre_roll_pcm = b""
         self.current_utterance_pcm = bytearray()
@@ -239,8 +251,72 @@ class SpeechSession:
                 )
             ]
 
+        spans = self._split_turns(utterance_pcm, captured_duration_ms)
+        events: list[SpeechEvent] = []
+        for span in spans:
+            span_pcm = utterance_pcm[
+                self._ms_to_bytes(span.start_ms): self._ms_to_bytes(span.end_ms)
+            ]
+            if not span_pcm:
+                continue
+            events.extend(
+                self._finalize_turn(
+                    span_pcm,
+                    start_ms + span.start_ms,
+                    start_ms + span.end_ms,
+                    forced_final=forced_final,
+                    overlap=span.ambiguous,
+                )
+            )
+        return events
+
+    def _split_turns(self, utterance_pcm: bytes, captured_duration_ms: int) -> list[TurnSpan]:
+        """Segment one VAD utterance into speaker turns (never fails the utterance)."""
+        whole = [TurnSpan(0, max(0, captured_duration_ms))]
+        if self.turn_splitter is None or captured_duration_ms < self.split_min_ms:
+            return whole
+        try:
+            spans = self.turn_splitter.split(
+                utterance_pcm,
+                self.sample_rate,
+                embed=self._embed_for_split,
+                reference=None,
+            )
+        except Exception as exc:  # never lose an utterance because segmentation failed
+            logger.warning(
+                "speaker turn split failed, keeping the whole utterance",
+                extra={"session_id": self.session_id, "error": str(exc)[:200]},
+            )
+            return whole
+        return spans or whole
+
+    def _embed_for_split(self, pcm: bytes) -> Sequence[float]:
+        payload = self._extract_speaker(pcm, self.authoritative_speaker_backend_key)
+        embedding = payload.get("embedding") if isinstance(payload, dict) else None
+        if embedding is None:
+            raise WorkerCrashedError(
+                "speaker embedding is required to segment a speaker turn",
+                details={"session_id": self.session_id},
+            )
+        return embedding
+
+    def _finalize_turn(
+        self,
+        utterance_pcm: bytes,
+        start_ms: int,
+        end_ms: int,
+        *,
+        forced_final: bool = False,
+        overlap: bool = False,
+    ) -> list[SpeechEvent]:
+        """Transcribe one speaker turn and emit its events in absolute session milliseconds."""
         asr = self.runtime.transcribe(utterance_pcm, self.sample_rate)
         common_details: dict[str, Any] = {"forced_final": True} if forced_final else {}
+        if overlap:
+            # The splitter could neither bound a confident change nor confirm a single
+            # speaker: mark the turn so SpeakerPolicy answers UNKNOWN instead of forcing a
+            # wrong attribution.
+            common_details = {**common_details, "overlap": True}
         authoritative_speaker: dict[str, Any] | None = None
         secondary_speaker: dict[str, Any] | None = None
         secondary_error: AIError | None = None

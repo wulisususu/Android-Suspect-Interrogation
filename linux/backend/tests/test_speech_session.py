@@ -186,3 +186,77 @@ def test_finalize_flushes_vad_and_closes_active_utterance_without_duplicate_deco
     assert session.finalize() == []
     assert len(runtime.transcribe_calls) == 1
     assert len(runtime.speaker_calls) == 1
+
+
+# --------------------------------------------------------------------------- speaker turns
+class SpeakerChangeRuntime(FakeRuntime):
+    """Speaker embeddings that flip half way through the utterance.
+
+    The tests build a two-tone PCM: samples before the tone change embed as one speaker, the
+    rest as the orthogonal one, so a window straddling the boundary dips to cosine 0.
+    """
+
+    TONE_BOUNDARY_SAMPLE = 100
+
+    def speaker_embedding(self, pcm: bytes, sample_rate: int, *, backend_key: str | None = None) -> dict:
+        self.speaker_calls.append((pcm, sample_rate))
+        first = int.from_bytes(pcm[:2], byteorder="little", signed=True)
+        embedding = [1.0, 0.0] if first < self.TONE_BOUNDARY_SAMPLE else [0.0, 1.0]
+        return {"embedding": embedding, "backend_key": "eres2net_large", "model_id": "eres2net"}
+
+
+def _two_tone_pcm(first_ms: int, second_ms: int, sample_rate: int = 16000) -> bytes:
+    return _pcm(first_ms, sample_rate, value=1) + _pcm(second_ms, sample_rate, value=200)
+
+
+def test_long_utterance_with_a_speaker_change_is_split_into_turns():
+    """The production failure: one 6 s VAD utterance holding an officer turn then a suspect turn."""
+    runtime = SpeakerChangeRuntime(vad_outputs=[[[0, -1]], [[-1, 6000]]])
+    session = SpeechSession("session-split", 16000, runtime, chunk_size_ms=200)
+    session.push_pcm(_pcm(3000, value=1))
+
+    events = session.push_pcm(_pcm(3000, value=200))
+
+    finals = [event for event in events if event.type is SpeechEventType.ASR_FINAL]
+    bounds = [(event.start_ms, event.end_ms) for event in finals]
+    assert len(bounds) == 2, "one turn per speaker"
+    assert bounds[0][0] == 0
+    assert bounds[0][1] == bounds[1][0], "turns are contiguous"
+    split_at = bounds[0][1]
+    assert abs(split_at - bounds[1][1] / 2) <= 750, "the change point sits near the middle"
+    assert len(runtime.transcribe_calls) == 2
+    assert all(event.details.get("overlap") is None for event in finals)
+    assert len([e for e in events if e.type is SpeechEventType.SPEAKER_RESULT]) == 2
+
+
+def test_long_utterance_without_a_detectable_change_stays_one_ambiguous_turn():
+    """A constant embedding gives no change point: keep one turn and flag it as overlap."""
+    runtime = FakeRuntime(vad_outputs=[[[0, -1]], [[-1, 6000]]])
+    session = SpeechSession("session-flat", 16000, runtime, chunk_size_ms=200)
+    session.push_pcm(_pcm(3000, value=1))
+
+    events = session.push_pcm(_pcm(3000, value=1))
+
+    finals = [event for event in events if event.type is SpeechEventType.ASR_FINAL]
+    assert len(finals) == 1
+    assert finals[0].start_ms == 0
+    assert finals[0].details.get("overlap") is True
+    assert len(runtime.transcribe_calls) == 1
+
+
+def test_short_utterance_never_pays_for_segmentation():
+    class ExplodingSplitter:
+        def split(self, *args, **kwargs):  # pragma: no cover - must not be called
+            raise AssertionError("the splitter must not run for a short utterance")
+
+    runtime = FakeRuntime(vad_outputs=[[[0, -1]], [[-1, 1200]]])
+    session = SpeechSession(
+        "session-short", 16000, runtime, chunk_size_ms=200, turn_splitter=ExplodingSplitter()
+    )
+    session.push_pcm(_pcm(1000, value=1))
+
+    events = session.push_pcm(_pcm(200, value=1))
+
+    finals = [event for event in events if event.type is SpeechEventType.ASR_FINAL]
+    assert [(event.start_ms, event.end_ms) for event in finals] == [(0, 1200)]
+    assert finals[0].details.get("overlap") is None
