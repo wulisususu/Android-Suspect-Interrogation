@@ -115,8 +115,18 @@ async function main() {
   // 1. fresh case through the real UI
   await send("Page.navigate", { url: `${BASE}/?audioInput=BROWSER` });
   await sleep(4000);
-  await evalJS(clickDeepest("新建询问"));
-  await sleep(2500);
+  const modalReady = `document.querySelector('[class*=modal], [role=dialog]') ? true : false`;
+  let opened = false;
+  for (let attempt = 0; attempt < 4 && !opened; attempt += 1) {
+    await evalJS(clickDeepest("新建询问"));
+    for (let wait = 0; wait < 6; wait += 1) {
+      if (await evalJS(modalReady)) { opened = true; break; }
+      await sleep(1500);
+    }
+    trace(`new-case modal attempt ${attempt + 1}: ${opened ? "open" : "not yet"}`);
+  }
+  rec("new-case identity modal opened", opened);
+  if (!opened) { finish(); return; }
   await evalJS(clickDeepest("手动录入"));
   await evalJS(`(() => {
     const set = (el, v) => { const s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; s.call(el, v);

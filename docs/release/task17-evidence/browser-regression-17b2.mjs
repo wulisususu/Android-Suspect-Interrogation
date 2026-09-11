@@ -124,16 +124,39 @@ async function main() {
     if (b.innerText.includes('开始审讯')) { b.click(); return 'session-started'; }
     return 'already-running:' + b.innerText.trim();
   })()`);
-  rec("interrogation session is available", started !== 'disabled' && started !== 'no-button', { started });
+  const sessionActive = await evalJS(`(() => {
+    const pause = [...document.querySelectorAll('button')].find((b) => b.getBoundingClientRect().width > 0 && /暂停|结束审讯/.test((b.innerText || '').trim()));
+    return pause ? true : false;
+  })()`);
+  rec("interrogation session is available",
+      started !== 'disabled' && started !== 'no-button' || sessionActive,
+      { started, sessionActive });
   await sleep(4000);
 
-  const recording = await evalJS(`(() => {
-    const b = [...document.querySelectorAll('button')].find((x) => x.getBoundingClientRect().width > 0 && /开始录音/.test((x.innerText || '').trim()));
-    if (!b) return 'no-record-button';
-    b.click();
-    return 'recording';
-  })()`);
+  // starting the session can send the workspace back to tab A, so re-open the record tab and
+  // poll for the button instead of assuming it is already rendered
+  let recording = 'no-record-button';  for (let attempt = 0; attempt < 3 && recording !== 'recording'; attempt += 1) {
+    await evalJS(clickDeepest("审讯记录"));
+    await sleep(2000);
+    for (let wait = 0; wait < 8; wait += 1) {
+      recording = await evalJS(`(() => {
+        const b = [...document.querySelectorAll('button')].find((x) => x.getBoundingClientRect().width > 0 && /开始录音/.test((x.innerText || '').trim()));
+        if (!b) return 'no-record-button';
+        b.click();
+        return 'recording';
+      })()`);
+      if (recording === 'recording') break;
+      await sleep(2000);
+    }
+    trace(`record button attempt ${attempt + 1}: ${recording}`);
+  }
   rec("realtime recording started through the UI", recording === 'recording', { recording });
+  if (recording !== 'recording') {
+    const buttons = await evalJS(`[...document.querySelectorAll('button')].filter((b) => b.getBoundingClientRect().width > 0).map((b) => b.innerText.trim().slice(0, 16))`);
+    trace("buttons on failure: " + JSON.stringify(buttons));
+    finish();
+    return;
+  }
 
   trace(`recording for ${SECONDS}s`);
   await sleep(SECONDS * 1000);
