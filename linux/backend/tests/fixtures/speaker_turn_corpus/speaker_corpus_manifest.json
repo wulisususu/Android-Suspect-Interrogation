@@ -8,7 +8,7 @@
    "sourceFile": "新錄音 21.m4a",
    "wav": "case-zhangming-16k.wav",
    "sha256": "81133fa420a8902a113e12c7278c1a613ae9bf12bee1b68f18ecaafb7e9d191c",
-   "durationMs": 179880,
+   "durationMs": 182613,
    "segments": 45,
    "clusters": {
     "GS01": {
@@ -26,14 +26,22 @@
       "AMBIGUOUS": 1
      }
     }
-   }
+   },
+   "sampleRate": 16000,
+   "channels": 1,
+   "derivation": "ffmpeg -i '新錄音 21.m4a' -ac 1 -ar 16000 -acodec pcm_s16le case-zhangming-16k.wav"
   },
   {
    "name": "suspect-enroll-zhangming",
    "kind": "SINGLE_SPEAKER_SUSPECT",
-   "derivedFrom": "dual-qa-21 (GS02 turns concatenated)",
-   "sha256": "81133fa420a8902a113e12c7278c1a613ae9bf12bee1b68f18ecaafb7e9d191c",
-   "note": "built by build_speaker_wav.py; used as browser fake-mic for enrollment"
+   "derivedFrom": "dual-qa-21, GS02 turns concatenated by build_speaker_wav.py",
+   "sha256": "25d6361ca581588f60d7a8dd8e4b91d930c5064becdf8b4321dc27d1cfb6797d",
+   "note": "single-speaker excerpt used as the browser fake-mic input for enrollment. The 185 s loop (sha256 6cf0eda1cfd27f31fa63d60269f3185f2fae835ba8caa8e13ffd7eaf710686d3) is required when Chrome must keep feeding audio for a whole enrollment; a 30 s file ends mid-capture and the browser channel closes.",
+   "durationMs": 30000,
+   "sampleRate": 16000,
+   "channels": 1,
+   "wav": "suspect-zhangming-only.wav",
+   "derivation": "python build_speaker_wav.py <segments.json> GS02 case-zhangming-16k.wav suspect-zhangming-only.wav 30 250"
   },
   {
    "name": "officer-enroll",
@@ -75,5 +83,6 @@
    "clockNote": "the browser session clock lagged the source file by ≈29s because the fake-mic file kept playing before 开始录音 was pressed; the same utterance is mixed-turn-src-99.8-105.2 once mapped to the source file",
    "policy": "OBSERVATION_ONLY"
   }
- ]
+ ],
+ "integrityNote": "sha256 values are pinned per tier; audio is materialised out of band and never committed. Verified 2026-09-11: dual-qa-21 matches the local 16 kHz derivation, suspect tier has its own hash (the first revision wrongly reused the dual-qa hash)."
 }
