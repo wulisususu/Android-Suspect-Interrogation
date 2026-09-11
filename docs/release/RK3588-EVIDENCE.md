@@ -317,7 +317,11 @@ $ MossWorkerClient health → status=ok, manifest_sha256=b735dc2d…, queue_dept
 
 **真 Chrome 回归（部署版，6/6 PASS）**：`regression-17a.mjs` 走真 UI 建案 → 断言语义：未注册显示"开始录制"；注册后**不再出现失败文案**且 readiness `suspectReady=true`；Gate 常驻并出现"重新录制"；点击后**不删库即可重新注册**。报告 `regression-17a.json`。
 
-**独立评审判定"需返工"**：Blocker B1 成立——`refreshVoiceprintState()` 抛错时 `closeBrowserCapture()` 永不被调用（catch 无 close；修复前是"先 close 再 refresh"，属 17A 引入的回归），导致麦克风常亮、`getUserMedia`/`AudioContext` 泄漏、capture 变不可达；且新测试恰好 mock 掉了唯一能暴露它的依赖。评审员用"预修复文件 + 新测试"反向验证：13 例失败（生命周期套件 8/8 全红），证明测试确实打在生产代码上。返工中（另含 `beginFinalize()` 在 try 外、`OfficerVoiceprintLibrary` 守卫、模式 chip 口径）。
+**独立评审判定"需返工"**：评审提出 Blocker B1（`refreshVoiceprintState()` 抛错时 `closeBrowserCapture()` 永不被调用 → 麦克风常亮 / `getUserMedia` 泄漏）与 I2（`beginFinalize()` 在 `try` 之外）、I3（`OfficerVoiceprintLibrary` 无 settling 守卫）、以及模式 chip 仍显示声明模式。评审员用"预修复文件 + 新测试"反向验证：13 例失败（生命周期套件 8/8 全红），证明新测试确实打在生产代码上。
+
+**评审争议裁决（2026-09-11，以源码为证）**：实现者反驳 B1 的机制描述；我导出 `26ea94da` 原文逐行核对后确认**实现者正确、评审员该条有误**——两个 `catch` 里**本来就有** `await closeBrowserCapture(capture)`，故"refresh 失败 → 麦克风常亮"的可达回归**并不存在**。真实情况：同一函数内有两类**早退分支**（`if (!isCurrentAttempt(attempt)) return`，位于 HTTP stop 之后与 refresh 之后）会跳过 close；返工把 close 移入 `finally` 使释放变为**无条件**（这才是该改动的真实价值），并锁定 `beginFinalize → http:stop → close` 顺序。**真正可复现的活跃缺陷**由实现者指出并给出 red 证据（`expected true to be false`）：`beginFinalize()` 位于 `try` 之外，抛错则 `voiceprintBusy` 永久 `true`、录制按钮永久禁用。返工提交 `4b750a5b`，我复核：`npx vitest run` 35 文件 / 165 例全绿、`vue-tsc` exit 0、`finally` 位于 253/302/354 行并覆盖 249/283/285/298/350 的早退分支。
+
+**方法论要点**：对抗性验证必须**双向**——独立评审也会给出错误结论，实现者有权反驳，最终以源码证据裁决；双方都留下可复核的原始输出，才谈得上"证据"。
 
 ### 17B-1 effective speaker mode（已提交，待产线部署）
 
