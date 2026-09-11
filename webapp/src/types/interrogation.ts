@@ -248,6 +248,15 @@ export interface TemporaryAsrFragment {
   modelVersion?: string | null
   recognitionEvidence?: AsrRecognitionEvidence | null
   recognitionRevisions: AsrRecognitionRevision[]
+  /**
+   * Task 17B-1: the mode the fragment was decided in, as published on ASR_FRAGMENT.
+   * A narrowed operating point (no calibrated margin) reports SUSPECT_ONLY with
+   * `recognitionModeDegraded === true` even when the session declared more.
+   */
+  declaredRecognitionMode?: VoiceRecognitionMode
+  effectiveRecognitionMode?: VoiceRecognitionMode
+  recognitionModeDegraded?: boolean
+  recognitionModeDegradedReason?: string | null
   audio: AsrAudioReference
   createdAt: number
   updatedAt: number
@@ -305,14 +314,23 @@ export interface VoiceprintReadiness extends VoiceprintBackendReadiness {
   marginConfigured?: boolean
   thresholdConfigured?: boolean
   /**
-   * `recognitionMode` is what the bound roles declare. The runtime can only honour it when
-   * the device carries a calibrated margin and threshold, so `effectiveRecognitionMode` is
-   * the mode that will really be enforced and `recognitionModeDegraded` says the two differ.
+   * `recognitionMode` is what the bound roles declare. The runtime narrows to suspect-only
+   * exactly when it has no calibrated margin, so `effectiveRecognitionMode` is the mode
+   * that will really be enforced and `recognitionModeDegraded` says the two differ.
+   *
+   * Task 17B-1: read `recognitionModeVerified` first. When it is false the backend could
+   * not check the operating point against the capture runtime's own resolver, so neither
+   * mode field is reported (both are `undefined`, not `false`) and neither "mode
+   * available" nor "not degraded" may be shown.
    */
   declaredRecognitionMode?: VoiceRecognitionMode
   effectiveRecognitionMode?: VoiceRecognitionMode
   recognitionModeDegraded?: boolean
   recognitionModeDegradedReason?: string | null
+  /** true only when the mode was resolved from the runtime's own operating point. */
+  recognitionModeVerified?: boolean
+  /** LIVE_CAPTURE | DEVICE_CALIBRATION | UNVERIFIED. */
+  recognitionModeVerificationSource?: string
 }
 
 export interface OfficerVoiceprint {

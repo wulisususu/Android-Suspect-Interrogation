@@ -5,6 +5,7 @@ import {
   fetchVoiceprintReadiness,
   generateCaseAiAnalysis,
   generateLlm,
+  normalizeTemporaryAsrFragment,
   recognizeOcrImage,
   revokeOfficerVoiceprint,
   startAsrCapture,
@@ -136,6 +137,62 @@ describe('application API runtime delegation', () => {
     expect(readiness.speakerThreshold).toBe(0.372)
     expect(readiness.marginConfigured).toBe(false)
     expect(readiness.thresholdConfigured).toBe(true)
+  })
+
+  it('keeps the unverified marker and never turns it into a mode claim', async () => {
+    const { adapter } = fakeAdapter()
+    adapter.invoke = (async <T,>(operation: RuntimeOperation) => {
+      if (operation !== 'voiceprint.readiness') throw new Error(`unexpected ${operation}`)
+      return {
+        suspectReady: true,
+        interrogatorReady: true,
+        recorderReady: false,
+        recognitionMode: 'SUSPECT_PLUS_INTERROGATOR',
+        canStart: true,
+        speakerMargin: 0.08,
+        marginConfigured: true,
+        declaredRecognitionMode: 'SUSPECT_PLUS_INTERROGATOR',
+        // The backend could not check the operating point against the runtime.
+        effectiveRecognitionMode: null,
+        recognitionModeDegraded: null,
+        recognitionModeDegradedReason: null,
+        recognitionModeVerified: false,
+        recognitionModeVerificationSource: 'UNVERIFIED',
+      } as T
+    }) as typeof adapter.invoke
+    resetRuntimeAdapterForTests(adapter)
+
+    const readiness = await fetchVoiceprintReadiness('case-1')
+
+    expect(readiness.recognitionModeVerified).toBe(false)
+    expect(readiness.recognitionModeVerificationSource).toBe('UNVERIFIED')
+    // "Unverified" must not be normalized into "effective = declaration" or
+    // "degraded = false": neither claim was proven.
+    expect(readiness.effectiveRecognitionMode).toBeUndefined()
+    expect(readiness.recognitionModeDegraded).toBeUndefined()
+    expect(readiness.declaredRecognitionMode).toBe('SUSPECT_PLUS_INTERROGATOR')
+    expect(readiness.speakerMargin).toBe(0.08)
+  })
+
+  it('keeps the mode an ASR fragment was decided in', () => {
+    const fragment = normalizeTemporaryAsrFragment({
+      fragmentId: 'FRAG-1',
+      caseId: 'case-1',
+      captureSessionId: 'CAP-1',
+      startedAtMs: 0,
+      endedAtMs: 1200,
+      rawText: '我是嫌疑人',
+      speaker: 'SUSPECT',
+      declaredRecognitionMode: 'SUSPECT_PLUS_INTERROGATOR',
+      effectiveRecognitionMode: 'SUSPECT_ONLY',
+      recognitionModeDegraded: true,
+      recognitionModeDegradedReason: 'MARGIN_CALIBRATION_MISSING',
+    })
+
+    expect(fragment.declaredRecognitionMode).toBe('SUSPECT_PLUS_INTERROGATOR')
+    expect(fragment.effectiveRecognitionMode).toBe('SUSPECT_ONLY')
+    expect(fragment.recognitionModeDegraded).toBe(true)
+    expect(fragment.recognitionModeDegradedReason).toBe('MARGIN_CALIBRATION_MISSING')
   })
 
   it('delegates freeze and signing through the selected runtime', async () => {

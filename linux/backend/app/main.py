@@ -286,6 +286,10 @@ def create_app(
     app.state.browser_audio_input = browser_audio_input
     app.state.speech_client = speech_client
     app.state.speaker_calibration_model_provider = current_model_identity
+    # The readiness / health / asr-status surfaces must resolve the speaker operating
+    # point with the same closure the capture service starts with, so a STALE DB
+    # calibration cannot be bypassed by an env margin (Task 17B-1).
+    app.state.speaker_calibration_resolver_factory = runtime_calibration_resolver_factory
     app.state.voiceprint_capture = (
         AudioCaptureService(
             manager,

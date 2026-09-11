@@ -9,9 +9,9 @@ from typing import Any
 from fastapi import APIRouter, Request
 
 from .ai.settings import AISettings
-from .ai.speech.calibration import SpeakerCalibration
 from .runtime_settings import RuntimeSettings
 from .services.moss_transcription import MossTranscriptionService
+from .services.speaker_mode import SpeakerModeConfig, resolve_runtime_speaker_mode
 
 
 router = APIRouter(prefix="/health", tags=["health"])
@@ -99,27 +99,47 @@ def _ai_capability(settings: RuntimeSettings) -> dict[str, Any]:
     return _result("READY", required=False, detail="local model assets are present")
 
 
-def _calibration_capability(supervisor: Any | None) -> dict[str, Any]:
-    if supervisor is not None:
-        threshold = getattr(supervisor, "speaker_accept_threshold", None)
-        margin = getattr(supervisor, "speaker_margin", None)
-        configured = threshold is not None and margin is not None
-    else:
-        calibration = SpeakerCalibration.from_env()
-        threshold = calibration.accept_threshold
-        margin = calibration.margin
-        configured = calibration.configured
+def _calibration_capability(supervisor: Any | None, app_state: Any | None = None) -> dict[str, Any]:
+    """Report the device speaker calibration through the shared rule.
 
+    Task 17B-1: this used to read ``speaker_accept_threshold``/``speaker_margin`` off
+    the AI supervisor (or the env). On a device whose DB calibration went STALE the
+    supervisor still advertises env values while the runtime resolves ``margin=None``
+    and narrows to suspect-only, so the capability lied. The operating point now comes
+    from the same resolver the capture runtime starts with; when that cannot be
+    reached the capability is reported as UNVERIFIED, never as READY.
+    """
+
+    if app_state is not None:
+        config = resolve_runtime_speaker_mode(app_state=app_state)
+    else:
+        # Request-less callers (unit probes, CLI) know nothing about the runtime.
+        config = SpeakerModeConfig.from_sources([supervisor])
+
+    if not config.verified:
+        return _result(
+            "UNVERIFIED",
+            required=False,
+            detail="speaker operating point could not be resolved against the capture runtime",
+            thresholdConfigured=config.threshold_configured,
+            marginConfigured=config.margin_configured,
+            verified=False,
+            verificationSource=config.verification_source,
+        )
+
+    configured = config.margin_configured
     return _result(
         "READY" if configured else "NOT_CONFIGURED",
         required=False,
         detail=(
-            "speaker threshold and margin are calibrated"
+            "speaker margin is calibrated; the threshold is informational"
             if configured
-            else "speaker threshold and margin require RK3588 microphone calibration"
+            else "speaker margin requires RK3588 microphone calibration"
         ),
-        thresholdConfigured=threshold is not None,
-        marginConfigured=margin is not None,
+        thresholdConfigured=config.threshold_configured,
+        marginConfigured=config.margin_configured,
+        verified=True,
+        verificationSource=config.verification_source,
     )
 
 
@@ -217,7 +237,9 @@ def readiness_snapshot(request: Request | None = None) -> dict[str, Any]:
     settings = RuntimeSettings()
     supervisor = None
     manager = None
+    app_state = None
     if request is not None:
+        app_state = request.app.state
         supervisor = getattr(request.app.state, "ai_supervisor", None)
         manager = getattr(request.app.state, "hardware_manager", None)
 
@@ -225,7 +247,7 @@ def readiness_snapshot(request: Request | None = None) -> dict[str, Any]:
         "storage": _storage_check(settings),
         "database": _database_check(settings),
     }
-    calibration = _calibration_capability(supervisor)
+    calibration = _calibration_capability(supervisor, app_state)
     capabilities = {
         "hardware": _hardware_capability(),
         "ai": _ai_capability(settings),
@@ -271,9 +293,16 @@ def runtime_capabilities(request: Request) -> dict[str, Any]:
     asr_state = _runtime_capability_state(asr["state"])
     microphone = health["audioCapture"]
     microphone_state = _runtime_capability_state(microphone["state"])
-    recording_state = asr_state if asr_state != "AVAILABLE" else (
-        "AVAILABLE" if calibration["state"] == "READY" else "NOT_CONFIGURED"
-    )
+    if asr_state != "AVAILABLE":
+        recording_state = asr_state
+    elif calibration["state"] == "READY":
+        recording_state = "AVAILABLE"
+    elif calibration["state"] == "UNVERIFIED":
+        # Never advertise continuous recording as available while the speaker
+        # operating point cannot be checked against the runtime (Task 17B-1).
+        recording_state = "UNVERIFIED"
+    else:
+        recording_state = "NOT_CONFIGURED"
     recording_reason = (
         "offline ASR and calibrated speaker verification are ready"
         if recording_state == "AVAILABLE"

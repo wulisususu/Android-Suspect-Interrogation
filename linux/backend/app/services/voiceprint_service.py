@@ -16,13 +16,7 @@ from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
 from app.repositories import sessions as session_repo
 from app.repositories import voiceprints as voiceprint_repo
-from app.services.speaker_mode import (
-    MODE_DECLARED_KEY,
-    MODE_DEGRADED_KEY,
-    MODE_EFFECTIVE_KEY,
-    MODE_REASON_KEY,
-    SpeakerModeConfig,
-)
+from app.services.speaker_mode import SpeakerModeConfig
 
 
 _SAMPLE_RATE = 16000
@@ -124,20 +118,13 @@ class VoiceprintService:
     ) -> dict:
         """Declared/effective recognition mode plus the operating point behind it."""
         if speaker_mode is None:
-            # Nothing was injected, so no operating point is known: report the
-            # declaration untouched, keep the runtime fields null rather than
-            # fabricating a margin, and never claim a degradation we cannot prove.
-            return {
-                "speakerMargin": None,
-                "speakerThreshold": None,
-                "thresholdSource": None,
-                "marginConfigured": False,
-                "thresholdConfigured": False,
-                MODE_DECLARED_KEY: declared_mode,
-                MODE_EFFECTIVE_KEY: declared_mode,
-                MODE_DEGRADED_KEY: False,
-                MODE_REASON_KEY: None,
-            }
+            # Nothing was injected, so no operating point is known. The declaration is
+            # still reported, but the effective mode and the degradation flag stay
+            # null (``recognitionModeVerified=False``): claiming the declaration as
+            # effective *and* "not degraded" is the silent lie this rule removes.
+            return SpeakerModeConfig(
+                margin=None, threshold=None, threshold_source=None
+            ).as_readiness_fields(declared_mode)
         return speaker_mode.as_readiness_fields(declared_mode)
 
     def enroll_suspect(self, case_id: str, pcm: bytes, actor_id: str | None = None) -> dict:

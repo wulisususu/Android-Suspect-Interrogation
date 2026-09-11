@@ -466,6 +466,122 @@ def test_capture_failure_still_finalizes_worker_stops_alsa_and_marks_db_stopped(
     engine.dispose()
 
 
+# --- contract: declared_mode_for_roles / runtime binding roles ------------------
+
+
+def test_declared_mode_for_roles_requires_the_suspect_reference():
+    """The suspect reference is unconditionally bound, so a set without it is a bug.
+
+    Making this loud is the tightening: ``decision_roles`` always contains SUSPECT, so
+    a bound set that omitted it would declare one mode and enforce nothing.
+    """
+    import pytest
+
+    with pytest.raises(ValueError):
+        AsrCaptureService.declared_mode_for_roles({SpeakerRole.INTERROGATOR})
+
+
+def test_declared_mode_for_roles_ignores_values_that_are_not_speaker_roles():
+    assert AsrCaptureService.declared_mode_for_roles({SpeakerRole.SUSPECT}) == "SUSPECT_ONLY"
+    # A string is not a binding, exactly like in the candidate narrowing.
+    assert (
+        AsrCaptureService.declared_mode_for_roles({SpeakerRole.SUSPECT, "INTERROGATOR"})
+        == "SUSPECT_ONLY"
+    )
+    assert (
+        AsrCaptureService.declared_mode_for_roles(
+            {SpeakerRole.SUSPECT, SpeakerRole.INTERROGATOR}
+        )
+        == SUSPECT_PLUS_INTERROGATOR
+    )
+
+
+def test_start_seeds_the_declared_mode_without_a_second_database_session(tmp_path: Path, monkeypatch):
+    """``start()`` must not open an extra session just to seed the declared mode."""
+    engine, factory, case_id, _ = _seed_database(tmp_path, bind_interrogator=True)
+    sessions: list[int] = []
+    closed: list[int] = []
+    original = factory
+
+    class RecordingFactory:
+        def __call__(self):
+            sessions.append(len(sessions))
+            session = original()
+            closed.append(len(closed))
+            return session
+
+    service = AsrCaptureService(
+        session_factory=RecordingFactory(),
+        device_manager=FakeDeviceManager([]),
+        ai_supervisor=FakeSpeechSupervisor(),
+        publish_event=lambda *_args: None,
+        read_timeout=0.01,
+    )
+    started = service.start(case_id)
+    try:
+        assert started["declaredRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
+        assert len(sessions) == 1, "start() opened more than one session"
+    finally:
+        service.stop(case_id)
+        engine.dispose()
+
+
+# --- contract: the published ASR_FRAGMENT payload -------------------------------
+
+
+def test_published_fragment_payload_carries_the_shared_mode_rule(tmp_path: Path):
+    """Task 17B-1: every broadcast fragment names the mode it was decided in."""
+    engine, factory, case_id, session_id = _seed_database(tmp_path, bind_interrogator=True)
+    chunks = [b"\x01\x00" * 1600, b"\x02\x00" * 1600]
+
+    calibrated_events = EventCollector()
+    calibrated = AsrCaptureService(
+        session_factory=factory,
+        device_manager=FakeDeviceManager(list(chunks)),
+        ai_supervisor=FakeSpeechSupervisor(),
+        publish_event=calibrated_events,
+        sample_rate=16_000,
+        read_timeout=0.01,
+    )
+    calibrated.start(case_id)
+    _wait_until(lambda: bool(calibrated_events.events))
+    calibrated.stop(case_id)
+
+    degraded_events = EventCollector()
+    degraded_supervisor = FakeSpeechSupervisor()
+    degraded_supervisor.speaker_margin = None
+    degraded_supervisor.speaker_threshold_source = "MODEL_BASELINE"
+    degraded = AsrCaptureService(
+        session_factory=factory,
+        device_manager=FakeDeviceManager(list(chunks)),
+        ai_supervisor=degraded_supervisor,
+        publish_event=degraded_events,
+        sample_rate=16_000,
+        read_timeout=0.01,
+    )
+    degraded.start(case_id)
+    _wait_until(lambda: bool(degraded_events.events))
+    degraded.stop(case_id)
+
+    for events, expected_mode, expected_degraded in (
+        (calibrated_events, SUSPECT_PLUS_INTERROGATOR, False),
+        (degraded_events, "SUSPECT_ONLY", True),
+    ):
+        event_session, event_name, payload = events.events[0]
+        assert event_session == session_id
+        assert event_name == "ASR_FRAGMENT"
+        assert payload["declaredRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
+        assert payload["effectiveRecognitionMode"] == expected_mode
+        assert payload["recognitionModeDegraded"] is expected_degraded
+        assert payload["recognitionModeDegradedReason"] == (
+            DEGRADED_REASON_MARGIN_CALIBRATION_MISSING if expected_degraded else None
+        )
+        assert payload["speakerMargin"] == (
+            None if expected_degraded else 0.10
+        )
+    engine.dispose()
+
+
 def test_capture_starts_with_model_baseline_when_device_calibration_is_missing(tmp_path: Path):
     engine, factory, case_id, _ = _seed_database(tmp_path)
     device = FakeDeviceManager([])

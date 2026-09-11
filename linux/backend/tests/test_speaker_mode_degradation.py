@@ -18,17 +18,19 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.ai.speech.calibration import MODEL_BASELINE_THRESHOLD
 from app.database.models import Case
-from app.database.session import init_database, make_engine
+from app.database.session import init_database, make_engine, make_session_factory
 from app.hardware_gateway.mock import MockHardwareGateway
 from app.main import create_app
 from app.repositories import sessions as session_repo
+from app.repositories import speaker_calibrations as calibration_repo
 from app.services.asr_capture_service import AsrCaptureService
 from app.services.speaker_mode import (
     DEGRADED_REASON_MARGIN_CALIBRATION_MISSING,
-    DEGRADED_REASON_THRESHOLD_NOT_CONFIGURED,
     SUSPECT_ONLY,
     SUSPECT_PLUS_INTERROGATOR,
+    VERIFICATION_DEVICE_CALIBRATION,
     SpeakerModeConfig,
 )
 from app.services.speaker_policy import SpeakerRole
@@ -102,16 +104,132 @@ class FakeSupervisor:
         self.speaker_threshold_source = (
             "DEVICE_CALIBRATED" if threshold is not None else "MODEL_BASELINE"
         )
+        self.opened: list[str] = []
+        self.pushed: list[bytes] = []
+
+    def open_speech_session(self, session_id: str, *, sample_rate: int = SAMPLE_RATE, speaker_backend=None):
+        self.opened.append(session_id)
+        return {"session_id": session_id, "sample_rate": sample_rate}
+
+    def push_speech_pcm(self, session_id: str, pcm: bytes):
+        self.pushed.append(bytes(pcm))
+        return []
+
+    def finalize_speech_session(self, session_id: str):
+        return []
+
+    def close_speech_session(self, session_id: str) -> None:
+        pass
 
     def shutdown(self) -> None:
         pass
 
 
-def _calibrated(margin: float | None, threshold: float | None = 0.372) -> SpeakerModeConfig:
+class FakeDeviceManager:
+    """Idle microphone: the capture loop only ever reads silence."""
+
+    def __init__(self) -> None:
+        self.started = 0
+        self.stopped = 0
+
+    def start_record(self) -> None:
+        self.started += 1
+
+    def read_audio_frames(self, timeout: float = 0.01) -> bytes:
+        import time
+
+        time.sleep(min(timeout, 0.005))
+        return b""
+
+    def stop_record(self) -> None:
+        self.stopped += 1
+
+
+class CaseIdOnlyCaptureService:
+    """Mirrors ``SourceAwareAsrCaptureService.status(self, case_id: str)``.
+
+    ``case_id`` is a *required* positional parameter, exactly like production. A
+    caller that invokes ``status()`` with no argument gets a ``TypeError``, so this
+    fake can never hide the no-argument call the readiness route used to make.
+    """
+
+    def __init__(self, payload: dict | None = None) -> None:
+        self.payload = dict(payload or {})
+        self.calls: list[str] = []
+
+    def status(self, case_id: str) -> dict:
+        self.calls.append(case_id)
+        payload = dict(self.payload)
+        payload.setdefault("caseId", case_id)
+        return payload
+
+
+def _insert_stale_calibration(database_url: str) -> None:
+    """A real device calibration row whose fingerprints no longer match.
+
+    This is the review's divergence reproducer: once DB calibration history exists,
+    ``resolve_speaker_calibration`` refuses to fall back to env values, so a STALE
+    lifecycle state resolves to ``MODEL_BASELINE`` with ``margin=None``.
+    """
+    engine = make_engine(database_url)
+    try:
+        factory = make_session_factory(engine)
+        with factory() as db:
+            calibration_repo.create_calibration(
+                db,
+                status_at_creation="VALID",
+                threshold=0.55,
+                margin=0.09,
+                far=0.01,
+                frr=0.02,
+                eer=0.015,
+                eer_threshold=0.55,
+                eer_far=0.01,
+                eer_frr=0.02,
+                genuine_trial_count=40,
+                impostor_trial_count=40,
+                officer_count=3,
+                sample_count=9,
+                corpus_digest="stale-corpus",
+                algorithm_version="speaker-calibration-v1",
+                speaker_backend_key="eres2net_large",
+                speaker_model_id="eres2net_large",
+                speaker_model_version="retired-model",
+                speaker_model_fingerprint="f" * 64,
+                audio_source="ALSA",
+                microphone_id="retired-mic",
+                microphone_name="retired mic",
+                microphone_fingerprint="e" * 64,
+                microphone_fingerprint_certainty="HIGH",
+            )
+            db.commit()
+    finally:
+        engine.dispose()
+
+
+def _app(tmp_path: Path, monkeypatch, supervisor, *, db_name: str = "degradation-api.sqlite3"):
+    """App whose lifespan builds the given supervisor (the real one owns the margins)."""
+    monkeypatch.setattr("app.main._build_supervisor", lambda: supervisor)
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / db_name}",
+        hardware_gateway=MockHardwareGateway(simulated=False),
+    )
+    app.state.speech_client = FakeSpeechClient()
+    app.state.voiceprint_capture = FakeCaptureService()
+    return app
+
+
+def _calibrated(
+    margin: float | None,
+    threshold: float | None = 0.372,
+    *,
+    verification_source: str = VERIFICATION_DEVICE_CALIBRATION,
+) -> SpeakerModeConfig:
     return SpeakerModeConfig(
         margin=margin,
         threshold=threshold,
         threshold_source="DEVICE_CALIBRATED" if threshold is not None else "MODEL_BASELINE",
+        verification_source=verification_source,
     )
 
 
@@ -132,61 +250,123 @@ def _bound_case(tmp_path: Path, name: str):
     return engine, db
 
 
-def _runtime_decision_role(
-    *, margin: float | None, candidates: list[dict], enabled: set[SpeakerRole]
+def test_readiness_is_unverified_when_the_live_capture_status_cannot_be_read(tmp_path: Path, monkeypatch):
+    """A capture whose status raised may be running on a frozen snapshot.
+
+    The device resolver then describes the *next* capture, not the running one, so the
+    answer must be "unverified" rather than an authoritative "not degraded".
+    """
+    monkeypatch.setenv("SUSPECT_SPEAKER_ACCEPT_THRESHOLD", "0.55")
+    monkeypatch.setenv("SUSPECT_SPEAKER_MARGIN", "0.08")
+    app = _app(tmp_path, monkeypatch, FakeSupervisor(margin=0.08), db_name="status-failure.sqlite3")
+
+    class ExplodingStatus:
+        def status(self, case_id: str):
+            raise RuntimeError("simulated capture status failure")
+
+    with TestClient(app) as client:
+        case_id = _bind_interrogator(client)
+        app.state.asr_capture_service = ExplodingStatus()
+        data = _payload(client.get(f"/api/v1/cases/{case_id}/voiceprints/readiness"))
+
+    assert data["recognitionModeVerified"] is False
+    assert data["recognitionModeVerificationSource"] == "UNVERIFIED"
+    assert data["effectiveRecognitionMode"] is None
+    assert data["recognitionModeDegraded"] is None
+    # The resolver still ran, so the values it produced are shown as information only.
+    assert data["speakerMargin"] == 0.08
+    assert data["thresholdSource"] == "LEGACY_ENV"
+
+
+# --- contract: readiness vs a real runtime capture, per device state ------------
+
+
+@pytest.mark.parametrize(
+    ("state", "env", "stale_db_calibration", "expected_mode", "expected_role"),
+    [
+        ("margin_present", (0.55, 0.08), False, SUSPECT_PLUS_INTERROGATOR, SpeakerRole.INTERROGATOR),
+        ("no_margin", None, False, SUSPECT_ONLY, SpeakerRole.SUSPECT),
+        ("stale_db_hides_the_env_margin", (0.55, 0.08), True, SUSPECT_ONLY, SpeakerRole.SUSPECT),
+    ],
+)
+def test_readiness_and_a_real_capture_start_agree_for_each_device_state(
+    tmp_path: Path,
+    monkeypatch,
+    state: str,
+    env: tuple[float, float] | None,
+    stale_db_calibration: bool,
+    expected_mode: str,
+    expected_role: SpeakerRole,
 ):
-    """The decision the capture runtime really makes for this operating point."""
-    service = AsrCaptureService(
-        session_factory=None,
-        device_manager=None,
-        ai_supervisor=None,
+    """The two sides are driven independently, from one device state.
+
+    * readiness is resolved by the route through the runtime's own calibration
+      resolver (``app.state.speaker_calibration_resolver_factory``);
+    * the runtime side is a real ``AsrCaptureService.start()`` plus the decision that
+      operating point produces for a clear interrogator win.
+
+    The supervisor deliberately advertises a margin in every case, so a test that fed
+    both sides the supervisor's numbers would pass while the product still lied.
+    """
+    if env is None:
+        monkeypatch.delenv("SUSPECT_SPEAKER_ACCEPT_THRESHOLD", raising=False)
+        monkeypatch.delenv("SUSPECT_SPEAKER_MARGIN", raising=False)
+    else:
+        monkeypatch.setenv("SUSPECT_SPEAKER_ACCEPT_THRESHOLD", str(env[0]))
+        monkeypatch.setenv("SUSPECT_SPEAKER_MARGIN", str(env[1]))
+
+    db_name = f"contract-{state}.sqlite3"
+    database_url = f"sqlite:///{tmp_path / db_name}"
+    supervisor = FakeSupervisor(margin=0.08)
+    app = _app(tmp_path, monkeypatch, supervisor, db_name=db_name)
+    if stale_db_calibration:
+        _insert_stale_calibration(database_url)
+
+    with TestClient(app) as client:
+        case_id = _bind_interrogator(client)
+        readiness = _payload(client.get(f"/api/v1/cases/{case_id}/voiceprints/readiness"))
+
+    runtime = AsrCaptureService(
+        session_factory=app.state.session_factory,
+        device_manager=FakeDeviceManager(),
+        ai_supervisor=supervisor,
         publish_event=lambda *_args: None,
+        calibration_resolver=app.state.speaker_calibration_resolver_factory("ALSA"),
+        read_timeout=0.01,
     )
-    return service._decide_with_operating_point(
-        candidates=candidates,
-        enabled_roles=enabled,
-        threshold=0.372,
-        margin=margin,
-        usable_duration_ms=1200,
-        overlap=False,
-    ).role
-
-
-# --- contract: UI declaration vs runtime decision -------------------------------
-
-
-@pytest.mark.parametrize("margin", [0.08, None])
-def test_readiness_effective_mode_matches_the_runtime_decision_roles(tmp_path: Path, margin):
-    engine, db = _bound_case(tmp_path, f"contract-{margin}.sqlite3")
+    started = runtime.start(case_id)
     try:
-        service = VoiceprintService(db, speech_client=FakeSpeechClient())
-        effective = service.readiness("CASE-1", speaker_mode=_calibrated(margin))[
-            "effectiveRecognitionMode"
-        ]
+        assert started["speakerMargin"] == readiness["speakerMargin"], (
+            f"{state}: readiness and the runtime resolved different margins"
+        )
+        assert started["speakerThreshold"] == readiness["speakerThreshold"]
+        assert started["thresholdSource"] == readiness["thresholdSource"]
+        assert started["effectiveRecognitionMode"] == readiness["effectiveRecognitionMode"]
+        assert started["recognitionModeDegraded"] == readiness["recognitionModeDegraded"]
+        assert readiness["recognitionModeVerified"] is True
 
-        # The runtime is fed the same margin/threshold pair. A clear interrogator win
-        # must be honoured exactly when readiness claims the officer role is live.
-        enabled = {SpeakerRole.SUSPECT, SpeakerRole.INTERROGATOR}
-        candidates = [
-            {"role": SpeakerRole.SUSPECT, "score": 0.60, "speaker_id": "s", "speaker_name": "张某"},
-            {
-                "role": SpeakerRole.INTERROGATOR,
-                "score": 0.95,
-                "speaker_id": "P-001",
-                "speaker_name": "主审张警官",
-            },
-        ]
-        role = _runtime_decision_role(margin=margin, candidates=candidates, enabled=enabled)
-
-        if margin is not None:
-            assert effective == SUSPECT_PLUS_INTERROGATOR
-            assert role is SpeakerRole.INTERROGATOR
-        else:
-            assert effective == SUSPECT_ONLY
-            assert role is SpeakerRole.SUSPECT
+        role = runtime._decide_with_operating_point(
+            candidates=[
+                {"role": SpeakerRole.SUSPECT, "score": 0.60, "speaker_id": "s", "speaker_name": "张某"},
+                {
+                    "role": SpeakerRole.INTERROGATOR,
+                    "score": 0.95,
+                    "speaker_id": "P-001",
+                    "speaker_name": "主审张警官",
+                },
+            ],
+            enabled_roles={SpeakerRole.SUSPECT, SpeakerRole.INTERROGATOR},
+            threshold=started["speakerThreshold"],
+            margin=started["speakerMargin"],
+            usable_duration_ms=1200,
+            overlap=False,
+        ).role
     finally:
-        db.close()
-        engine.dispose()
+        runtime.stop(case_id)
+
+    assert readiness["effectiveRecognitionMode"] == expected_mode
+    assert role is expected_role
+    assert supervisor.speaker_margin == 0.08  # an unproven margin that must be ignored
 
 
 def test_readiness_and_runtime_both_degrade_when_margin_is_missing(tmp_path: Path):
@@ -200,10 +380,13 @@ def test_readiness_and_runtime_both_degrade_when_margin_is_missing(tmp_path: Pat
         assert uncalibrated["recognitionModeDegraded"] is True
         assert uncalibrated["recognitionModeDegradedReason"] == DEGRADED_REASON_MARGIN_CALIBRATION_MISSING
 
+        # Task 17B-1 rework: the threshold is informational. A missing threshold must
+        # NOT be reported as a degradation the runtime does not perform.
         missing_threshold = service.readiness("CASE-1", speaker_mode=_calibrated(0.08, threshold=None))
-        assert missing_threshold["effectiveRecognitionMode"] == SUSPECT_ONLY
-        assert missing_threshold["recognitionModeDegraded"] is True
-        assert missing_threshold["recognitionModeDegradedReason"] == DEGRADED_REASON_THRESHOLD_NOT_CONFIGURED
+        assert missing_threshold["effectiveRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
+        assert missing_threshold["recognitionModeDegraded"] is False
+        assert missing_threshold["recognitionModeDegradedReason"] is None
+        assert missing_threshold["thresholdConfigured"] is False
 
         calibrated = service.readiness("CASE-1", speaker_mode=_calibrated(0.08))
         assert calibrated["effectiveRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
@@ -243,7 +426,12 @@ def test_readiness_without_a_suspect_row_reports_none_metrics_instead_of_failing
         db.commit()
         readiness = VoiceprintService(db, speech_client=FakeSpeechClient()).readiness(
             "CASE-1",
-            speaker_mode=SpeakerModeConfig(margin=None, threshold=None, threshold_source=None),
+            speaker_mode=SpeakerModeConfig(
+                margin=None,
+                threshold=None,
+                threshold_source=None,
+                verification_source=VERIFICATION_DEVICE_CALIBRATION,
+            ),
         )
         assert readiness["suspectReady"] is False
         assert readiness["enrollmentQuality"] is None
@@ -264,33 +452,31 @@ def test_readiness_without_a_suspect_row_reports_none_metrics_instead_of_failing
         engine.dispose()
 
 
-def test_readiness_without_runtime_config_still_reports_the_declared_mode(tmp_path: Path):
-    """No injection (e.g. the enrollment-start guard) must not invent a degradation."""
+def test_readiness_without_runtime_config_reports_an_unverified_mode(tmp_path: Path):
+    """No injection (e.g. the enrollment-start guard) must not claim a mode.
+
+    ``VoiceprintService.readiness`` without a resolved operating point knows the
+    declaration only. Reporting the declaration as effective *and* "not degraded"
+    is exactly the silent lie this task removes, so both fields are ``None`` and
+    ``recognitionModeVerified`` is ``False``.
+    """
     engine, db = _bound_case(tmp_path, "no-config.sqlite3")
     try:
         readiness = VoiceprintService(db, speech_client=FakeSpeechClient()).readiness("CASE-1")
         assert readiness["speakerMargin"] is None
-        assert readiness["effectiveRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
-        assert readiness["recognitionModeDegraded"] is False
+        assert readiness["recognitionMode"] == SUSPECT_PLUS_INTERROGATOR
+        assert readiness["declaredRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
+        assert readiness["effectiveRecognitionMode"] is None
+        assert readiness["recognitionModeDegraded"] is None
         assert readiness["recognitionModeDegradedReason"] is None
+        assert readiness["recognitionModeVerified"] is False
+        assert readiness["recognitionModeVerificationSource"] == "UNVERIFIED"
     finally:
         db.close()
         engine.dispose()
 
 
 # --- API injection: runtime speaker config reaches the service layer ------------
-
-
-def _app(tmp_path: Path, monkeypatch, supervisor):
-    """App whose lifespan builds the given supervisor (the real one owns the margins)."""
-    monkeypatch.setattr("app.main._build_supervisor", lambda: supervisor)
-    app = create_app(
-        database_url=f"sqlite:///{tmp_path / 'degradation-api.sqlite3'}",
-        hardware_gateway=MockHardwareGateway(simulated=False),
-    )
-    app.state.speech_client = FakeSpeechClient()
-    app.state.voiceprint_capture = FakeCaptureService()
-    return app
 
 
 def _payload(response):
@@ -335,6 +521,9 @@ def _bind_interrogator(client: TestClient) -> str:
 
 
 def test_readiness_endpoint_reports_degradation_when_the_device_has_no_margin(tmp_path: Path, monkeypatch):
+    """No env margin and no DB calibration anywhere -> the runtime degrades."""
+    monkeypatch.delenv("SUSPECT_SPEAKER_MARGIN", raising=False)
+    monkeypatch.delenv("SUSPECT_SPEAKER_ACCEPT_THRESHOLD", raising=False)
     app = _app(tmp_path, monkeypatch, FakeSupervisor(margin=None))
     with TestClient(app) as client:
         case_id = _bind_interrogator(client)
@@ -350,9 +539,13 @@ def test_readiness_endpoint_reports_degradation_when_the_device_has_no_margin(tm
     assert data["recognitionModeDegradedReason"] == DEGRADED_REASON_MARGIN_CALIBRATION_MISSING
     assert data["marginConfigured"] is False
     assert data["thresholdConfigured"] is True
-    assert data["speakerThreshold"] == 0.372
+    assert data["speakerThreshold"] == MODEL_BASELINE_THRESHOLD
     assert data["speakerMargin"] is None
-    assert data["thresholdSource"] == "DEVICE_CALIBRATED"
+    # The threshold provenance is informational and reported verbatim.
+    assert data["thresholdSource"] == "MODEL_BASELINE"
+    # The operating point came from the same resolver the runtime starts with.
+    assert data["recognitionModeVerified"] is True
+    assert data["recognitionModeVerificationSource"] == "DEVICE_CALIBRATION"
     # Enrollment metrics reach the condensed card from the same payload.
     assert data["enrollmentQuality"] == "GOOD"
     assert data["usableDurationMs"] == 24000
@@ -360,6 +553,9 @@ def test_readiness_endpoint_reports_degradation_when_the_device_has_no_margin(tm
 
 
 def test_readiness_endpoint_reports_the_calibrated_mode_without_degradation(tmp_path: Path, monkeypatch):
+    """A real device margin (through the runtime resolver's legacy-env fallback)."""
+    monkeypatch.setenv("SUSPECT_SPEAKER_ACCEPT_THRESHOLD", "0.55")
+    monkeypatch.setenv("SUSPECT_SPEAKER_MARGIN", "0.08")
     app = _app(tmp_path, monkeypatch, FakeSupervisor(margin=0.08))
     with TestClient(app) as client:
         case_id = _bind_interrogator(client)
@@ -371,3 +567,79 @@ def test_readiness_endpoint_reports_the_calibrated_mode_without_degradation(tmp_
     assert data["recognitionModeDegradedReason"] is None
     assert data["marginConfigured"] is True
     assert data["speakerMargin"] == 0.08
+    assert data["speakerThreshold"] == 0.55
+    assert data["thresholdSource"] == "LEGACY_ENV"
+    assert data["recognitionModeVerified"] is True
+
+
+# --- B1 regression: the readiness route must ask the capture service by case -----
+
+
+def test_readiness_route_passes_the_case_id_to_the_capture_service_status(tmp_path: Path, monkeypatch):
+    """``status(case_id)`` has no default argument in production.
+
+    ``SourceAwareAsrCaptureService.status`` requires the case id; calling it without
+    one raises ``TypeError``. The route used to swallow that exception and silently
+    fall back to the supervisor, so the live operating point was never reachable.
+    """
+    app = _app(tmp_path, monkeypatch, FakeSupervisor(margin=0.08))
+    capture = CaseIdOnlyCaptureService(
+        {
+            "caseId": "ignored",
+            "active": True,
+            "status": "CAPTURING",
+            "speakerThreshold": 0.372,
+            "thresholdSource": "MODEL_BASELINE",
+            "speakerMargin": 0.051,
+            "speakerMarginConfigured": True,
+            "calibrationId": "CAL-1",
+            "calibrationStatus": "VALID",
+        }
+    )
+    with TestClient(app) as client:
+        case_id = _bind_interrogator(client)
+        app.state.asr_capture_service = capture
+        data = _payload(client.get(f"/api/v1/cases/{case_id}/voiceprints/readiness"))
+
+    # The case id must travel: a no-argument call raises TypeError.
+    assert capture.calls == [case_id]
+    # ... and the live operating point must win over the supervisor's margin.
+    assert data["speakerMargin"] == 0.051
+    assert data["marginConfigured"] is True
+    assert data["speakerThreshold"] == 0.372
+    assert data["effectiveRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
+    assert data["recognitionModeDegraded"] is False
+    assert data["recognitionModeVerified"] is True
+    assert data["recognitionModeVerificationSource"] == "LIVE_CAPTURE"
+
+
+# --- honest "unverified": no live capture and no device calibration --------------
+
+
+def test_readiness_is_unverified_when_no_capture_and_no_device_calibration(tmp_path: Path, monkeypatch):
+    """A supervisor margin alone is not the runtime's operating point.
+
+    With no capture running and no device-calibration resolver the route must say
+    "unverified" instead of reporting the supervisor's margin as "not degraded".
+    """
+    app = _app(tmp_path, monkeypatch, FakeSupervisor(margin=0.08))
+    capture = CaseIdOnlyCaptureService({"active": False, "status": "IDLE"})
+    with TestClient(app) as client:
+        case_id = _bind_interrogator(client)
+        app.state.asr_capture_service = capture
+        app.state.speaker_calibration_resolver_factory = None
+        data = _payload(client.get(f"/api/v1/cases/{case_id}/voiceprints/readiness"))
+
+    assert capture.calls == [case_id]
+    assert data["recognitionModeVerified"] is False
+    assert data["recognitionModeVerificationSource"] == "UNVERIFIED"
+    # Neither the mode nor the degradation may be claimed ...
+    assert data["effectiveRecognitionMode"] is None
+    assert data["recognitionModeDegraded"] is None
+    assert data["recognitionModeDegradedReason"] is None
+    # ... while the declaration and the raw (unverified) values stay visible.
+    assert data["recognitionMode"] == SUSPECT_PLUS_INTERROGATOR
+    assert data["declaredRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
+    assert data["speakerMargin"] == 0.08
+    assert data["marginConfigured"] is True
+

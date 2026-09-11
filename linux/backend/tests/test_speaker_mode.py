@@ -8,19 +8,21 @@ has no calibrated margin. Both sides must be derived from the same rule so that
 
 from app.services.speaker_mode import (
     DEGRADED_REASON_MARGIN_CALIBRATION_MISSING,
-    DEGRADED_REASON_THRESHOLD_NOT_CONFIGURED,
     FULL,
+    MODEL_BASELINE_SOURCE,
     MODE_DECISION_KEY,
     MODE_DEGRADED_KEY,
     SUSPECT_ONLY,
     SUSPECT_PLUS_INTERROGATOR,
     SUSPECT_PLUS_RECORDER,
+    VERIFICATION_DEVICE_CALIBRATION,
     SpeakerModeConfig,
     decision_roles,
     mode_decision_detail,
     narrow_decision_roles,
     resolve_effective_recognition_mode,
 )
+from app.ai.speech.calibration import MODEL_BASELINE_THRESHOLD
 from app.services.speaker_policy import SpeakerRole
 
 
@@ -49,14 +51,47 @@ def test_missing_margin_degrades_any_multi_reference_mode_to_suspect_only():
     assert reason == DEGRADED_REASON_MARGIN_CALIBRATION_MISSING
 
 
-def test_missing_threshold_is_reported_even_when_margin_exists():
-    effective, reason = resolve_effective_recognition_mode(
+def test_missing_threshold_does_not_degrade_a_margin_calibrated_device():
+    """Task 17B-1 rework: the runtime narrows on ``margin is None`` only.
+
+    ``AsrCaptureService`` narrows its candidate references exactly when
+    ``persisted_margin is None``; the numeric threshold is passed straight to
+    ``decide_speaker`` and never selects the mode. Treating a missing/derived
+    threshold as a degradation here made readiness claim a narrowing the runtime
+    does not perform.
+    """
+    assert resolve_effective_recognition_mode(
         declared_mode=FULL,
         margin=0.08,
         threshold=None,
+    ) == (FULL, None)
+
+
+def test_model_baseline_threshold_is_informational_and_never_degrades():
+    """A model-baseline threshold is reported verbatim, not treated as missing."""
+    config = SpeakerModeConfig.from_sources(
+        [
+            {
+                "speakerThreshold": MODEL_BASELINE_THRESHOLD,
+                "thresholdSource": MODEL_BASELINE_SOURCE,
+                "speakerMargin": 0.08,
+            }
+        ],
+        verification_source=VERIFICATION_DEVICE_CALIBRATION,
     )
-    assert effective == SUSPECT_ONLY
-    assert reason == DEGRADED_REASON_THRESHOLD_NOT_CONFIGURED
+
+    assert config.threshold == MODEL_BASELINE_THRESHOLD
+    assert config.threshold_source == MODEL_BASELINE_SOURCE
+    assert config.threshold_configured is True
+    assert config.resolve(SUSPECT_PLUS_INTERROGATOR) == (SUSPECT_PLUS_INTERROGATOR, None)
+
+    fields = config.as_readiness_fields(SUSPECT_PLUS_INTERROGATOR)
+    assert fields["speakerThreshold"] == MODEL_BASELINE_THRESHOLD
+    assert fields["thresholdSource"] == MODEL_BASELINE_SOURCE
+    assert fields["thresholdConfigured"] is True
+    assert fields["effectiveRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
+    assert fields["recognitionModeDegraded"] is False
+    assert fields["recognitionModeDegradedReason"] is None
 
 
 def test_missing_margin_and_threshold_reports_the_margin_channel():
@@ -124,6 +159,39 @@ def test_narrowing_drops_unbound_officer_candidates_when_margin_is_missing():
     )
     assert kept_roles == {SpeakerRole.SUSPECT}
     assert [item["role"] for item in kept_candidates] == [SpeakerRole.SUSPECT]
+
+
+def test_narrowing_drops_candidates_whose_role_is_not_a_speaker_role_member():
+    """Only real enum roles participate; a string role carries no binding.
+
+    The historical runtime predicate compared ``item.get("role") is
+    SpeakerRole.SUSPECT``, which dropped string roles too. Accepting them here would
+    have let a raw string smuggle an officer attribution past the narrowing.
+    """
+    candidates = [
+        {"role": "SUSPECT", "score": 0.90, "speaker_id": "s", "speaker_name": "张某"},
+        {"role": SpeakerRole.INTERROGATOR, "score": 0.80, "speaker_id": "P-001", "speaker_name": "张警官"},
+    ]
+
+    kept_roles, kept_candidates = narrow_decision_roles(
+        declared_mode=SUSPECT_PLUS_INTERROGATOR,
+        margin=0.08,
+        threshold=0.372,
+        enabled_roles={SpeakerRole.SUSPECT, SpeakerRole.INTERROGATOR},
+        candidates=candidates,
+    )
+    assert kept_roles == {SpeakerRole.SUSPECT, SpeakerRole.INTERROGATOR}
+    assert [item["role"] for item in kept_candidates] == [SpeakerRole.INTERROGATOR]
+
+    degraded_roles, degraded_candidates = narrow_decision_roles(
+        declared_mode=SUSPECT_PLUS_INTERROGATOR,
+        margin=None,
+        threshold=0.372,
+        enabled_roles={SpeakerRole.SUSPECT, SpeakerRole.INTERROGATOR},
+        candidates=candidates,
+    )
+    assert degraded_roles == {SpeakerRole.SUSPECT}
+    assert degraded_candidates == []
 
 
 def test_narrowing_is_a_no_op_for_a_declared_suspect_only_session():

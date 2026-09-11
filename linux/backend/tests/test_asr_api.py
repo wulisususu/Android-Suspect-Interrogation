@@ -134,7 +134,13 @@ def test_asr_status_and_capture_routes_delegate_without_starting_global_audio(tm
     with TestClient(app) as client:
         status = client.get("/api/v1/asr/status").json()
         assert status["state"] == "AVAILABLE"
-        assert status["calibration"]["configured"] is True
+        # No device-calibration resolver is wired in this minimal app, so the
+        # supervisor's margin is not proof of anything: the calibration must be
+        # reported as unverified rather than as configured (Task 17B-1).
+        assert status["calibration"]["configured"] is False
+        assert status["calibration"]["verified"] is False
+        assert status["calibration"]["verificationSource"] == "UNVERIFIED"
+        assert status["calibration"]["margin"] == 0.10
 
         assert client.post("/api/v1/asr/start").status_code == 200
         assert capture.started == []
@@ -153,6 +159,67 @@ def test_asr_status_and_capture_routes_delegate_without_starting_global_audio(tm
 
         assert client.post("/api/v1/asr/stop").status_code == 200
         assert capture.shutdown_calls == 1
+    engine.dispose()
+
+
+def test_asr_status_calibration_comes_from_the_runtime_device_resolver(tmp_path):
+    """The single shared rule, fed by the resolver the capture runtime starts with."""
+    from app.services.speaker_calibration_runtime import ResolvedSpeakerCalibration
+
+    app, engine, _, _ = _app(tmp_path)
+    calls: list[str] = []
+
+    def resolver(db):
+        calls.append("resolved")
+        return ResolvedSpeakerCalibration(
+            calibration_id="CAL-9",
+            threshold=0.61,
+            margin=0.07,
+            source="DEVICE_CALIBRATED",
+            status="VALID",
+            speaker_model_fingerprint="a" * 64,
+            microphone_fingerprint="b" * 64,
+        )
+
+    app.state.speaker_calibration_resolver_factory = lambda source: resolver
+
+    with TestClient(app) as client:
+        status = client.get("/api/v1/asr/status").json()
+
+    assert calls == ["resolved"], "the DB/runtime resolver must be the source of truth"
+    assert status["calibration"]["configured"] is True
+    assert status["calibration"]["verified"] is True
+    assert status["calibration"]["verificationSource"] == "DEVICE_CALIBRATION"
+    assert status["calibration"]["margin"] == 0.07
+    assert status["calibration"]["threshold"] == 0.61
+    assert status["calibration"]["thresholdSource"] == "DEVICE_CALIBRATED"
+    engine.dispose()
+
+
+def test_asr_status_ignores_a_supervisor_margin_when_the_runtime_resolves_none(tmp_path):
+    """Env/supervisor margin + a non-VALID device calibration must degrade, not pass."""
+    from app.services.speaker_calibration_runtime import ResolvedSpeakerCalibration
+
+    app, engine, _, _ = _app(tmp_path)
+    app.state.speaker_calibration_resolver_factory = lambda source: (
+        lambda db: ResolvedSpeakerCalibration(
+            calibration_id=None,
+            threshold=0.372,
+            margin=None,
+            source="MODEL_BASELINE",
+            status="STALE_MODEL",
+            speaker_model_fingerprint=None,
+            microphone_fingerprint=None,
+        )
+    )
+
+    with TestClient(app) as client:
+        status = client.get("/api/v1/asr/status").json()
+
+    assert status["calibration"]["verified"] is True
+    assert status["calibration"]["configured"] is False
+    assert status["calibration"]["margin"] is None
+    assert status["calibration"]["thresholdSource"] == "MODEL_BASELINE"
     engine.dispose()
 
 

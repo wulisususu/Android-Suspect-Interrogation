@@ -15,6 +15,7 @@ from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
 from app.repositories import recognition_evidence as evidence_repo
 from app.services.message_service import MessageService
+from app.services.speaker_mode import resolve_runtime_speaker_mode
 from app.services.speaker_policy import SpeakerRole, SpeakerSource
 
 
@@ -93,15 +94,26 @@ def _asr_status(request: Request) -> dict[str, Any]:
     health = supervisor.health()
     capabilities = supervisor.capabilities()
     speech = health.get("speech") or {}
-    threshold = getattr(supervisor, "speaker_accept_threshold", None)
-    margin = getattr(supervisor, "speaker_margin", None)
-    calibrated = threshold is not None and margin is not None
+    # Task 17B-1: the calibration flag used to be read straight off the supervisor,
+    # which is not where a calibration-configured runtime reads from. It now comes
+    # from the shared rule, resolved with the capture service's own resolver, and is
+    # reported as unverified when that resolver cannot be reached.
+    config = resolve_runtime_speaker_mode(app_state=request.app.state)
     ready = speech.get("state") == "READY" and capabilities.get("asr", {}).get("state") not in {"ERROR", "NOT_CONFIGURED"}
     return {
         "state": "AVAILABLE" if ready else "ERROR",
         "speech": speech,
         "capabilities": {"asr": capabilities.get("asr"), "vad": capabilities.get("vad"), "speaker": capabilities.get("speaker")},
-        "calibration": {"configured": calibrated, "threshold": threshold, "margin": margin},
+        "calibration": {
+            # The margin is the only channel the runtime narrows on, so it is the only
+            # one that makes the device "configured"; the threshold is informational.
+            "configured": bool(config.verified and config.margin_configured),
+            "verified": config.verified,
+            "verificationSource": config.verification_source,
+            "threshold": config.threshold,
+            "margin": config.margin,
+            "thresholdSource": config.threshold_source,
+        },
     }
 
 

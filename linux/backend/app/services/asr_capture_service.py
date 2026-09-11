@@ -73,11 +73,10 @@ class _CaptureRuntime:
     authoritative_speaker_backend: str | None = None
     secondary_speaker_backend: str | None = None
     secondary_calibration: ResolvedSpeakerCalibration | None = None
-    #: Roles bound to this session's voice assignment. Kept so the declared
-    #: recognition mode and the effective one are both derived from one place.
-    bound_roles: set[SpeakerRole] = field(default_factory=lambda: {SpeakerRole.SUSPECT})
     #: The mode this capture declares from its bound roles, captured before the
     #: operating point narrows anything, so a degradation stays reported as such.
+    #: ``start()`` seeds it from the session's voice assignment; every persisted
+    #: fragment refreshes it from the roles that fragment really bound.
     declared_recognition_mode: str = SUSPECT_ONLY
     stop_event: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
@@ -207,8 +206,11 @@ class AsrCaptureService:
             db.commit()
             capture_session_id = capture.id
             interrogation_session_id = interrogation_session.id
+            # Seed the declared mode inside the session start() already owns: the
+            # previous code opened a second one just for this, before the runtime row
+            # existed.
+            bound_roles = self._bound_roles(db, interrogation_session_id)
 
-        bound_roles = self._bound_roles(interrogation_session_id)
         runtime = _CaptureRuntime(
             case_id=case_id,
             interrogation_session_id=interrogation_session_id,
@@ -224,7 +226,6 @@ class AsrCaptureService:
             authoritative_speaker_backend=self.authoritative_speaker_backend,
             secondary_speaker_backend=self.secondary_speaker_backend,
             secondary_calibration=secondary_calibration,
-            bound_roles=bound_roles,
             declared_recognition_mode=self.declared_mode_for_roles(bound_roles),
         )
 
@@ -546,7 +547,6 @@ class AsrCaptureService:
             threshold = float(runtime.speaker_threshold)
             threshold_source = str(runtime.threshold_source)
             persisted_margin = runtime.speaker_margin
-            runtime.bound_roles = set(enabled_roles)
 
             # A calibrated margin is needed only for comparing multiple enrolled
             # references. Without it, formal interrogation remains available but
@@ -554,7 +554,6 @@ class AsrCaptureService:
             # single authoritative rule in app.services.speaker_mode so the readiness
             # payload and this runtime decision cannot disagree.
             declared_mode = self.declared_mode_for_roles(enabled_roles)
-            runtime.bound_roles = set(enabled_roles)
             runtime.declared_recognition_mode = declared_mode
 
             decision_roles, decision_candidates = self._narrow_decision(
@@ -867,11 +866,23 @@ class AsrCaptureService:
 
     @staticmethod
     def declared_mode_for_roles(enabled_roles: Iterable[SpeakerRole]) -> str:
-        """The recognition mode a bound role set declares to the operator."""
-        roles = {
-            role if isinstance(role, SpeakerRole) else SpeakerRole(str(role))
-            for role in enabled_roles
-        }
+        """The recognition mode a bound role set declares to the operator.
+
+        Contract: ``enabled_roles`` are the references the runtime actually bound for
+        this session, and it always contains :attr:`SpeakerRole.SUSPECT`
+        (``_speaker_candidates`` raises unless the suspect reference exists). A set
+        without it is a programming error, not a mode: the rule would declare
+        ``SUSPECT_ONLY`` while ``decision_roles`` narrowed the decision set to the
+        empty set. Values that are not :class:`SpeakerRole` members are ignored --
+        they are not bindings, exactly as in ``narrow_decision_roles``.
+        """
+
+        roles = {role for role in enabled_roles if isinstance(role, SpeakerRole)}
+        if SpeakerRole.SUSPECT not in roles:
+            raise ValueError(
+                "declared_mode_for_roles requires the bound suspect reference; "
+                f"got {sorted(role.value for role in roles)}"
+            )
         if SpeakerRole.RECORDER in roles and SpeakerRole.INTERROGATOR in roles:
             return FULL
         if SpeakerRole.INTERROGATOR in roles:
@@ -1111,28 +1122,32 @@ class AsrCaptureService:
         enabled.add(role)
         references.append((role, officer, officer.officer_id, officer.officer_name))
 
-    def _bound_roles(self, interrogation_session_id: str) -> set[SpeakerRole]:
-        """Roles the session's voice assignment enables, resolved against live profiles."""
+    def _bound_roles(self, db, interrogation_session_id: str) -> set[SpeakerRole]:
+        """Roles the session's voice assignment enables, resolved against live profiles.
+
+        Used once per capture start, inside the session ``start()`` already holds, to
+        seed ``_CaptureRuntime.declared_recognition_mode`` so ``status()`` can report
+        the declaration before the first fragment binds its own roles.
+        """
         roles: set[SpeakerRole] = {SpeakerRole.SUSPECT}
-        with self.session_factory() as db:
-            assignment = db.scalar(
-                select(SessionVoiceAssignment).where(
-                    SessionVoiceAssignment.session_id == interrogation_session_id
-                )
+        assignment = db.scalar(
+            select(SessionVoiceAssignment).where(
+                SessionVoiceAssignment.session_id == interrogation_session_id
             )
-            if assignment is None:
-                return roles
-            for officer_id, role in (
-                (assignment.interrogator_officer_id, SpeakerRole.INTERROGATOR),
-                (assignment.recorder_officer_id, SpeakerRole.RECORDER),
-            ):
-                if not officer_id:
-                    continue
-                officer = voiceprint_repo.get_officer(
-                    db, str(officer_id), model_key=self.authoritative_speaker_backend
-                )
-                if officer is not None:
-                    roles.add(role)
+        )
+        if assignment is None:
+            return roles
+        for officer_id, role in (
+            (assignment.interrogator_officer_id, SpeakerRole.INTERROGATOR),
+            (assignment.recorder_officer_id, SpeakerRole.RECORDER),
+        ):
+            if not officer_id:
+                continue
+            officer = voiceprint_repo.get_officer(
+                db, str(officer_id), model_key=self.authoritative_speaker_backend
+            )
+            if officer is not None:
+                roles.add(role)
         return roles
 
     def _resolve_calibration(self, db) -> ResolvedSpeakerCalibration:
@@ -1322,6 +1337,9 @@ class AsrCaptureService:
             "speakerSecondaryBackend": runtime.secondary_speaker_backend,
             "speakerThreshold": runtime.speaker_threshold,
             "thresholdSource": runtime.threshold_source,
+            # The margin value itself, not just whether one exists: readiness must be
+            # able to report the operating point this capture is really running on.
+            "speakerMargin": runtime.speaker_margin,
             "speakerMarginConfigured": runtime.speaker_margin is not None,
             "calibrationId": runtime.calibration_id,
             "calibrationStatus": runtime.calibration_status,

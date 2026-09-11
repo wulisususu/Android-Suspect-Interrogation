@@ -108,9 +108,18 @@ function normalizeVoiceprintReadiness(value: unknown): VoiceprintReadiness {
   const declared = raw.declaredRecognitionMode === undefined
     ? undefined
     : String(raw.declaredRecognitionMode) as VoiceRecognitionMode
+  // Task 17B-1: the backend reports null for both fields when it cannot verify the
+  // runtime operating point. "Unverified" is carried by recognitionModeVerified=false,
+  // and the mode claim is simply not reported, so null maps to absent instead of being
+  // coerced into a claim ("null" as a mode, or null -> false = "not degraded").
   const effective = raw.effectiveRecognitionMode === undefined
     ? undefined
-    : String(raw.effectiveRecognitionMode) as VoiceRecognitionMode
+    : (raw.effectiveRecognitionMode === null
+      ? undefined
+      : String(raw.effectiveRecognitionMode) as VoiceRecognitionMode)
+  const degraded = raw.recognitionModeDegraded === undefined
+    ? undefined
+    : (raw.recognitionModeDegraded === null ? undefined : Boolean(raw.recognitionModeDegraded))
   const degradedReason = raw.recognitionModeDegradedReason === undefined ? undefined : String(raw.recognitionModeDegradedReason)
   return {
     suspectReady: Boolean(raw.suspectReady),
@@ -133,8 +142,12 @@ function normalizeVoiceprintReadiness(value: unknown): VoiceprintReadiness {
     ...(raw.thresholdConfigured === undefined ? {} : { thresholdConfigured: Boolean(raw.thresholdConfigured) }),
     ...(declared === undefined ? {} : { declaredRecognitionMode: declared }),
     ...(effective === undefined ? {} : { effectiveRecognitionMode: effective }),
-    ...(raw.recognitionModeDegraded === undefined ? {} : { recognitionModeDegraded: Boolean(raw.recognitionModeDegraded) }),
+    ...(degraded === undefined ? {} : { recognitionModeDegraded: degraded }),
     ...(degradedReason === undefined ? {} : { recognitionModeDegradedReason: degradedReason }),
+    ...(raw.recognitionModeVerified === undefined ? {} : { recognitionModeVerified: Boolean(raw.recognitionModeVerified) }),
+    ...(raw.recognitionModeVerificationSource === undefined || raw.recognitionModeVerificationSource === null
+      ? {}
+      : { recognitionModeVerificationSource: String(raw.recognitionModeVerificationSource) }),
   }
 }
 
@@ -211,6 +224,27 @@ function normalizeRecognitionRevision(value: unknown): AsrRecognitionRevision {
   }
 }
 
+/**
+ * Task 17B-1: the mode an ASR fragment was decided in, as published on ASR_FRAGMENT.
+ * Only copied when the backend sent it, so an older payload keeps the fields absent.
+ */
+function modeFields(raw: Record<string, unknown>): Partial<TemporaryAsrFragment> {
+  return {
+    ...(raw.declaredRecognitionMode === undefined || raw.declaredRecognitionMode === null
+      ? {}
+      : { declaredRecognitionMode: String(raw.declaredRecognitionMode) as VoiceRecognitionMode }),
+    ...(raw.effectiveRecognitionMode === undefined || raw.effectiveRecognitionMode === null
+      ? {}
+      : { effectiveRecognitionMode: String(raw.effectiveRecognitionMode) as VoiceRecognitionMode }),
+    ...(raw.recognitionModeDegraded === undefined || raw.recognitionModeDegraded === null
+      ? {}
+      : { recognitionModeDegraded: Boolean(raw.recognitionModeDegraded) }),
+    ...(raw.recognitionModeDegradedReason === undefined || raw.recognitionModeDegradedReason === null
+      ? {}
+      : { recognitionModeDegradedReason: String(raw.recognitionModeDegradedReason) }),
+  }
+}
+
 export function normalizeTemporaryAsrFragment(value: unknown): TemporaryAsrFragment {
   const raw = asRecord(value)
   const startedAtMs = Number(raw.startedAtMs ?? 0)
@@ -250,6 +284,9 @@ export function normalizeTemporaryAsrFragment(value: unknown): TemporaryAsrFragm
     modelVersion: raw.modelVersion == null ? null : String(raw.modelVersion),
     recognitionEvidence: normalizeRecognitionEvidence(raw.recognitionEvidence),
     recognitionRevisions,
+    // Task 17B-1: the mode the fragment was decided in survives normalization, so a
+    // narrowed operating point is visible in the UI instead of being dropped here.
+    ...modeFields(raw),
     audio: { captureSessionId, startOffsetMs: startedAtMs, endOffsetMs: endedAtMs, available: false },
     createdAt,
     updatedAt,
