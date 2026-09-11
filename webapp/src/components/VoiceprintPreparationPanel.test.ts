@@ -89,6 +89,20 @@ describe('VoiceprintPreparationPanel helpers', () => {
     })
   })
 
+  it('shows the effective recognition mode in the chip, not only the declared one', () => {
+    const source = readFileSync(new URL('./VoiceprintPreparationPanel.vue', import.meta.url), 'utf8')
+    // The chip is the operator's only statement of the mode in force, so it must
+    // be derived from `effectiveRecognitionMode` (the mode the runtime will
+    // honour) rather than from `recognitionMode` (what the bound roles declare).
+    // `VoiceprintPreparationPanel.sfc.test.ts` renders the chip with a
+    // margin-less readiness payload and asserts the visible wording.
+    expect(source).toContain('voiceprintEffectiveMode(props.readiness)')
+    expect(source).not.toContain('voiceprintModeLabel(readiness.recognitionMode)')
+    // Degradation is announced with the same contract as VoiceprintEnrollmentGate.
+    expect(source).toContain('role="status"')
+    expect(source).toContain('aria-live="polite"')
+  })
+
   it('keeps officer administration out of a case and retains binding selectors', () => {
     const source = readFileSync(new URL('./VoiceprintPreparationPanel.vue', import.meta.url), 'utf8')
     expect(source).toContain('选择主审民警声纹')

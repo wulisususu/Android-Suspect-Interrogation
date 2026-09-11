@@ -13,6 +13,21 @@ export function formatVoiceprintDuration(durationMs: number): string {
   const seconds = Math.max(0, Number(durationMs || 0)) / 1000
   return `${seconds.toFixed(1)} 秒`
 }
+
+/**
+ * A transport failure that arrives while this round is being finalized is the
+ * normal end of the recording, not a failure: the backend stores the sample and
+ * closes the browser audio channel while the HTTP stop/enroll request is still
+ * running. Reporting that close as an error told the operator a saved sample had
+ * failed. Returns the message to show, or `''` when it must be ignored.
+ *
+ * `pause()` on the transport already silences the main cause; this guard covers
+ * the window between `pause()` and the backend actually tearing the channel
+ * down, where the close callback still fires.
+ */
+export function captureFailureNotice(message: string, settling: boolean): string {
+  return settling ? '' : message
+}
 </script>
 
 <script setup lang="ts">
@@ -149,8 +164,14 @@ async function beginSample() {
     requiredUsableSpeechMs.value = 20_000
     if (browserCapture) {
       await browserCapture.start(started.captureId, {
-        onError: (text) => { error.value = text },
-        onTrackEnded: () => { error.value = '浏览器麦克风已停止，请重新开始采样' },
+        onError: (text) => {
+          const notice = captureFailureNotice(text, finalizing)
+          if (notice) error.value = notice
+        },
+        onTrackEnded: () => {
+          const notice = captureFailureNotice('浏览器麦克风已停止，请重新开始采样', finalizing)
+          if (notice) error.value = notice
+        },
       })
     }
     recording.value = true
@@ -173,6 +194,10 @@ async function finalizeSample(automatic = false) {
   finalizing = true
   busy.value = true
   stopPolling()
+  // From here on the transport close is expected, and any notice written before
+  // this point belongs to a superseded failure: the successful sample below is
+  // the current state.
+  error.value = ''
   const officerId = captureSubjectId.value
   try {
     browserCapture?.pause()

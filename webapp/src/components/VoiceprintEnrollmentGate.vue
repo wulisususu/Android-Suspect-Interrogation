@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { VoiceprintAudioSource } from '../api/browserVoiceprint'
-import { voiceprintEnrollmentProgress } from './VoiceprintPreparationPanel.vue'
+import { voiceprintDegradationNotice, voiceprintEnrollmentProgress } from './VoiceprintPreparationPanel.vue'
 import VoiceprintAudioSourceBanner from './VoiceprintAudioSourceBanner.vue'
 import type { OfficerVoiceprint, VoiceprintEnrollmentState, VoiceprintReadiness } from '../types/interrogation'
 
@@ -85,17 +85,11 @@ const compactUsableSpeechLabel = computed(() => {
 
 const compactQualityLabel = computed(() => (props.readiness.enrollmentQuality ? `质量：${props.readiness.enrollmentQuality}` : '质量：未知'))
 
-// Task 17B-1: the operator must know when the declared mode is not the enforced one.
-const recognitionModeDegraded = computed(() => props.readiness.recognitionModeDegraded === true)
+// Task 17B-1: the operator must know when the declared mode is not the enforced
+// one. The notice wording lives in `voiceprintDegradationNotice` so this gate
+// and the voiceprint preparation panel cannot drift apart.
 const officerRolesBound = computed(() => props.readiness.interrogatorReady === true || props.readiness.recorderReady === true)
-const degradationNotice = computed(() => {
-  if (!recognitionModeDegraded.value || !officerRolesBound.value) return ''
-  const reason = props.readiness.recognitionModeDegradedReason
-  const detail = reason === 'THRESHOLD_NOT_CONFIGURED'
-    ? '设备未配置声纹判定阈值'
-    : '设备未完成 margin 校准'
-  return `已绑定民警声纹，但${detail}，实时识别将退化为仅嫌疑人`
-})
+const degradationNotice = computed(() => (officerRolesBound.value ? voiceprintDegradationNotice(props.readiness) : ''))
 
 function startOrReRecord() {
   emits('suspectStart')

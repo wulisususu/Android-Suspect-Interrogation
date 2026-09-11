@@ -97,8 +97,12 @@ class ActionCapture {
     this.state = 'STREAMING'
   }
 
+  /** Makes beginFinalize() throw, like a transport that cannot leave STREAMING. */
+  beginFinalizeThrows = false
+
   beginFinalize() {
     this.actions.push(FINALIZE_ACTION)
+    if (this.beginFinalizeThrows) throw new Error('浏览器麦克风无法进入收尾状态')
     if (this.state !== 'STOPPED') this.state = 'FINALIZING'
   }
 
@@ -139,6 +143,13 @@ type Harness = {
   nextCapture: (capture: ActionCapture) => void
   actions: string[]
   state: () => VoiceprintEnrollmentState
+  /** True while the store reports a voiceprint operation in flight. */
+  busy: () => boolean
+  /**
+   * Make the post-stop state refresh fail, as a timed-out readiness/officer
+   * round trip does on a slow board.
+   */
+  failRefresh: (error?: Error) => void
   feedbackCalls: () => Array<{ message: string; isError: boolean }>
   startSuspect: () => Promise<void>
   stopSuspect: () => Promise<void>
@@ -146,6 +157,8 @@ type Harness = {
   stopOfficer: () => Promise<void>
   /** Resolve the pending HTTP stop/enroll request. */
   acceptEnrollment: () => void
+  /** Reject the pending HTTP stop/enroll request. */
+  rejectEnrollment: (error: Error) => void
   /** True while at least one HTTP stop/enroll request is still in flight. */
   httpStopPending: () => boolean
   /** Resolve every cancel request that is still in flight. */
@@ -160,7 +173,6 @@ type Harness = {
 async function createHarness(): Promise<Harness> {
   vi.resetModules()
 
-  const pendingStops: Array<(value: unknown) => void> = [() => undefined]
   let pendingCancel: (() => void) | undefined
   let deferCancelResponses = false
 
@@ -189,10 +201,11 @@ async function createHarness(): Promise<Harness> {
     { usableDurationMs: 20_030, simulated: false },
     { usableDurationMs: 20_030, simulated: false, officerName: '民警甲' },
   ]
+  const pendingStopSettlers: Array<{ resolve: (value: Record<string, unknown>) => void; reject: (reason: Error) => void }> = []
   const stopEnrollment = () => {
     activeCapture.actions.push(HTTP_STOP_ACTION)
-    return new Promise<Record<string, unknown>>((resolve) => {
-      pendingStops.push((value: unknown) => resolve(value as Record<string, unknown>))
+    return new Promise<Record<string, unknown>>((resolve, reject) => {
+      pendingStopSettlers.push({ resolve, reject })
     })
   }
   apiMock.stopBrowserAwareSuspectEnrollment.mockImplementation(stopEnrollment)
@@ -202,7 +215,9 @@ async function createHarness(): Promise<Harness> {
   setActivePinia(createPinia())
   const { useInterrogationStore } = await import('../stores/interrogation')
   const store = useInterrogationStore()
-  vi.spyOn(store, 'refreshVoiceprintState').mockResolvedValue(undefined)
+  // The spy is kept so a test can make the refresh reject. A resolving default
+  // keeps every other case on the happy path.
+  const refreshVoiceprintState = vi.spyOn(store, 'refreshVoiceprintState').mockResolvedValue(undefined)
   const feedbackCalls: Array<{ message: string; isError: boolean }> = []
   vi.spyOn(store, 'feedback').mockImplementation((message: string, isError = false) => {
     feedbackCalls.push({ message, isError })
@@ -222,16 +237,24 @@ async function createHarness(): Promise<Harness> {
     },
     actions: [],
     state: () => store.voiceprintEnrollmentState,
+    busy: () => store.voiceprintBusy,
+    failRefresh: (error: Error = new Error('声纹状态刷新失败')) => {
+      refreshVoiceprintState.mockRejectedValue(error)
+    },
     feedbackCalls: () => feedbackCalls,
     startSuspect: () => enrollment.startSuspect(),
     stopSuspect: () => enrollment.stopSuspect(),
     startOfficer: () => enrollment.startOfficer('OFFICER-1', '民警甲'),
     stopOfficer: () => enrollment.stopOfficer('OFFICER-1'),
     acceptEnrollment: () => {
-      const resolvers = pendingStops.splice(0, pendingStops.length)
-      for (const resolve of resolvers) resolve(enrollmentResults.shift() ?? { usableDurationMs: 20_030, simulated: false })
+      const settlers = pendingStopSettlers.splice(0, pendingStopSettlers.length)
+      for (const settler of settlers) settler.resolve(enrollmentResults.shift() ?? { usableDurationMs: 20_030, simulated: false })
     },
-    httpStopPending: () => pendingStops.length > 0,
+    rejectEnrollment: (error: Error) => {
+      const settlers = pendingStopSettlers.splice(0, pendingStopSettlers.length)
+      for (const settler of settlers) settler.reject(error)
+    },
+    httpStopPending: () => pendingStopSettlers.length > 0,
     settle: async () => {
       pendingCancel?.()
       pendingCancel = undefined
@@ -488,5 +511,112 @@ describe('useAutoVoiceprintEnrollment lifecycle race', () => {
     await harness.startSuspect()
     expect(harness.state().phase).toBe('RECORDING')
     expect(secondRound.actions).toContain('capture:start')
+  })
+
+  it('releases the transport when the post-stop state refresh fails, and still reports the failure', async () => {
+    const harness = await createHarness()
+    await harness.startSuspect()
+    const capture = harness.capture
+    // The HTTP stop/enroll already succeeded on the backend; the refresh that
+    // follows it is what fails (a readiness/officer round trip that times out on
+    // a slow board). The audio channel has been closed by the backend by now, so
+    // leaving the browser transport open keeps the microphone hot forever.
+    harness.failRefresh(new Error('声纹就绪状态读取超时'))
+
+    const stopping = harness.stopSuspect()
+    await flush()
+    harness.acceptEnrollment()
+    await stopping
+
+    expect(capture.actions).toContain(STOP_CAPTURE_ACTION)
+    expect(capture.lifecycle).toBe('STOPPED')
+    // The failure is still reported: a failed refresh must not be swallowed.
+    expect(harness.state().phase).toBe('ERROR')
+    expect(harness.state().subjectId).toBe('CASE-RACE')
+    expect(harness.feedbackCalls().at(-1)?.isError).toBe(true)
+    // ...and the block the failure left behind is released.
+    expect(harness.busy()).toBe(false)
+
+    // The leaked channel used to keep activeCaptureId pinned, so the operator
+    // could never start the next round without reloading the page.
+    const nextRound = new ActionCapture()
+    harness.nextCapture(nextRound)
+    await harness.startSuspect()
+    expect(harness.state().phase).toBe('RECORDING')
+    expect(nextRound.actions).toContain('capture:start')
+  })
+
+  it('releases the officer transport when the post-stop state refresh fails', async () => {
+    const harness = await createHarness()
+    await harness.startOfficer()
+    const capture = harness.capture
+    harness.failRefresh(new Error('民警声纹列表读取失败'))
+
+    const stopping = harness.stopOfficer()
+    await flush()
+    harness.acceptEnrollment()
+    await stopping
+
+    expect(capture.actions).toContain(STOP_CAPTURE_ACTION)
+    expect(capture.lifecycle).toBe('STOPPED')
+    expect(harness.state().phase).toBe('ERROR')
+    expect(harness.busy()).toBe(false)
+  })
+
+  it('releases the busy flag when the cancellation settles while a newer round is already running', async () => {
+    const harness = await createHarness()
+    harness.deferCancels()
+    await harness.startSuspect()
+    harness.capture.emitClose()
+    await flush()
+    expect(harness.cancelPending()).toBe(true)
+
+    // The failed attempt's cancellation is still in flight when a new round
+    // takes over: the stale cancel must not leave voiceprintBusy behind, or the
+    // operator can never stop the round now recording.
+    const nextRound = new ActionCapture()
+    harness.nextCapture(nextRound)
+    await harness.startSuspect()
+    expect(harness.busy()).toBe(true)
+
+    await harness.settle()
+
+    // The stale cancellation keeps its own failure state and must not touch the
+    // running round's, but it must hand voiceprintBusy back so the operator is
+    // never locked out of the next attempt.
+    expect(harness.busy()).toBe(false)
+    expect(harness.state().phase).toBe('ERROR')
+
+    const laterRound = new ActionCapture()
+    harness.nextCapture(laterRound)
+    await harness.startSuspect()
+    expect(harness.state().phase).toBe('RECORDING')
+    expect(laterRound.actions).toContain('capture:start')
+  })
+
+  it('resets the busy flag when beginFinalize throws, so the next round can start', async () => {
+    const harness = await createHarness()
+    await harness.startSuspect()
+    // The transport refuses to leave STREAMING, so the finalize step itself
+    // throws before any HTTP stop was attempted.
+    harness.capture.beginFinalizeThrows = true
+
+    const stopping = harness.stopSuspect()
+    await flush()
+    // Nothing to release: the operator must never be locked out of recording.
+    expect(harness.busy()).toBe(false)
+    expect(harness.httpStopPending()).toBe(false)
+
+    await stopping
+
+    expect(harness.busy()).toBe(false)
+    expect(harness.state().phase).toBe('ERROR')
+
+    // A permanent voiceprintBusy would keep every record button disabled.
+    const nextRound = new ActionCapture()
+    harness.nextCapture(nextRound)
+    await harness.startSuspect()
+    expect(nextRound.actions).toContain('capture:start')
+    expect(harness.state().phase).toBe('RECORDING')
   })
 })

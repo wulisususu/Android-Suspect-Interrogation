@@ -3,7 +3,7 @@ import { transformSync } from 'esbuild'
 import { compileScript, compileTemplate, parse } from '@vue/compiler-sfc'
 import * as Vue from 'vue'
 import { describe, expect, it } from 'vitest'
-import { voiceprintEnrollmentProgress } from './VoiceprintPreparationPanel.vue'
+import { voiceprintDegradationNotice, voiceprintEnrollmentProgress } from './VoiceprintPreparationPanel.vue'
 import { audioInputMode } from '../config/audioInput'
 import type { OfficerVoiceprint, VoiceprintEnrollmentState, VoiceprintReadiness } from '../types/interrogation'
 
@@ -36,7 +36,7 @@ function compileClientComponent(fileName: string, dependencies: Record<string, u
     .replace(/Object\.defineProperty\(__returned__, '__isScriptSetup', \{ enumerable: false, value: true \}\)\r?\n/, '')
   const factorySource = `return function createComponent(Vue, dependencies) {
     const { defineComponent: _defineComponent, computed, ref, unref, watch } = Vue
-    const { voiceprintEnrollmentProgress, VoiceprintAudioSourceBanner, audioInputMode } = dependencies
+    const { voiceprintEnrollmentProgress, voiceprintDegradationNotice, VoiceprintAudioSourceBanner, audioInputMode } = dependencies
     ${scriptWithoutImports}
   }`
   const createComponent = new Function(transformSync(factorySource, { loader: 'ts', target: 'es2022' }).code)()
@@ -48,6 +48,8 @@ function compileClientComponent(fileName: string, dependencies: Record<string, u
 const VoiceprintAudioSourceBanner = compileClientComponent('./VoiceprintAudioSourceBanner.vue', { audioInputMode })
 const VoiceprintEnrollmentGate = compileClientComponent('./VoiceprintEnrollmentGate.vue', {
   voiceprintEnrollmentProgress,
+  // Shared with VoiceprintPreparationPanel.vue: both surfaces must use it.
+  voiceprintDegradationNotice,
   VoiceprintAudioSourceBanner,
 })
 

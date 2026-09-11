@@ -36,6 +36,38 @@ export function voiceprintModeLabel(mode: VoiceRecognitionMode) {
   return labels[mode]
 }
 
+/**
+ * The mode the runtime will really enforce. `recognitionMode` is only what the
+ * bound roles declare; a device without a calibrated margin or threshold
+ * degrades to suspect-only, so the operator must never be shown the declared
+ * mode as if it were in force. Readiness without injected runtime config carries
+ * no effective mode and is not reported as degraded.
+ */
+export function voiceprintEffectiveMode(readiness: {
+  recognitionMode: VoiceRecognitionMode
+  effectiveRecognitionMode?: VoiceRecognitionMode
+}): VoiceRecognitionMode {
+  return readiness.effectiveRecognitionMode ?? readiness.recognitionMode
+}
+
+/**
+ * Degradation notice shared with `VoiceprintEnrollmentGate.vue`: identical
+ * wording, and silent whenever the device honours the declared mode.
+ */
+export function voiceprintDegradationNotice(readiness: {
+  interrogatorReady?: boolean
+  recorderReady?: boolean
+  recognitionModeDegraded?: boolean
+  recognitionModeDegradedReason?: string | null
+}): string {
+  if (readiness.recognitionModeDegraded !== true) return ''
+  if (readiness.interrogatorReady !== true && readiness.recorderReady !== true) return ''
+  const detail = readiness.recognitionModeDegradedReason === 'THRESHOLD_NOT_CONFIGURED'
+    ? '设备未配置声纹判定阈值'
+    : '设备未完成 margin 校准'
+  return `已绑定民警声纹，但${detail}，实时识别将退化为仅嫌疑人`
+}
+
 export function temporarySpeakerPresentation(speaker: TemporaryAsrSpeaker, speakerName?: string | null) {
   if (speaker === 'SUSPECT') return { label: `嫌疑人 · ${speakerName || '未命名'}`, detail: 'ERes2Net-large 声纹匹配', needsConfirmation: false }
   if (speaker === 'INTERROGATOR') return { label: `主审民警 · ${speakerName || '未命名'}`, detail: 'ERes2Net-large 声纹匹配', needsConfirmation: false }
@@ -69,6 +101,11 @@ defineEmits<{
 }>()
 
 const guard = computed(() => voiceprintStartGuard(props.readiness))
+// Task 17A follow-up: the chip states the mode that is actually enforced, never
+// the declared one, so it cannot promise officer recognition a margin-less
+// device will silently drop.
+const modeLabel = computed(() => voiceprintModeLabel(voiceprintEffectiveMode(props.readiness)))
+const degradationNotice = computed(() => voiceprintDegradationNotice(props.readiness))
 const enrollmentRecording = computed(() => props.enrollmentState.phase === 'RECORDING')
 const suspectRecording = computed(() => enrollmentRecording.value && props.enrollmentState.kind === 'SUSPECT')
 const finalUsableSeconds = computed(() => Math.floor((props.enrollmentState.usableDurationMs || 0) / 1000))
@@ -85,8 +122,13 @@ function normalizedSelect(event: Event) {
   <section class="voiceprint-preparation-panel" aria-label="声纹准备">
     <header class="voiceprint-preparation-header">
       <div><span class="section-kicker">正式语音审讯前置条件</span><h2>声纹准备</h2></div>
-      <div class="voiceprint-mode-chip" :class="{ ready: readiness.suspectReady }">{{ voiceprintModeLabel(readiness.recognitionMode) }}</div>
+      <div class="voiceprint-mode-chip" :class="{ ready: readiness.suspectReady }">{{ modeLabel }}</div>
     </header>
+
+    <p v-if="degradationNotice" class="voiceprint-mode-degradation" role="status" aria-live="polite" aria-atomic="true">
+      <span class="voiceprint-mode-degradation-icon" aria-hidden="true">!</span>
+      <span>{{ degradationNotice }}</span>
+    </p>
 
     <div v-if="readiness.simulated" class="voiceprint-warning">当前为浏览器开发模拟；模拟结果不能解锁正式声纹审讯。</div>
 
@@ -149,6 +191,8 @@ function normalizedSelect(event: Event) {
 .section-kicker { color:#5d7184; font-size:12px; letter-spacing:.08em; }
 .voiceprint-mode-chip,.voiceprint-status { border:1px solid #b7c8d7; border-radius:999px; padding:5px 10px; background:#fff; color:#566b7e; font-size:12px; font-weight:700; }
 .voiceprint-mode-chip.ready,.voiceprint-status.ok { border-color:#8fc6a6; background:#edf8f1; color:#267647; }
+.voiceprint-mode-degradation { display:flex; align-items:flex-start; gap:8px; margin:10px 0 0; padding:8px 10px; border:1px solid #e0b64a; border-left:4px solid #c98a10; border-radius:7px; background:#fff8e6; color:#7a5305; font-size:12px; font-weight:700; }
+.voiceprint-mode-degradation-icon { display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; width:16px; height:16px; border-radius:50%; background:#c98a10; color:#fff; font-size:11px; }
 .voiceprint-warning { margin-top:10px; padding:9px 12px; border:1px solid #e5b763; border-radius:7px; background:#fff8e8; color:#8b5c0a; font-weight:700; }
 .eres-backend-hint { margin:10px 0 0; padding:9px 12px; border:1px solid #d2dee8; border-radius:7px; background:#fff; color:#607588; font-size:12px; }
 .voiceprint-preparation-grid { display:grid; gap:8px; margin-top:12px; }

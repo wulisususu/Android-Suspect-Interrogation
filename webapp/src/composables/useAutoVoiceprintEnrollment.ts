@@ -128,17 +128,22 @@ export function useAutoVoiceprintEnrollment() {
     activeKind = null
     activeSubjectId = null
     activeOfficerName = null
-    // Cancel path: stop sending PCM, then let the server cancel the capture and
-    // finally close the channel. Finalizing before the HTTP cancel keeps the
-    // transport silent while the cancel request is in flight.
-    capture?.beginFinalize()
     store.voiceprintBusy = true
     cancellingFor = attempt
     let stillCurrent = false
     try {
+      // Cancel path: stop sending PCM, then let the server cancel the capture and
+      // finally close the channel. Finalizing before the HTTP cancel keeps the
+      // transport silent while the cancel request is in flight. It runs inside
+      // the guarded region so a transport that refuses to finalize still
+      // releases voiceprintBusy instead of locking every record button.
+      capture?.beginFinalize()
       await cancelBrowserAwareVoiceprintEnrollment(captureId).catch(() => undefined)
       stillCurrent = isCurrentAttempt(attempt)
       if (stillCurrent) await closeBrowserCapture(capture)
+    } catch {
+      // The transport could not be finalized (or the cancel threw): the failure
+      // path below still has to run so the state converges.
     } finally {
       // A newer attempt may have started while the cancel request was in
       // flight; its state belongs to that attempt, not to this message.
@@ -268,13 +273,15 @@ export function useAutoVoiceprintEnrollment() {
     // makes the backend's WebSocket handler take its cancel path and throw the
     // enrollment away; the backend closes the channel itself while the HTTP
     // stop is running, which the finalized transport now treats as normal.
-    capture?.beginFinalize()
     store.voiceprintEnrollmentState = { ...store.voiceprintEnrollmentState, phase: 'PROCESSING' }
     try {
+      // Inside the guarded region: a transport that cannot leave STREAMING must
+      // still release voiceprintBusy in the finally block below, otherwise the
+      // record buttons stay disabled forever.
+      capture?.beginFinalize()
       const result = await stopBrowserAwareSuspectEnrollment(caseId, actorId)
       if (!isCurrentAttempt(attempt)) return
       await store.refreshVoiceprintState()
-      await closeBrowserCapture(capture)
       if (!isCurrentAttempt(attempt)) return
       clearActive()
       store.voiceprintEnrollmentState = {
@@ -288,12 +295,20 @@ export function useAutoVoiceprintEnrollment() {
       store.feedback(store.voiceprintEnrollmentState.message || '嫌疑人声纹已注册')
     } catch (error) {
       const message = backendErrorMessage(error)
-      await closeBrowserCapture(capture)
       if (!isCurrentAttempt(attempt)) return
       clearActive()
       store.voiceprintEnrollmentState = { phase: 'ERROR', kind: 'SUSPECT', subjectId: caseId, message }
       store.feedback(message, true)
     } finally {
+      // The transport is released on every exit path — success, failure, a
+      // rejected state refresh (the readiness/officer round trip can time out
+      // long before the 120 s HTTP stop does) and an early stale-attempt return.
+      // Leaving it open keeps the microphone hot and pins activeCaptureId, so a
+      // retry would open a second getUserMedia channel. The close keeps its
+      // place after the HTTP stop and the state refresh: the backend closes the
+      // channel itself during the stop, and the finalized transport treats that
+      // as the normal end of the recording.
+      await closeBrowserCapture(capture)
       if (isCurrentAttempt(attempt)) finalizing = false
       store.voiceprintBusy = false
     }
@@ -353,13 +368,14 @@ export function useAutoVoiceprintEnrollment() {
     clearProgressTimer()
     // Same ordering contract as stopSuspect(): finalize the browser transport
     // before the HTTP stop, never after it.
-    capture?.beginFinalize()
     store.voiceprintEnrollmentState = { ...store.voiceprintEnrollmentState, phase: 'PROCESSING' }
     try {
+      // Guarded like stopSuspect(): a throwing finalize still releases the
+      // busy flag in the finally block.
+      capture?.beginFinalize()
       const result = await stopBrowserAwareOfficerEnrollment(officerId, actorId)
       if (!isCurrentAttempt(attempt)) return
       await store.refreshVoiceprintState()
-      await closeBrowserCapture(capture)
       if (!isCurrentAttempt(attempt)) return
       clearActive()
       store.voiceprintEnrollmentState = {
@@ -374,12 +390,13 @@ export function useAutoVoiceprintEnrollment() {
       store.feedback(store.voiceprintEnrollmentState.message || '民警声纹已保存')
     } catch (error) {
       const message = backendErrorMessage(error)
-      await closeBrowserCapture(capture)
       if (!isCurrentAttempt(attempt)) return
       clearActive()
       store.voiceprintEnrollmentState = { phase: 'ERROR', kind: 'OFFICER', subjectId: officerId, officerName, message }
       store.feedback(message, true)
     } finally {
+      // Every exit path releases the transport, exactly as in stopSuspect().
+      await closeBrowserCapture(capture)
       if (isCurrentAttempt(attempt)) finalizing = false
       store.voiceprintBusy = false
     }
