@@ -166,6 +166,8 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   let caseGeneration = 0
   let feedbackTimer: ReturnType<typeof setTimeout> | undefined
   let captureTimer: ReturnType<typeof setInterval> | undefined
+  let captureStatusSyncTimer: ReturnType<typeof setInterval> | undefined
+  let captureStatusSyncInFlight = false
   let voiceprintProgressTimer: ReturnType<typeof setInterval> | undefined
   let sessionConnection: RuntimeSessionConnection | undefined
 
@@ -194,6 +196,9 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     sessionConnection = undefined
     if (captureTimer) clearInterval(captureTimer)
     captureTimer = undefined
+    if (captureStatusSyncTimer) clearInterval(captureStatusSyncTimer)
+    captureStatusSyncTimer = undefined
+    captureStatusSyncInFlight = false
   }
 
   function resetCaseContext(nextCaseId = '') {
@@ -261,6 +266,34 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       clearInterval(captureTimer)
       captureTimer = undefined
     }
+    if (status.running && !captureStatusSyncTimer) startCaptureStatusSync(scope)
+    else if (!status.running) stopCaptureStatusSync()
+  }
+
+  function stopCaptureStatusSync() {
+    if (captureStatusSyncTimer) clearInterval(captureStatusSyncTimer)
+    captureStatusSyncTimer = undefined
+    captureStatusSyncInFlight = false
+  }
+
+  async function syncCaptureStatus(scope: CaseScope) {
+    if (captureStatusSyncInFlight || !isCurrentScope(scope) || !capture.value.running) return
+    captureStatusSyncInFlight = true
+    try {
+      const status = await fetchAsrCaptureStatus(scope.caseId)
+      applyCaptureStatus(status, scope)
+    } catch {
+      // The WebSocket remains the primary live path. Polling only repairs a
+      // missed event, so a transient status request must not interrupt capture.
+    } finally {
+      captureStatusSyncInFlight = false
+    }
+  }
+
+  function startCaptureStatusSync(scope: CaseScope) {
+    captureStatusSyncTimer = setInterval(() => {
+      void syncCaptureStatus(scope)
+    }, 2000)
   }
 
   function upsertAsrFragment(fragment: TemporaryAsrFragment, scope = currentScope()) {
