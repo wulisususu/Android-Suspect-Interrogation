@@ -272,6 +272,16 @@ def test_qwen_routing_e2e_preserves_raw_evidence_and_builds_formal_record(tmp_pa
                 closed[0],
                 decision(RouteClass.MATCH_EXISTING, target=dynamic_id, answer="约20时15分到达现场。"),
             )
+        with pytest.raises(DomainError, match="冻结"):
+            FormalRecordRoutingService(db).apply_auto(
+                closed[0],
+                decision(RouteClass.NEEDS_REVIEW),
+            )
+        with pytest.raises(DomainError, match="冻结"):
+            FormalRecordRoutingService(db).apply_auto(
+                closed[0],
+                decision(RouteClass.IGNORE),
+            )
 
     assert len(fake_router.calls) == 6
     assert len(commit_visible_events) == 4

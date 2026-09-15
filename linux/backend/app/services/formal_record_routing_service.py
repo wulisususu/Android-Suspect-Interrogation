@@ -22,6 +22,7 @@ class FormalRecordRoutingService:
 
     def apply_auto(self, qa_unit_id: str, decision: FormalRecordRouteDecision) -> dict:
         unit = qa_repo.get(self.db, qa_unit_id)
+        assert_formal_record_mutable(self.db, unit.case_id)
         if decision.classification is RouteClass.NEEDS_REVIEW:
             return self._review(unit, decision)
         if decision.classification is RouteClass.IGNORE:
@@ -31,20 +32,17 @@ class FormalRecordRoutingService:
             question = self._valid_target(unit.case_id, decision.target_question_id, fixed=True)
             if question is None or not decision.formal_answer:
                 return self._review(unit, decision, reason_code="INVALID_AUTO_DECISION")
-            assert_formal_record_mutable(self.db, unit.case_id)
             return self._apply_existing(unit, question, decision, audit_action="QA_ROUTE_AUTO_APPLIED")
 
         if decision.classification is RouteClass.MATCH_EXISTING:
             question = self._valid_target(unit.case_id, decision.target_question_id, fixed=False)
             if question is None or not decision.formal_answer:
                 return self._review(unit, decision, reason_code="INVALID_AUTO_DECISION")
-            assert_formal_record_mutable(self.db, unit.case_id)
             return self._apply_existing(unit, question, decision, audit_action="QA_ROUTE_AUTO_APPLIED")
 
         if decision.classification is RouteClass.CREATE_LIVE_FROM_SPEECH:
             if not self._can_create_live(unit, decision):
                 return self._review(unit, decision, reason_code="INVALID_AUTO_DECISION")
-            assert_formal_record_mutable(self.db, unit.case_id)
             created = TemplateWorkspaceService(self.db).add_case_question(
                 unit.case_id,
                 text=decision.formal_question or "",
@@ -66,6 +64,7 @@ class FormalRecordRoutingService:
     ) -> dict:
         unit = qa_repo.get(self.db, qa_unit_id)
         self._assert_manual_resolvable(unit)
+        assert_formal_record_mutable(self.db, unit.case_id)
         normalized = str(action or "").strip().upper()
         if normalized not in _MANUAL_ACTIONS:
             raise DomainError("INVALID_QA_RESOLUTION_ACTION", "问答单元处理动作无效", 400)
@@ -83,7 +82,6 @@ class FormalRecordRoutingService:
             )
             return self._ignore(unit, manual_decision, manual=True)
 
-        assert_formal_record_mutable(self.db, unit.case_id)
         clean_answer = self._manual_text(
             formal_answer,
             unit.formal_answer_text,
