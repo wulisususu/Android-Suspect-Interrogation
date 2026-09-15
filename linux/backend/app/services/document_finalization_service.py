@@ -40,6 +40,16 @@ class DocumentFinalizationService:
             raise DomainError("CASE_ID_REQUIRED", "案件编号不能为空", 400)
 
         case = case_repo.get(self.db, case_id)
+        if WorkflowState(case.workflow_state) in {
+            WorkflowState.FROZEN,
+            WorkflowState.SIGNED,
+            WorkflowState.REPORT_GENERATED,
+        }:
+            result = DocumentService(self.db).signing_state(case_id)
+            self.db.rollback()
+            if result is None:
+                raise DomainError("DOCUMENT_SNAPSHOT_NOT_FOUND", "冻结笔录快照不存在", 409)
+            return result
         session = session_repo.active_for_case(self.db, case_id) or session_repo.latest_for_case(self.db, case_id)
         session_id = None if session is None else session.id
         self.db.rollback()

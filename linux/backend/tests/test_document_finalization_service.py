@@ -63,6 +63,16 @@ def test_finalize_stops_capture_drains_routing_then_finishes_and_freezes(tmp_pat
         assert db.get(Case, case_id).workflow_state == WorkflowState.FROZEN.value
         assert db.get(InterrogationSession, session_id).status == SessionStatus.COMPLETED.value
         assert db.query(DocumentSnapshot).filter_by(case_id=case_id).count() == 1
+
+        retry_events: list[str] = []
+        retried = DocumentFinalizationService(
+            db,
+            capture_service=FakeCaptureService(retry_events),
+            routing_coordinator=FakeRoutingCoordinator(retry_events),
+        ).finalize(case_id, actor_id="officer-1")
+        assert retried == state
+        assert retry_events == []
+        assert db.query(DocumentSnapshot).filter_by(case_id=case_id).count() == 1
     engine.dispose()
 
 
