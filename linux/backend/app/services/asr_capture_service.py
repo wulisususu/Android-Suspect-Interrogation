@@ -506,6 +506,21 @@ class AsrCaptureService:
         speaker_by_range: dict[tuple[int, int], SpeechEvent] = {}
         compare_by_range: dict[tuple[int, int], SpeechEvent] = {}
         for event in events:
+            if event.type is SpeechEventType.ASR_PARTIAL:
+                text = str(event.text or "").strip()
+                if text:
+                    self.publish_event(
+                        runtime.interrogation_session_id,
+                        "ASR_PARTIAL",
+                        {
+                            "caseId": runtime.case_id,
+                            "captureSessionId": runtime.capture_session_id,
+                            "text": text,
+                            "startedAtMs": event.start_ms,
+                            "endedAtMs": event.end_ms,
+                        },
+                    )
+                continue
             if event.start_ms is None or event.end_ms is None:
                 continue
             key = (int(event.start_ms), int(event.end_ms))

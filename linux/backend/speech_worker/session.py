@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 PCM_SAMPLE_WIDTH_BYTES = 2
 _PRODUCT_SPEAKER_BACKEND = "eres2net_large"
+_PARTIAL_TRANSCRIPT_MIN_MS = 1_500
 
 
 class SpeechRuntime(Protocol):
@@ -103,6 +104,7 @@ class SpeechSession:
         self._capture_start_ms: int | None = None
         self._stream_samples = 0
         self._finalized = False
+        self._last_partial_end_ms: int | None = None
 
     def push_pcm(self, pcm: bytes) -> list[SpeechEvent]:
         if self._finalized:
@@ -133,7 +135,9 @@ class SpeechSession:
             is_final=False,
             chunk_size_ms=self.chunk_size_ms,
         )
-        return self._consume_vad_events(vad_events)
+        events = self._consume_vad_events(vad_events)
+        events.extend(self._preview_transcript())
+        return events
 
     def finalize(self) -> list[SpeechEvent]:
         if self._finalized:
@@ -289,6 +293,56 @@ class SpeechSession:
             )
             return whole
         return spans or whole
+
+    def _preview_transcript(self) -> list[SpeechEvent]:
+        """Emit an unpersisted transcript while the current person is still speaking.
+
+        The final VAD-bounded result remains the only input to speaker verification and
+        formal-record routing.  This preview exists solely so the live dialogue can show
+        the original words without waiting for an end-of-utterance decision.
+        """
+        start_ms = self.utterance_start_ms
+        capture_start_ms = self._capture_start_ms
+        end_ms = self.stream_offset_ms
+        if start_ms is None or capture_start_ms is None:
+            return []
+        captured_duration_ms = max(0, end_ms - capture_start_ms)
+        if captured_duration_ms < _PARTIAL_TRANSCRIPT_MIN_MS:
+            return []
+        if self._last_partial_end_ms is not None and end_ms - self._last_partial_end_ms < _PARTIAL_TRANSCRIPT_MIN_MS:
+            return []
+
+        pcm = bytes(self.current_utterance_pcm[:self._ms_to_bytes(captured_duration_ms)])
+        if not pcm:
+            return []
+        try:
+            transcript = self.runtime.transcribe(pcm, self.sample_rate)
+        except AIError as exc:
+            logger.warning(
+                "live transcript preview failed",
+                extra={"session_id": self.session_id, "error_code": exc.code},
+            )
+            return []
+        self._last_partial_end_ms = end_ms
+        text = str(transcript.get("text") or "").strip()
+        if not text:
+            return []
+        return [
+            SpeechEvent(
+                type=SpeechEventType.ASR_PARTIAL,
+                session_id=self.session_id,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                text=text,
+                confidence=(
+                    None
+                    if transcript.get("confidence") is None
+                    else float(transcript["confidence"])
+                ),
+                model_id=str(transcript.get("model_id") or "paraformer"),
+                details={"preview": True},
+            )
+        ]
 
     def _embed_for_split(self, pcm: bytes) -> Sequence[float]:
         payload = self._extract_speaker(pcm, self.authoritative_speaker_backend_key)
@@ -517,6 +571,7 @@ class SpeechSession:
         self.current_utterance_pcm = bytearray()
         self.utterance_start_ms = None
         self._capture_start_ms = None
+        self._last_partial_end_ms = None
 
     def _ms_to_bytes(self, milliseconds: int) -> int:
         samples = int(round(int(milliseconds) * self.sample_rate / 1000.0))

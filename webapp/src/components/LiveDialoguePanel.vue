@@ -9,7 +9,7 @@ import type {
   PendingResolution,
   QAUnitResolution,
 } from '../types/templateInterrogation'
-import { dialoguePresentation, liveDialogueTurns } from '../utils/templateInterrogation'
+import { dialoguePresentation } from '../utils/templateInterrogation'
 
 const props = defineProps<{
   dialogue: TemporaryAsrFragment[]
@@ -37,34 +37,16 @@ const correctionSpeaker = ref<Record<string, TemporaryAsrSpeaker>>({})
 const correctionReason = ref<Record<string, string>>({})
 const qaReviewUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'NEEDS_REVIEW'))
 const qaResolvedUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'APPLIED' || unit.status === 'IGNORED'))
-const turnFragmentIds = computed(() => {
-  const ids: Record<string, string[]> = {}
-  for (const unit of props.qaUnits) {
-    ids[`turn:question:${unit.id}`] = unit.questionFragmentIds
-    ids[`turn:answer:${unit.id}`] = unit.answerFragmentIds
-  }
-  return ids
-})
+function transcriptTimestamp(value?: string | number | null) {
+  if (typeof value === 'number') return value
+  const parsed = value ? Date.parse(value) : Number.NaN
+  return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER
+}
+
 const visibleDialogue = computed<TemporaryAsrFragment[]>(() => {
-  const fragmentsById = new Map(props.dialogue.map((fragment) => [fragment.id, fragment]))
-  return liveDialogueTurns(props.qaUnits, props.dialogue).flatMap((turn) => {
-    if (turn.kind === 'UNCONFIRMED') return [turn.fragment]
-    const fragmentIds = turnFragmentIds.value[`turn:${turn.key}`] || []
-    const source = fragmentIds.map((id) => fragmentsById.get(id)).find((fragment) => fragment != null)
-    if (!source) return []
-    const speaker: TemporaryAsrSpeaker = turn.kind === 'QUESTION' ? 'INTERROGATOR' : 'SUSPECT'
-    return [{
-      ...source,
-      id: `turn:${turn.key}`,
-      rawText: turn.text,
-      editedText: '',
-      speaker,
-      speakerName: turn.kind === 'QUESTION' ? `问${turn.ordinal}` : `答${turn.ordinal}`,
-      recognitionEvidence: null,
-      recognitionRevisions: [],
-      state: 'CONFIRMED',
-    }]
-  })
+  return [...props.dialogue]
+    .filter((fragment) => Boolean(visibleText(fragment)))
+    .sort((left, right) => transcriptTimestamp(left.createdAt) - transcriptTimestamp(right.createdAt) || left.ordinal - right.ordinal)
 })
 
 const elapsed = computed(() => {
@@ -74,16 +56,6 @@ const elapsed = computed(() => {
 
 function visibleText(item: TemporaryAsrFragment) {
   return (item.editedText || item.rawText || '').trim()
-}
-
-function isMergedTurn(item: TemporaryAsrFragment) {
-  return item.id.startsWith('turn:')
-}
-
-function sourceFragments(item: TemporaryAsrFragment) {
-  return (turnFragmentIds.value[item.id] || [])
-    .map((fragmentId) => props.dialogue.find((fragment) => fragment.id === fragmentId))
-    .filter((fragment): fragment is TemporaryAsrFragment => fragment != null)
 }
 
 function formatTime(item: TemporaryAsrFragment) {
@@ -228,7 +200,8 @@ onMounted(() => { void scrollToLatest(true) })
     </header>
 
     <div ref="feed" class="dialogue-feed" @scroll="onFeedScroll">
-      <section v-if="qaReviewUnits.length || qaResolvedUnits.length" class="qa-review-rail" aria-label="Qwen 正式笔录路由状态">
+      <details v-if="qaReviewUnits.length || qaResolvedUnits.length" class="qa-review-rail" aria-label="Qwen 正式笔录路由状态">
+        <summary>笔录归档处理（{{ qaReviewUnits.length }} 项待处理）</summary>
         <article v-for="unit in qaReviewUnits" :key="unit.id" class="qa-review-card">
           <header><span class="qa-status-chip">待处理</span><small>{{ unit.reasonCode || 'NEEDS_REVIEW' }}</small></header>
           <p v-if="unit.rawQuestionText"><b>原始问：</b>{{ unit.rawQuestionText }}</p>
@@ -245,10 +218,10 @@ onMounted(() => { void scrollToLatest(true) })
           <span>{{ qaStatusLabel(unit) }}</span>
           <small v-if="unit.rawQuestionText">{{ unit.rawQuestionText }}</small>
         </div>
-      </section>
+      </details>
       <div v-if="!visibleDialogue.length && !partialText" class="dialogue-empty">
         <strong>等待现场对话</strong>
-        <p>识别后的语音会按问答回合显示；原始片段和识别证据可展开核对。</p>
+        <p>原始转写会先显示在这里；说话人归属完成后自动补上姓名。</p>
       </div>
 
       <template v-for="item in visibleDialogue" :key="item.id">
@@ -260,30 +233,13 @@ onMounted(() => { void scrollToLatest(true) })
           @dragstart="startPendingDrag($event, item.id)"
         >
           <div class="dialogue-meta">
-            <strong>{{ speakerName(item) }}</strong>
             <span>{{ dialoguePresentation(item).badge }}</span>
             <time>{{ formatTime(item) }}</time>
           </div>
-          <div class="dialogue-bubble">{{ visibleText(item) || '（无可显示文本）' }}</div>
-
-          <details v-if="isMergedTurn(item)" class="recognition-evidence-card">
-            <summary><span class="evidence-title">原始识别片段与证据</span></summary>
-            <div class="raw-fragment-list">
-              <div v-for="fragment in sourceFragments(item)" :key="fragment.id">
-                <strong>{{ speakerLabel(fragment.speaker) }}</strong>
-                <span>{{ visibleText(fragment) }}</span>
-                <small v-if="fragment.recognitionEvidence?.score != null">Score {{ scoreText(fragment.recognitionEvidence.score) }}</small>
-              </div>
-            </div>
-          </details>
+          <div class="dialogue-bubble"><strong class="speaker-prefix">{{ speakerName(item) }}：</strong>{{ visibleText(item) }}</div>
 
           <details v-if="item.recognitionEvidence" class="recognition-evidence-card">
-            <summary>
-              <span class="evidence-title">识别证据</span>
-              <span class="evidence-store-badge">独立证据已入库</span>
-              <span>AI 原判：{{ speakerLabel(item.recognitionEvidence.aiSpeaker) }}</span>
-              <span v-if="item.recognitionEvidence.score != null">Score {{ scoreText(item.recognitionEvidence.score) }}</span>
-            </summary>
+            <summary>查看识别依据</summary>
 
             <div class="evidence-grid">
               <div><small>AI 原判</small><strong>{{ speakerLabel(item.recognitionEvidence.aiSpeaker) }}</strong></div>
@@ -338,7 +294,7 @@ onMounted(() => { void scrollToLatest(true) })
             </div>
           </details>
 
-          <div v-else-if="!isMergedTurn(item)" class="recognition-evidence-missing">
+          <div v-else class="recognition-evidence-missing">
             识别证据尚未独立入库（历史数据迁移后将自动补齐）
           </div>
 
@@ -387,7 +343,7 @@ onMounted(() => { void scrollToLatest(true) })
       </template>
 
       <article v-if="partialText" class="dialogue-turn side-neutral partial-turn">
-        <div class="dialogue-meta"><strong>正在识别…</strong></div>
+        <div class="dialogue-meta"><span>正在转写</span></div>
         <div class="dialogue-bubble">{{ partialText }}</div>
       </article>
     </div>
@@ -405,14 +361,11 @@ onMounted(() => { void scrollToLatest(true) })
   font-size: 12px;
 }
 .recognition-evidence-card summary {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
   cursor: pointer;
-  padding: 8px 10px;
-  color: #48596b;
+  padding: 6px 8px;
+  color: #728194;
 }
+.speaker-prefix { color: #173f69; }
 .evidence-title { font-weight: 700; color: #23384d; }
 .evidence-store-badge {
   padding: 2px 6px;
@@ -478,7 +431,9 @@ onMounted(() => { void scrollToLatest(true) })
   .revision-row { grid-template-columns: auto 1fr; }
   .correction-controls { grid-template-columns: 1fr; }
 }
-.qa-review-rail { display: grid; gap: 8px; margin-bottom: 10px; }
+.qa-review-rail { margin-bottom: 10px; color: #647587; font-size: 12px; }
+.qa-review-rail summary { cursor: pointer; padding: 4px 2px; }
+.qa-review-rail[open] { display: grid; gap: 8px; }
 .qa-review-card { border: 1px solid #d5a73f; background: #fff9e8; border-radius: 10px; padding: 10px; }
 .qa-review-card header { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
 .qa-review-card p { margin: 6px 0; line-height: 1.45; }

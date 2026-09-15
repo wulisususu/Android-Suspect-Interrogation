@@ -188,6 +188,55 @@ def _wait_until(predicate, timeout: float = 1.0) -> None:
     raise AssertionError("condition did not become true")
 
 
+def test_capture_broadcasts_live_transcript_preview_without_creating_a_fragment(tmp_path: Path):
+    _engine, factory, case_id, session_id = _seed_database(tmp_path)
+    events = EventCollector()
+    service = AsrCaptureService(
+        session_factory=factory,
+        device_manager=FakeDeviceManager([]),
+        ai_supervisor=FakeSpeechSupervisor(),
+        publish_event=events,
+    )
+    runtime = capture_module._CaptureRuntime(
+        case_id=case_id,
+        interrogation_session_id=session_id,
+        capture_session_id="capture-preview",
+        speech_session_id="speech-preview",
+        speaker_threshold=0.7,
+        speaker_margin=0.1,
+        threshold_source="TEST",
+        calibration_id=None,
+        calibration_status="TEST",
+        speaker_model_fingerprint=None,
+        microphone_fingerprint=None,
+    )
+
+    service._consume_events(runtime, [
+        SpeechEvent(
+            type=SpeechEventType.ASR_PARTIAL,
+            session_id=runtime.speech_session_id,
+            start_ms=100,
+            end_ms=1600,
+            text="正在说的话",
+            model_id="test-paraformer",
+        )
+    ])
+
+    assert events.events == [(
+        session_id,
+        "ASR_PARTIAL",
+        {
+            "caseId": case_id,
+            "captureSessionId": "capture-preview",
+            "text": "正在说的话",
+            "startedAtMs": 100,
+            "endedAtMs": 1600,
+        },
+    )]
+    with factory() as db:
+        assert db.query(ASRFragment).count() == 0
+
+
 def test_capture_pushes_each_pcm_chunk_once_persists_verified_fragment_and_broadcasts(tmp_path: Path):
     engine, factory, case_id, session_id = _seed_database(tmp_path)
     chunks = [b"\x01\x00" * 1600, b"\x02\x00" * 1600]

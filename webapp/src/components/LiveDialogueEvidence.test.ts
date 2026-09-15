@@ -5,16 +5,15 @@ import workspaceSource from '../views/InterrogationWorkspace.vue?raw'
 
 
 describe('recognition evidence workbench contract', () => {
-  it('renders merged question and answer turns while retaining raw evidence access', () => {
-    expect(dialogueSource).toContain('liveDialogueTurns')
-    expect(dialogueSource).toContain('问${turn.ordinal}')
-    expect(dialogueSource).toContain('答${turn.ordinal}')
-    expect(dialogueSource).toContain("turn.kind === 'UNCONFIRMED'")
-    expect(dialogueSource).toContain('原始识别片段与证据')
+  it('renders chronological raw transcript fragments before formal-record grouping', () => {
+    expect(dialogueSource).toContain('return [...props.dialogue]')
+    expect(dialogueSource).toContain('原始转写会先显示在这里')
+    expect(dialogueSource).toContain('speaker-prefix')
+    expect(dialogueSource).not.toContain('liveDialogueTurns')
   })
 
   it('shows independent AI recognition evidence on every dialogue turn', () => {
-    expect(dialogueSource).toContain('识别证据')
+    expect(dialogueSource).toContain('查看识别依据')
     expect(dialogueSource).toContain('recognitionEvidence')
     expect(dialogueSource).toContain('thresholdSource')
     expect(dialogueSource).toContain('speakerModelVersion')
@@ -39,6 +38,7 @@ describe('recognition evidence workbench contract', () => {
     expect(dialogueSource).toContain('拖动整组问答')
     expect(dialogueSource).toContain('仅拖动答案')
     expect(dialogueSource).toContain("action: 'IGNORE'")
+    expect(dialogueSource).toContain('笔录归档处理')
   })
 
   it('shows routing status chips for A/B/C while E stays muted and raw-only', () => {

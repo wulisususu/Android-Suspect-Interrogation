@@ -109,6 +109,21 @@ def test_start_then_end_decodes_utterance_once_with_shared_bounds():
     assert runtime.speaker_calls == [(expected_utterance, 16000)]
 
 
+def test_active_utterance_emits_a_preview_without_waiting_for_vad_end():
+    runtime = FakeRuntime(vad_outputs=[[[0, -1]], []])
+    session = SpeechSession("session-preview", 16000, runtime, chunk_size_ms=200)
+
+    session.push_pcm(_pcm(200, value=1))
+    events = session.push_pcm(_pcm(1500, value=2))
+
+    assert [event.type for event in events] == [SpeechEventType.ASR_PARTIAL]
+    assert events[0].text == "测试口供"
+    assert events[0].start_ms == 0
+    assert events[0].end_ms == 1700
+    assert events[0].details == {"preview": True}
+    assert runtime.speaker_calls == []
+
+
 def test_speaker_result_requires_runtime_model_metadata():
     runtime = MissingSpeakerMetadataRuntime(vad_outputs=[[[0, 100]]])
     session = SpeechSession("session-no-model", 16000, runtime, chunk_size_ms=200)

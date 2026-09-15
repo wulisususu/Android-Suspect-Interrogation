@@ -291,6 +291,9 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       }
       if (event.event === 'ASR_FRAGMENT') {
         const fragment = normalizeTemporaryAsrFragment(event.payload)
+        // The persisted fragment is the finalized replacement for the transient
+        // live transcript shown while the speaker was still talking.
+        capture.value.partialText = ''
         upsertAsrFragment(fragment, scope)
         return
       }
