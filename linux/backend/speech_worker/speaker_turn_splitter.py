@@ -34,10 +34,11 @@ Stage 2 — windowed change point, paid only for suspicious utterances
                 (left mean cosRef <= band_low and right mean >= band_high, or the reverse).
                 Available only when a reference exists.
 
-    Every produced turn must reach ``min_turn_ms``. Anything else — no dip, a dip whose turns
-    are too short, competing change points — returns a single span flagged ``ambiguous=True``
-    so the caller can emit ``overlap=True`` and let ``SpeakerPolicy`` answer UNKNOWN. In a
-    forensic system UNKNOWN beats a confident wrong attribution.
+    Every produced turn must reach ``min_turn_ms``. No dip means there is no detected turn
+    boundary, so the whole span remains eligible for downstream reference verification. A
+    detected dip whose turns are too short or competing change points returns one span flagged
+    ``ambiguous=True`` so the caller can emit ``overlap=True`` and let ``SpeakerPolicy`` answer
+    UNKNOWN. In a forensic system UNKNOWN beats a confident wrong attribution.
 
 Without ``reference`` — which is how the live speech worker must call this, because biometric
 references never enter the worker — stage 1 and rule B cannot run. Rule A and the deep-dip rule
@@ -218,7 +219,9 @@ class SpeakerTurnSplitter:
                 STAGE_WINDOWED, len(starts), REASON_NO_DIP,
                 whole_cos_ref=whole_cos_ref, embedded_windows=embedded_windows,
             )
-            return [TurnSpan(0, total_ms, True)]
+            # No change point is not an overlap.  Downstream speaker verification
+            # must receive the whole turn and compare it with the enrolled reference.
+            return [TurnSpan(0, total_ms)]
 
         accepted: dict[int, str] = {}
         for position in dip_positions:

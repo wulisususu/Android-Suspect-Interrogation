@@ -236,11 +236,11 @@ def test_two_consecutive_dips_are_rule_a():
     assert engine.last_metrics.reason == REASON_RULE_A
 
 
-def test_flat_utterance_without_any_dip_is_a_single_ambiguous_turn():
+def test_flat_utterance_without_any_dip_is_a_single_turn():
     utterance = Utterance(["MIXED_FAR"] * 6)
     engine = SpeakerTurnSplitter()
     spans = split(utterance, engine=engine)
-    assert spans == [TurnSpan(0, utterance.total_ms, True)]
+    assert spans == [TurnSpan(0, utterance.total_ms)]
     assert engine.last_metrics is not None
     assert engine.last_metrics.reason == REASON_NO_DIP
 

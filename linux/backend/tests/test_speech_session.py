@@ -229,8 +229,8 @@ def test_long_utterance_with_a_speaker_change_is_split_into_turns():
     assert len([e for e in events if e.type is SpeechEventType.SPEAKER_RESULT]) == 2
 
 
-def test_long_utterance_without_a_detectable_change_stays_one_ambiguous_turn():
-    """A constant embedding gives no change point: keep one turn and flag it as overlap."""
+def test_long_utterance_without_a_detectable_change_stays_one_turn():
+    """A constant embedding has no turn boundary and remains eligible for verification."""
     runtime = FakeRuntime(vad_outputs=[[[0, -1]], [[-1, 6000]]])
     session = SpeechSession("session-flat", 16000, runtime, chunk_size_ms=200)
     session.push_pcm(_pcm(3000, value=1))
@@ -240,7 +240,7 @@ def test_long_utterance_without_a_detectable_change_stays_one_ambiguous_turn():
     finals = [event for event in events if event.type is SpeechEventType.ASR_FINAL]
     assert len(finals) == 1
     assert finals[0].start_ms == 0
-    assert finals[0].details.get("overlap") is True
+    assert finals[0].details.get("overlap") is None
     assert len(runtime.transcribe_calls) == 1
 
 
