@@ -1,7 +1,9 @@
+import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.ai_gateway.mock import DeterministicAIGateway
-from app.database.models import Message
+from app.database.models import DocumentSnapshot, Message, SignatureRecord
 from app.database.session import init_database, make_engine
 from app.domain.errors import DomainError
 from app.hardware_gateway.mock import MockHardwareGateway
@@ -73,6 +75,14 @@ def test_full_service_workflow_revision_audit_and_documents(tmp_path, enroll_tes
         assert [item["signerRole"] for item in suspect_signed["signatures"]] == ["SUSPECT"]
         assert cases.get(case["id"])["workflowState"] == "FROZEN"
 
+        with pytest.raises(DomainError) as duplicate_signature:
+            documents.sign(
+                case["id"], signer_role="SUSPECT", signer_name="测试对象",
+                image_data="data:image/png;base64,SUSPECT-RETRY", strokes_json="[]", actor_id="officer-1"
+            )
+        assert duplicate_signature.value.code == "SIGNATURE_ALREADY_EXISTS"
+        assert duplicate_signature.value.status_code == 409
+
         officer_signed = documents.sign(
             case["id"], signer_role="OFFICER", signer_name="测试警官",
             image_data="data:image/png;base64,OFFICER", strokes_json="[]", actor_id="officer-1"
@@ -92,6 +102,48 @@ def test_full_service_workflow_revision_audit_and_documents(tmp_path, enroll_tes
         assert any(item["action"] == "QA_MARK" for item in audit)
         assert len([item for item in audit if item["action"] == "SIGNATURE_SAVE"]) == 2
     finally:
+        db.close()
+        engine.dispose()
+
+
+def test_signature_schema_allows_each_role_once_per_snapshot(tmp_path):
+    engine, db = make_db(tmp_path)
+    try:
+        case = CaseService(db).create({"operator_id": "officer"})
+        snapshot = DocumentSnapshot(
+            id="snapshot-1",
+            case_id=case["id"],
+            version=1,
+            content_json="{}",
+            content_hash="a" * 64,
+        )
+        db.add(snapshot)
+        db.add(
+            SignatureRecord(
+                id="signature-1",
+                case_id=case["id"],
+                snapshot_id=snapshot.id,
+                signer_role="SUSPECT",
+                signer_name="测试对象",
+                image_data="data:image/png;base64,ONE",
+            )
+        )
+        db.commit()
+
+        db.add(
+            SignatureRecord(
+                id="signature-2",
+                case_id=case["id"],
+                snapshot_id=snapshot.id,
+                signer_role="SUSPECT",
+                signer_name="测试对象",
+                image_data="data:image/png;base64,TWO",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db.commit()
+    finally:
+        db.rollback()
         db.close()
         engine.dispose()
 

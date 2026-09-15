@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy import create_engine, inspect, text
 
 
-EXPECTED_HEAD = "0013_moss_transcription_integration"
+EXPECTED_HEAD = "0014_signature_snapshot_role_unique"
 XVECTOR = "xvector"
 
 

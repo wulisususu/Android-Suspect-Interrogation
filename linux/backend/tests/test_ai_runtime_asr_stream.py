@@ -63,3 +63,23 @@ def test_streaming_asr_processes_each_pcm_chunk_exactly_once_and_finalizes_full_
     # Finalization is intentionally one whole-utterance pass for the legacy ASR
     # endpoint until capture orchestration delegates it to SpeechWorkerSession.
     assert supervisor.transcribe_inputs == [b"AB"]
+
+
+def test_streaming_asr_rejects_audio_larger_than_one_minute_without_retaining_it():
+    app = FastAPI()
+    app.state.ai_supervisor = RecordingSupervisor()
+    app.include_router(ai_router, prefix="/api/v1")
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/v1/ai/asr/stream?session_id=session-limit") as ws:
+            ws.send_bytes(b"A" * (16_000 * 2 * 60 + 1))
+            result = ws.receive_json()
+            ws.send_text('{"type":"close"}')
+
+    assert result == {
+        "type": "error",
+        "error": {
+            "code": "STREAM_AUDIO_LIMIT_EXCEEDED",
+            "message": "单次语音流最长支持 60 秒",
+        },
+    }

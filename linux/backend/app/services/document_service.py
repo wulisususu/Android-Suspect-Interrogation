@@ -2,6 +2,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database.session import begin_sqlite_immediate
@@ -211,6 +212,7 @@ class DocumentService:
         strokes_json: str = "[]",
         actor_id: str | None = None,
     ) -> dict:
+        begin_sqlite_immediate(self.db)
         case = case_repo.get(self.db, case_id)
         workflow_state = WorkflowState(case.workflow_state)
         if workflow_state not in {WorkflowState.FROZEN, WorkflowState.SIGNED}:
@@ -232,19 +234,25 @@ class DocumentService:
             if row.snapshot_id == snapshot.id
         ]
         if any(str(row.signer_role or "").strip().upper() == role for row in snapshot_signatures):
-            raise DomainError("SIGNATURE_ROLE_ALREADY_SIGNED", "该签名角色已完成签名", 409)
+            raise DomainError("SIGNATURE_ALREADY_EXISTS", "该签名角色已完成签名", 409)
 
         session = session_repo.latest_for_case(self.db, case_id)
-        signature = document_repo.create_signature(
-            self.db,
-            case_id=case_id,
-            session_id=session.id if session else None,
-            snapshot_id=snapshot.id,
-            signer_role=role,
-            signer_name=name,
-            image_data=image_data,
-            strokes_json=strokes_json,
-        )
+        try:
+            signature = document_repo.create_signature(
+                self.db,
+                case_id=case_id,
+                session_id=session.id if session else None,
+                snapshot_id=snapshot.id,
+                signer_role=role,
+                signer_name=name,
+                image_data=image_data,
+                strokes_json=strokes_json,
+            )
+        except IntegrityError as exc:
+            self.db.rollback()
+            if "signature_records.snapshot_id, signature_records.signer_role" in str(exc.orig):
+                raise DomainError("SIGNATURE_ALREADY_EXISTS", "该签名角色已完成签名", 409) from exc
+            raise
 
         signed_roles = {
             str(row.signer_role or "").strip().upper()

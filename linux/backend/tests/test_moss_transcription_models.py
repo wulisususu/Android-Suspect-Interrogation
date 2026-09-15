@@ -16,7 +16,7 @@ from app.repositories import cases as case_repo
 
 
 MOSS_TABLES = {"moss_transcriptions", "moss_transcription_revisions", "moss_speaker_mappings"}
-ALEMBIC_HEAD = "0013_moss_transcription_integration"
+ALEMBIC_HEAD = "0014_signature_snapshot_role_unique"
 
 
 def _run_alembic(tmp_path: Path, target: str):

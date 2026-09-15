@@ -38,7 +38,7 @@ REQUIRED_TABLES = (
     CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES | QWEN_ROUTING_TABLES |
     MOSS_TRANSCRIPTION_TABLES
 )
-ALEMBIC_HEAD = "0013_moss_transcription_integration"
+ALEMBIC_HEAD = "0014_signature_snapshot_role_unique"
 
 
 def _run_alembic(tmp_path, target: str):
@@ -122,6 +122,11 @@ def test_alembic_upgrade_head_builds_required_schema(tmp_path):
     try:
         inspector = inspect(engine)
         assert REQUIRED_TABLES <= set(inspector.get_table_names())
+        signature_uniques = {
+            tuple(item["column_names"])
+            for item in inspector.get_unique_constraints("signature_records")
+        }
+        assert ("snapshot_id", "signer_role") in signature_uniques
         evidence_columns = {item["name"] for item in inspector.get_columns("asr_recognition_evidence")}
         assert {
             "fragment_id", "ai_speaker", "score", "threshold", "margin", "threshold_source",

@@ -163,6 +163,7 @@ class DocumentSnapshot(Base):
 
 class SignatureRecord(Base):
     __tablename__ = "signature_records"
+    __table_args__ = (UniqueConstraint("snapshot_id", "signer_role", name="uq_signature_snapshot_role"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)

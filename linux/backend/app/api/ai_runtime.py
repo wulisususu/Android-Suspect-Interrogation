@@ -15,6 +15,9 @@ from ..domain.errors import DomainError
 
 router = APIRouter(prefix="/ai", tags=["ai-runtime"])
 
+MAX_STREAM_SECONDS = 60
+MAX_STREAM_BYTES = 16_000 * 2 * MAX_STREAM_SECONDS
+
 
 class LLMGenerateRequest(BaseModel):
     prompt: str = Field(min_length=1)
@@ -130,6 +133,18 @@ async def asr_stream(websocket: WebSocket):
                 # streaming path must consume each newly received PCM chunk
                 # exactly once; passing the accumulated buffer reprocessed old
                 # samples as A, AB, ABC, ... on successive messages.
+                if len(audio) + len(chunk) > MAX_STREAM_BYTES:
+                    audio.clear()
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "error": {
+                                "code": "STREAM_AUDIO_LIMIT_EXCEEDED",
+                                "message": f"单次语音流最长支持 {MAX_STREAM_SECONDS} 秒",
+                            },
+                        }
+                    )
+                    continue
                 audio.extend(chunk)
                 try:
                     partials = await asyncio.to_thread(
