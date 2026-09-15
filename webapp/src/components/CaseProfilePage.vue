@@ -1,16 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import {
-  backendErrorMessage,
-  captureOcrImage,
-  fetchLocalModels,
-  fetchOcrStatus,
-  recognizeOcrImage,
-  selectLocalModel,
-} from '../api/interrogation'
+import { backendErrorMessage } from '../api/interrogation'
 import { updateCaseFact, updateCaseProfile } from '../api/caseProfile'
 import type { CaseSummary, FactItem } from '../types/interrogation'
-import { calculateAge, parseIdentityCardOcr } from '../utils/identityOcr'
+import { calculateAge } from '../utils/identityOcr'
 
 const props = defineProps<{ summary: CaseSummary; facts: FactItem[] }>()
 const emit = defineEmits<{ saved: [] }>()
@@ -18,7 +11,6 @@ const emit = defineEmits<{ saved: [] }>()
 const busy = ref('')
 const error = ref('')
 const message = ref('')
-const rawOcrText = ref('')
 
 const form = reactive({
   suspectName: '',
@@ -79,41 +71,6 @@ function syncAge() {
   form.age = calculateAge(form.birthDate)
 }
 
-async function ensureOcrModel() {
-  const status = await fetchOcrStatus()
-  if (status.selectedModelId) return
-  const catalog = await fetchLocalModels(false)
-  const candidate = catalog.models.find((item) => item.category === 'OCR' && item.runtimeReady && item.complete !== false)
-  if (!candidate) throw new Error('当前没有可运行的 OCR 模型，请先在 AI 设置中导入并选择 OCR 模型')
-  await selectLocalModel('OCR', candidate.id)
-}
-
-async function recaptureIdentity() {
-  busy.value = 'ocr'
-  error.value = ''
-  message.value = ''
-  rawOcrText.value = ''
-  try {
-    await ensureOcrModel()
-    await captureOcrImage()
-    const result = await recognizeOcrImage()
-    rawOcrText.value = result.text
-    const parsed = parseIdentityCardOcr(result.text)
-    if (parsed.suspectName) form.suspectName = parsed.suspectName
-    if (parsed.gender) form.gender = parsed.gender
-    if (parsed.nation) form.nation = parsed.nation
-    if (parsed.birthDate) form.birthDate = parsed.birthDate
-    if (parsed.age) form.age = parsed.age
-    if (parsed.idNumber) form.idNumber = parsed.idNumber
-    if (parsed.address) form.idCardAddress = parsed.address
-    message.value = '身份证已重新读取并回填。请核对后点击“保存修改”。'
-  } catch (err) {
-    error.value = backendErrorMessage(err)
-  } finally {
-    busy.value = ''
-  }
-}
-
 function factPatch(value: string, fallback = '未录入') {
   const clean = value.trim()
   return { value: clean || fallback, status: clean ? 'confirmed' as const : 'missing' as const }
@@ -148,8 +105,8 @@ async function save() {
       idNumber,
       address: form.idCardAddress.trim(),
       officerName: form.officerName.trim() || '当前警官',
-      identitySource: rawOcrText.value ? 'OCR' : (props.summary.identitySource || 'MANUAL'),
-      identityCapturedAt: rawOcrText.value ? Date.now() : (props.summary.identityCapturedAt || Date.now()),
+      identitySource: props.summary.identitySource || 'MANUAL',
+      identityCapturedAt: props.summary.identityCapturedAt || Date.now(),
     })
 
     await Promise.all([
@@ -194,12 +151,7 @@ onMounted(syncFromProps)
         <h2>嫌疑人身份与笔录基础信息</h2>
         <p>A 页作为固定信息数据源；C 页生成询问笔录时自动引用，不需要重复录入。</p>
       </div>
-      <div class="profile-header-actions">
-        <span class="identity-source">身份来源：{{ identitySourceText }}</span>
-        <button class="scanner-button secondary-scan" :disabled="!!busy" @click="recaptureIdentity">
-          {{ busy === 'ocr' ? '读取中…' : '重新读取身份证' }}
-        </button>
-      </div>
+      <span class="identity-source">身份来源：{{ identitySourceText }}</span>
     </header>
 
     <div class="profile-content profile-content-single">
@@ -232,10 +184,6 @@ onMounted(syncFromProps)
           <label class="wide"><span>记录人工作单位</span><input v-model="form.recorderUnit" /></label>
         </div>
 
-        <div v-if="rawOcrText" class="profile-recapture-result">
-          <strong>本次重新读取已完成</strong>
-          <span>身份证字段已回填到表单，保存前请人工核对。</span>
-        </div>
         <div v-if="error" class="page-message error">{{ error }}</div>
         <div v-else-if="message" class="page-message success">{{ message }}</div>
 
@@ -266,29 +214,4 @@ onMounted(syncFromProps)
   font-size: 15px;
 }
 .profile-section-title.second { margin-top: 24px; }
-.scanner-button.secondary-scan {
-  border-color: #cbd8e2;
-  background: #fff;
-  color: #4f6474;
-  padding: 7px 11px;
-  font-weight: 600;
-}
-.scanner-button.secondary-scan:hover:not(:disabled) {
-  border-color: #8eb7d8;
-  color: #2369a2;
-  background: #f8fbfe;
-}
-.profile-recapture-result {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 12px;
-  padding: 9px 12px;
-  border: 1px solid #d8e8f5;
-  border-radius: 8px;
-  background: #f6fbff;
-  color: #557080;
-  font-size: 12px;
-}
-.profile-recapture-result strong { color: #266a9f; }
 </style>

@@ -62,8 +62,6 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
     }
     case 'case.get': return { method: 'GET', url: `/api/v1/cases/${caseId}` }
     case 'case.update': return { method: 'PUT', url: `/api/v1/cases/${caseId}`, data: payload.patch ?? payload }
-    case 'case.ai.list': return { method: 'GET', url: `/api/v1/cases/${caseId}/ai-analyses` }
-    case 'case.ai.generate': return { method: 'POST', url: `/api/v1/cases/${caseId}/ai-analyses`, data: {} }
     case 'message.list': return { method: 'GET', url: `/api/v1/cases/${caseId}/messages`, params: { limit: payload.limit ?? 1000 } }
     case 'message.add': return { method: 'POST', url: `/api/v1/cases/${caseId}/messages`, data: { text: payload.text, from: payload.from } }
     case 'message.update': return { method: 'PUT', url: `/api/v1/cases/${caseId}/messages/${messageId}`, data: { text: payload.text, reason: payload.reason } }
@@ -107,18 +105,6 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
       },
     }
     case 'device.action': return { method: 'POST', url: '/api/v1/device/action', data: { type: payload.type } }
-    case 'model.list': return { method: 'GET', url: '/api/v1/models' }
-    case 'model.scan': return { method: 'GET', url: '/api/v1/models', params: { rescan: true } }
-    case 'model.select': return { method: 'POST', url: '/api/v1/models/select', data: { category: payload.category, model_id: payload.modelId } }
-    case 'model.import': return { method: 'POST', url: '/api/v1/models/import', data: { category: payload.category, source: payload.source } }
-    case 'llm.status': return { method: 'GET', url: '/api/v1/llm/status' }
-    case 'llm.storage.permission.request': return { method: 'POST', url: '/api/v1/llm/storage/permission', data: {} }
-    case 'llm.generate': return { method: 'POST', url: '/api/v1/llm/generate', data: payload }
-    case 'llm.cancel': return { method: 'POST', url: '/api/v1/llm/cancel', data: {} }
-    case 'llm.release': return { method: 'POST', url: '/api/v1/llm/release', data: {} }
-    case 'asr.status': return { method: 'GET', url: '/api/v1/asr/status' }
-    case 'asr.start': return { method: 'POST', url: '/api/v1/asr/start', data: {} }
-    case 'asr.stop': return { method: 'POST', url: '/api/v1/asr/stop', data: {} }
     case 'asr.capture.status': return { method: 'GET', url: `/api/v1/cases/${caseId}/asr/capture` }
     case 'asr.capture.start': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/capture/start`, data: {} }
     case 'asr.capture.stop': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/capture/stop`, data: {} }
@@ -173,16 +159,9 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
         actor_id: payload.actorId,
       },
     }
-    case 'ocr.status': return { method: 'GET', url: '/api/v1/ocr/status' }
-    case 'ocr.image.pick': return { method: 'POST', url: '/api/v1/ocr/image/pick', data: {} }
-    case 'ocr.camera.capture': return { method: 'POST', url: '/api/v1/ocr/camera/capture', data: {} }
-    case 'ocr.recognize': return { method: 'POST', url: '/api/v1/ocr/recognize', data: {} }
-    case 'ocr.release': return { method: 'POST', url: '/api/v1/ocr/release', data: {} }
-    case 'ai.inquiry': return { method: 'POST', url: '/api/v1/ai/inquiry', data: { case_id: payload.caseId, message: payload.message } }
     case 'document.signing.get': return { method: 'GET', url: `/api/v1/cases/${caseId}/document` }
     case 'document.freeze': return { method: 'POST', url: `/api/v1/cases/${caseId}/document/freeze`, data: {} }
     case 'document.sign': return { method: 'POST', url: `/api/v1/cases/${caseId}/document/sign`, data: payload }
-    case 'report.get': return { method: 'GET', url: `/api/v1/cases/${caseId}/report` }
     default: throw new RuntimeAdapterError('UNSUPPORTED_OPERATION', `Linux Runtime 不支持操作：${operation}`, 'NOT_CONFIGURED')
   }
 }

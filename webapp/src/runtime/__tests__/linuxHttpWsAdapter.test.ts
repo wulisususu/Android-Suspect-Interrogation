@@ -157,6 +157,27 @@ describe('LinuxHttpWsAdapter', () => {
     ])
   })
 
+  it('rejects retired operations that have no formal Linux FastAPI route', async () => {
+    const adapter = new LinuxHttpWsAdapter({
+      request: async () => ({ data: { ok: true, data: {} } }),
+    })
+
+    for (const operation of [
+      'case.ai.list',
+      'model.list',
+      'llm.status',
+      'asr.status',
+      'ocr.status',
+      'ai.inquiry',
+      'report.get',
+    ]) {
+      await expect(adapter.invoke(operation)).rejects.toMatchObject<Partial<RuntimeAdapterError>>({
+        code: 'UNSUPPORTED_OPERATION',
+        state: 'NOT_CONFIGURED',
+      })
+    }
+  })
+
   it('normalizes network failures to NOT_CONNECTED', async () => {
     const adapter = new LinuxHttpWsAdapter({
       request: async () => { throw Object.assign(new Error('offline'), { code: 'ERR_NETWORK' }) },

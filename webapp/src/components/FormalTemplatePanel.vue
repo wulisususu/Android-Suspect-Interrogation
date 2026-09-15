@@ -15,8 +15,6 @@ const props = defineProps<{
   signingState: DocumentSigningState | null
   signingBusy: string
   captureRunning: boolean
-  aiBusy: boolean
-  aiError: string
 }>()
 
 const emit = defineEmits<{
@@ -27,7 +25,6 @@ const emit = defineEmits<{
   saveLibrary: [questionId: string]
   insertPending: [pendingId: string, afterQuestionId: string | null]
   resolveQaUnit: [qaUnitId: string, resolution: QAUnitResolution]
-  generateAi: []
   freeze: []
   sign: [role: DocumentSignerRole]
   updateHeader: [target: 'case' | 'fact', key: string, value: string]
@@ -163,7 +160,6 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
       <header class="record-paper-header">
         <div class="record-title-block"><h1>询问笔录</h1><span>第 1 次</span></div>
         <div class="record-top-actions record-no-print">
-          <button :disabled="aiBusy" @click="emit('generateAi')">{{ aiBusy ? 'AI 梳理中…' : '案件 AI 梳理' }}</button>
           <button class="primary" :disabled="documentFrozen || signingBusy !== '' || captureRunning" @click="emit('freeze')">
             {{ signingBusy === 'freeze' ? '正在冻结…' : documentFrozen ? '笔录已冻结' : '结束并冻结笔录' }}
           </button>
@@ -176,7 +172,6 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
         </div>
       </header>
 
-      <p v-if="aiError" class="inline-error record-no-print">{{ aiError }}</p>
       <section class="record-meta-grid">
         <p><b>时间</b><span>{{ formatRecordTime(session.startedAt || summary.createdAt) }} 至 {{ session.endedAt ? formatRecordTime(session.endedAt) : '____________' }}</span></p>
         <p><b>地点</b><input class="record-meta-editor" aria-label="地点" :value="factText('interrogation_place')" :disabled="busy || documentFrozen" placeholder="填写询问地点" @change="saveHeader($event, 'fact', 'interrogation_place')"></p>

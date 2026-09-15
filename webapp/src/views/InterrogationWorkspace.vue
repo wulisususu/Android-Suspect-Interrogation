@@ -137,13 +137,6 @@ function openInterrogation() {
   activePage.value = 'interrogation'
 }
 
-async function generateCaseOverview() {
-  await store.generateCaseAnalysis()
-  if (store.caseAiError) return
-  await refreshCaseWorkspace()
-  activePage.value = 'overview'
-}
-
 async function runTemplateAction(action: () => Promise<unknown>) {
   try { await action() }
   catch { store.feedback(templateStore.error || '模板笔录操作失败', true) }
@@ -275,8 +268,6 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
             :native-capture-available="store.nativeCaptureAvailable"
             :capture-busy="store.captureBusy"
             :capture-elapsed-ms="store.captureElapsedMs"
-            :ai-busy="store.caseAiBusy"
-            :ai-error="store.caseAiError"
             :workspace="templateStore.workspace"
             :dialogue-history="templateStore.dialogueHistory"
             :question-library="templateStore.questionLibrary"
@@ -306,7 +297,6 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
             @select-interrogator="store.selectInterrogatorOfficer($event)"
             @select-recorder="store.selectRecorderOfficer($event)"
             @bind-roles="store.bindVoiceprintRoles()"
-            @generate-ai="generateCaseOverview"
             @load-library="loadQuestionLibrary"
             @create-question="createFormalQuestion"
             @update-question="updateFormalQuestion"

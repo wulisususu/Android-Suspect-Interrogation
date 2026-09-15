@@ -3,10 +3,7 @@ import {
   fetchOfficerVoiceprints,
   fetchVoiceprintEnrollmentStatus,
   fetchVoiceprintReadiness,
-  generateCaseAiAnalysis,
-  generateLlm,
   normalizeTemporaryAsrFragment,
-  recognizeOcrImage,
   revokeOfficerVoiceprint,
   startAsrCapture,
   startOfficerVoiceprintEnrollment,
@@ -25,10 +22,7 @@ function fakeAdapter() {
     kind: 'linux-http-ws',
     async invoke<T>(operation: RuntimeOperation, payload?: Record<string, unknown>): Promise<T> {
       calls.push({ operation, payload })
-      if (operation === 'case.ai.generate') return { id: 'analysis-1', caseId: 'case-1', text: 'ok', provider: 'LOCAL', model: 'local', createdAt: 1 } as T
-      if (operation === 'llm.generate') return { outputText: 'ok', finished: true, fragments: ['ok'], tokenIds: [], modelName: 'local', provider: 'linux', maxNewTokens: 32, maxContextLen: 256, initializationMs: 1, totalInferenceMs: 2 } as T
       if (operation === 'asr.capture.start') return { caseId: 'case-1', running: true, sampleRate: 16000, partialText: '', fragments: [] } as T
-      if (operation === 'ocr.recognize') return { text: '张三', blocks: [], imageWidth: 1, imageHeight: 1, modelName: 'ocr', provider: 'linux', recognitionMs: 1 } as T
       if (operation === 'document.freeze') return { caseId: 'case-1', version: 1, documentId: 'doc-1', documentHash: 'hash', status: 'FROZEN', createdAt: 1, integrityValid: true, signatures: [] } as T
       if (operation === 'document.sign') return { caseId: 'case-1', version: 1, documentId: 'doc-1', documentHash: 'hash', status: 'LOCKED', createdAt: 1, integrityValid: true, signatures: [] } as T
       if (operation === 'voiceprint.readiness') return { suspectReady: true, interrogatorReady: false, recorderReady: false, recognitionMode: 'SUSPECT_ONLY', canStart: true } as T
@@ -47,20 +41,14 @@ function fakeAdapter() {
 afterEach(() => resetRuntimeAdapterForTests())
 
 describe('application API runtime delegation', () => {
-  it('delegates AI, LLM, continuous ASR and OCR through the selected runtime', async () => {
+  it('delegates continuous ASR through the selected runtime', async () => {
     const { adapter, calls } = fakeAdapter()
     resetRuntimeAdapterForTests(adapter)
 
-    await generateCaseAiAnalysis('case-1')
-    await generateLlm({ generationId: 'g1', prompt: 'hello', maxNewTokens: 32, maxContextLen: 256 })
     await startAsrCapture('case-1')
-    await recognizeOcrImage()
 
     expect(calls.map((item) => item.operation)).toEqual([
-      'case.ai.generate',
-      'llm.generate',
       'asr.capture.start',
-      'ocr.recognize',
     ])
   })
 

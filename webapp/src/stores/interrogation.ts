@@ -10,7 +10,6 @@ import {
   discardAsrFragment,
   fetchAsrCaptureStatus,
   fetchCase,
-  fetchCaseAiAnalyses,
   fetchFacts,
   fetchMessages,
   fetchOfficerVoiceprints,
@@ -21,7 +20,6 @@ import {
   fetchVoiceprintEnrollmentStatus,
   fetchVoiceprintReadiness,
   finishSession as finishSessionApi,
-  generateCaseAiAnalysis,
   markTranscriptMessage,
   normalizeTemporaryAsrFragment,
   pauseSession as pauseSessionApi,
@@ -35,7 +33,6 @@ import {
   stopAsrCapture,
   stopOfficerVoiceprintEnrollment as stopOfficerVoiceprintEnrollmentApi,
   stopSuspectVoiceprintEnrollment as stopSuspectVoiceprintEnrollmentApi,
-  streamInquiry,
   updateAsrFragment,
   updateTranscriptMessage,
   updateVoiceprintAssignments,
@@ -45,7 +42,6 @@ import type {
   AsrCaptureStatus,
   AsrInsertionReceipt,
   AsrInsertionTarget,
-  CaseAiAnalysis,
   CaseSummary,
   FactItem,
   InterrogationStage,
@@ -161,9 +157,6 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   const transcript = ref<TranscriptMessage[]>([])
   const timeline = ref<TimelineEvent[]>([])
   const facts = ref<FactItem[]>([])
-  const caseAiAnalyses = ref<CaseAiAnalysis[]>([])
-  const caseAiBusy = ref(false)
-  const caseAiError = ref('')
   const voiceprintReadiness = ref<VoiceprintReadiness>(emptyVoiceprintReadiness())
   const officerVoiceprints = ref<OfficerVoiceprint[]>([])
   const selectedInterrogatorOfficerId = ref<string | null>(null)
@@ -176,7 +169,6 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   let captureTimer: ReturnType<typeof setInterval> | undefined
   let voiceprintProgressTimer: ReturnType<typeof setInterval> | undefined
   let sessionConnection: RuntimeSessionConnection | undefined
-  let inquiryController: AbortController | undefined
 
   const completion = computed(() => {
     if (!facts.value.length) return 0
@@ -208,8 +200,6 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   function resetCaseContext(nextCaseId = '') {
     caseGeneration += 1
     stopVoiceprintProgressPolling()
-    inquiryController?.abort()
-    inquiryController = undefined
     disposeCaptureEvents()
     if (feedbackTimer) clearTimeout(feedbackTimer)
     feedbackTimer = undefined
@@ -234,9 +224,6 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     transcript.value = []
     timeline.value = []
     facts.value = []
-    caseAiAnalyses.value = []
-    caseAiBusy.value = false
-    caseAiError.value = ''
     voiceprintReadiness.value = emptyVoiceprintReadiness()
     officerVoiceprints.value = []
     selectedInterrogatorOfficerId.value = null
@@ -354,13 +341,12 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
       const runtimeCapabilities = await fetchRuntimeCapabilities()
       captureAvailable.value = runtimeCapabilities.recording.state === 'AVAILABLE' || runtimeCapabilities.asr.state === 'AVAILABLE'
-      const [messages, factItems, timelineItems, sessionState, captureStatus, analyses, readiness, officers] = await Promise.all([
+      const [messages, factItems, timelineItems, sessionState, captureStatus, readiness, officers] = await Promise.all([
         fetchMessages(requestedCaseId),
         fetchFacts(requestedCaseId),
         fetchTimeline(requestedCaseId),
         fetchSessionState(requestedCaseId),
         captureAvailable.value ? fetchAsrCaptureStatus(requestedCaseId) : Promise.resolve(null),
-        fetchCaseAiAnalyses(requestedCaseId),
         fetchVoiceprintReadiness(requestedCaseId),
         fetchOfficerVoiceprints(true),
       ])
@@ -378,7 +364,6 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       officerVoiceprints.value = officers
       initializeRuntimeEvents(scope)
       if (captureStatus) applyCaptureStatus(captureStatus, scope)
-      caseAiAnalyses.value = analyses.filter((item) => item.caseId === requestedCaseId)
     } catch (err) {
       const scope: CaseScope = { caseId: requestedCaseId, generation }
       if (!isCurrentScope(scope)) return
@@ -711,53 +696,6 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     }
 
     if (!isCurrentScope(scope)) return
-    const aiMessage: TranscriptMessage = { id: uid(), speaker: 'AI', text: '', streaming: true }
-    transcript.value.push(aiMessage)
-    streaming.value = true
-    const controller = new AbortController()
-    inquiryController = controller
-
-    try {
-      await streamInquiry(scope.caseId, clean, (payload) => {
-        if (!isCurrentScope(scope)) return
-        if (payload.code) {
-          error.value = payload.message || `AI 上游返回错误 ${payload.code}`
-          return
-        }
-        if (payload.text_chunk) aiMessage.text += payload.text_chunk
-      }, controller.signal)
-    } catch (err) {
-      if (isCurrentScope(scope) && !controller.signal.aborted) error.value = backendErrorMessage(err)
-    } finally {
-      aiMessage.streaming = false
-      if (inquiryController === controller) inquiryController = undefined
-      if (isCurrentScope(scope)) streaming.value = false
-    }
-  }
-
-  async function generateCaseAnalysis() {
-    if (caseAiBusy.value) return
-
-    const scope = currentScope()
-    caseAiBusy.value = true
-    caseAiError.value = ''
-    try {
-      const analysis = await generateCaseAiAnalysis(scope.caseId)
-      if (!isCurrentScope(scope)) return
-      if (analysis.caseId !== scope.caseId) {
-        caseAiError.value = 'AI 推理返回的案件号与当前案件不一致'
-        feedback(caseAiError.value, true)
-        return
-      }
-      caseAiAnalyses.value = [analysis, ...caseAiAnalyses.value.filter((item) => item.id !== analysis.id && item.caseId === scope.caseId)]
-      feedbackIfCurrent(scope, '本案 AI 推理已生成并保存到当前案件')
-    } catch (err) {
-      if (!isCurrentScope(scope)) return
-      caseAiError.value = backendErrorMessage(err)
-      feedback(caseAiError.value, true)
-    } finally {
-      if (isCurrentScope(scope)) caseAiBusy.value = false
-    }
   }
 
   async function editMessage(messageId: string, text: string) {
@@ -906,9 +844,6 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     transcript,
     timeline,
     facts,
-    caseAiAnalyses,
-    caseAiBusy,
-    caseAiError,
     completion,
     stateText,
     stageText,
@@ -935,7 +870,6 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     resetCaseContext,
     initialize,
     ask,
-    generateCaseAnalysis,
     editMessage,
     markMessage,
     markLatestConflict,

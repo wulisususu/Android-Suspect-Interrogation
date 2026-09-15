@@ -341,14 +341,6 @@ export function fetchMessages(caseId: string): Promise<TranscriptMessage[]> { re
 export function fetchFacts(caseId: string): Promise<FactItem[]> { return runtime().invoke<FactItem[]>('fact.list', { caseId }) }
 export function fetchTimeline(caseId: string): Promise<TimelineEvent[]> { return runtime().invoke<TimelineEvent[]>('timeline.list', { caseId }) }
 export async function fetchSessionState(caseId: string): Promise<SessionState> { return normalizeSessionState(await runtime().invoke<unknown>('session.get', { caseId }), caseId) }
-export async function fetchCaseAiAnalyses(caseId: string): Promise<CaseAiAnalysis[]> {
-  try { return await runtime().invoke<CaseAiAnalysis[]>('case.ai.list', { caseId }) }
-  catch (error) {
-    if (error instanceof RuntimeAdapterError && ['MODEL_NOT_INSTALLED', 'NOT_CONFIGURED'].includes(error.state)) return []
-    throw error
-  }
-}
-export function generateCaseAiAnalysis(caseId: string): Promise<CaseAiAnalysis> { return runtime().invoke<CaseAiAnalysis>('case.ai.generate', { caseId }, { timeoutMs: 15 * 60_000 }) }
 export function persistQuestionOrAnswer(caseId: string, text: string, from: '民警' | '嫌疑人'): Promise<TranscriptMessage> { return runtime().invoke<TranscriptMessage>('message.add', { caseId, text, from }) }
 export function updateTranscriptMessage(caseId: string, messageId: string, text: string): Promise<TranscriptMessage> { return runtime().invoke<TranscriptMessage>('message.update', { caseId, messageId, text, reason: '警官在审讯工作台修订' }) }
 export function markTranscriptMessage(caseId: string, messageId: string, mark: RecordMark): Promise<TranscriptMessage> { return runtime().invoke<TranscriptMessage>('message.mark', { caseId, messageId, mark }) }
@@ -364,25 +356,6 @@ export const finishSession = (caseId: string) => sessionAction(caseId, 'finish')
 export async function changeSessionStage(caseId: string, stage: InterrogationStage): Promise<SessionState> { return normalizeSessionState(await runtime().invoke<unknown>('session.stage', { caseId, stage }), caseId) }
 export function invokeDeviceAction(type: 'identity' | 'fingerprint' | 'signature'): Promise<DeviceActionResult> { return runtime().invoke<DeviceActionResult>('device.action', { type }) }
 
-const emptyModelCatalog: LocalModelCatalog = { rootPath: 'Linux 本地模型目录（未就绪）', models: [] }
-export async function fetchLocalModels(rescan = false): Promise<LocalModelCatalog> {
-  try { return await runtime().invoke<LocalModelCatalog>(rescan ? 'model.scan' : 'model.list') }
-  catch (error) {
-    if (error instanceof RuntimeAdapterError && ['MODEL_NOT_INSTALLED', 'NOT_CONFIGURED'].includes(error.state)) return emptyModelCatalog
-    throw error
-  }
-}
-export function selectLocalModel(category: ModelCategory, modelId?: string): Promise<LocalModelCatalog> { return runtime().invoke<LocalModelCatalog>('model.select', { category, ...(modelId ? { modelId } : {}) }) }
-export function importLocalModel(category: ModelCategory, source: ModelImportSource): Promise<LocalModelCatalog> { return runtime().invoke<LocalModelCatalog>('model.import', { category, source }, { timeoutMs: 15 * 60_000 }) }
-export function fetchLlmStatus(): Promise<LlmRuntimeStatus> { return runtime().invoke<LlmRuntimeStatus>('llm.status') }
-export function requestLlmStoragePermission(): Promise<LlmRuntimeStatus> { return runtime().invoke<LlmRuntimeStatus>('llm.storage.permission.request', {}, { timeoutMs: 5 * 60_000 }) }
-export function generateLlm(request: LlmGenerateRequest): Promise<LlmResult> { return runtime().invoke<LlmResult>('llm.generate', request as unknown as Record<string, unknown>, { timeoutMs: 15 * 60_000 }) }
-export function cancelLlm(): Promise<LlmRuntimeStatus> { return runtime().invoke<LlmRuntimeStatus>('llm.cancel', {}, { timeoutMs: 30_000 }) }
-export function releaseLlm(): Promise<LlmRuntimeStatus> { return runtime().invoke<LlmRuntimeStatus>('llm.release', {}, { timeoutMs: 30_000 }) }
-export function fetchAsrStatus(): Promise<AsrRuntimeStatus> { return runtime().invoke<AsrRuntimeStatus>('asr.status') }
-export function startAsr(): Promise<AsrRuntimeStatus> { return runtime().invoke<AsrRuntimeStatus>('asr.start', {}, { timeoutMs: 120_000 }) }
-export function stopAsr(): Promise<AsrRuntimeStatus> { return runtime().invoke<AsrRuntimeStatus>('asr.stop', {}, { timeoutMs: 30_000 }) }
-
 export async function fetchVoiceprintReadiness(caseId: string): Promise<VoiceprintReadiness> { return normalizeVoiceprintReadiness(await runtime().invoke<unknown>('voiceprint.readiness', { caseId })) }
 export async function fetchVoiceprintEnrollmentStatus(): Promise<VoiceprintCaptureStatus> { return normalizeVoiceprintCaptureStatus(await runtime().invoke<unknown>('voiceprint.enrollment.status', {})) }
 export function startSuspectVoiceprintEnrollment(caseId: string, actorId?: string): Promise<VoiceprintEnrollmentResult> { return runtime().invoke<VoiceprintEnrollmentResult>('voiceprint.suspect.enrollment.start', { caseId, actorId }) }
@@ -397,12 +370,6 @@ export async function revokeOfficerVoiceprint(officerId: string, actorId?: strin
 export async function updateVoiceprintAssignments(caseId: string, interrogatorOfficerId?: string | null, recorderOfficerId?: string | null, actorId?: string): Promise<VoiceprintReadiness> {
   return normalizeVoiceprintReadiness(await runtime().invoke<unknown>('voiceprint.assignments.update', { caseId, interrogatorOfficerId: interrogatorOfficerId ?? null, recorderOfficerId: recorderOfficerId ?? null, actorId }))
 }
-
-export function fetchOcrStatus(): Promise<OcrRuntimeStatus> { return runtime().invoke<OcrRuntimeStatus>('ocr.status') }
-export function pickOcrImage(): Promise<OcrRuntimeStatus> { return runtime().invoke<OcrRuntimeStatus>('ocr.image.pick', {}, { timeoutMs: 5 * 60_000 }) }
-export function captureOcrImage(): Promise<OcrRuntimeStatus> { return runtime().invoke<OcrRuntimeStatus>('ocr.camera.capture', {}, { timeoutMs: 5 * 60_000 }) }
-export function recognizeOcrImage(): Promise<OcrResult> { return runtime().invoke<OcrResult>('ocr.recognize', {}, { timeoutMs: 5 * 60_000 }) }
-export function releaseOcr(): Promise<OcrRuntimeStatus> { return runtime().invoke<OcrRuntimeStatus>('ocr.release', {}, { timeoutMs: 30_000 }) }
 
 export async function fetchAsrCaptureStatus(caseId: string): Promise<AsrCaptureStatus> { return normalizeCaptureStatus(caseId, await runtime().invoke<unknown>('asr.capture.status', { caseId })) }
 export async function startAsrCapture(caseId: string): Promise<AsrCaptureStatus> { return normalizeCaptureStatus(caseId, await runtime().invoke<unknown>('asr.capture.start', { caseId }, { timeoutMs: 120_000 })) }
@@ -430,10 +397,3 @@ export async function applyAsrFragmentsToRecord(caseId: string, _captureSessionI
   return { confirmedCount: Number(raw.confirmedCount ?? fragments.length), fragments }
 }
 export async function discardAsrFragment(caseId: string, fragmentId: string): Promise<TemporaryAsrFragment> { return normalizeTemporaryAsrFragment(await runtime().invoke<unknown>('asr.fragment.discard', { caseId, fragmentId })) }
-
-export async function streamInquiry(caseId: string, message: string, onPayload: (payload: InquirySsePayload) => void, signal?: AbortSignal) {
-  if (signal?.aborted) return
-  const result = await runtime().invoke<{ text?: string; provider?: string; model?: string }>('ai.inquiry', { caseId, message }, { timeoutMs: 15 * 60_000 })
-  if (signal?.aborted) return
-  if (result?.text) onPayload({ text_chunk: result.text })
-}

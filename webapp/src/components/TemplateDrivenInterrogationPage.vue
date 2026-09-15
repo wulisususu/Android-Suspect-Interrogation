@@ -42,8 +42,6 @@ const props = defineProps<{
   nativeCaptureAvailable: boolean
   captureBusy: boolean
   captureElapsedMs: number
-  aiBusy: boolean
-  aiError: string
   workspace: TemplateWorkspace
   dialogueHistory: TemporaryAsrFragment[]
   questionLibrary: StandardQuestion[]
@@ -76,7 +74,6 @@ const emit = defineEmits<{
   selectInterrogator: [officerId: string | null]
   selectRecorder: [officerId: string | null]
   bindRoles: []
-  generateAi: []
   loadLibrary: [category?: string]
   createQuestion: [input: CaseQuestionCreateInput]
   updateQuestion: [questionId: string, input: CaseQuestionUpdateInput]
@@ -311,8 +308,6 @@ async function confirmSignature() {
           :signing-state="signingState"
           :signing-busy="signingBusy"
           :capture-running="capture.running"
-          :ai-busy="aiBusy"
-          :ai-error="aiError"
           @update-question="forwardQuestionUpdate"
           @reorder="emit('reorderQuestions', $event)"
           @remove-question="(id) => emit('removeQuestion', id)"
@@ -320,7 +315,6 @@ async function confirmSignature() {
           @resolve-qa-unit="(qaUnitId, resolution) => emit('resolveQaUnit', qaUnitId, resolution)"
           @update-answer="(id, text) => emit('updateAnswer', id, text)"
           @save-library="emit('saveLibrary', $event)"
-          @generate-ai="emit('generateAi')"
           @freeze="finishAndFreeze"
           @sign="openSignature"
           @update-header="(target, key, value) => emit('updateHeader', target, key, value)"
