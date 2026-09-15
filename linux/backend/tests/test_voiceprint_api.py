@@ -1,7 +1,9 @@
 import struct
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
+from app.database.models import InterrogationSession, SessionVoiceAssignment
 from app.domain.errors import DomainError
 from app.hardware_gateway.mock import MockHardwareGateway
 from app.main import create_app
@@ -220,6 +222,41 @@ def test_officer_library_and_full_role_assignment_api(tmp_path):
 
         revoked = payload(client.delete("/api/v1/officer-voiceprints/P-001?actor_id=admin"))
         assert revoked["active"] is False
+
+
+def test_session_start_binds_voiceprint_roles_atomically(tmp_path):
+    app = app_with_voiceprint_fakes(tmp_path)
+    with TestClient(app) as client:
+        case_id = create_identity_ready_case(client)
+        enroll_suspect(client, case_id)
+
+        blocked = client.post(f"/api/v1/cases/{case_id}/session/start", json={
+            "actor_id": "op",
+            "interrogator_officer_id": "P-MISSING",
+        })
+        assert blocked.status_code == 404
+        assert blocked.json()["code"] == "OFFICER_VOICEPRINT_NOT_FOUND"
+        assert payload(client.get(f"/api/v1/cases/{case_id}"))["workflowState"] == "IDENTITY_READY"
+
+        with app.state.session_factory() as db:
+            assert db.scalar(select(InterrogationSession).where(InterrogationSession.case_id == case_id)) is None
+            assert db.scalar(select(SessionVoiceAssignment).join(InterrogationSession).where(InterrogationSession.case_id == case_id)) is None
+
+        enrolled_officer = enroll_officer(client, "P-001", "张警官")
+        assert enrolled_officer["active"] is True
+        started = payload(client.post(f"/api/v1/cases/{case_id}/session/start", json={
+            "actor_id": "op",
+            "interrogator_officer_id": "P-001",
+        }))
+        assert started["status"] == "RUNNING"
+
+        with app.state.session_factory() as db:
+            session = db.scalar(select(InterrogationSession).where(InterrogationSession.case_id == case_id))
+            assignment = db.scalar(select(SessionVoiceAssignment).where(SessionVoiceAssignment.session_id == session.id))
+            assert assignment is not None
+            assert assignment.interrogator_officer_id == "P-001"
+            assert assignment.recorder_officer_id is None
+            assert assignment.recognition_mode == "SUSPECT_PLUS_INTERROGATOR"
 
 
 def test_concurrent_voiceprint_enrollment_returns_resource_busy(tmp_path):

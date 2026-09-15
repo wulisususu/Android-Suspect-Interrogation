@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 
 from app.database.base import utc_now
+from app.database.session import begin_sqlite_immediate
 from app.domain.enums import InterrogationStage, SessionStatus, WorkflowState
 from app.domain.errors import DomainError
 from app.repositories import audit as audit_repo
@@ -22,35 +23,61 @@ class SessionService:
     def _advance(self, case, target: WorkflowState) -> None:
         case.workflow_state = StateMachine.transition(WorkflowState(case.workflow_state), target).value
 
-    def start(self, case_id: str, actor_id: str | None = None, allow_identity_bypass: bool = False) -> dict:
-        case = case_repo.get(self.db, case_id)
-        active = session_repo.active_for_case(self.db, case_id)
-        if active:
-            return session_dict(active, case)
-        state = WorkflowState(case.workflow_state)
-        if state == WorkflowState.IDENTITY_REQUIRED:
-            if not allow_identity_bypass:
-                raise DomainError("IDENTITY_REQUIRED", "请先完成身份读取再开始审讯", 409)
-            audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="IDENTITY_BYPASS_LEGACY_COMPAT", target_type="CASE", target_id=case_id,
-                           detail={"reason": "legacy browser compatibility route"})
-            self._advance(case, WorkflowState.IDENTITY_READY)
-            state = WorkflowState.IDENTITY_READY
-        if state == WorkflowState.IDENTITY_READY:
-            self._advance(case, WorkflowState.CASE_CREATED)
-            state = WorkflowState.CASE_CREATED
-        if state != WorkflowState.CASE_CREATED:
-            raise DomainError("SESSION_START_NOT_ALLOWED", f"当前状态不可开始审讯：{state.value}", 409)
-        if voiceprint_repo.get_suspect(self.db, case_id, model_key="eres2net_large") is None:
-            raise DomainError(
-                "SUSPECT_VOICEPRINT_REQUIRED",
-                "请先完成嫌疑人声纹注册再开始审讯",
-                409,
-            )
-        self._advance(case, WorkflowState.QUESTIONING)
-        row = session_repo.create(self.db, case_id, case.stage)
-        audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="SESSION_START", target_type="SESSION", target_id=row.id)
-        self.db.commit()
-        return session_dict(row, case)
+    def start(
+        self,
+        case_id: str,
+        actor_id: str | None = None,
+        allow_identity_bypass: bool = False,
+        *,
+        voiceprint_service=None,
+        interrogator_officer_id: str | None = None,
+        recorder_officer_id: str | None = None,
+    ) -> dict:
+        begin_sqlite_immediate(self.db)
+        try:
+            case = case_repo.get(self.db, case_id)
+            active = session_repo.active_for_case(self.db, case_id)
+            if active:
+                return session_dict(active, case)
+            state = WorkflowState(case.workflow_state)
+            if state == WorkflowState.IDENTITY_REQUIRED:
+                if not allow_identity_bypass:
+                    raise DomainError("IDENTITY_REQUIRED", "请先完成身份读取再开始审讯", 409)
+                audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="IDENTITY_BYPASS_LEGACY_COMPAT", target_type="CASE", target_id=case_id,
+                               detail={"reason": "legacy browser compatibility route"})
+                self._advance(case, WorkflowState.IDENTITY_READY)
+                state = WorkflowState.IDENTITY_READY
+            if state == WorkflowState.IDENTITY_READY:
+                self._advance(case, WorkflowState.CASE_CREATED)
+                state = WorkflowState.CASE_CREATED
+            if state != WorkflowState.CASE_CREATED:
+                raise DomainError("SESSION_START_NOT_ALLOWED", f"当前状态不可开始审讯：{state.value}", 409)
+            if voiceprint_repo.get_suspect(self.db, case_id, model_key="eres2net_large") is None:
+                raise DomainError(
+                    "SUSPECT_VOICEPRINT_REQUIRED",
+                    "请先完成嫌疑人声纹注册再开始审讯",
+                    409,
+                )
+            if voiceprint_service is not None:
+                voiceprint_service.validate_role_binding(
+                    case_id, interrogator_officer_id, recorder_officer_id
+                )
+            self._advance(case, WorkflowState.QUESTIONING)
+            row = session_repo.create(self.db, case_id, case.stage)
+            if voiceprint_service is not None:
+                voiceprint_service.bind_roles(
+                    case_id,
+                    interrogator_officer_id,
+                    recorder_officer_id,
+                    actor_id=actor_id,
+                    commit=False,
+                )
+            audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="SESSION_START", target_type="SESSION", target_id=row.id)
+            self.db.commit()
+            return session_dict(row, case)
+        except Exception:
+            self.db.rollback()
+            raise
 
     def pause(self, case_id: str, actor_id: str | None = None) -> dict:
         case = case_repo.get(self.db, case_id)

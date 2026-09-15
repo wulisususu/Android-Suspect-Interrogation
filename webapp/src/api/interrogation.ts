@@ -374,10 +374,22 @@ export function updateTranscriptMessage(caseId: string, messageId: string, text:
 export function markTranscriptMessage(caseId: string, messageId: string, mark: RecordMark): Promise<TranscriptMessage> { return runtime().invoke<TranscriptMessage>('message.mark', { caseId, messageId, mark }) }
 export function fetchRevisions(caseId: string, messageId?: string): Promise<RecordRevision[]> { return runtime().invoke<RecordRevision[]>('message.revisions', { caseId, ...(messageId ? { messageId } : {}) }) }
 
-async function sessionAction(caseId: string, action: 'start' | 'pause' | 'resume' | 'finish'): Promise<SessionState> {
+async function sessionAction(caseId: string, action: 'pause' | 'resume' | 'finish'): Promise<SessionState> {
   return normalizeSessionState(await runtime().invoke<unknown>(`session.${action}`, { caseId }), caseId)
 }
-export const startSession = (caseId: string) => sessionAction(caseId, 'start')
+export async function startSession(
+  caseId: string,
+  interrogatorOfficerId?: string | null,
+  recorderOfficerId?: string | null,
+  actorId?: string,
+): Promise<SessionState> {
+  return normalizeSessionState(await runtime().invoke<unknown>('session.start', {
+    caseId,
+    interrogatorOfficerId: interrogatorOfficerId ?? null,
+    recorderOfficerId: recorderOfficerId ?? null,
+    actorId,
+  }), caseId)
+}
 export const pauseSession = (caseId: string) => sessionAction(caseId, 'pause')
 export const resumeSession = (caseId: string) => sessionAction(caseId, 'resume')
 export const finishSession = (caseId: string) => sessionAction(caseId, 'finish')

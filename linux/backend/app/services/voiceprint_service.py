@@ -317,6 +317,8 @@ class VoiceprintService:
         interrogator_officer_id: str | None,
         recorder_officer_id: str | None,
         actor_id: str | None = None,
+        *,
+        commit: bool = True,
     ) -> dict:
         case_repo.get(self.db, case_id)
         session = session_repo.active_for_case(self.db, case_id)
@@ -356,7 +358,8 @@ class VoiceprintService:
                 "recognition_mode": assignment.recognition_mode,
             },
         )
-        self.db.commit()
+        if commit:
+            self.db.commit()
         return {
             "sessionId": session.id,
             "assignmentId": assignment.id,
@@ -368,6 +371,45 @@ class VoiceprintService:
             "recognitionMode": assignment.recognition_mode,
             "canStart": True,
         }
+
+    def validate_role_binding(
+        self,
+        case_id: str,
+        interrogator_officer_id: str | None,
+        recorder_officer_id: str | None,
+    ) -> None:
+        """Check every selected reference before a session row is created."""
+        case_repo.get(self.db, case_id)
+        backend = self.authoritative_speaker_backend
+        suspect = voiceprint_repo.get_suspect(self.db, case_id, model_key=backend)
+        if suspect is None:
+            raise DomainError(
+                "SUSPECT_VOICEPRINT_BACKEND_REQUIRED",
+                f"请先完成 {backend} 嫌疑人声纹注册",
+                409,
+                data={"speaker_backend": backend},
+            )
+        for officer_id in (
+            self._optional_id(interrogator_officer_id),
+            self._optional_id(recorder_officer_id),
+        ):
+            if officer_id is None:
+                continue
+            officer = voiceprint_repo.get_officer(
+                self.db, officer_id, model_key=backend, active_only=False
+            )
+            if officer is None:
+                raise DomainError(
+                    "OFFICER_VOICEPRINT_NOT_FOUND",
+                    f"民警 {officer_id} 未登记 {backend} 声纹",
+                    404,
+                )
+            if not officer.active or officer.revoked_at is not None:
+                raise DomainError(
+                    "OFFICER_VOICEPRINT_NOT_ACTIVE",
+                    f"民警 {officer_id} 的 {backend} 声纹档案已停用",
+                    409,
+                )
 
     def build_reference_for_backend(self, pcm: bytes, backend: str) -> dict[str, Any]:
         """Build one model-specific reference from source PCM using enrollment semantics."""

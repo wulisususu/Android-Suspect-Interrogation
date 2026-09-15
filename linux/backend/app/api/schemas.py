@@ -53,6 +53,11 @@ class ActorRequest(FlexibleModel):
     actor_id: str | None = None
 
 
+class SessionStartRequest(ActorRequest):
+    interrogator_officer_id: str | None = None
+    recorder_officer_id: str | None = None
+
+
 class IdentityReadRequest(ActorRequest):
     case_id: str | None = None
 

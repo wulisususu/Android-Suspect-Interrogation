@@ -754,26 +754,18 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       return
     }
     try {
-      const nextSession = await startSessionApi(scope.caseId)
+      const nextSession = await startSessionApi(
+        scope.caseId,
+        selectedInterrogatorOfficerId.value,
+        selectedRecorderOfficerId.value,
+      )
       if (!isCurrentScope(scope) || nextSession.caseId !== scope.caseId) return
       session.value = nextSession
-      try {
-        await bindVoiceprintRoles()
-      } catch {
-        if (!isCurrentScope(scope)) return
-        try {
-          const paused = await pauseSessionApi(scope.caseId)
-          if (isCurrentScope(scope) && paused.caseId === scope.caseId) session.value = paused
-        } catch {
-          // Keep the original role-binding failure visible; capture remains blocked while not RUNNING.
-        }
-        return
-      }
       if (!isCurrentScope(scope)) return
       disposeCaptureEvents()
       initializeRuntimeEvents(scope)
       await refreshCase(scope)
-      feedbackIfCurrent(scope, '审讯已开始：嫌疑人声纹门禁已通过，民警角色已绑定到本次 session')
+      feedbackIfCurrent(scope, '审讯已开始：声纹角色已随本次 session 一次性冻结')
     } catch (err) {
       feedbackIfCurrent(scope, backendErrorMessage(err), true)
     }

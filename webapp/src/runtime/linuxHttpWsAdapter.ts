@@ -76,7 +76,15 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
     case 'timeline.list': return { method: 'GET', url: `/api/v1/cases/${caseId}/timeline` }
     case 'audit.list': return { method: 'GET', url: `/api/v1/cases/${caseId}/audit` }
     case 'session.get': return { method: 'GET', url: `/api/v1/cases/${caseId}/session` }
-    case 'session.start': return { method: 'POST', url: `/api/v1/cases/${caseId}/session/start`, data: {} }
+    case 'session.start': return {
+      method: 'POST',
+      url: `/api/v1/cases/${caseId}/session/start`,
+      data: {
+        interrogator_officer_id: payload.interrogatorOfficerId ?? null,
+        recorder_officer_id: payload.recorderOfficerId ?? null,
+        actor_id: payload.actorId,
+      },
+    }
     case 'session.pause': return { method: 'POST', url: `/api/v1/cases/${caseId}/session/pause`, data: {} }
     case 'session.resume': return { method: 'POST', url: `/api/v1/cases/${caseId}/session/resume`, data: {} }
     case 'session.finish': return { method: 'POST', url: `/api/v1/cases/${caseId}/session/finish`, data: {} }

@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.api.responses import envelope
-from app.api.schemas import ActorRequest, MessageCreateRequest, MessageMarkRequest, MessageUpdateRequest, StageRequest
+from app.api.schemas import ActorRequest, MessageCreateRequest, MessageMarkRequest, MessageUpdateRequest, SessionStartRequest, StageRequest
+from app.api.voiceprints import make_voiceprint_service
 from app.services.message_service import MessageService
 from app.services.session_service import SessionService
 
@@ -20,8 +21,18 @@ def get_session(case_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/cases/{case_id}/session/start")
-def start_session(case_id: str, body: ActorRequest | None = None, db: Session = Depends(get_db)):
-    return envelope(SessionService(db).start(case_id, _actor(body)), "审讯已开始")
+def start_session(case_id: str, request: Request, body: SessionStartRequest | None = None, db: Session = Depends(get_db)):
+    body = body or SessionStartRequest()
+    return envelope(
+        SessionService(db).start(
+            case_id,
+            _actor(body),
+            voiceprint_service=make_voiceprint_service(request, db),
+            interrogator_officer_id=body.interrogator_officer_id,
+            recorder_officer_id=body.recorder_officer_id,
+        ),
+        "审讯已开始",
+    )
 
 
 @router.post("/cases/{case_id}/session/pause")

@@ -115,14 +115,23 @@ describe('LinuxHttpWsAdapter', () => {
       origin: 'http://127.0.0.1:8080',
     })
 
-    await adapter.invoke('session.start', { caseId: 'CASE-001' })
+    await adapter.invoke('session.start', {
+      caseId: 'CASE-001',
+      interrogatorOfficerId: 'POL-1',
+      recorderOfficerId: null,
+      actorId: 'actor-1',
+    })
     await adapter.invoke('session.pause', { caseId: 'CASE-001' })
     await adapter.invoke('session.resume', { caseId: 'CASE-001' })
     await adapter.invoke('session.stage', { caseId: 'CASE-001', stage: 'STATEMENT' })
     await adapter.invoke('session.finish', { caseId: 'CASE-001' })
 
     expect(calls).toEqual([
-      { method: 'POST', url: '/api/v1/cases/CASE-001/session/start', data: {} },
+      {
+        method: 'POST',
+        url: '/api/v1/cases/CASE-001/session/start',
+        data: { interrogator_officer_id: 'POL-1', recorder_officer_id: null, actor_id: 'actor-1' },
+      },
       { method: 'POST', url: '/api/v1/cases/CASE-001/session/pause', data: {} },
       { method: 'POST', url: '/api/v1/cases/CASE-001/session/resume', data: {} },
       { method: 'POST', url: '/api/v1/cases/CASE-001/session/stage', data: { stage: 'STATEMENT' } },
