@@ -196,6 +196,8 @@ def qa_unit_dict(row: QAUnit) -> dict:
         "rawAnswerText": row.raw_answer_text,
         "formalQuestionText": row.formal_question_text,
         "formalAnswerText": row.formal_answer_text,
+        "aiSuggestedQuestionText": row.formal_question_text,
+        "aiSuggestedAnswerText": row.formal_answer_text,
         "candidateQuestionIds": _json_list(row.candidate_question_ids_json),
         "questionFragmentIds": [item.fragment_id for item in fragments if item.role == "QUESTION"],
         "answerFragmentIds": [item.fragment_id for item in fragments if item.role == "ANSWER"],

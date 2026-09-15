@@ -235,7 +235,7 @@ class FormalRecordRoutingService:
         question_repo.set_canonical_answer(
             self.db,
             question,
-            answer_text=decision.formal_answer or "",
+            answer_text=str(unit.raw_answer_text or "").strip(),
             first_asked_at=unit.started_at,
         )
         TemplateWorkspaceService(self.db).apply_actual_body_order(unit.case_id)

@@ -171,7 +171,8 @@ def test_a_preserves_fixed_question_and_updates_canonical_answer(tmp_path):
             decision(RouteClass.MATCH_FIXED, target=opening.id, answer="接到派出所通知后前来配合调查。"),
         )
         assert opening.text == "你因何事来公安机关？"
-        assert opening.formal_answer_text == "接到派出所通知后前来配合调查。"
+        assert opening.formal_answer_text == "派出所通知我来的。"
+        assert unit.formal_answer_text == "接到派出所通知后前来配合调查。"
         assert result["status"] == "APPLIED"
         rounds = db.scalars(select(QuestionRound).where(QuestionRound.case_question_id == opening.id)).all()
         assert len(rounds) == 1
@@ -190,7 +191,7 @@ def test_b_followup_creates_rounds_but_one_canonical_answer_and_keeps_first_aske
         first_asked = body1.first_asked_at
         second = make_unit(db, case, session, capture, ordinal_base=3, start_ms=5000, question="具体一点呢？", answer="八点十五左右。")
         service.apply_auto(second.id, decision(RouteClass.MATCH_EXISTING, target=body1.id, answer="大概八点十五分左右到达。"))
-        assert body1.formal_answer_text == "大概八点十五分左右到达。"
+        assert body1.formal_answer_text == "八点十五左右。"
         assert as_utc(body1.first_asked_at) == as_utc(first_asked)
         rounds = db.scalars(select(QuestionRound).where(QuestionRound.case_question_id == body1.id).order_by(QuestionRound.round_no)).all()
         assert [row.round_no for row in rounds] == [1, 2]
@@ -214,7 +215,7 @@ def test_c_creates_live_question_from_real_speech_and_canonical_answer(tmp_path)
         created = question_repo.get_case(db, case.id, result["targetQuestionId"])
         assert created.source == "LIVE"
         assert created.text == "你离开现场后是否再次返回？"
-        assert created.formal_answer_text == "返回过一次，因为手机遗留在现场。"
+        assert created.formal_answer_text == "回去拿了手机。"
         assert as_utc(created.first_asked_at) == as_utc(unit.started_at)
     finally:
         db.close(); engine.dispose()

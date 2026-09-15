@@ -206,13 +206,13 @@ def test_qwen_routing_e2e_preserves_raw_evidence_and_builds_formal_record(tmp_pa
         fixed = db.get(CaseQuestion, fixed_id)
         dynamic = db.get(CaseQuestion, dynamic_id)
         assert fixed is not None and fixed.text == "你因何事来公安机关？"
-        assert fixed.formal_answer_text == "因昨晚与他人发生纠纷，今日接到派出所通知后前来配合调查。"
-        assert dynamic is not None and dynamic.formal_answer_text == "约20时15分到达现场。"
+        assert fixed.formal_answer_text == "对，今天通知我过来配合调查。"
+        assert dynamic is not None and dynamic.formal_answer_text == "大概八点十五。"
 
         live = db.scalar(select(CaseQuestion).where(CaseQuestion.case_id == case_id, CaseQuestion.source == "LIVE"))
         assert live is not None
         assert live.text == "你离开现场后是否再次返回？"
-        assert live.formal_answer_text == "返回过一次，因为手机遗留在现场。"
+        assert live.formal_answer_text == "回来过一次，我手机落里面了。"
         assert live.first_asked_at is not None
         assert dynamic.first_asked_at is not None
         assert dynamic.first_asked_at < live.first_asked_at

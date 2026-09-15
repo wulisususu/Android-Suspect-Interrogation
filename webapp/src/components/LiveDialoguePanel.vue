@@ -196,8 +196,8 @@ onMounted(() => { void scrollToLatest(true) })
           <header><span class="qa-status-chip">待处理</span><small>{{ unit.reasonCode || 'NEEDS_REVIEW' }}</small></header>
           <p v-if="unit.rawQuestionText"><b>原始问：</b>{{ unit.rawQuestionText }}</p>
           <p v-if="unit.rawAnswerText"><b>原始答：</b>{{ unit.rawAnswerText }}</p>
-          <p v-if="unit.formalQuestionText" class="qa-suggestion"><b>建议问：</b>{{ unit.formalQuestionText }}</p>
-          <p v-if="unit.formalAnswerText" class="qa-suggestion"><b>建议答：</b>{{ unit.formalAnswerText }}</p>
+          <p v-if="unit.aiSuggestedQuestionText" class="qa-suggestion"><b>AI 建议问：</b>{{ unit.aiSuggestedQuestionText }}</p>
+          <p v-if="unit.aiSuggestedAnswerText" class="qa-suggestion"><b>AI 建议答：</b>{{ unit.aiSuggestedAnswerText }}</p>
           <div class="qa-review-actions">
             <button draggable="true" @dragstart="startWholeQaDrag($event, unit)">拖动整组问答</button>
             <button v-if="unit.answerFragmentIds.length" draggable="true" @dragstart="startAnswerDrag($event, unit)">仅拖动答案</button>
