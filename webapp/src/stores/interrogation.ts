@@ -6,7 +6,6 @@ import {
   connectRuntimeSession,
   confirmAsrFragment,
   confirmAsrFragmentBatch,
-  createCase,
   discardAsrFragment,
   fetchAsrCaptureStatus,
   fetchCase,
@@ -317,24 +316,18 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   async function initialize() {
     const generation = caseGeneration
-    let requestedCaseId = caseId.value
+    const requestedCaseId = caseId.value
     loading.value = true
     error.value = ''
 
+    if (!requestedCaseId) {
+      loading.value = false
+      error.value = '请先建案后进入审讯工作台'
+      return
+    }
+
     try {
-      let summary: CaseSummary
-      if (!requestedCaseId) {
-        const created = await createCase({ officerName: '当前警官' })
-        if (generation !== caseGeneration || caseId.value !== '') return
-        requestedCaseId = created.id
-        caseId.value = requestedCaseId
-        const next = new URL(location.href)
-        next.searchParams.set('caseId', requestedCaseId)
-        history.replaceState(null, '', next)
-        summary = created
-      } else {
-        summary = await fetchCase(requestedCaseId)
-      }
+      const summary = await fetchCase(requestedCaseId)
 
       const scope: CaseScope = { caseId: requestedCaseId, generation }
       if (!isCurrentScope(scope) || summary.id !== requestedCaseId) return

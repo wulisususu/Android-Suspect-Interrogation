@@ -12,6 +12,19 @@ def payload(response):
     return body["data"]
 
 
+def test_formal_api_rejects_unknown_request_fields_while_legacy_ignores_them(tmp_path):
+    app = create_app(database_url=f"sqlite:///{tmp_path / 'strict-request-fields.db'}", hardware_gateway=MockHardwareGateway(simulated=True))
+    with TestClient(app) as client:
+        formal = client.post("/api/v1/cases", json={"suspectName": "测试对象", "unexpected": "must fail"})
+        assert formal.status_code == 422
+        assert formal.json()["code"] == "VALIDATION_ERROR"
+        assert any(item["type"] == "extra_forbidden" for item in formal.json()["data"]["errors"])
+
+        legacy = client.post("/api/cases/create", json={"suspectName": "测试对象", "unexpected": "ignored"})
+        assert legacy.status_code == 200
+        assert payload(legacy)["suspectName"] == "测试对象"
+
+
 def test_canonical_api_full_case_flow(tmp_path, enroll_test_suspect_voiceprint):
     db_url = f"sqlite:///{tmp_path / 'api.db'}"
     app = create_app(database_url=db_url, hardware_gateway=MockHardwareGateway(simulated=True))

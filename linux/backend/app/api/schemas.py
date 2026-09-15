@@ -3,11 +3,15 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class FlexibleModel(BaseModel):
+class FormalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class LegacyRequest(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
-class CaseCreateRequest(FlexibleModel):
+class CaseCreateRequest(FormalRequest):
     operator_id: str | None = None
     operatorId: str | None = None
     case_type: str = "suspect_interrogation"
@@ -18,7 +22,7 @@ class CaseCreateRequest(FlexibleModel):
     officerName: str | None = None
 
 
-class CaseIntakeIdentity(FlexibleModel):
+class CaseIntakeIdentity(FormalRequest):
     name: str = Field(min_length=1)
     gender: str | None = None
     nation: str | None = None
@@ -32,7 +36,7 @@ class CaseIntakeRequest(CaseCreateRequest):
     identity: CaseIntakeIdentity
 
 
-class CaseUpdateRequest(FlexibleModel):
+class CaseUpdateRequest(FormalRequest):
     operator_id: str | None = None
     operatorId: str | None = None
     case_type: str | None = None
@@ -49,7 +53,7 @@ class CaseUpdateRequest(FlexibleModel):
     actor_id: str | None = None
 
 
-class ActorRequest(FlexibleModel):
+class ActorRequest(FormalRequest):
     actor_id: str | None = None
 
 
@@ -108,7 +112,7 @@ class TimelineCreateRequest(ActorRequest):
     evidence: list[str] = Field(default_factory=list)
 
 
-class DeviceActionRequest(FlexibleModel):
+class DeviceActionRequest(FormalRequest):
     type: str
 
 
@@ -119,7 +123,7 @@ class SignatureRequest(ActorRequest):
     strokes_json: str = "[]"
 
 
-class DocumentSignRequest(FlexibleModel):
+class DocumentSignRequest(FormalRequest):
     signer_role: Literal["SUSPECT", "OFFICER"] = Field(alias="signerRole")
     signer_name: str = Field(min_length=1, alias="signerName")
     image_data: str = Field(min_length=1, alias="imageDataUrl")
@@ -127,23 +131,23 @@ class DocumentSignRequest(FlexibleModel):
     actor_id: str | None = Field(default=None, alias="actorId")
 
 
-class LegacySignatureRequest(FlexibleModel):
+class LegacySignatureRequest(LegacyRequest):
     session_id: str | None = None
     data: str
 
 
-class LegacyWorkMessageProfile(FlexibleModel):
+class LegacyWorkMessageProfile(LegacyRequest):
     text: str
     from_: str = Field(alias="from")
 
 
-class LegacyWorkMessageRequest(FlexibleModel):
+class LegacyWorkMessageRequest(LegacyRequest):
     profile: LegacyWorkMessageProfile | None = None
     text: str | None = None
     from_: str | None = Field(default=None, alias="from")
 
 
-class CaseQuestionCreateRequest(FlexibleModel):
+class CaseQuestionCreateRequest(FormalRequest):
     text: str
     source: Literal["STANDARD", "CASE", "LIVE"] = "CASE"
     standard_question_id: str | None = Field(default=None, alias="standardQuestionId")
@@ -151,39 +155,75 @@ class CaseQuestionCreateRequest(FlexibleModel):
     after_question_id: str | None = Field(default=None, alias="afterQuestionId")
 
 
-class CaseQuestionUpdateRequest(FlexibleModel):
+class CaseQuestionUpdateRequest(FormalRequest):
     text: str | None = None
     regex_patterns: list[str] | None = Field(default=None, alias="regexPatterns")
 
 
-class QuestionReorderRequest(FlexibleModel):
+class QuestionReorderRequest(FormalRequest):
     question_ids: list[str] = Field(alias="questionIds")
 
 
-class PendingAddRequest(FlexibleModel):
+class PendingAddRequest(FormalRequest):
     after_question_id: str | None = Field(default=None, alias="afterQuestionId")
 
 
-class PendingLinkRequest(FlexibleModel):
+class PendingLinkRequest(FormalRequest):
     case_question_id: str = Field(alias="caseQuestionId")
     round_mode: Literal["APPEND_EXISTING", "NEW_ROUND"] = Field(alias="roundMode")
 
 
-class RoundReassociateRequest(FlexibleModel):
+class RoundReassociateRequest(FormalRequest):
     case_question_id: str | None = Field(default=None, alias="caseQuestionId")
     new_question_text: str | None = Field(default=None, alias="newQuestionText")
 
 
-class RoundUpdateRequest(FlexibleModel):
+class RoundUpdateRequest(FormalRequest):
     answer_text: str = Field(alias="answerText")
 
 
-class SaveQuestionToLibraryRequest(FlexibleModel):
+class SaveQuestionToLibraryRequest(FormalRequest):
     category: str = "通用"
 
 
-class QAUnitResolutionRequest(FlexibleModel):
+class QAUnitResolutionRequest(FormalRequest):
     action: Literal["CREATE_LIVE", "LINK_QA", "LINK_ANSWER", "IGNORE"]
     case_question_id: str | None = Field(default=None, alias="caseQuestionId")
     formal_question: str | None = Field(default=None, alias="formalQuestion")
     formal_answer: str | None = Field(default=None, alias="formalAnswer")
+
+
+class LegacyCaseCreateRequest(CaseCreateRequest):
+    model_config = LegacyRequest.model_config
+
+
+class LegacyCaseUpdateRequest(CaseUpdateRequest):
+    model_config = LegacyRequest.model_config
+
+
+class LegacyActorRequest(ActorRequest):
+    model_config = LegacyRequest.model_config
+
+
+class LegacyMessageUpdateRequest(MessageUpdateRequest):
+    model_config = LegacyRequest.model_config
+
+
+class LegacyMessageMarkRequest(MessageMarkRequest):
+    model_config = LegacyRequest.model_config
+
+
+class LegacyStageRequest(StageRequest):
+    model_config = LegacyRequest.model_config
+
+
+class LegacyFactUpdateRequest(FactUpdateRequest):
+    model_config = LegacyRequest.model_config
+
+
+class LegacyTimelineCreateRequest(TimelineCreateRequest):
+    model_config = LegacyRequest.model_config
+
+
+class LegacyDeviceActionRequest(DeviceActionRequest):
+    model_config = LegacyRequest.model_config

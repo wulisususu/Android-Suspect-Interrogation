@@ -4,8 +4,9 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, get_hardware
 from app.api.responses import envelope
 from app.api.schemas import (
-    ActorRequest, CaseCreateRequest, CaseUpdateRequest, DeviceActionRequest, FactUpdateRequest,
-    LegacyWorkMessageRequest, MessageMarkRequest, MessageUpdateRequest, StageRequest, TimelineCreateRequest,
+    LegacyActorRequest, LegacyCaseCreateRequest, LegacyCaseUpdateRequest, LegacyDeviceActionRequest,
+    LegacyFactUpdateRequest, LegacyMessageMarkRequest, LegacyMessageUpdateRequest, LegacyStageRequest,
+    LegacyTimelineCreateRequest, LegacyWorkMessageRequest,
 )
 from app.services.case_service import CaseService
 from app.services.device_service import DeviceService
@@ -21,7 +22,7 @@ def legacy_health():
 
 
 @router.post("/api/cases/create")
-def legacy_create_case(body: CaseCreateRequest, db: Session = Depends(get_db)):
+def legacy_create_case(body: LegacyCaseCreateRequest, db: Session = Depends(get_db)):
     return envelope(CaseService(db).create(body.model_dump(exclude_none=True)), "案件已创建")
 
 
@@ -36,7 +37,7 @@ def legacy_get_case(case_id: str, db: Session = Depends(get_db)):
 
 
 @router.put("/api/cases/{case_id}")
-def legacy_update_case(case_id: str, body: CaseUpdateRequest, db: Session = Depends(get_db)):
+def legacy_update_case(case_id: str, body: LegacyCaseUpdateRequest, db: Session = Depends(get_db)):
     patch = body.model_dump(exclude_none=True)
     actor_id = patch.pop("actor_id", None)
     return envelope(CaseService(db).update(case_id, patch, actor_id), "案件信息已保存")
@@ -67,12 +68,12 @@ def legacy_list_messages(case_id: str, limit: int = 1000, db: Session = Depends(
 
 
 @router.put("/api/cases/{case_id}/messages/{message_id}")
-def legacy_revise_message(case_id: str, message_id: str, body: MessageUpdateRequest, db: Session = Depends(get_db)):
+def legacy_revise_message(case_id: str, message_id: str, body: LegacyMessageUpdateRequest, db: Session = Depends(get_db)):
     return envelope(MessageService(db).revise(case_id, message_id, text=body.text, reason=body.reason, actor_id=body.actor_id), "笔录已修订并生成版本")
 
 
 @router.post("/api/cases/{case_id}/messages/{message_id}/mark")
-def legacy_mark_message(case_id: str, message_id: str, body: MessageMarkRequest, db: Session = Depends(get_db)):
+def legacy_mark_message(case_id: str, message_id: str, body: LegacyMessageMarkRequest, db: Session = Depends(get_db)):
     return envelope(MessageService(db).mark(case_id, message_id, body.mark, body.actor_id), "标记已保存")
 
 
@@ -92,7 +93,7 @@ def legacy_facts(case_id: str, db: Session = Depends(get_db)):
 
 
 @router.put("/api/cases/{case_id}/facts/{fact_key}")
-def legacy_update_fact(case_id: str, fact_key: str, body: FactUpdateRequest, db: Session = Depends(get_db)):
+def legacy_update_fact(case_id: str, fact_key: str, body: LegacyFactUpdateRequest, db: Session = Depends(get_db)):
     patch = body.model_dump(exclude_none=True)
     actor_id = patch.pop("actor_id", None)
     return envelope(CaseService(db).update_fact(case_id, fact_key, patch, actor_id), "事实项已更新")
@@ -104,7 +105,7 @@ def legacy_timeline(case_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/api/cases/{case_id}/timeline")
-def legacy_add_timeline(case_id: str, body: TimelineCreateRequest, db: Session = Depends(get_db)):
+def legacy_add_timeline(case_id: str, body: LegacyTimelineCreateRequest, db: Session = Depends(get_db)):
     payload = body.model_dump(exclude_none=True)
     actor_id = payload.pop("actor_id", None)
     return envelope(CaseService(db).add_timeline(case_id, payload, actor_id), "时间线事件已添加")
@@ -116,27 +117,27 @@ def legacy_get_session(case_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/api/cases/{case_id}/session/start")
-def legacy_start(case_id: str, body: ActorRequest | None = None, db: Session = Depends(get_db)):
+def legacy_start(case_id: str, body: LegacyActorRequest | None = None, db: Session = Depends(get_db)):
     return envelope(SessionService(db).start(case_id, body.actor_id if body else None, allow_identity_bypass=True), "审讯已开始")
 
 
 @router.post("/api/cases/{case_id}/session/pause")
-def legacy_pause(case_id: str, body: ActorRequest | None = None, db: Session = Depends(get_db)):
+def legacy_pause(case_id: str, body: LegacyActorRequest | None = None, db: Session = Depends(get_db)):
     return envelope(SessionService(db).pause(case_id, body.actor_id if body else None), "审讯已暂停")
 
 
 @router.post("/api/cases/{case_id}/session/resume")
-def legacy_resume(case_id: str, body: ActorRequest | None = None, db: Session = Depends(get_db)):
+def legacy_resume(case_id: str, body: LegacyActorRequest | None = None, db: Session = Depends(get_db)):
     return envelope(SessionService(db).resume(case_id, body.actor_id if body else None), "审讯已恢复")
 
 
 @router.post("/api/cases/{case_id}/session/finish")
-def legacy_finish(case_id: str, body: ActorRequest | None = None, db: Session = Depends(get_db)):
+def legacy_finish(case_id: str, body: LegacyActorRequest | None = None, db: Session = Depends(get_db)):
     return envelope(SessionService(db).finish(case_id, body.actor_id if body else None), "审讯已结束，进入复核")
 
 
 @router.post("/api/cases/{case_id}/session/stage")
-def legacy_stage(case_id: str, body: StageRequest, db: Session = Depends(get_db)):
+def legacy_stage(case_id: str, body: LegacyStageRequest, db: Session = Depends(get_db)):
     return envelope(SessionService(db).change_stage(case_id, body.stage, body.actor_id), "审讯阶段已切换")
 
 
@@ -151,5 +152,5 @@ def legacy_device_status(hardware=Depends(get_hardware)):
 
 
 @router.post("/api/device/action")
-def legacy_device_action(body: DeviceActionRequest, hardware=Depends(get_hardware)):
+def legacy_device_action(body: LegacyDeviceActionRequest, hardware=Depends(get_hardware)):
     return envelope(DeviceService(hardware).action(body.type), "设备操作完成")
