@@ -247,7 +247,11 @@ def list_unassigned_for_session(
             ASRFragment.speaker.in_(("INTERROGATOR", "RECORDER", "OFFICER_FALLBACK", "SUSPECT")),
             ~assigned.exists(),
         )
-        .order_by(ASRFragment.ordinal.asc())
+        .order_by(
+            ASRCaptureSession.started_at.asc(),
+            ASRFragment.ordinal.asc(),
+            ASRFragment.id.asc(),
+        )
         .limit(max(1, min(int(limit), 4096)))
     )
     return list(db.scalars(stmt))

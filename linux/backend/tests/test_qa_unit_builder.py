@@ -176,6 +176,54 @@ def test_unknown_fragment_is_not_assigned_or_recovered(tmp_path):
         engine.dispose()
 
 
+def test_recovery_keeps_capture_timeline_when_ordinals_restart_after_resume(tmp_path):
+    engine, db, case, session, first_capture = make_context(tmp_path)
+    try:
+        second_capture = asr_repo.create_capture_session(
+            db,
+            case_id=case.id,
+            interrogation_session_id=session.id,
+            sample_rate=16000,
+        )
+        second_capture.started_at = first_capture.started_at + timedelta(minutes=5)
+        db.commit()
+
+        first_question = add_fragment(
+            db, first_capture, ordinal=0, speaker="INTERROGATOR", text="第一次的问题？", start_ms=0, end_ms=500
+        )
+        first_answer = add_fragment(
+            db, first_capture, ordinal=1, speaker="SUSPECT", text="第一次的回答。", start_ms=700, end_ms=1200
+        )
+        second_question = add_fragment(
+            db, second_capture, ordinal=0, speaker="INTERROGATOR", text="第二次的问题？", start_ms=0, end_ms=500
+        )
+        second_answer = add_fragment(
+            db, second_capture, ordinal=1, speaker="SUSPECT", text="第二次的回答。", start_ms=700, end_ms=1200
+        )
+
+        recovered = asr_repo.list_unassigned_for_session(db, case.id, session.id)
+        assert [fragment.id for fragment in recovered] == [
+            first_question.id,
+            first_answer.id,
+            second_question.id,
+            second_answer.id,
+        ]
+
+        builder = QAUnitBuilder(db)
+        for fragment in recovered:
+            builder.consume_fragment(case.id, fragment.id)
+        builder.flush_session(case.id, session.id)
+
+        units = qa_repo.list_for_case(db, case.id)
+        assert [(unit.raw_question_text, unit.raw_answer_text) for unit in units] == [
+            ("第一次的问题？", "第一次的回答。"),
+            ("第二次的问题？", "第二次的回答。"),
+        ]
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_orphan_suspect_answer_becomes_review_unit(tmp_path):
     engine, db, case, _session, capture = make_context(tmp_path)
     try:
