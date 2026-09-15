@@ -369,7 +369,7 @@ export function fetchMessages(caseId: string): Promise<TranscriptMessage[]> { re
 export function fetchFacts(caseId: string): Promise<FactItem[]> { return runtime().invoke<FactItem[]>('fact.list', { caseId }) }
 export function fetchTimeline(caseId: string): Promise<TimelineEvent[]> { return runtime().invoke<TimelineEvent[]>('timeline.list', { caseId }) }
 export async function fetchSessionState(caseId: string): Promise<SessionState> { return normalizeSessionState(await runtime().invoke<unknown>('session.get', { caseId }), caseId) }
-export function persistQuestionOrAnswer(caseId: string, text: string, from: '民警' | '嫌疑人'): Promise<TranscriptMessage> { return runtime().invoke<TranscriptMessage>('message.add', { caseId, text, from }) }
+export function persistQuestionOrAnswer(caseId: string, text: string, speaker: '民警' | '嫌疑人'): Promise<TranscriptMessage> { return runtime().invoke<TranscriptMessage>('message.add', { caseId, text, speaker }) }
 export function updateTranscriptMessage(caseId: string, messageId: string, text: string): Promise<TranscriptMessage> { return runtime().invoke<TranscriptMessage>('message.update', { caseId, messageId, text, reason: '警官在审讯工作台修订' }) }
 export function markTranscriptMessage(caseId: string, messageId: string, mark: RecordMark): Promise<TranscriptMessage> { return runtime().invoke<TranscriptMessage>('message.mark', { caseId, messageId, mark }) }
 export function fetchRevisions(caseId: string, messageId?: string): Promise<RecordRevision[]> { return runtime().invoke<RecordRevision[]>('message.revisions', { caseId, ...(messageId ? { messageId } : {}) }) }

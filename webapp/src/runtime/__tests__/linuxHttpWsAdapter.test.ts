@@ -48,6 +48,24 @@ describe('LinuxHttpWsAdapter', () => {
     expect(calls).toEqual([{ method: 'POST', url: '/api/v1/cases/intake', data: intake }])
   })
 
+  it('sends manual transcript speakers using the formal FastAPI field name', async () => {
+    const calls: Array<{ method: string; url: string; data?: unknown }> = []
+    const adapter = new LinuxHttpWsAdapter({
+      request: async (config) => {
+        calls.push({ method: String(config.method), url: String(config.url), data: config.data })
+        return { data: { ok: true, data: {} } }
+      },
+    })
+
+    await adapter.invoke('message.add', { caseId: 'CASE-001', text: '请说明情况。', speaker: '民警' })
+
+    expect(calls).toEqual([{
+      method: 'POST',
+      url: '/api/v1/cases/CASE-001/messages',
+      data: { text: '请说明情况。', speaker: '民警' },
+    }])
+  })
+
   it('routes Linux operations through /api/v1 and preserves identity case binding', async () => {
     const calls: Array<{ method: string; url: string; data?: unknown }> = []
     const adapter = new LinuxHttpWsAdapter({

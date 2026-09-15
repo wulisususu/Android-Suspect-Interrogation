@@ -64,7 +64,7 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
     case 'case.get': return { method: 'GET', url: `/api/v1/cases/${caseId}` }
     case 'case.update': return { method: 'PUT', url: `/api/v1/cases/${caseId}`, data: payload.patch ?? payload }
     case 'message.list': return { method: 'GET', url: `/api/v1/cases/${caseId}/messages`, params: { limit: payload.limit ?? 1000 } }
-    case 'message.add': return { method: 'POST', url: `/api/v1/cases/${caseId}/messages`, data: { text: payload.text, from: payload.from } }
+    case 'message.add': return { method: 'POST', url: `/api/v1/cases/${caseId}/messages`, data: { text: payload.text, speaker: payload.speaker } }
     case 'message.update': return { method: 'PUT', url: `/api/v1/cases/${caseId}/messages/${messageId}`, data: { text: payload.text, reason: payload.reason } }
     case 'message.mark': return { method: 'POST', url: `/api/v1/cases/${caseId}/messages/${messageId}/mark`, data: { mark: payload.mark } }
     case 'message.revisions': {

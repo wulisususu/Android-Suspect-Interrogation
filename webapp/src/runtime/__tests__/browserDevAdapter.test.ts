@@ -26,6 +26,19 @@ describe('BrowserDevAdapter', () => {
     }))
   })
 
+  it('translates the formal speaker field only at the legacy message boundary', async () => {
+    mocks.request.mockResolvedValue({ data: { id: 'message-1' } })
+    const adapter = new BrowserDevAdapter()
+
+    await adapter.invoke('message.add', { caseId: 'case-1', text: '请说明情况。', speaker: '民警' })
+
+    expect(mocks.request).toHaveBeenCalledWith(expect.objectContaining({
+      method: 'POST',
+      url: '/work/case/case-1/message',
+      data: { profile: { text: '请说明情况。', from: '民警' } },
+    }))
+  })
+
   it('never falls back to cloud AI when a local model runtime is absent', async () => {
     const adapter = new BrowserDevAdapter()
 

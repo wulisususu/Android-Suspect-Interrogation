@@ -84,7 +84,7 @@ function legacyConfig(operation: string, payload: Record<string, unknown>): Axio
     case 'case.get': return { method: 'GET', url: `/api/cases/${caseId}` }
     case 'case.update': return { method: 'PUT', url: `/api/cases/${caseId}`, data: payload.patch ?? payload }
     case 'message.list': return { method: 'GET', url: `/api/cases/${caseId}/messages`, params: { limit: payload.limit ?? 1000 } }
-    case 'message.add': return { method: 'POST', url: `/work/case/${caseId}/message`, data: { profile: { text: payload.text, from: payload.from } } }
+    case 'message.add': return { method: 'POST', url: `/work/case/${caseId}/message`, data: { profile: { text: payload.text, from: payload.speaker } } }
     case 'message.update': return { method: 'PUT', url: `/api/cases/${caseId}/messages/${messageId}`, data: { text: payload.text, reason: payload.reason } }
     case 'message.mark': return { method: 'POST', url: `/api/cases/${caseId}/messages/${messageId}/mark`, data: { mark: payload.mark } }
     case 'message.revisions': {
