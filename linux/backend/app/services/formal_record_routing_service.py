@@ -14,6 +14,11 @@ from app.services.template_workspace_service import TemplateWorkspaceService
 
 
 _MANUAL_ACTIONS = {"CREATE_LIVE", "LINK_QA", "LINK_ANSWER", "IGNORE"}
+_AUTO_APPLY_MIN_CONFIDENCE = {
+    RouteClass.MATCH_FIXED: 0.88,
+    RouteClass.MATCH_EXISTING: 0.88,
+    RouteClass.CREATE_LIVE_FROM_SPEECH: 0.93,
+}
 
 
 class FormalRecordRoutingService:
@@ -23,6 +28,11 @@ class FormalRecordRoutingService:
     def apply_auto(self, qa_unit_id: str, decision: FormalRecordRouteDecision) -> dict:
         unit = qa_repo.get(self.db, qa_unit_id)
         assert_formal_record_mutable(self.db, unit.case_id)
+        confidence_review = self._confidence_review_decision(decision)
+        if confidence_review is not None:
+            review_decision, threshold = confidence_review
+            self._audit_confidence_gate(unit, decision, threshold)
+            return self._review(unit, review_decision)
         if decision.classification is RouteClass.NEEDS_REVIEW:
             return self._review(unit, decision)
         if decision.classification is RouteClass.IGNORE:
@@ -52,6 +62,57 @@ class FormalRecordRoutingService:
             return self._apply_existing(unit, question, decision, audit_action="QA_ROUTE_AUTO_APPLIED")
 
         return self._review(unit, decision, reason_code="INVALID_AUTO_DECISION")
+
+    @staticmethod
+    def _confidence_review_decision(
+        decision: FormalRecordRouteDecision,
+    ) -> tuple[FormalRecordRouteDecision, float] | None:
+        threshold = _AUTO_APPLY_MIN_CONFIDENCE.get(decision.classification)
+        if threshold is None:
+            return None
+        if decision.confidence is not None and decision.confidence >= threshold:
+            return None
+        candidates = list(decision.candidate_question_ids)
+        if decision.target_question_id and decision.target_question_id not in candidates:
+            candidates.append(decision.target_question_id)
+        return (
+            FormalRecordRouteDecision(
+                classification=RouteClass.NEEDS_REVIEW,
+                target_question_id=None,
+                formal_question=decision.formal_question,
+                formal_answer=decision.formal_answer,
+                confidence=decision.confidence,
+                candidate_question_ids=tuple(candidates),
+                reason_code="AUTO_ROUTE_CONFIDENCE_BELOW_THRESHOLD",
+                model_id=decision.model_id,
+            ),
+            threshold,
+        )
+
+    def _audit_confidence_gate(
+        self,
+        unit,
+        decision: FormalRecordRouteDecision,
+        threshold: float,
+    ) -> None:
+        audit_repo.add(
+            self.db,
+            case_id=unit.case_id,
+            action="QA_ROUTE_CONFIDENCE_REVIEW_REQUIRED",
+            target_type="QA_UNIT",
+            target_id=unit.id,
+            detail={
+                "qa_unit_id": unit.id,
+                "proposed_classification": decision.classification.value,
+                "proposed_target_question_id": decision.target_question_id,
+                "proposed_formal_question": decision.formal_question,
+                "proposed_formal_answer": decision.formal_answer,
+                "confidence": decision.confidence,
+                "required_confidence": threshold,
+                "model_id": decision.model_id,
+                "reason_code": "AUTO_ROUTE_CONFIDENCE_BELOW_THRESHOLD",
+            },
+        )
 
     def resolve_manual(
         self,

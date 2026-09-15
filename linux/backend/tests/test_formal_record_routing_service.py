@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.database.models import Case, CaseQuestion, InterrogationSession, QuestionRound
+from app.database.models import AuditLog, Case, CaseQuestion, InterrogationSession, QuestionRound
 from app.database.session import init_database, make_engine
 from app.domain.errors import DomainError
 from app.repositories import asr_fragments as asr_repo
@@ -17,7 +18,7 @@ from app.services.formal_record_routing_service import FormalRecordRoutingServic
 from app.services.template_workspace_service import TemplateWorkspaceService
 
 
-def decision(kind: RouteClass, *, target=None, question=None, answer=None, confidence=0.9, reason="TEST"):
+def decision(kind: RouteClass, *, target=None, question=None, answer=None, confidence=0.95, reason="TEST"):
     return FormalRecordRouteDecision(
         classification=kind,
         target_question_id=target,
@@ -231,6 +232,49 @@ def test_c_without_officer_fragment_degrades_to_review_without_formal_mutation(t
         assert result["status"] == "NEEDS_REVIEW"
         assert db.scalar(select(func.count()).select_from(CaseQuestion)) == before_questions
         assert db.scalar(select(func.count()).select_from(QuestionRound)) == 0
+    finally:
+        db.close(); engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("classification", "threshold"),
+    [
+        (RouteClass.MATCH_FIXED, 0.88),
+        (RouteClass.MATCH_EXISTING, 0.88),
+        (RouteClass.CREATE_LIVE_FROM_SPEECH, 0.93),
+    ],
+)
+def test_low_confidence_auto_route_requires_review_and_preserves_proposal(tmp_path, classification, threshold):
+    engine, db, case, session, capture, opening, body1, *_ = make_context(tmp_path)
+    try:
+        unit = make_unit(db, case, session, capture, ordinal_base=1, start_ms=0, question="你几点到现场？", answer="八点到的。")
+        before_rounds = db.scalar(select(func.count()).select_from(QuestionRound))
+        target = opening.id if classification is RouteClass.MATCH_FIXED else body1.id if classification is RouteClass.MATCH_EXISTING else None
+        question = "你几点到现场？" if classification is RouteClass.CREATE_LIVE_FROM_SPEECH else None
+        proposed = decision(
+            classification,
+            target=target,
+            question=question,
+            answer="晚上八点到达现场。",
+            confidence=threshold - 0.01,
+        )
+
+        result = FormalRecordRoutingService(db).apply_auto(unit.id, proposed)
+
+        assert result["status"] == "NEEDS_REVIEW"
+        assert unit.status == "NEEDS_REVIEW"
+        assert unit.confidence == pytest.approx(threshold - 0.01)
+        assert unit.formal_answer_text == "晚上八点到达现场。"
+        assert json.loads(unit.candidate_question_ids_json) == ([target] if target else [])
+        assert db.scalar(select(func.count()).select_from(QuestionRound)) == before_rounds
+        audit = db.scalar(
+            select(AuditLog).where(AuditLog.action == "QA_ROUTE_CONFIDENCE_REVIEW_REQUIRED")
+        )
+        assert audit is not None
+        detail = json.loads(audit.detail_json)
+        assert detail["proposed_classification"] == classification.value
+        assert detail["confidence"] == pytest.approx(threshold - 0.01)
+        assert detail["required_confidence"] == threshold
     finally:
         db.close(); engine.dispose()
 
