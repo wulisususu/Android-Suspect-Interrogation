@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -288,6 +289,35 @@ def test_batch_confirm_apply_and_discard_never_duplicate_official_messages(tmp_p
         assert db.query(Message).count() == 1
         assert db.get(ASRFragment, first_id).state == "CONFIRMED"
         assert db.get(ASRFragment, second_id).state == "DISCARDED"
+    engine.dispose()
+
+
+@pytest.mark.parametrize("workflow_state", ["FROZEN", "SIGNED", "REPORT_GENERATED"])
+def test_immutable_workflow_states_reject_asr_mutations_and_apply(tmp_path, workflow_state):
+    app, engine, factory, _ = _app(tmp_path)
+    case_id, _, _, fragment_id, second_id = _seed_fragment(factory)
+    with factory() as db:
+        case_repo.get(db, case_id).workflow_state = workflow_state
+        db.commit()
+
+    with TestClient(app) as client:
+        updated = client.put(
+            f"/api/v1/cases/{case_id}/asr/fragments/{fragment_id}",
+            json={"edited_text": "冻结后不能修订", "speaker": "INTERROGATOR"},
+        )
+        applied = client.post(
+            f"/api/v1/cases/{case_id}/asr/fragments/apply",
+            json={"fragment_ids": [second_id]},
+        )
+
+    assert updated.status_code == 409
+    assert updated.json()["code"] == "FORMAL_RECORD_FROZEN"
+    assert applied.status_code == 409
+    assert applied.json()["code"] == "FORMAL_RECORD_FROZEN"
+    with factory() as db:
+        assert db.get(ASRFragment, fragment_id).edited_text == "原始识别"
+        assert db.get(ASRFragment, second_id).state == "PENDING"
+        assert db.query(Message).count() == 0
     engine.dispose()
 
 

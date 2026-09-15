@@ -8,6 +8,7 @@ from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
 from app.repositories import messages as message_repo
 from app.repositories import sessions as session_repo
+from app.services.formal_record_policy import assert_formal_record_mutable
 from app.services.serializers import message_dict, revision_dict
 
 
@@ -28,7 +29,7 @@ class MessageService:
         actor_id: str | None = None,
         commit: bool = True,
     ) -> dict:
-        case_repo.get(self.db, case_id)
+        assert_formal_record_mutable(self.db, case_id)
         active = session_repo.active_for_case(self.db, case_id)
         if active is None:
             raise DomainError("SESSION_NOT_ACTIVE", "请先开始审讯再记录问答", 409)
@@ -42,6 +43,7 @@ class MessageService:
         return message_dict(row)
 
     def revise(self, case_id: str, message_id: str, *, text: str, reason: str = "警官修订", actor_id: str | None = None) -> dict:
+        assert_formal_record_mutable(self.db, case_id)
         before_row = message_repo.get(self.db, case_id, message_id)
         old = before_row.text
         row, revision = message_repo.revise(self.db, case_id=case_id, message_id=message_id, new_text=text, reason=reason, actor_id=actor_id)
@@ -53,6 +55,7 @@ class MessageService:
         return message_dict(row)
 
     def mark(self, case_id: str, message_id: str, mark: str, actor_id: str | None = None) -> dict:
+        assert_formal_record_mutable(self.db, case_id)
         before_row = message_repo.get(self.db, case_id, message_id)
         old_mark = before_row.mark
         row = message_repo.mark(self.db, case_id=case_id, message_id=message_id, mark=mark)

@@ -9,6 +9,7 @@ from app.repositories import cases as case_repo
 from app.repositories import facts as fact_repo
 from app.repositories import persons as person_repo
 from app.repositories import timeline as timeline_repo
+from app.services.formal_record_policy import assert_formal_record_mutable
 from app.services.serializers import audit_dict, case_dict, fact_dict, person_dict, timeline_dict
 
 
@@ -50,7 +51,7 @@ class CaseService:
         return [self._case_data(row) for row in case_repo.list_all(self.db, limit, query)]
 
     def update(self, case_id: str, patch: dict, actor_id: str | None = None) -> dict:
-        row = case_repo.get(self.db, case_id)
+        row = assert_formal_record_mutable(self.db, case_id)
         before = self._case_data(row)
         if "stage" in patch:
             try:
@@ -98,7 +99,7 @@ class CaseService:
         return [fact_dict(row) for row in fact_repo.list_for_case(self.db, case_id)]
 
     def update_fact(self, case_id: str, fact_key: str, patch: dict, actor_id: str | None = None) -> dict:
-        case_repo.get(self.db, case_id)
+        assert_formal_record_mutable(self.db, case_id)
         before_item = next((x for x in self.list_facts(case_id) if x["key"] == fact_key), None)
         row = fact_repo.update(self.db, case_id, fact_key, patch)
         after_item = fact_dict(row)
@@ -111,7 +112,7 @@ class CaseService:
         return [timeline_dict(row) for row in timeline_repo.list_for_case(self.db, case_id)]
 
     def add_timeline(self, case_id: str, payload: dict, actor_id: str | None = None) -> dict:
-        case_repo.get(self.db, case_id)
+        assert_formal_record_mutable(self.db, case_id)
         row = timeline_repo.create(self.db, case_id, payload)
         data = timeline_dict(row)
         audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="TIMELINE_CREATE", target_type="TIMELINE", target_id=row.id, after=data)

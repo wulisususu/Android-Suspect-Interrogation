@@ -15,6 +15,7 @@ from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
 from app.repositories import recognition_evidence as evidence_repo
 from app.services.message_service import MessageService
+from app.services.formal_record_policy import assert_formal_record_mutable
 from app.services.speaker_mode import resolve_runtime_speaker_mode
 from app.services.speaker_policy import SpeakerRole, SpeakerSource
 
@@ -191,6 +192,7 @@ def list_fragments(case_id: str, include_confirmed: bool = Query(False), db: Ses
 @router.put("/cases/{case_id}/asr/fragments/{fragment_id}")
 def update_fragment(case_id: str, fragment_id: str, body: FragmentUpdateRequest, db: Session = Depends(get_db)):
     fragment = _fragment_for_case(db, case_id, fragment_id)
+    assert_formal_record_mutable(db, case_id)
     if fragment.state == "DISCARDED":
         raise DomainError("ASR_FRAGMENT_DISCARDED", "已丢弃的 ASR 片段不能修改", 409)
     try:
@@ -246,6 +248,7 @@ def update_fragment(case_id: str, fragment_id: str, body: FragmentUpdateRequest,
 
 def _confirm_one(db: Session, *, case_id: str, fragment_id: str, actor_id: str | None, commit: bool = True) -> tuple[ASRFragment, bool]:
     fragment = _fragment_for_case(db, case_id, fragment_id)
+    assert_formal_record_mutable(db, case_id)
     if fragment.state == "DISCARDED":
         raise DomainError("ASR_FRAGMENT_DISCARDED", "已丢弃的 ASR 片段不能确认", 409)
     if fragment.state == "CONFIRMED":
@@ -271,7 +274,7 @@ def confirm_fragment(case_id: str, fragment_id: str, db: Session = Depends(get_d
 
 
 def _confirm_batch(db: Session, *, case_id: str, fragment_ids: list[str], actor_id: str | None) -> dict[str, Any]:
-    case_repo.get(db, case_id)
+    assert_formal_record_mutable(db, case_id)
     unique_ids = list(dict.fromkeys(str(item).strip() for item in fragment_ids if str(item).strip()))
     confirmed = 0
     rows: list[ASRFragment] = []
@@ -299,6 +302,7 @@ def apply_fragments(case_id: str, body: FragmentBatchRequest, db: Session = Depe
 @router.post("/cases/{case_id}/asr/fragments/{fragment_id}/discard")
 def discard_fragment(case_id: str, fragment_id: str, db: Session = Depends(get_db)):
     fragment = _fragment_for_case(db, case_id, fragment_id)
+    assert_formal_record_mutable(db, case_id)
     if fragment.state == "CONFIRMED":
         raise DomainError("ASR_FRAGMENT_ALREADY_CONFIRMED", "已确认的 ASR 片段不能丢弃", 409)
     if fragment.state != "DISCARDED":
