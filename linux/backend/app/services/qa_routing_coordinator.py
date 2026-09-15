@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -21,6 +22,14 @@ from app.services.serializers import qa_unit_dict
 logger = logging.getLogger(__name__)
 PublishEvent = Callable[[str, str, dict[str, Any]], None]
 RouterFactory = Callable[[Any, Any], Any]
+
+
+@dataclass
+class _DrainRequest:
+    case_id: str
+    session_id: str
+    completed: threading.Event = field(default_factory=threading.Event)
+    error: Exception | None = None
 
 
 class QARoutingCoordinator:
@@ -52,7 +61,7 @@ class QARoutingCoordinator:
         self.router_factory = router_factory or (lambda db, ai: FormalRecordRouter(db, ai_supervisor=ai))
         self.idle_close_seconds = max(0.01, float(idle_close_seconds))
         self.poll_interval = max(0.01, float(poll_interval))
-        self._queue: queue.Queue[tuple[str, str, str] | None] = queue.Queue(maxsize=max(1, int(queue_size)))
+        self._queue: queue.Queue[tuple[str, str, str] | _DrainRequest | None] = queue.Queue(maxsize=max(1, int(queue_size)))
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._state_lock = threading.RLock()
@@ -93,6 +102,26 @@ class QARoutingCoordinator:
             # cannot lose the final unit even though this wakeup is dropped.
             pass
 
+    def drain_capture(self, case_id: str, session_id: str, *, timeout: float = 60.0) -> None:
+        """Wait for persisted capture fragments to become committed formal-record work.
+
+        The marker enters the same FIFO worker queue as fragment notices. Therefore
+        every notice emitted before capture stop is consumed before the terminal
+        flush closes and routes the final QA unit.
+        """
+        if not self.running:
+            raise RuntimeError("qa routing coordinator is not running")
+        request = _DrainRequest(str(case_id), str(session_id))
+        wait_seconds = max(0.01, float(timeout))
+        try:
+            self._queue.put(request, timeout=wait_seconds)
+        except queue.Full as exc:
+            raise TimeoutError("qa routing queue did not accept capture drain") from exc
+        if not request.completed.wait(wait_seconds):
+            raise TimeoutError("qa routing did not drain capture before timeout")
+        if request.error is not None:
+            raise request.error
+
     def shutdown(self) -> None:
         self._stop.set()
         try:
@@ -119,6 +148,14 @@ class QARoutingCoordinator:
                     except queue.Empty:
                         continue
                     if notice is None:
+                        continue
+                    if isinstance(notice, _DrainRequest):
+                        try:
+                            self._flush_capture(notice.case_id, notice.session_id)
+                        except Exception as exc:
+                            notice.error = exc
+                        finally:
+                            notice.completed.set()
                         continue
                     kind, case_id, value = notice
                     if kind == "fragment":
@@ -180,15 +217,18 @@ class QARoutingCoordinator:
         with self._state_lock:
             pending = list(self._pending_flushes)
         for case_id, session_id in pending:
-            self._recover_session(case_id, session_id)
-            with self.session_factory() as db:
-                builder = QAUnitBuilder(db, idle_close_seconds=self.idle_close_seconds)
-                closed_ids = builder.flush_session(case_id, session_id)
-                db.commit()
-            for qa_unit_id in closed_ids:
-                self._route_unit(qa_unit_id)
+            self._flush_capture(case_id, session_id)
             with self._state_lock:
                 self._pending_flushes.discard((case_id, session_id))
+
+    def _flush_capture(self, case_id: str, session_id: str) -> None:
+        self._recover_session(case_id, session_id)
+        with self.session_factory() as db:
+            builder = QAUnitBuilder(db, idle_close_seconds=self.idle_close_seconds)
+            closed_ids = builder.flush_session(case_id, session_id)
+            db.commit()
+        for qa_unit_id in closed_ids:
+            self._route_unit(qa_unit_id)
 
     def _close_idle(self) -> None:
         with self.session_factory() as db:

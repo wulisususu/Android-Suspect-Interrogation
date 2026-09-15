@@ -185,6 +185,23 @@ describe('LinuxHttpWsAdapter', () => {
     ])
   })
 
+  it('finalizes an interrogation through the single backend command', async () => {
+    const calls: Array<{ method: string; url: string; data?: unknown }> = []
+    const adapter = new LinuxHttpWsAdapter({
+      request: async (config) => {
+        calls.push({ method: String(config.method), url: String(config.url), data: config.data })
+        return { data: { ok: true, data: {} } }
+      },
+      origin: 'http://127.0.0.1:8080',
+    })
+
+    await adapter.invoke('document.finalize', { caseId: 'CASE-001' })
+
+    expect(calls).toEqual([
+      { method: 'POST', url: '/api/v1/cases/CASE-001/document/finalize', data: {} },
+    ])
+  })
+
   it('rejects retired operations that have no formal Linux FastAPI route', async () => {
     const adapter = new LinuxHttpWsAdapter({
       request: async () => ({ data: { ok: true, data: {} } }),

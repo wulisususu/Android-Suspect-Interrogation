@@ -166,7 +166,7 @@ class DocumentService:
             "entries": entries,
         }
 
-    def freeze(self, case_id: str, actor_id: str | None = None) -> dict:
+    def freeze(self, case_id: str, actor_id: str | None = None, *, commit: bool = True) -> dict:
         begin_sqlite_immediate(self.db)
         case = case_repo.get(self.db, case_id)
         if WorkflowState(case.workflow_state) != WorkflowState.SUMMARY:
@@ -197,7 +197,8 @@ class DocumentService:
             target_id=snapshot.id,
             after={"version": snapshot.version, "content_hash": snapshot.content_hash},
         )
-        self.db.commit()
+        if commit:
+            self.db.commit()
         state = self.signing_state(case_id)
         assert state is not None
         return state

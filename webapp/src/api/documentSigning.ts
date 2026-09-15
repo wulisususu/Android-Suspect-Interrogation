@@ -14,6 +14,10 @@ export function freezeDocument(caseId: string): Promise<DocumentSigningState> {
   return getRuntimeAdapter().invoke<DocumentSigningState>('document.freeze', { caseId }, { timeoutMs: 60_000 })
 }
 
+export function finalizeDocument(caseId: string): Promise<DocumentSigningState> {
+  return getRuntimeAdapter().invoke<DocumentSigningState>('document.finalize', { caseId }, { timeoutMs: 90_000 })
+}
+
 export function signDocument(
   caseId: string,
   signerRole: DocumentSignerRole,

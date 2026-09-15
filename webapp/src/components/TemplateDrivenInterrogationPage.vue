@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 
-import { backendErrorMessage, finishSession } from '../api/interrogation'
-import { fetchDocumentSigningState, freezeDocument, signDocument } from '../api/documentSigning'
+import { backendErrorMessage } from '../api/interrogation'
+import { fetchDocumentSigningState, finalizeDocument, signDocument } from '../api/documentSigning'
 import type {
   AsrCaptureStatus,
   AsrInsertionTarget,
@@ -131,15 +131,10 @@ function toggleCapture() {
 
 async function finishAndFreeze() {
   if (signingBusy.value || documentFrozen.value) return
-  if (props.capture.running) {
-    signingError.value = '请先停止当前录音，再结束审讯并冻结笔录。'
-    return
-  }
   signingBusy.value = 'freeze'
   signingError.value = ''
   try {
-    if (props.session.status !== 'COMPLETED') await finishSession(props.caseId)
-    signingState.value = await freezeDocument(props.caseId)
+    signingState.value = await finalizeDocument(props.caseId)
     emit('saved')
   } catch (err) {
     signingError.value = backendErrorMessage(err)

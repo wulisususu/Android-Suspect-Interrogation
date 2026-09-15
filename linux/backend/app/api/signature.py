@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.api.responses import envelope
 from app.api.schemas import ActorRequest, DocumentSignRequest, SignatureRequest
+from app.domain.errors import DomainError
+from app.services.document_finalization_service import DocumentFinalizationService
 from app.services.document_service import DocumentService
 
 router = APIRouter(tags=["documents"])
@@ -23,6 +25,27 @@ def document_status(case_id: str, db: Session = Depends(get_db)):
 def freeze_document(case_id: str, body: ActorRequest | None = None, db: Session = Depends(get_db)):
     actor_id = body.actor_id if body else None
     return envelope(DocumentService(db).freeze(case_id, actor_id), "笔录已冻结")
+
+
+@router.post("/cases/{case_id}/document/finalize")
+def finalize_document(
+    case_id: str,
+    request: Request,
+    body: ActorRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    capture_service = getattr(request.app.state, "asr_capture_service", None)
+    if capture_service is None:
+        raise DomainError("ASR_CAPTURE_UNAVAILABLE", "语音采集服务未配置，不能结束并冻结笔录", 503)
+    actor_id = body.actor_id if body else None
+    return envelope(
+        DocumentFinalizationService(
+            db,
+            capture_service=capture_service,
+            routing_coordinator=getattr(request.app.state, "qa_routing_coordinator", None),
+        ).finalize(case_id, actor_id),
+        "审讯已结束，笔录已冻结",
+    )
 
 
 @router.post("/cases/{case_id}/document/sign")

@@ -167,6 +167,30 @@ def test_enqueue_is_non_blocking_while_qwen_routes_in_worker(tmp_path):
         engine.dispose()
 
 
+def test_drain_capture_waits_until_final_formal_record_is_committed(tmp_path):
+    engine, factory, case_id, session_id, capture_id = seed(tmp_path)
+    supervisor = FakeSupervisor(delay=0.15)
+    coordinator = QARoutingCoordinator(
+        session_factory=factory,
+        ai_supervisor=supervisor,
+        publish_event=EventCollector(factory),
+        idle_close_seconds=60.0,
+        poll_interval=0.01,
+    )
+    q_id, a_id = add_exchange(factory, case_id=case_id, capture_id=capture_id)
+    coordinator.start()
+    try:
+        coordinator.enqueue_fragment(case_id, q_id)
+        coordinator.enqueue_fragment(case_id, a_id)
+        started = time.monotonic()
+        coordinator.drain_capture(case_id, session_id, timeout=2.0)
+        assert time.monotonic() - started >= 0.10
+        assert qa_repo_status(factory, case_id, "APPLIED")
+    finally:
+        coordinator.shutdown()
+        engine.dispose()
+
+
 def test_model_timeout_becomes_needs_review_instead_of_killing_worker(tmp_path):
     engine, factory, case_id, session_id, capture_id = seed(tmp_path)
     supervisor = FakeSupervisor(fail=True)

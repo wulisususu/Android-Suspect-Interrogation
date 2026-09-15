@@ -40,4 +40,22 @@ describe('LinuxHttpWsAdapter browser ASR stop', () => {
 
     expect(order).toEqual(['browser', 'backend'])
   })
+
+  it('closes the browser microphone stream before finalizing the formal record', async () => {
+    const order: string[] = []
+    browserAudio.stopBrowserAsrCapture.mockImplementationOnce(async () => {
+      order.push('browser')
+    })
+    const adapter = new LinuxHttpWsAdapter({
+      request: async () => {
+        order.push('backend')
+        return { data: { ok: true, data: {} } }
+      },
+      origin: 'https://192.168.0.9:18080',
+    })
+
+    await adapter.invoke('document.finalize', { caseId: 'CASE-001' })
+
+    expect(order).toEqual(['browser', 'backend'])
+  })
 })

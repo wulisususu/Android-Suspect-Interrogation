@@ -170,6 +170,7 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
     }
     case 'document.signing.get': return { method: 'GET', url: `/api/v1/cases/${caseId}/document` }
     case 'document.freeze': return { method: 'POST', url: `/api/v1/cases/${caseId}/document/freeze`, data: {} }
+    case 'document.finalize': return { method: 'POST', url: `/api/v1/cases/${caseId}/document/finalize`, data: {} }
     case 'document.sign': return { method: 'POST', url: `/api/v1/cases/${caseId}/document/sign`, data: payload }
     default: throw new RuntimeAdapterError('UNSUPPORTED_OPERATION', `Linux Runtime 不支持操作：${operation}`, 'NOT_CONFIGURED')
   }
@@ -220,7 +221,7 @@ export class LinuxHttpWsAdapter implements RuntimeAdapter {
   async invoke<T>(operation: RuntimeOperation, payload: Record<string, unknown> = {}, options: RuntimeInvokeOptions = {}): Promise<T> {
     let browserBackendStarted = false
     try {
-      const stoppingBrowserCapture = audioInputMode === 'BROWSER' && operation === 'asr.capture.stop'
+      const stoppingBrowserCapture = audioInputMode === 'BROWSER' && (operation === 'asr.capture.stop' || operation === 'document.finalize')
       if (stoppingBrowserCapture) await stopBrowserAsrCapture().catch(() => undefined)
       const config = endpoint(operation, payload)
       if (options.timeoutMs) config.timeout = options.timeoutMs
@@ -242,7 +243,7 @@ export class LinuxHttpWsAdapter implements RuntimeAdapter {
           try { await this.request(endpoint('asr.capture.stop', payload)) } catch { /* preserve original failure */ }
         }
         await stopBrowserAsrCapture().catch(() => undefined)
-      } else if (audioInputMode === 'BROWSER' && operation === 'asr.capture.stop') {
+      } else if (audioInputMode === 'BROWSER' && (operation === 'asr.capture.stop' || operation === 'document.finalize')) {
         await stopBrowserAsrCapture().catch(() => undefined)
       }
       throw normalizeRuntimeError(error, operation)

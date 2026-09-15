@@ -103,7 +103,7 @@ class SessionService:
         self.db.commit()
         return session_dict(row, case)
 
-    def finish(self, case_id: str, actor_id: str | None = None) -> dict:
+    def finish(self, case_id: str, actor_id: str | None = None, *, commit: bool = True) -> dict:
         case = case_repo.get(self.db, case_id)
         row = session_repo.active_for_case(self.db, case_id)
         if row is None:
@@ -116,7 +116,8 @@ class SessionService:
         row.ended_at = utc_now()
         row.paused_at = None
         audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="SESSION_FINISH", target_type="SESSION", target_id=row.id)
-        self.db.commit()
+        if commit:
+            self.db.commit()
         return session_dict(row, case)
 
     def change_stage(self, case_id: str, stage: str, actor_id: str | None = None) -> dict:
