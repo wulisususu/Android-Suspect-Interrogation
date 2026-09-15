@@ -199,6 +199,7 @@ def qa_unit_dict(row: QAUnit) -> dict:
         "candidateQuestionIds": _json_list(row.candidate_question_ids_json),
         "questionFragmentIds": [item.fragment_id for item in fragments if item.role == "QUESTION"],
         "answerFragmentIds": [item.fragment_id for item in fragments if item.role == "ANSWER"],
+        "controlFragmentIds": [item.fragment_id for item in fragments if item.role == "CONTROL"],
         "confidence": row.confidence,
         "modelId": row.model_id,
         "reasonCode": row.reason_code,

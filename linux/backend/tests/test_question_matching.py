@@ -8,6 +8,7 @@ from app.services.question_matching import (
 
 def test_operational_instruction_is_not_treated_as_template_question():
     assert is_question_utterance("继续说。") is False
+    assert is_question_utterance("嗯，继续说。") is False
     assert is_question_utterance("声音大一点。") is False
 
 

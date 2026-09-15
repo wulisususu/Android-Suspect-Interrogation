@@ -9,6 +9,7 @@ from app.database.models import ASRFragment, QAUnit, QAUnitFragment
 from app.domain.errors import DomainError
 from app.repositories import asr_fragments as asr_repo
 from app.repositories import qa_units as qa_repo
+from app.services.question_matching import is_operational_utterance
 
 
 OFFICER_SPEAKERS = {"INTERROGATOR", "RECORDER", "OFFICER_FALLBACK"}
@@ -22,8 +23,9 @@ def _aware(value: datetime) -> datetime:
 class QAUnitBuilder:
     """Deterministically group final speaker-attributed ASR fragments into QA units.
 
-    The builder performs no semantic question classification. Natural officer prompts
-    are grouped solely from speaker order so Qwen receives the complete real exchange.
+    The builder groups ordinary prompts from speaker order so Qwen receives the
+    complete real exchange. A short operational prompt such as "继续说" is kept
+    with the active exchange rather than turning a continuing answer into a new Q/A.
     """
 
     def __init__(self, db: Session, *, idle_close_seconds: float = 4.0):
@@ -51,6 +53,19 @@ class QAUnitBuilder:
         closed_ids: list[str] = []
 
         if speaker in OFFICER_SPEAKERS:
+            if active is not None and self._has_answer(active) and is_operational_utterance(text):
+                # Keep the source fragment for audit/recovery, but do not let a
+                # backchannel prompt become a second formal question or close the
+                # suspect's still-continuing answer.
+                qa_repo.append_fragment(
+                    self.db,
+                    active,
+                    fragment_id=fragment.id,
+                    role="CONTROL",
+                    position=self._next_position(active),
+                )
+                self._refresh_text(active)
+                return []
             if active is not None and self._has_answer(active):
                 self._close(active)
                 closed_ids.append(active.id)
@@ -166,7 +181,10 @@ class QAUnitBuilder:
             text = str(fragment.edited_text or fragment.raw_text or "").strip()
             if not text:
                 continue
-            (question if link.role == "QUESTION" else answer).append(text)
+            if link.role == "QUESTION":
+                question.append(text)
+            elif link.role == "ANSWER":
+                answer.append(text)
         return " ".join(question), " ".join(answer)
 
     def _refresh_text(self, unit: QAUnit) -> None:

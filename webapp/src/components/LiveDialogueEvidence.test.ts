@@ -6,7 +6,7 @@ import workspaceSource from '../views/InterrogationWorkspace.vue?raw'
 
 describe('recognition evidence workbench contract', () => {
   it('renders chronological raw transcript fragments before formal-record grouping', () => {
-    expect(dialogueSource).toContain('return [...props.dialogue]')
+    expect(dialogueSource).toContain('groupLiveDialogueFragments(props.dialogue)')
     expect(dialogueSource).toContain('原始转写会先显示在这里')
     expect(dialogueSource).toContain('speaker-prefix')
     expect(dialogueSource).not.toContain('liveDialogueTurns')

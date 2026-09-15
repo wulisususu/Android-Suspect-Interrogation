@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { dialoguePresentation, liveDialogueTurns, roundGroups } from './templateInterrogation'
+import { dialoguePresentation, groupLiveDialogueFragments, liveDialogueTurns, roundGroups } from './templateInterrogation'
 
 
 describe('dialoguePresentation', () => {
@@ -16,6 +16,21 @@ describe('dialoguePresentation', () => {
       side: 'left',
       badge: '待识别',
     })
+  })
+})
+
+describe('groupLiveDialogueFragments', () => {
+  it('renders adjacent suspect VAD chunks as one readable turn without merging other speakers', () => {
+    const groups = groupLiveDialogueFragments([
+      { id: 'a1', rawText: '我先翻了后墙，', speaker: 'SUSPECT', speakerId: 'suspect:1', startedAtMs: 0, endedAtMs: 2200, ordinal: 1, createdAt: 1 } as any,
+      { id: 'a2', rawText: '然后从厨房进去。', speaker: 'SUSPECT', speakerId: 'suspect:1', startedAtMs: 2300, endedAtMs: 4300, ordinal: 2, createdAt: 2 } as any,
+      { id: 'q1', rawText: '你确定吗？', speaker: 'INTERROGATOR', startedAtMs: 4400, endedAtMs: 5100, ordinal: 3, createdAt: 3 } as any,
+    ])
+
+    expect(groups).toHaveLength(2)
+    expect(groups[0].text).toBe('我先翻了后墙，然后从厨房进去。')
+    expect(groups[0].fragments.map((item) => item.id)).toEqual(['a1', 'a2'])
+    expect(groups[1].primary.id).toBe('q1')
   })
 })
 

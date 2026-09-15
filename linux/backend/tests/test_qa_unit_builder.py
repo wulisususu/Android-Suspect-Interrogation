@@ -9,6 +9,7 @@ from app.database.session import init_database, make_engine
 from app.repositories import asr_fragments as asr_repo
 from app.repositories import qa_units as qa_repo
 from app.services.qa_unit_builder import QAUnitBuilder
+from app.services.serializers import qa_unit_dict
 
 
 def make_context(tmp_path):
@@ -109,6 +110,37 @@ def test_next_officer_question_closes_previous_unit(tmp_path):
         assert closed.raw_answer_text == "八点多。"
         next_unit = qa_repo.active_for_session(db, case.id, session.id)
         assert next_unit is not None and next_unit.id != closed.id
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_operational_officer_prompt_keeps_continuing_suspect_answer_in_same_unit(tmp_path):
+    engine, db, case, session, capture = make_context(tmp_path)
+    try:
+        builder = QAUnitBuilder(db)
+        question = add_fragment(db, capture, ordinal=1, speaker="INTERROGATOR", text="你是怎么进去的？", start_ms=0, end_ms=500)
+        first_answer = add_fragment(db, capture, ordinal=2, speaker="SUSPECT", text="我先翻了后面的围墙。", start_ms=700, end_ms=1200)
+        continue_prompt = add_fragment(db, capture, ordinal=3, speaker="INTERROGATOR", text="嗯，继续说。", start_ms=1400, end_ms=1600)
+        second_answer = add_fragment(db, capture, ordinal=4, speaker="SUSPECT", text="然后我从厨房窗户进去的。", start_ms=1800, end_ms=2500)
+
+        builder.consume_fragment(case.id, question.id)
+        builder.consume_fragment(case.id, first_answer.id)
+        assert builder.consume_fragment(case.id, continue_prompt.id) == []
+        assert builder.consume_fragment(case.id, second_answer.id) == []
+
+        active = qa_repo.active_for_session(db, case.id, session.id)
+        assert active is not None
+        assert active.raw_question_text == "你是怎么进去的？"
+        assert active.raw_answer_text == "我先翻了后面的围墙。 然后我从厨房窗户进去的。"
+        assert [link.fragment_id for link in active.fragments] == [
+            question.id,
+            first_answer.id,
+            continue_prompt.id,
+            second_answer.id,
+        ]
+        assert [link.role for link in active.fragments] == ["QUESTION", "ANSWER", "CONTROL", "ANSWER"]
+        assert qa_unit_dict(active)["controlFragmentIds"] == [continue_prompt.id]
     finally:
         db.close()
         engine.dispose()

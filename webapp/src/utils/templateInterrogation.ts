@@ -8,6 +8,13 @@ export interface DialoguePresentation {
   badge: string
 }
 
+export interface LiveDialogueGroup {
+  key: string
+  primary: TemporaryAsrFragment
+  fragments: TemporaryAsrFragment[]
+  text: string
+}
+
 const presentationBySpeaker: Record<TemporaryAsrSpeaker, DialoguePresentation> = {
   SUSPECT: { side: 'left', badge: '嫌疑人' },
   INTERROGATOR: { side: 'right', badge: '主审' },
@@ -30,6 +37,42 @@ function timestamp(value: string | number | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER
 }
 
+function isContinuousSuspectTurn(previous: TemporaryAsrFragment, next: TemporaryAsrFragment): boolean {
+  if (previous.speaker !== 'SUSPECT' || next.speaker !== 'SUSPECT') return false
+  if (previous.speakerId && next.speakerId && previous.speakerId !== next.speakerId) return false
+  const gapMs = next.startedAtMs - previous.endedAtMs
+  return gapMs >= -100 && gapMs <= 2_500
+}
+
+/**
+ * FSMN-VAD may close one continuous answer at a natural micro-pause. Keep each
+ * source fragment and its evidence intact, but present adjacent suspect chunks as
+ * one readable dialogue turn.
+ */
+export function groupLiveDialogueFragments(fragments: TemporaryAsrFragment[]): LiveDialogueGroup[] {
+  const ordered = [...fragments]
+    .filter((fragment) => Boolean(textOf(fragment)))
+    .sort((left, right) => timestamp(left.createdAt) - timestamp(right.createdAt) || left.ordinal - right.ordinal)
+  const groups: LiveDialogueGroup[] = []
+  for (const fragment of ordered) {
+    const previous = groups.at(-1)
+    const last = previous?.fragments.at(-1)
+    if (previous && last && isContinuousSuspectTurn(last, fragment)) {
+      previous.fragments.push(fragment)
+      previous.text = previous.fragments.map(textOf).join('')
+      previous.key = `dialogue:${previous.primary.id}:${fragment.id}`
+      continue
+    }
+    groups.push({
+      key: `dialogue:${fragment.id}`,
+      primary: fragment,
+      fragments: [fragment],
+      text: textOf(fragment),
+    })
+  }
+  return groups
+}
+
 export function liveDialogueTurns(units: FormalQAUnit[], fragments: TemporaryAsrFragment[]): LiveDialogueTurn[] {
   const linkedFragmentIds = new Set<string>()
   const orderedUnits = [...units].sort((left, right) => (
@@ -42,6 +85,7 @@ export function liveDialogueTurns(units: FormalQAUnit[], fragments: TemporaryAsr
   orderedUnits.forEach((unit, index) => {
     unit.questionFragmentIds.forEach((id) => linkedFragmentIds.add(id))
     unit.answerFragmentIds.forEach((id) => linkedFragmentIds.add(id))
+    for (const id of unit.controlFragmentIds ?? []) linkedFragmentIds.add(id)
     const ordinal = index + 1
     const order = timestamp(unit.startedAt || unit.createdAt)
     const question = unit.rawQuestionText.trim()

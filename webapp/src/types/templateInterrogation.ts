@@ -11,7 +11,7 @@ export interface FormalQAUnit {
   id: string; caseId: string; sessionId: string | null; status: 'OPEN' | 'CLOSED' | 'ROUTING' | 'APPLIED' | 'NEEDS_REVIEW' | 'IGNORED'
   classification: QARouteClass | null; rawQuestionText: string; rawAnswerText: string
   formalQuestionText: string | null; formalAnswerText: string | null; targetQuestionId: string | null
-  candidateQuestionIds: string[]; questionFragmentIds: string[]; answerFragmentIds: string[]
+  candidateQuestionIds: string[]; questionFragmentIds: string[]; answerFragmentIds: string[]; controlFragmentIds?: string[]
   confidence: number | null; modelId: string | null; reasonCode: string | null
   startedAt: string | null; endedAt: string | null; createdAt: string | null; updatedAt: string | null
 }

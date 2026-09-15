@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.database.models import QAUnit, QAUnitFragment
 from app.domain.errors import DomainError
 
-_ROLES = {"QUESTION", "ANSWER"}
+_ROLES = {"QUESTION", "ANSWER", "CONTROL"}
 
 
 def create_open(db: Session, *, case_id: str, session_id: str | None, started_at: datetime) -> QAUnit:

@@ -9,7 +9,7 @@ import type {
   PendingResolution,
   QAUnitResolution,
 } from '../types/templateInterrogation'
-import { dialoguePresentation } from '../utils/templateInterrogation'
+import { dialoguePresentation, groupLiveDialogueFragments } from '../utils/templateInterrogation'
 
 const props = defineProps<{
   dialogue: TemporaryAsrFragment[]
@@ -37,26 +37,12 @@ const correctionSpeaker = ref<Record<string, TemporaryAsrSpeaker>>({})
 const correctionReason = ref<Record<string, string>>({})
 const qaReviewUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'NEEDS_REVIEW'))
 const qaResolvedUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'APPLIED' || unit.status === 'IGNORED'))
-function transcriptTimestamp(value?: string | number | null) {
-  if (typeof value === 'number') return value
-  const parsed = value ? Date.parse(value) : Number.NaN
-  return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER
-}
-
-const visibleDialogue = computed<TemporaryAsrFragment[]>(() => {
-  return [...props.dialogue]
-    .filter((fragment) => Boolean(visibleText(fragment)))
-    .sort((left, right) => transcriptTimestamp(left.createdAt) - transcriptTimestamp(right.createdAt) || left.ordinal - right.ordinal)
-})
+const visibleDialogue = computed(() => groupLiveDialogueFragments(props.dialogue))
 
 const elapsed = computed(() => {
   const total = Math.floor(props.captureElapsedMs / 1000)
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
 })
-
-function visibleText(item: TemporaryAsrFragment) {
-  return (item.editedText || item.rawText || '').trim()
-}
 
 function formatTime(item: TemporaryAsrFragment) {
   if (!item.createdAt) return ''
@@ -228,22 +214,23 @@ onMounted(() => { void scrollToLatest(true) })
         <p>原始转写会先显示在这里；说话人归属完成后自动补上姓名。</p>
       </div>
 
-      <template v-for="item in visibleDialogue" :key="item.id">
+      <template v-for="turn in visibleDialogue" :key="turn.key">
         <article
           class="dialogue-turn"
-          :class="[`side-${dialoguePresentation(item).side}`, { 'pending-draggable': !!pendingFor(item.id) }]"
-          :data-fragment-id="item.id"
-          :draggable="!!pendingFor(item.id)"
-          @dragstart="startPendingDrag($event, item.id)"
+          :class="[`side-${dialoguePresentation(turn.primary).side}`, { 'pending-draggable': !!pendingFor(turn.primary.id) }]"
+          :data-fragment-id="turn.primary.id"
+          :draggable="!!pendingFor(turn.primary.id)"
+          @dragstart="startPendingDrag($event, turn.primary.id)"
         >
           <div class="dialogue-meta">
-            <span>{{ dialoguePresentation(item).badge }}</span>
-            <time>{{ formatTime(item) }}</time>
+            <span>{{ dialoguePresentation(turn.primary).badge }}</span>
+            <time>{{ formatTime(turn.primary) }}</time>
           </div>
-          <div class="dialogue-bubble"><strong v-if="speakerPrefix(item)" class="speaker-prefix">{{ speakerPrefix(item) }}</strong>{{ visibleText(item) }}</div>
+          <div class="dialogue-bubble"><strong v-if="speakerPrefix(turn.primary)" class="speaker-prefix">{{ speakerPrefix(turn.primary) }}</strong>{{ turn.text }}</div>
 
-          <details v-if="item.recognitionEvidence" class="recognition-evidence-card">
-            <summary>查看识别依据</summary>
+          <template v-for="item in turn.fragments" :key="item.id">
+            <details v-if="item.recognitionEvidence" class="recognition-evidence-card">
+              <summary>查看识别依据<span v-if="turn.fragments.length > 1">（第 {{ turn.fragments.indexOf(item) + 1 }} 段）</span></summary>
 
             <div class="evidence-grid">
               <div><small>AI 原判</small><strong>{{ speakerLabel(item.recognitionEvidence.aiSpeaker) }}</strong></div>
@@ -296,49 +283,50 @@ onMounted(() => { void scrollToLatest(true) })
                 >保存修正</button>
               </div>
             </div>
-          </details>
+            </details>
 
-          <div v-else class="recognition-evidence-missing">
-            识别证据尚未独立入库（历史数据迁移后将自动补齐）
-          </div>
+            <div v-else class="recognition-evidence-missing">
+              识别证据尚未独立入库（历史数据迁移后将自动补齐）
+            </div>
+          </template>
 
-          <section v-if="pendingFor(item.id)" class="pending-resolution-card">
-            <template v-if="pendingFor(item.id)?.matchStatus === 'UNMATCHED'">
+          <section v-if="pendingFor(turn.primary.id)" class="pending-resolution-card">
+            <template v-if="pendingFor(turn.primary.id)?.matchStatus === 'UNMATCHED'">
               <p>未匹配正式笔录问题 · 可直接拖到左侧正式笔录指定位置</p>
               <div class="pending-actions">
-                <button class="primary" @click="resolve(pendingFor(item.id)!, { action: 'ADD' })">加入本案笔录</button>
-                <button @click="resolve(pendingFor(item.id)!, { action: 'IGNORE' })">忽略</button>
+                <button class="primary" @click="resolve(pendingFor(turn.primary.id)!, { action: 'ADD' })">加入本案笔录</button>
+                <button @click="resolve(pendingFor(turn.primary.id)!, { action: 'IGNORE' })">忽略</button>
               </div>
             </template>
 
-            <template v-else-if="pendingFor(item.id)?.matchStatus === 'AMBIGUOUS'">
+            <template v-else-if="pendingFor(turn.primary.id)?.matchStatus === 'AMBIGUOUS'">
               <p>可能对应多个正式问题，请人工确认</p>
               <div class="candidate-list">
                 <button
-                  v-for="candidate in candidateQuestions(pendingFor(item.id)!)"
+                  v-for="candidate in candidateQuestions(pendingFor(turn.primary.id)!)"
                   :key="candidate.id"
-                  @click="resolve(pendingFor(item.id)!, { action: 'LINK', caseQuestionId: candidate.id, roundMode: 'NEW_ROUND' })"
+                  @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: candidate.id, roundMode: 'NEW_ROUND' })"
                 >
                   对应：{{ candidate.text }}
                 </button>
               </div>
               <div class="pending-actions">
-                <button class="primary" @click="resolve(pendingFor(item.id)!, { action: 'ADD' })">新建本案问题</button>
-                <button @click="resolve(pendingFor(item.id)!, { action: 'IGNORE' })">忽略</button>
+                <button class="primary" @click="resolve(pendingFor(turn.primary.id)!, { action: 'ADD' })">新建本案问题</button>
+                <button @click="resolve(pendingFor(turn.primary.id)!, { action: 'IGNORE' })">忽略</button>
               </div>
             </template>
 
-            <template v-else-if="pendingFor(item.id)?.matchStatus === 'MATCHED_EXISTING'">
+            <template v-else-if="pendingFor(turn.primary.id)?.matchStatus === 'MATCHED_EXISTING'">
               <p>该问题已在本案笔录中出现，请选择本次问答如何记录</p>
               <div class="pending-actions">
                 <button
-                  v-if="pendingFor(item.id)!.candidateQuestionIds[0]"
+                  v-if="pendingFor(turn.primary.id)!.candidateQuestionIds[0]"
                   class="primary"
-                  @click="resolve(pendingFor(item.id)!, { action: 'LINK', caseQuestionId: pendingFor(item.id)!.candidateQuestionIds[0], roundMode: 'APPEND_EXISTING' })"
+                  @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: pendingFor(turn.primary.id)!.candidateQuestionIds[0], roundMode: 'APPEND_EXISTING' })"
                 >追加到原回答</button>
                 <button
-                  v-if="pendingFor(item.id)!.candidateQuestionIds[0]"
-                  @click="resolve(pendingFor(item.id)!, { action: 'LINK', caseQuestionId: pendingFor(item.id)!.candidateQuestionIds[0], roundMode: 'NEW_ROUND' })"
+                  v-if="pendingFor(turn.primary.id)!.candidateQuestionIds[0]"
+                  @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: pendingFor(turn.primary.id)!.candidateQuestionIds[0], roundMode: 'NEW_ROUND' })"
                 >新增一轮问答</button>
               </div>
             </template>
