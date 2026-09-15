@@ -2,7 +2,6 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.ai_gateway.mock import DeterministicAIGateway
 from app.database.models import DocumentSnapshot, Message, SignatureRecord
 from app.database.session import init_database, make_engine
 from app.domain.errors import DomainError
@@ -162,11 +161,3 @@ def test_device_gateway_never_fakes_real_hardware(tmp_path):
     finally:
         db.close()
         engine.dispose()
-
-
-def test_deterministic_ai_gateway_is_offline_and_repeatable():
-    gateway = DeterministicAIGateway()
-    first = gateway.generate("  测试回答  ")
-    second = gateway.generate("测试回答")
-    assert first == second
-    assert first["text"].startswith("离线模拟回复：")

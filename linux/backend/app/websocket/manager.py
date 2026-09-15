@@ -135,12 +135,6 @@ async def interrogation_socket(websocket: WebSocket, session_id: str):
                 await manager.send(websocket, session_id, "STATE_SYNC", _state_sync(websocket, session_id))
                 continue
 
-            if incoming.event == "USER_TEXT":
-                text = str(incoming.payload.get("text") or "")
-                ai_payload = websocket.app.state.ai_gateway.generate(text)
-                await manager.broadcast(session_id, "AI_RESPONSE", ai_payload)
-                continue
-
             # Device/ASR/recording/signature transport events are broadcast to all
             # connected views. Durable domain state for those features is written by
             # their REST/services layer, not by this connection registry.

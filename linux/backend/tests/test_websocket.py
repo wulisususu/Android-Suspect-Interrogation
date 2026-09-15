@@ -18,8 +18,9 @@ def create_running_case(client, app, enroll_test_suspect_voiceprint):
     return case["id"], session["id"]
 
 
-def test_websocket_initial_sync_ai_and_protocol_error(tmp_path, enroll_test_suspect_voiceprint):
+def test_websocket_initial_sync_rejects_retired_mock_ai_event(tmp_path, enroll_test_suspect_voiceprint):
     app = create_app(database_url=f"sqlite:///{tmp_path / 'ws.db'}", hardware_gateway=MockHardwareGateway(simulated=True))
+    assert not hasattr(app.state, "ai_gateway")
     with TestClient(app) as client:
         case_id, session_id = create_running_case(client, app, enroll_test_suspect_voiceprint)
         with client.websocket_connect(f"/ws/interrogation/{session_id}") as ws:
@@ -32,11 +33,9 @@ def test_websocket_initial_sync_ai_and_protocol_error(tmp_path, enroll_test_susp
             assert first["payload"]["session"]["state"] == "QUESTIONING"
 
             ws.send_json({"session_id": session_id, "event": "USER_TEXT", "seq": 1, "timestamp": "2026-08-26T00:00:00+00:00", "payload": {"text": "  测试   问题  "}})
-            ai = ws.receive_json()
-            assert ai["event"] == "AI_RESPONSE"
-            assert ai["session_id"] == session_id
-            assert ai["payload"]["mock"] is True
-            assert "测试 问题" in ai["payload"]["text"]
+            error = ws.receive_json()
+            assert error["event"] == "PROTOCOL_ERROR"
+            assert error["payload"]["code"] == "INVALID_WEBSOCKET_ENVELOPE"
 
             ws.send_json({"payload": {}})
             error = ws.receive_json()

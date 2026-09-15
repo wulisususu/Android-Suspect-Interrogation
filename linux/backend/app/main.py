@@ -15,7 +15,6 @@ from app.ai.speech.calibration import SpeakerCalibration
 from app.ai.speech.client import SpeechWorkerClient
 from app.ai.speech.fingerprint import fingerprint_microphone
 from app.ai.supervisor import AISupervisor
-from app.ai_gateway.mock import DeterministicAIGateway
 from app.api.ai_runtime import router as ai_router
 from app.api.asr import router as asr_router
 from app.api.cases import router as cases_router
@@ -88,7 +87,6 @@ def _database_url(database_url: str | None, settings: RuntimeSettings) -> str | 
 def create_app(
     database_url: str | None = None,
     hardware_gateway=None,
-    ai_gateway=None,
     hardware_manager=None,
     ai_supervisor: AISupervisor | None = None,
     runtime_settings: RuntimeSettings | None = None,
@@ -301,7 +299,6 @@ def create_app(
         else None
     )
     app.state.voiceprint_enrollment_context = {}
-    app.state.ai_gateway = ai_gateway or DeterministicAIGateway()
     app.state.websocket_manager = websocket_manager
 
     install_error_handlers(app)

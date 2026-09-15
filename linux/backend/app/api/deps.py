@@ -17,7 +17,3 @@ def get_db(request: Request) -> Generator[Session, None, None]:
 
 def get_hardware(request: Request):
     return request.app.state.hardware_gateway
-
-
-def get_ai(request: Request):
-    return request.app.state.ai_gateway
