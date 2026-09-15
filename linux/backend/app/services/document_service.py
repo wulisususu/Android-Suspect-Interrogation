@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from app.database.session import begin_sqlite_immediate
 from app.domain.enums import WorkflowState
 from app.domain.errors import DomainError
 from app.repositories import audit as audit_repo
@@ -165,6 +166,7 @@ class DocumentService:
         }
 
     def freeze(self, case_id: str, actor_id: str | None = None) -> dict:
+        begin_sqlite_immediate(self.db)
         case = case_repo.get(self.db, case_id)
         if WorkflowState(case.workflow_state) != WorkflowState.SUMMARY:
             raise DomainError("DOCUMENT_FREEZE_NOT_ALLOWED", "仅复核阶段可以冻结笔录", 409)

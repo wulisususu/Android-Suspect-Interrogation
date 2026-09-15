@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.database.session import begin_sqlite_immediate
 from app.database.models import ASRFragment
 from app.domain.errors import DomainError
 from app.repositories import asr_fragments as asr_repo
@@ -247,6 +248,7 @@ def update_fragment(case_id: str, fragment_id: str, body: FragmentUpdateRequest,
 
 
 def _confirm_one(db: Session, *, case_id: str, fragment_id: str, actor_id: str | None, commit: bool = True) -> tuple[ASRFragment, bool]:
+    begin_sqlite_immediate(db)
     fragment = _fragment_for_case(db, case_id, fragment_id)
     assert_formal_record_mutable(db, case_id)
     if fragment.state == "DISCARDED":
@@ -274,6 +276,7 @@ def confirm_fragment(case_id: str, fragment_id: str, db: Session = Depends(get_d
 
 
 def _confirm_batch(db: Session, *, case_id: str, fragment_ids: list[str], actor_id: str | None) -> dict[str, Any]:
+    begin_sqlite_immediate(db)
     assert_formal_record_mutable(db, case_id)
     unique_ids = list(dict.fromkeys(str(item).strip() for item in fragment_ids if str(item).strip()))
     confirmed = 0
@@ -293,6 +296,7 @@ def confirm_fragments(case_id: str, body: FragmentBatchRequest, db: Session = De
 
 @router.post("/cases/{case_id}/asr/fragments/apply")
 def apply_fragments(case_id: str, body: FragmentBatchRequest, db: Session = Depends(get_db)):
+    begin_sqlite_immediate(db)
     fragment_ids = list(body.fragment_ids)
     if not fragment_ids:
         fragment_ids = list(db.scalars(select(ASRFragment.id).where(ASRFragment.case_id == case_id, ASRFragment.state.in_(["PENDING", "EDITED"])).order_by(ASRFragment.created_at.asc(), ASRFragment.ordinal.asc())))

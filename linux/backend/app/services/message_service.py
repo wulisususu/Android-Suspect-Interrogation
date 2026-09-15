@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from app.database.session import begin_sqlite_immediate
 from app.domain.enums import SessionStatus
 from app.domain.errors import DomainError
 from app.repositories import audit as audit_repo
@@ -29,6 +30,7 @@ class MessageService:
         actor_id: str | None = None,
         commit: bool = True,
     ) -> dict:
+        begin_sqlite_immediate(self.db)
         assert_formal_record_mutable(self.db, case_id)
         active = session_repo.active_for_case(self.db, case_id)
         if active is None:
