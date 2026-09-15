@@ -162,11 +162,9 @@ function allNodes(target: TestNode): TestNode[] {
 }
 
 describe('VoiceprintEnrollmentGate', () => {
-  it('renders the audio banner and start control before suspect enrollment', () => {
+  it('renders the start control before suspect enrollment', () => {
     const root = mount({ phase: 'IDLE', kind: 'SUSPECT' })
 
-    expect(textContent(root)).toContain('音源：Windows 浏览器麦克风（局域网测试）')
-    expect(textContent(root)).toContain('测试音源')
     expect(textContent(root)).toContain('嫌疑人 · 张某')
     expect(textContent(root)).toContain('尚未注册')
     expect(textContent(root)).toContain('开始录制')

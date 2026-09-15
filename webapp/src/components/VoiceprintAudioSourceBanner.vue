@@ -7,6 +7,7 @@ const props = defineProps<{
   source: VoiceprintAudioSource | null | Ref<VoiceprintAudioSource | null>
   reason: string | Ref<string>
   secureContext: boolean | Ref<boolean>
+  compact?: boolean
 }>()
 
 const sourceValue = computed(() => unref(props.source))
@@ -21,14 +22,25 @@ const secureContextValue = computed(() => unref(props.secureContext))
 </script>
 
 <template>
-  <aside class="voiceprint-source-banner" :class="effectiveSource.toLowerCase()" aria-live="polite">
-    <div>
+  <aside class="voiceprint-source-banner" :class="[effectiveSource.toLowerCase(), { compact }]" aria-live="polite">
+    <details v-if="compact" class="compact-source-details">
+      <summary>
+        <strong v-if="effectiveSource === 'BROWSER'">Windows 浏览器麦克风</strong>
+        <strong v-else>Linux 一体机麦克风</strong>
+        <span v-if="effectiveSource === 'BROWSER'" class="security-chip" :class="{ secure: secureContextValue }">{{ secureContextValue ? '可用' : '需授权' }}</span>
+        <span v-else class="security-chip secure">可用</span>
+      </summary>
+      <p>{{ reasonValue }}</p>
+    </details>
+    <div v-if="!compact">
       <strong v-if="effectiveSource === 'BROWSER'">音源：Windows 浏览器麦克风（局域网测试）</strong>
       <strong v-else>音源：Linux 一体机麦克风（生产）</strong>
       <span>{{ reasonValue }}</span>
     </div>
-    <span v-if="effectiveSource === 'BROWSER'" class="security-chip" :class="{ secure: secureContextValue }">{{ secureContextValue ? '浏览器麦克风上下文可用' : '需用 LAN 测试启动脚本' }}</span>
-    <span v-else class="security-chip secure">ALSA 本机音源</span>
+    <template v-if="!compact">
+      <span v-if="effectiveSource === 'BROWSER'" class="security-chip" :class="{ secure: secureContextValue }">{{ secureContextValue ? '浏览器麦克风上下文可用' : '需用 LAN 测试启动脚本' }}</span>
+      <span v-else class="security-chip secure">ALSA 本机音源</span>
+    </template>
   </aside>
 </template>
 
@@ -41,4 +53,11 @@ const secureContextValue = computed(() => unref(props.secureContext))
 .voiceprint-source-banner.alsa { background:#fff8e8; border-bottom-color:#e5c77e; }
 .security-chip { flex:none; border:1px solid #d7b36b; border-radius:999px; padding:5px 9px; background:#fff; color:#895c0b !important; font-weight:700; }
 .security-chip.secure { border-color:#8fc6a6; color:#267647 !important; }
+.compact-source-details { min-width:0; }
+.compact-source-details summary { display:flex; align-items:center; justify-content:flex-end; gap:6px; cursor:pointer; list-style:none; white-space:nowrap; }
+.compact-source-details summary::-webkit-details-marker { display:none; }
+.compact-source-details strong { font-size:11px; }
+.compact-source-details .security-chip { padding:2px 6px; font-size:10px; }
+.compact-source-details p { max-width:300px; margin:5px 0 0; color:#62788c; font-size:11px; line-height:1.4; white-space:normal; }
+.voiceprint-source-banner.compact { justify-content:flex-end; padding:3px 6px; border:1px solid #c9d7e2; border-radius:6px; }
 </style>

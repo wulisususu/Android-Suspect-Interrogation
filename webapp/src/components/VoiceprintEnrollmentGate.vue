@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { VoiceprintAudioSource } from '../api/browserVoiceprint'
 import { voiceprintDegradationNotice, voiceprintEnrollmentProgress } from './VoiceprintPreparationPanel.vue'
-import VoiceprintAudioSourceBanner from './VoiceprintAudioSourceBanner.vue'
 import type { OfficerVoiceprint, VoiceprintEnrollmentState, VoiceprintReadiness } from '../types/interrogation'
 
 const props = withDefaults(defineProps<{
@@ -13,9 +11,6 @@ const props = withDefaults(defineProps<{
   selectedRecorderOfficerId: string | null
   enrollmentState: VoiceprintEnrollmentState
   busy: boolean
-  source: VoiceprintAudioSource | null
-  reason: string
-  secureContext: boolean
   /** Registered suspects get the condensed status card instead of the full recording card. */
   compact?: boolean
 }>(), { compact: false })
@@ -98,8 +93,6 @@ function startOrReRecord() {
 
 <template>
   <aside class="voiceprint-enrollment-gate" :class="{ compact }" aria-label="嫌疑人声纹注册">
-    <VoiceprintAudioSourceBanner :source="source" :reason="reason" :secure-context="secureContext" />
-
     <div class="voiceprint-enrollment-content" :class="{ 'compact-card': compact }">
       <header v-if="!compact">
         <span class="section-kicker">正式审讯前置条件</span>

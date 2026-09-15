@@ -58,9 +58,6 @@ const props = defineProps<{
   selectedRecorderOfficerId: string | null
   voiceprintEnrollmentState: VoiceprintEnrollmentState
   voiceprintBusy: boolean
-  voiceprintSource: import('../api/browserVoiceprint').VoiceprintAudioSource | null
-  voiceprintReason: string
-  voiceprintSecureContext: boolean
 }>()
 
 const emit = defineEmits<{
@@ -326,9 +323,6 @@ async function confirmSignature() {
           :selected-recorder-officer-id="selectedRecorderOfficerId"
           :enrollment-state="voiceprintEnrollmentState"
           :busy="voiceprintBusy"
-          :source="voiceprintSource"
-          :reason="voiceprintReason"
-          :secure-context="voiceprintSecureContext"
           @suspect-start="emit('suspectStart')"
           @suspect-stop="emit('suspectStop')"
           @select-interrogator="emit('selectInterrogator', $event)"
