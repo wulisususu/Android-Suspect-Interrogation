@@ -5,10 +5,14 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from app.ai.speech.calibration import MODEL_BASELINE_THRESHOLD
 from app.ai.speech.types import SpeechEvent, SpeechEventType
 from app.database.models import ASRCaptureSession, ASRFragment
 from app.database.session import init_database, make_engine, make_session_factory
+from app.domain.enums import SessionStatus
+from app.domain.errors import DomainError
 from app.repositories import cases as case_repo
 from app.repositories import sessions as session_repo
 from app.repositories import voiceprints as voiceprint_repo
@@ -247,6 +251,29 @@ def test_capture_pushes_each_pcm_chunk_once_persists_verified_fragment_and_broad
     assert payload["speakerSource"] == "SPEAKER_EMBEDDING"
     assert payload["thresholdSource"] == "DEVICE_CALIBRATED"
     assert payload["voiceprintVerified"] is True
+    engine.dispose()
+
+
+def test_capture_rejects_paused_interrogation_session(tmp_path: Path):
+    engine, factory, case_id, _ = _seed_database(tmp_path)
+    with factory() as db:
+        session = session_repo.active_for_case(db, case_id)
+        assert session is not None
+        session.status = SessionStatus.PAUSED.value
+        db.commit()
+
+    device = FakeDeviceManager([])
+    service = AsrCaptureService(
+        session_factory=factory,
+        device_manager=device,
+        ai_supervisor=FakeSpeechSupervisor(),
+        publish_event=EventCollector(),
+    )
+
+    with pytest.raises(DomainError, match="当前审讯未处于进行状态") as exc:
+        service.start(case_id)
+    assert exc.value.code == "SESSION_NOT_RUNNING"
+    assert device.started == 0
     engine.dispose()
 
 

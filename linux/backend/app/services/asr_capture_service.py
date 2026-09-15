@@ -18,6 +18,7 @@ from app.database.models import (
     OfficerVoiceprint,
     SessionVoiceAssignment,
 )
+from app.domain.enums import SessionStatus
 from app.domain.errors import DomainError
 from app.repositories import asr_fragments as asr_repo
 from app.repositories import audit as audit_repo
@@ -170,6 +171,8 @@ class AsrCaptureService:
             interrogation_session = session_repo.active_for_case(db, case_id)
             if interrogation_session is None:
                 raise DomainError("SESSION_NOT_ACTIVE", "请先开始审讯再启动语音采集", 409)
+            if interrogation_session.status != SessionStatus.RUNNING.value:
+                raise DomainError("SESSION_NOT_RUNNING", "当前审讯未处于进行状态", 409)
             if voiceprint_repo.get_suspect(
                 db, case_id, model_key=self.authoritative_speaker_backend
             ) is None:
