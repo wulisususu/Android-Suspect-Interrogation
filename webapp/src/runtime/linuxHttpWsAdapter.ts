@@ -55,6 +55,7 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
 
   switch (operation) {
     case 'case.create': return { method: 'POST', url: '/api/v1/cases', data: payload }
+    case 'case.intake': return { method: 'POST', url: '/api/v1/cases/intake', data: payload }
     case 'case.list': {
       const params: Record<string, unknown> = { limit: payload.limit }
       if (typeof payload.query === 'string' && payload.query) params.query = payload.query

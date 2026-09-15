@@ -79,6 +79,7 @@ function legacyConfig(operation: string, payload: Record<string, unknown>): Axio
   const messageId = encode(payload.messageId)
   switch (operation) {
     case 'case.create': return { method: 'POST', url: '/api/cases/create', data: payload }
+    case 'case.intake': return { method: 'POST', url: '/api/v1/cases/intake', data: payload }
     case 'case.list': return { method: 'GET', url: '/api/cases', params: { limit: payload.limit } }
     case 'case.get': return { method: 'GET', url: `/api/cases/${caseId}` }
     case 'case.update': return { method: 'PUT', url: `/api/cases/${caseId}`, data: payload.patch ?? payload }

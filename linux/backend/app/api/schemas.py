@@ -18,6 +18,20 @@ class CaseCreateRequest(FlexibleModel):
     officerName: str | None = None
 
 
+class CaseIntakeIdentity(FlexibleModel):
+    name: str = Field(min_length=1)
+    gender: str | None = None
+    nation: str | None = None
+    birthDate: str | None = None
+    idNumber: str = ""
+    address: str | None = None
+    source: str = "MANUAL"
+
+
+class CaseIntakeRequest(CaseCreateRequest):
+    identity: CaseIntakeIdentity
+
+
 class CaseUpdateRequest(FlexibleModel):
     operator_id: str | None = None
     operatorId: str | None = None

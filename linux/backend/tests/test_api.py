@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.hardware_gateway.mock import MockHardwareGateway
 from app.main import create_app
+from app.repositories import persons as person_repo
 
 
 def payload(response):
@@ -147,6 +148,55 @@ def test_confirmed_identity_intake_allows_session_start_without_hardware_reread(
         session = payload(client.post(f"/api/v1/cases/{case_id}/session/start", json={"actor_id": "op-2"}))
         assert session["status"] == "RUNNING"
         assert session["state"] == "QUESTIONING"
+
+
+def test_case_intake_creates_case_and_confirmed_identity_in_one_request(tmp_path):
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'case-intake.db'}",
+        hardware_gateway=MockHardwareGateway(simulated=False),
+    )
+    with TestClient(app) as client:
+        created = payload(client.post("/api/v1/cases/intake", json={
+            "operatorId": "op-intake",
+            "officerName": "李警官",
+            "caseType": "suspect_interrogation",
+            "identity": {
+                "name": "赵某",
+                "gender": "男",
+                "nation": "汉",
+                "birthDate": "1990-01-01",
+                "idNumber": "320101199001010011",
+                "address": "测试地址",
+                "source": "ID_CARD_READER",
+            },
+        }))
+
+        assert created["workflowState"] == "IDENTITY_READY"
+        assert created["suspectName"] == "赵某"
+        assert created["idNumber"] == "320101199001010011"
+        assert created["identitySource"] == "ID_CARD_READER"
+        assert len(payload(client.get(f"/api/v1/cases/{created['id']}/facts"))) >= 7
+        actions = [item["action"] for item in payload(client.get(f"/api/v1/cases/{created['id']}/audit"))]
+        assert {"CASE_CREATE", "IDENTITY_CONFIRM"} <= set(actions)
+
+
+def test_case_intake_rolls_back_case_when_identity_persistence_fails(tmp_path, monkeypatch):
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'case-intake-rollback.db'}",
+        hardware_gateway=MockHardwareGateway(simulated=False),
+    )
+
+    def fail_person_create(*_args, **_kwargs):
+        raise RuntimeError("simulated identity persistence failure")
+
+    monkeypatch.setattr(person_repo, "create", fail_person_create)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/api/v1/cases/intake", json={
+            "operatorId": "op-intake",
+            "identity": {"name": "赵某", "idNumber": "320101199001010011", "source": "MANUAL"},
+        })
+        assert response.status_code == 500
+        assert payload(client.get("/api/v1/cases")) == []
 
 
 def test_formal_record_header_updates_persist_identity_and_missing_facts(tmp_path):

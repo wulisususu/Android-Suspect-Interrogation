@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { backendErrorMessage, createCase, fetchRuntimeCapabilities } from '../api/interrogation'
+import { backendErrorMessage, createCaseWithIdentity, fetchRuntimeCapabilities } from '../api/interrogation'
 import { getRuntimeAdapter, type RuntimeCapabilities } from '../runtime'
 import type { CaseSummary } from '../types/interrogation'
 import { calculateAge } from '../utils/identityOcr'
@@ -35,7 +35,22 @@ async function submit() {
   if (idNumber && !/^\d{15}$|^\d{17}[\dX]$/.test(idNumber)) { error.value = '身份证号码格式不正确。'; return }
   busy.value = 'submit'; error.value = ''
   try {
-    const item = await createCase({ suspectName, gender: form.gender.trim(), nation: form.nation.trim(), birthDate: form.birthDate.trim(), age: form.age.trim() || calculateAge(form.birthDate), idNumber, address: form.idCardAddress.trim(), officerName: form.officerName.trim() || '当前警官', identitySource: cardApplied.value ? 'ID_CARD_READER' : 'MANUAL', identityCapturedAt: Date.now() })
+    const officerName = form.officerName.trim() || '当前警官'
+    const item = await createCaseWithIdentity({
+      operatorId: officerName,
+      officerName,
+      caseType: 'suspect_interrogation',
+      age: form.age.trim() || calculateAge(form.birthDate),
+      identity: {
+        name: suspectName,
+        gender: form.gender.trim(),
+        nation: form.nation.trim(),
+        birthDate: form.birthDate.trim(),
+        idNumber,
+        address: form.idCardAddress.trim(),
+        source: cardApplied.value ? 'ID_CARD_READER' : 'MANUAL',
+      },
+    })
     emit('created', item)
   } catch (cause) { error.value = backendErrorMessage(cause) } finally { busy.value = '' }
 }

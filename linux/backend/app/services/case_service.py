@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.domain.enums import InterrogationStage
+from app.database.session import begin_sqlite_immediate
+from app.domain.enums import InterrogationStage, WorkflowState
 from app.domain.errors import DomainError
 from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
+from app.repositories import devices as device_repo
 from app.repositories import facts as fact_repo
 from app.repositories import persons as person_repo
 from app.repositories import timeline as timeline_repo
 from app.services.formal_record_policy import assert_formal_record_mutable
 from app.services.serializers import audit_dict, case_dict, fact_dict, person_dict, timeline_dict
+from app.workflow.state import StateMachine
 
 
 class CaseService:
@@ -43,6 +46,55 @@ class CaseService:
         audit_repo.add(self.db, case_id=row.id, actor_id=row.operator_id, action="CASE_CREATE", target_type="CASE", target_id=row.id, after=data)
         self.db.commit()
         return data
+
+    def intake(self, payload: dict, identity: dict, actor_id: str | None = None) -> dict:
+        clean_identity = dict(identity)
+        clean_identity["name"] = str(clean_identity.get("name") or "").strip()
+        clean_identity["idNumber"] = str(clean_identity.get("idNumber") or "").strip()
+        clean_identity["source"] = str(clean_identity.get("source") or "MANUAL").strip() or "MANUAL"
+        if not clean_identity["name"]:
+            raise DomainError("IDENTITY_NAME_REQUIRED", "身份确认必须包含姓名", 400)
+
+        try:
+            begin_sqlite_immediate(self.db)
+            row = case_repo.create(self.db, payload)
+            fact_repo.seed_defaults(self.db, row.id)
+            audit_repo.add(
+                self.db,
+                case_id=row.id,
+                actor_id=actor_id or row.operator_id,
+                action="CASE_CREATE",
+                target_type="CASE",
+                target_id=row.id,
+                after=case_dict(row),
+            )
+            person = person_repo.create(self.db, case_id=row.id, data=clean_identity)
+            row.workflow_state = StateMachine.transition(
+                WorkflowState.IDENTITY_REQUIRED, WorkflowState.IDENTITY_READY
+            ).value
+            device_repo.add_event(
+                self.db,
+                case_id=row.id,
+                session_id=None,
+                device="identity",
+                event="IDENTITY_CONFIRMED",
+                payload={"person_id": person.id, "source": person.source},
+            )
+            audit_repo.add(
+                self.db,
+                case_id=row.id,
+                actor_id=actor_id or row.operator_id,
+                action="IDENTITY_CONFIRM",
+                target_type="PERSON",
+                target_id=person.id,
+                after={"name": person.name, "id_number": person.id_number, "source": person.source},
+            )
+            data = self._case_data(row)
+            self.db.commit()
+            return data
+        except Exception:
+            self.db.rollback()
+            raise
 
     def get(self, case_id: str) -> dict:
         return self._case_data(case_repo.get(self.db, case_id))

@@ -29,6 +29,25 @@ describe('LinuxHttpWsAdapter', () => {
     expect(calls[0].params).toEqual({ limit: 50 })
   })
 
+  it('maps atomic case intake to the canonical endpoint', async () => {
+    const calls: Array<{ method: string; url: string; data?: unknown }> = []
+    const adapter = new LinuxHttpWsAdapter({
+      request: async (config) => {
+        calls.push({ method: String(config.method), url: String(config.url), data: config.data })
+        return { data: { ok: true, data: { id: 'CASE-001' } } }
+      },
+    })
+    const intake = {
+      operatorId: 'officer-01',
+      officerName: '李警官',
+      identity: { name: '赵某', idNumber: '320101199001010011', source: 'MANUAL' },
+    }
+
+    await adapter.invoke('case.intake', intake)
+
+    expect(calls).toEqual([{ method: 'POST', url: '/api/v1/cases/intake', data: intake }])
+  })
+
   it('routes Linux operations through /api/v1 and preserves identity case binding', async () => {
     const calls: Array<{ method: string; url: string; data?: unknown }> = []
     const adapter = new LinuxHttpWsAdapter({

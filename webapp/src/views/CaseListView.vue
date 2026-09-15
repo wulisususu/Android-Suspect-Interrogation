@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { backendErrorMessage, fetchCase, fetchCases } from '../api/interrogation'
+import { backendErrorMessage, fetchCases } from '../api/interrogation'
 import IdentityIntakeModal from '../components/IdentityIntakeModal.vue'
-import { getRuntimeAdapter } from '../runtime'
 import type { CaseSummary } from '../types/interrogation'
 
 interface CaseRow extends CaseSummary {}
@@ -98,25 +97,8 @@ function submitSearch() {
 async function created(item: CaseSummary) {
   identityOpen.value = false
   error.value = ''
-  try {
-    await getRuntimeAdapter().invoke('identity.confirm', {
-      caseId: item.id,
-      actorId: item.officerName || '当前警官',
-      name: item.suspectName || '',
-      idNumber: item.idNumber || '',
-      gender: item.gender || '',
-      nation: item.nation || '',
-      birthDate: item.birthDate || '',
-      address: item.address || '',
-      source: item.identitySource || 'MANUAL',
-    })
-    const refreshed = await fetchCase(item.id)
-    cases.value = [refreshed, ...cases.value.filter((row) => row.id !== item.id)]
-    emit('open', item.id)
-  } catch (err) {
-    cases.value = [item, ...cases.value.filter((row) => row.id !== item.id)]
-    error.value = `案件已创建，但身份绑定未完成：${backendErrorMessage(err)}`
-  }
+  cases.value = [item, ...cases.value.filter((row) => row.id !== item.id)]
+  emit('open', item.id)
 }
 
 onMounted(load)

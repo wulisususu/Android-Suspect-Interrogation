@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.api.responses import envelope
-from app.api.schemas import CaseCreateRequest, CaseUpdateRequest, FactUpdateRequest, TimelineCreateRequest
+from app.api.schemas import CaseCreateRequest, CaseIntakeRequest, CaseUpdateRequest, FactUpdateRequest, TimelineCreateRequest
 from app.services.case_service import CaseService
 
 router = APIRouter(prefix="/cases", tags=["cases"])
@@ -12,6 +12,14 @@ router = APIRouter(prefix="/cases", tags=["cases"])
 @router.post("")
 def create_case(body: CaseCreateRequest, db: Session = Depends(get_db)):
     return envelope(CaseService(db).create(body.model_dump(exclude_none=True)), "案件已创建")
+
+
+@router.post("/intake")
+def intake_case(body: CaseIntakeRequest, db: Session = Depends(get_db)):
+    payload = body.model_dump(exclude={"identity"}, exclude_none=True)
+    identity = body.identity.model_dump(exclude_none=True)
+    actor_id = payload.get("operator_id") or payload.get("operatorId")
+    return envelope(CaseService(db).intake(payload, identity, actor_id), "案件及身份信息已创建")
 
 
 @router.get("")
