@@ -13,7 +13,7 @@ const presentationBySpeaker: Record<TemporaryAsrSpeaker, DialoguePresentation> =
   INTERROGATOR: { side: 'right', badge: '主审' },
   RECORDER: { side: 'right', badge: '记录员' },
   OFFICER_FALLBACK: { side: 'right', badge: '民警' },
-  UNKNOWN: { side: 'neutral', badge: '待识别' },
+  UNKNOWN: { side: 'left', badge: '待识别' },
 }
 
 export function dialoguePresentation(item: Pick<TemporaryAsrFragment, 'speaker'>): DialoguePresentation {

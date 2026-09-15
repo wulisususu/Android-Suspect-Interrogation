@@ -102,6 +102,10 @@ function speakerName(item: TemporaryAsrFragment) {
   return item.speakerName || presentation.badge
 }
 
+function speakerPrefix(item: TemporaryAsrFragment) {
+  return item.speaker === 'UNKNOWN' ? '' : `${speakerName(item)}：`
+}
+
 function pendingFor(fragmentId: string) {
   return props.pendingQuestions.find((item) => item.officerFragmentId === fragmentId && (item.status === 'PENDING' || item.status === 'DEFERRED'))
 }
@@ -185,7 +189,7 @@ onMounted(() => { void scrollToLatest(true) })
   <aside class="live-dialogue-panel">
     <header class="live-dialogue-header">
       <div>
-        <span class="panel-kicker">实时问答流</span>
+        <span class="panel-kicker">原文 / 实时转写</span>
         <h2>实时语音对话</h2>
       </div>
       <button
@@ -236,7 +240,7 @@ onMounted(() => { void scrollToLatest(true) })
             <span>{{ dialoguePresentation(item).badge }}</span>
             <time>{{ formatTime(item) }}</time>
           </div>
-          <div class="dialogue-bubble"><strong class="speaker-prefix">{{ speakerName(item) }}：</strong>{{ visibleText(item) }}</div>
+          <div class="dialogue-bubble"><strong v-if="speakerPrefix(item)" class="speaker-prefix">{{ speakerPrefix(item) }}</strong>{{ visibleText(item) }}</div>
 
           <details v-if="item.recognitionEvidence" class="recognition-evidence-card">
             <summary>查看识别依据</summary>
@@ -342,7 +346,7 @@ onMounted(() => { void scrollToLatest(true) })
         </article>
       </template>
 
-      <article v-if="partialText" class="dialogue-turn side-neutral partial-turn">
+      <article v-if="partialText" class="dialogue-turn side-left partial-turn">
         <div class="dialogue-meta"><span>正在转写</span></div>
         <div class="dialogue-bubble">{{ partialText }}</div>
       </article>
@@ -354,15 +358,14 @@ onMounted(() => { void scrollToLatest(true) })
 
 <style scoped>
 .recognition-evidence-card {
-  margin-top: 8px;
-  border: 1px solid rgba(76, 112, 156, .28);
-  border-radius: 10px;
-  background: rgba(245, 249, 253, .9);
-  font-size: 12px;
+  margin-top: 4px;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
 }
 .recognition-evidence-card summary {
   cursor: pointer;
-  padding: 6px 8px;
+  padding: 2px 4px;
   color: #728194;
 }
 .speaker-prefix { color: #173f69; }
@@ -381,6 +384,7 @@ onMounted(() => { void scrollToLatest(true) })
   padding: 9px 10px;
   border-top: 1px solid rgba(76, 112, 156, .16);
 }
+.partial-turn .dialogue-bubble { border-style: solid; }
 .evidence-grid div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .evidence-grid small { color: #728194; }
 .evidence-grid strong { color: #27394b; overflow-wrap: anywhere; }

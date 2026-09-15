@@ -11,9 +11,9 @@ describe('dialoguePresentation', () => {
     expect(dialoguePresentation({ speaker: 'OFFICER_FALLBACK' } as any)).toMatchObject({ side: 'right', badge: '民警' })
   })
 
-  it('keeps unknown attribution neutral without surfacing confidence as a business marker', () => {
+  it('keeps unknown attribution in the chronological raw transcript without surfacing confidence as a business marker', () => {
     expect(dialoguePresentation({ speaker: 'UNKNOWN', lowConfidence: true } as any)).toEqual({
-      side: 'neutral',
+      side: 'left',
       badge: '待识别',
     })
   })
