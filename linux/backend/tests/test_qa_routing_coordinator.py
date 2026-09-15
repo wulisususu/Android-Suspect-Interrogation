@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
 from sqlalchemy.orm import Session
 
 from app.database.models import Case, CaseQuestion, InterrogationSession
@@ -12,6 +13,7 @@ from app.database.session import init_database, make_engine, make_session_factor
 from app.repositories import asr_fragments as asr_repo
 from app.repositories import qa_units as qa_repo
 from app.services.qa_routing_coordinator import QARoutingCoordinator
+from app.services.qa_unit_builder import QAUnitBuilder
 
 
 class GenerateResult:
@@ -236,6 +238,42 @@ def test_startup_recovery_processes_persisted_unassigned_fragments(tmp_path):
         assert FakeSupervisorInstance.calls == 1
     finally:
         coordinator.shutdown()
+        engine.dispose()
+
+
+@pytest.mark.parametrize("persisted_status", ["CLOSED", "ROUTING"])
+def test_startup_recovery_routes_pending_units(tmp_path, persisted_status):
+    engine, factory, case_id, session_id, capture_id = seed(tmp_path)
+    try:
+        q_id, a_id = add_exchange(factory, case_id=case_id, capture_id=capture_id)
+        with factory() as db:
+            builder = QAUnitBuilder(db)
+            builder.consume_fragment(case_id, q_id)
+            builder.consume_fragment(case_id, a_id)
+            builder.flush_session(case_id, session_id)
+            db.commit()
+            unit = qa_repo.list_for_case(db, case_id)[0]
+            assert unit.status == "CLOSED"
+            if persisted_status == "ROUTING":
+                qa_repo.mark_routing(db, unit)
+                db.commit()
+            assert unit.status == persisted_status
+
+        supervisor = FakeSupervisor()
+        coordinator = QARoutingCoordinator(
+            session_factory=factory,
+            ai_supervisor=supervisor,
+            publish_event=EventCollector(factory),
+            idle_close_seconds=60.0,
+            poll_interval=0.01,
+        )
+        coordinator.start()
+        try:
+            wait_until(lambda: bool(qa_repo_status(factory, case_id, "APPLIED")))
+            assert supervisor.calls == 1
+        finally:
+            coordinator.shutdown()
+    finally:
         engine.dispose()
 
 

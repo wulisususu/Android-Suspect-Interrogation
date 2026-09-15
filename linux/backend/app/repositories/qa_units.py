@@ -91,6 +91,15 @@ def list_for_case(db: Session, case_id: str) -> list[QAUnit]:
     return list(db.scalars(stmt))
 
 
+def list_pending_routing(db: Session) -> list[QAUnit]:
+    stmt = (
+        select(QAUnit)
+        .where(QAUnit.status.in_(("CLOSED", "ROUTING")))
+        .order_by(QAUnit.ended_at.asc(), QAUnit.created_at.asc(), QAUnit.id.asc())
+    )
+    return list(db.scalars(stmt))
+
+
 def list_recent_closed(db: Session, case_id: str, *, limit: int = 2) -> list[QAUnit]:
     stmt = (
         select(QAUnit)

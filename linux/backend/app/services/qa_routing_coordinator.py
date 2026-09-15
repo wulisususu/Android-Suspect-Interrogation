@@ -137,6 +137,7 @@ class QARoutingCoordinator:
 
     def _run(self) -> None:
         try:
+            self._recover_pending_routing()
             while not self._stop.is_set():
                 try:
                     self._write_recovery_markers()
@@ -170,6 +171,16 @@ class QARoutingCoordinator:
                 self._apply_pending_flushes()
             except Exception:
                 logger.exception("qa routing final flush failed")
+
+    def _recover_pending_routing(self) -> None:
+        """Resume units committed before a restart but not yet routed."""
+        with self.session_factory() as db:
+            unit_ids = [unit.id for unit in qa_repo.list_pending_routing(db)]
+        for qa_unit_id in unit_ids:
+            try:
+                self._route_unit(qa_unit_id)
+            except Exception:
+                logger.exception("qa routing startup recovery failed for qa unit %s", qa_unit_id)
 
     def _consume_fragment(self, case_id: str, fragment_id: str) -> None:
         with self.session_factory() as db:

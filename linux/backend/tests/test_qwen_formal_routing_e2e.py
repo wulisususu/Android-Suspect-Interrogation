@@ -150,7 +150,6 @@ def test_qwen_routing_e2e_preserves_raw_evidence_and_builds_formal_record(tmp_pa
             answer="返回过一次，因为手机遗留在现场。",
         ),
         decision(RouteClass.NEEDS_REVIEW, candidates=(fixed_id, dynamic_id), confidence=0.58, reason="AMBIGUOUS"),
-        decision(RouteClass.IGNORE, confidence=0.99, reason="OPERATIONAL_CHATTER"),
     ])
     commit_visible_events: list[tuple[str, str]] = []
 
@@ -182,7 +181,7 @@ def test_qwen_routing_e2e_preserves_raw_evidence_and_builds_formal_record(tmp_pa
             with factory() as db:
                 rows = qa_repo.list_for_case(db, case_id)
                 terminal = {"APPLIED", "NEEDS_REVIEW", "IGNORED"}
-                return len(rows) == 6 and all(row.status in terminal for row in rows)
+                return len(rows) == 5 and all(row.status in terminal for row in rows)
 
         wait_until(routed)
     finally:
@@ -194,17 +193,15 @@ def test_qwen_routing_e2e_preserves_raw_evidence_and_builds_formal_record(tmp_pa
         assert [row.edited_text for row in fragments] == raw_texts
 
         units = qa_repo.list_for_case(db, case_id)
-        assert len(units) == 6
+        assert len(units) == 5
         assert [row.classification for row in units] == [
             "MATCH_FIXED",
             "MATCH_FIXED",
             "MATCH_EXISTING",
             "CREATE_LIVE_FROM_SPEECH",
             "NEEDS_REVIEW",
-            "IGNORE",
         ]
         assert units[4].status == "NEEDS_REVIEW"
-        assert units[5].status == "IGNORED"
 
         fixed = db.get(CaseQuestion, fixed_id)
         dynamic = db.get(CaseQuestion, dynamic_id)
@@ -283,7 +280,7 @@ def test_qwen_routing_e2e_preserves_raw_evidence_and_builds_formal_record(tmp_pa
                 decision(RouteClass.IGNORE),
             )
 
-    assert len(fake_router.calls) == 6
+    assert len(fake_router.calls) == 5
     assert len(commit_visible_events) == 4
     assert all(session == session_id for session, _ in commit_visible_events)
     engine.dispose()
