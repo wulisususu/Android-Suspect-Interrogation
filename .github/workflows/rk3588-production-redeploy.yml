@@ -103,7 +103,7 @@ jobs:
           grep -q '民警声纹库' webapp/src/App.vue
           grep -q 'OfficerVoiceprintLibrary' webapp/src/views/SystemSettingsView.vue
           grep -q 'SpeakerCalibrationCenter' webapp/src/views/SystemSettingsView.vue
-          grep -q '独立证据已入库' webapp/src/components/LiveDialoguePanel.vue
+          grep -q 'recognitionEvidence' webapp/src/components/LiveDialoguePanel.vue
           grep -q 'HTTP_REQUEST_HEADERS' webapp/src/config/audioInput.ts
           grep -q 'Sec-CH-UA-Platform' linux/backend/app/api/client_context.py
           grep -q 'client_context_router' linux/backend/app/main.py
