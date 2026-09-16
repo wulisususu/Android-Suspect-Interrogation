@@ -38,7 +38,7 @@ from app.services.voiceprint_service import VoiceprintService
 
 
 SAMPLE_RATE = 16000
-GOOD_SEGMENTS = [[0, 8000], [9000, 17000], [18000, 26000]]
+GOOD_SEGMENTS = [[0, 20000], [21000, 41000], [42000, 62000]]
 GOOD_EMBEDDINGS = [
     [1.0, 0.0, 0.0],
     [0.99, 0.1, 0.0],
@@ -46,7 +46,7 @@ GOOD_EMBEDDINGS = [
 ]
 
 
-def pcm16(duration_ms: int = 30000, sample: int = 1200) -> bytes:
+def pcm16(duration_ms: int = 62000, sample: int = 1200) -> bytes:
     samples = duration_ms * SAMPLE_RATE // 1000
     return struct.pack(f"<{samples}h", *([sample] * samples))
 
@@ -408,7 +408,7 @@ def test_readiness_exposes_suspect_enrollment_metrics(tmp_path: Path):
     try:
         readiness = VoiceprintService(db, speech_client=FakeSpeechClient()).readiness("CASE-1")
         assert readiness["enrollmentQuality"] == "GOOD"
-        assert readiness["usableDurationMs"] == 24000
+        assert readiness["usableDurationMs"] == 60000
         assert readiness["modelKey"] == "eres2net_large"
         assert readiness["modelId"] == "eres2net_large"
         assert readiness["modelVersion"] == "17b1-test"
@@ -548,7 +548,7 @@ def test_readiness_endpoint_reports_degradation_when_the_device_has_no_margin(tm
     assert data["recognitionModeVerificationSource"] == "DEVICE_CALIBRATION"
     # Enrollment metrics reach the condensed card from the same payload.
     assert data["enrollmentQuality"] == "GOOD"
-    assert data["usableDurationMs"] == 24000
+    assert data["usableDurationMs"] == 60000
     assert data["modelKey"] == "eres2net_large"
 
 

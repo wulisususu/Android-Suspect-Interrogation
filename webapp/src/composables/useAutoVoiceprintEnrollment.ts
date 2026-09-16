@@ -16,7 +16,7 @@ import {
 import { selectAutoVoiceprintSource } from '../audio/voiceprintSourceSelection'
 import { useInterrogationStore } from '../stores/interrogation'
 
-const DEFAULT_REQUIRED_USABLE_MS = 20_000
+const DEFAULT_REQUIRED_USABLE_MS = 60_000
 
 type ActiveKind = 'SUSPECT' | 'OFFICER'
 

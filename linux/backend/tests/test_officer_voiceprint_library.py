@@ -14,7 +14,7 @@ from app.services.officer_voiceprint_library import OfficerVoiceprintLibraryServ
 
 
 SAMPLE_RATE = 16_000
-GOOD_SEGMENTS = [[0, 8000], [9000, 17000], [18000, 26000]]
+GOOD_SEGMENTS = [[0, 20000], [21000, 41000], [42000, 62000]]
 MODEL_FP = "a" * 64
 MIC_FP = "b" * 64
 XVECTOR = "xvector"
@@ -139,7 +139,7 @@ def test_one_officer_capture_creates_eres2net_samples_only(tmp_path):
         result = OfficerVoiceprintLibraryService(db, speech_client=speech).add_sample(
             "P-DUAL",
             "双模型警官",
-            pcm16(30_000),
+            pcm16(62_000),
             actor_id="admin",
             audio_source="ALSA",
             device_id="default",
@@ -183,7 +183,7 @@ def test_eres_failure_does_not_fall_back_to_legacy_xvector(tmp_path):
             OfficerVoiceprintLibraryService(
                 db,
                 speech_client=FakeDualSpeechClient(fail_backend=ERES2NET),
-            ).add_sample("P-DUAL", "双模型警官", pcm16(30_000), audio_source="ALSA")
+            ).add_sample("P-DUAL", "双模型警官", pcm16(62_000), audio_source="ALSA")
 
         profiles = list(db.scalars(select(OfficerVoiceProfile).where(OfficerVoiceProfile.officer_id == "P-DUAL")))
         assert profiles == []
@@ -198,7 +198,7 @@ def test_second_enrollment_appends_sample_and_increments_aggregate_version(tmp_p
         first = service(db, 0).add_sample(
             "P-001",
             "张警官",
-            pcm16(30_000),
+            pcm16(62_000),
             actor_id="admin",
             audio_source="BROWSER",
             device_id="browser-default",
@@ -212,7 +212,7 @@ def test_second_enrollment_appends_sample_and_increments_aggregate_version(tmp_p
         second = service(db, 1).add_sample(
             "P-001",
             "张警官",
-            pcm16(30_000),
+            pcm16(62_000),
             actor_id="admin",
             audio_source="ALSA",
             device_id="default",
@@ -247,8 +247,8 @@ def test_second_enrollment_appends_sample_and_increments_aggregate_version(tmp_p
 def test_disabling_sample_preserves_history_and_rebuilds_reference(tmp_path):
     engine, db = make_db(tmp_path)
     try:
-        first = service(db, 0).add_sample("P-001", "张警官", pcm16(30_000), audio_source="BROWSER")
-        second = service(db, 1).add_sample("P-001", "张警官", pcm16(30_000), audio_source="ALSA")
+        first = service(db, 0).add_sample("P-001", "张警官", pcm16(62_000), audio_source="BROWSER")
+        second = service(db, 1).add_sample("P-001", "张警官", pcm16(62_000), audio_source="ALSA")
         before_version = second["aggregateVersion"]
 
         result = service(db, 0).disable_sample("P-001", first["latestSampleId"], reason="环境噪声", actor_id="admin")
@@ -269,7 +269,7 @@ def test_session_binding_freezes_officer_reference_version(tmp_path):
     engine, db = make_db(tmp_path)
     try:
         library = service(db, 0)
-        first = library.add_sample("P-001", "张警官", pcm16(30_000), audio_source="BROWSER")
+        first = library.add_sample("P-001", "张警官", pcm16(62_000), audio_source="BROWSER")
         bridge_before = voiceprint_repo.get_officer(db, "P-001")
         bridge_before_embedding = bytes(bridge_before.embedding)
 
@@ -301,7 +301,7 @@ def test_session_binding_freezes_officer_reference_version(tmp_path):
         assert bytes(frozen.embedding) == bridge_before_embedding
 
         library = service(db, 1)
-        after = library.add_sample("P-001", "张警官", pcm16(30_000), audio_source="ALSA")
+        after = library.add_sample("P-001", "张警官", pcm16(62_000), audio_source="ALSA")
         bridge_after = voiceprint_repo.get_officer(db, "P-001")
         frozen_after = db.get(OfficerVoiceprint, frozen_id)
         assignment_after = db.scalar(select(SessionVoiceAssignment).where(SessionVoiceAssignment.session_id == session.id))

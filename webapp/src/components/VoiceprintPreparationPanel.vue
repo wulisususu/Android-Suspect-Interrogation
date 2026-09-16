@@ -7,7 +7,7 @@ export function voiceprintEnrollmentProgress(value: {
   usableSpeechMs?: number | null
   requiredUsableSpeechMs?: number | null
 }) {
-  const targetDurationMs = Math.max(1, Number(value.requiredUsableSpeechMs ?? value.targetDurationMs ?? 20000))
+  const targetDurationMs = Math.max(1, Number(value.requiredUsableSpeechMs ?? value.targetDurationMs ?? 60000))
   const usableDurationMs = Math.max(0, Math.min(Number(value.usableSpeechMs ?? value.capturedDurationMs ?? 0), targetDurationMs))
   const recordedDurationMs = Math.max(0, Number(value.capturedDurationMs ?? 0))
   return {

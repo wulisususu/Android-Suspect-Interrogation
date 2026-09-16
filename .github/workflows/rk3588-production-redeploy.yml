@@ -116,7 +116,7 @@ jobs:
           grep -q 'apply_database_migrations' deploy/control.sh
           grep -q 'apply_database_migrations' deploy/lib/release.sh
           grep -q 'TemplateDrivenInterrogationPage' webapp/src/views/InterrogationWorkspace.vue
-          grep -q 'required_usable_speech_ms=20000' linux/backend/app/main.py
+          grep -q 'required_usable_speech_ms=60000' linux/backend/app/main.py
           grep -q 'open_vad_session' linux/backend/app/ai/speech/client.py
           grep -q '有效语音达到 20 秒后会自动停止并注册' webapp/src/components/VoiceprintPreparationPanel.vue
           echo 'production_source_contract=ok'
@@ -316,7 +316,7 @@ jobs:
           print('vad_progress_protocol=ok usable_ms=', usable)
           PY
 
-          grep -q 'required_usable_speech_ms=20000' /opt/suspect-interrogation/current/linux/backend/app/main.py
+          grep -q 'required_usable_speech_ms=60000' /opt/suspect-interrogation/current/linux/backend/app/main.py
           grep -q 'USABLE_SPEECH_TARGET' /opt/suspect-interrogation/current/linux/backend/app/services/audio_capture_service.py
           echo "current_release=$(readlink -f /opt/suspect-interrogation/current)"
           echo "deployed_source_sha=$(cat /opt/suspect-interrogation/current/.suspect-source-sha)"

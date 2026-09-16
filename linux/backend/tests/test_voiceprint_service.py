@@ -13,7 +13,7 @@ from app.services.voiceprint_service import VoiceprintService
 
 
 SAMPLE_RATE = 16000
-GOOD_SEGMENTS = [[0, 8000], [9000, 17000], [18000, 26000]]
+GOOD_SEGMENTS = [[0, 20000], [21000, 41000], [42000, 62000]]
 GOOD_EMBEDDINGS = [
     [1.0, 0.0, 0.0],
     [0.99, 0.1, 0.0],
@@ -77,13 +77,13 @@ def test_suspect_enrollment_uses_vad_multiple_embeddings_and_audits(tmp_path):
         speech = good_speech()
         result = VoiceprintService(db, speech_client=speech).enroll_suspect(
             "CASE-1",
-            pcm16(30000),
+            pcm16(62000),
             actor_id="op-1",
         )
 
         assert result["caseId"] == "CASE-1"
         assert result["ready"] is True
-        assert result["usableDurationMs"] == 24000
+        assert result["usableDurationMs"] == 60000
         assert result["embeddingDim"] == 3
         assert speech.segment_calls == 1
         assert speech.embedding_calls >= 3
@@ -140,14 +140,14 @@ def test_suspect_enrollment_rejects_clearly_clipped_audio_before_model_calls(tmp
         engine.dispose()
 
 
-def test_suspect_enrollment_requires_twenty_seconds_vad_positive_speech(tmp_path):
+def test_suspect_enrollment_requires_sixty_seconds_vad_positive_speech(tmp_path):
     engine, db = make_db(tmp_path)
     try:
-        speech = FakeSpeechClient([[0, 6000], [7000, 13000], [14000, 19000]])
+        speech = FakeSpeechClient([[0, 15000], [16000, 30000], [31000, 45000]])
         with pytest.raises(DomainError) as exc_info:
             VoiceprintService(db, speech_client=speech).enroll_suspect(
                 "CASE-1",
-                pcm16(30000),
+                pcm16(46000),
                 actor_id="op-1",
             )
         assert exc_info.value.code == "VOICEPRINT_INSUFFICIENT_SPEECH"
@@ -161,14 +161,14 @@ def test_officer_library_enroll_update_revoke_and_list_preserves_identity_histor
     engine, db = make_db(tmp_path)
     try:
         service = VoiceprintService(db, speech_client=good_speech())
-        enrolled = service.enroll_officer("P-001", "张警官", pcm16(30000), actor_id="admin")
+        enrolled = service.enroll_officer("P-001", "张警官", pcm16(62000), actor_id="admin")
         assert enrolled["officerId"] == "P-001"
         assert enrolled["officerName"] == "张警官"
         assert enrolled["active"] is True
         assert [item["officerId"] for item in service.list_officers()] == ["P-001"]
 
         service.speech_client = good_speech()
-        updated = service.update_officer("P-001", pcm16(30000), actor_id="admin")
+        updated = service.update_officer("P-001", pcm16(62000), actor_id="admin")
         assert updated["officerId"] == "P-001"
         assert updated["officerName"] == "张警官"
         assert updated["active"] is True
@@ -224,7 +224,7 @@ def test_readiness_requires_suspect_but_never_requires_police_voiceprints(tmp_pa
             "canStart": False,
         }
 
-        service.enroll_suspect("CASE-1", pcm16(30000), actor_id="op")
+        service.enroll_suspect("CASE-1", pcm16(62000), actor_id="op")
         after = service.readiness("CASE-1")
         assert {
             name: after[name]
@@ -255,11 +255,11 @@ def test_bind_roles_uses_active_session_and_active_officer_profiles(tmp_path):
     engine, db = make_db(tmp_path)
     try:
         service = VoiceprintService(db, speech_client=good_speech())
-        service.enroll_suspect("CASE-1", pcm16(30000), actor_id="op")
+        service.enroll_suspect("CASE-1", pcm16(62000), actor_id="op")
         service.speech_client = good_speech()
-        service.enroll_officer("P-001", "主审张警官", pcm16(30000), actor_id="admin")
+        service.enroll_officer("P-001", "主审张警官", pcm16(62000), actor_id="admin")
         service.speech_client = good_speech()
-        service.enroll_officer("P-002", "记录李警官", pcm16(30000), actor_id="admin")
+        service.enroll_officer("P-002", "记录李警官", pcm16(62000), actor_id="admin")
 
         with pytest.raises(DomainError) as exc_info:
             service.bind_roles("CASE-1", "P-001", "P-002", actor_id="op")

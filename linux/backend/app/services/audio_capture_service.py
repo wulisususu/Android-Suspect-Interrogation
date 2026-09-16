@@ -47,7 +47,7 @@ class AudioCaptureService:
         speech_client: Any | None = None,
         sample_rate: int = 16000,
         max_seconds: int = 300,
-        required_usable_speech_ms: int = 20000,
+        required_usable_speech_ms: int = 60000,
         vad_chunk_ms: int = 200,
         read_timeout: float = 0.5,
         stop_wait_seconds: float = 5.0,

@@ -629,7 +629,7 @@ class OfficerVoiceprintLibraryService:
     @staticmethod
     def _sample_weight(sample: OfficerVoiceSample) -> float:
         quality_weight = _QUALITY_WEIGHTS.get(str(sample.quality or "").upper(), 0.5)
-        duration_factor = max(0.75, min(1.25, float(sample.usable_duration_ms) / 20_000.0))
+        duration_factor = max(0.75, min(1.25, float(sample.usable_duration_ms) / 60_000.0))
         return quality_weight * duration_factor
 
     @staticmethod

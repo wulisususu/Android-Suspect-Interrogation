@@ -20,7 +20,7 @@ from app.services.speaker_mode import SpeakerModeConfig
 
 
 _SAMPLE_RATE = 16000
-_MIN_USABLE_SPEECH_MS = 20000
+_MIN_USABLE_SPEECH_MS = 60000
 _MIN_SEGMENT_MS = 1000
 _MAX_SEGMENT_MS = 8000
 _MIN_EMBEDDING_SEGMENTS = 3
@@ -434,7 +434,7 @@ class VoiceprintService:
         if usable_duration_ms < _MIN_USABLE_SPEECH_MS:
             raise DomainError(
                 "VOICEPRINT_INSUFFICIENT_SPEECH",
-                "有效语音不足20秒，请重新录制声纹",
+                "有效语音不足60秒，请重新录制声纹",
                 400,
             )
 

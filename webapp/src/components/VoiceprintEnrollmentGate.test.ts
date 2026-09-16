@@ -283,7 +283,7 @@ describe('VoiceprintEnrollmentGate', () => {
   it('states that the existing voiceprint stays valid when re-recording fails', () => {
     const emitted: string[] = []
     const root = mount(
-      { phase: 'ERROR', kind: 'SUSPECT', message: '有效语音不足20秒，请重新录制声纹' },
+      { phase: 'ERROR', kind: 'SUSPECT', message: '有效语音不足60秒，请重新录制声纹' },
       { onSuspectStart: () => emitted.push('suspectStart') },
       { readiness: readyReadiness, compact: true },
     )

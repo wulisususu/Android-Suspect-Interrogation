@@ -16,12 +16,12 @@ from speech_worker.main import SpeechWorkerServer
 
 
 SAMPLE_RATE = 16000
-GOOD_SEGMENTS = [[0, 8000], [9000, 17000], [18000, 26000]]
+GOOD_SEGMENTS = [[0, 20000], [21000, 41000], [42000, 62000]]
 XVECTOR = "xvector"
 ERES2NET = "eres2net_large"
 
 
-def pcm16(duration_ms: int = 30000, sample: int = 1200) -> bytes:
+def pcm16(duration_ms: int = 62000, sample: int = 1200) -> bytes:
     samples = duration_ms * SAMPLE_RATE // 1000
     return struct.pack(f"<{samples}h", *([sample] * samples))
 

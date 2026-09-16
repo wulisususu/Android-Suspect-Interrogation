@@ -62,7 +62,7 @@ const captureSubjectId = ref('')
 const captureId = ref('')
 const capturedDurationMs = ref(0)
 const usableSpeechMs = ref(0)
-const requiredUsableSpeechMs = ref(20_000)
+const requiredUsableSpeechMs = ref(60_000)
 const captureSource = ref<'ALSA' | 'BROWSER'>('ALSA')
 let browserCapture: BrowserVoiceprintCapture | null = null
 let progressTimer: ReturnType<typeof setInterval> | null = null
@@ -138,7 +138,7 @@ async function pollCapture() {
     const status = await fetchBrowserAwareVoiceprintStatus()
     capturedDurationMs.value = Number(status.capturedDurationMs ?? status.recordedDurationMs ?? 0)
     usableSpeechMs.value = Number(status.usableSpeechMs ?? 0)
-    requiredUsableSpeechMs.value = Number(status.requiredUsableSpeechMs ?? status.targetDurationMs ?? 20_000)
+    requiredUsableSpeechMs.value = Number(status.requiredUsableSpeechMs ?? status.targetDurationMs ?? 60_000)
     if (status.complete) await finalizeSample(true)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
@@ -161,7 +161,7 @@ async function beginSample() {
     captureId.value = started.captureId
     capturedDurationMs.value = 0
     usableSpeechMs.value = 0
-    requiredUsableSpeechMs.value = 20_000
+    requiredUsableSpeechMs.value = 60_000
     if (browserCapture) {
       await browserCapture.start(started.captureId, {
         onError: (text) => {

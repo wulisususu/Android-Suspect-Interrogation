@@ -293,7 +293,7 @@ def create_app(
             manager,
             speech_client=speech_client,
             max_seconds=300,
-            required_usable_speech_ms=20000,
+            required_usable_speech_ms=60000,
         )
         if manager is not None
         else None
