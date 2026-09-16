@@ -166,7 +166,7 @@ function normalizedSelect(event: Event) {
     <div v-if="showSuspectProgress" class="voiceprint-enrollment-progress" :class="enrollmentState.phase.toLowerCase()">
       <strong>嫌疑人声纹</strong>
       <template v-if="enrollmentState.phase === 'RECORDING'">
-        <span>请自然说话；有效语音达到 20 秒后会自动停止并注册，停顿和语速慢不会按总时长判失败。</span>
+        <span>请自然说话；有效语音达到 60 秒后会自动停止并注册，停顿和语速慢不会按总时长判失败。</span>
         <div class="voiceprint-capture-meter" role="progressbar" :aria-valuemin="0" :aria-valuemax="enrollmentProgress.targetSeconds" :aria-valuenow="enrollmentProgress.usableSeconds" :aria-label="`有效语音 ${enrollmentProgress.usableSeconds} / ${enrollmentProgress.targetSeconds} 秒`">
           <i :style="{ width: `${enrollmentProgress.percent}%` }"></i>
         </div>

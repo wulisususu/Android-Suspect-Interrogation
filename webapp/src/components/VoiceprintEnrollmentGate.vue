@@ -140,7 +140,7 @@ function startOrReRecord() {
 
       <div v-if="showProgress" class="voiceprint-enrollment-progress" :class="enrollmentState.phase.toLowerCase()">
         <template v-if="enrollmentState.phase === 'RECORDING'">
-          <span>请自然说话；有效语音达到 20 秒后会自动停止并注册，停顿和语速慢不会按总时长判失败。</span>
+          <span>请自然说话；有效语音达到 60 秒后会自动停止并注册，停顿和语速慢不会按总时长判失败。</span>
           <div class="voiceprint-capture-meter" role="progressbar" :aria-valuemin="0" :aria-valuemax="progress.targetSeconds" :aria-valuenow="progress.usableSeconds" :aria-label="`有效语音 ${progress.usableSeconds} / ${progress.targetSeconds} 秒`">
             <i :style="{ width: `${progress.percent}%` }"></i>
           </div>
