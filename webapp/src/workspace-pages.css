@@ -44,8 +44,7 @@
   border: 0;
   background: transparent;
 }
-.workspace-page-tabs .session-controls { display: grid; grid-template-rows: auto auto; justify-items: end; align-content: center; gap: 2px; }
-.workspace-page-tabs .session-audio-source { max-width: 300px; }
+.workspace-page-tabs .session-controls { display: grid; grid-template-rows: auto; justify-items: end; align-content: center; }
 .workspace-page-tabs .session-buttons { display: flex; align-items: center; gap: 10px; }
 .workspace-page-tabs .session-buttons button { min-width: 96px; min-height: 38px; font-weight: 700; }
 

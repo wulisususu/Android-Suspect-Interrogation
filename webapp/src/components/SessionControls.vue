@@ -1,15 +1,10 @@
 <script setup lang="ts">
-import type { VoiceprintAudioSource } from '../api/browserVoiceprint'
 import type { SessionState } from '../types/interrogation'
-import VoiceprintAudioSourceBanner from './VoiceprintAudioSourceBanner.vue'
 
 defineProps<{
   session: SessionState
   startDisabled?: boolean
   startDisabledReason?: string
-  audioSource: VoiceprintAudioSource | null
-  audioReason: string
-  audioSecureContext: boolean
 }>()
 defineEmits<{
   start: []
@@ -21,13 +16,6 @@ defineEmits<{
 
 <template>
   <div class="session-controls">
-    <VoiceprintAudioSourceBanner
-      class="session-audio-source"
-      compact
-      :source="audioSource"
-      :reason="audioReason"
-      :secure-context="audioSecureContext"
-    />
     <div class="session-buttons">
       <button
         v-if="session.status === 'READY'"

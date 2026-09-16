@@ -28,4 +28,16 @@ describe('interrogation workspace top bar', () => {
     expect(source).not.toContain('class="state-chip"')
   })
 
+  it('renders the compact audio source banner inside the dark top bar', () => {
+    const topbarStart = source.indexOf('<header class="topbar"')
+    const topbarEnd = source.indexOf('</header>')
+    const banner = source.indexOf('<VoiceprintAudioSourceBanner')
+
+    expect(topbarStart).toBeGreaterThanOrEqual(0)
+    expect(banner).toBeGreaterThan(topbarStart)
+    expect(topbarEnd).toBeGreaterThan(banner)
+    expect(source).toContain('class="topbar-audio-source"')
+    expect(source).not.toContain('class="session-audio-source"')
+  })
+
 })

@@ -8,9 +8,8 @@ describe('session controls', () => {
     expect(source).not.toContain('会话状态：')
   })
 
-  it('places compact audio status above the session action buttons', () => {
-    expect(source).toContain('VoiceprintAudioSourceBanner')
-    expect(source).toContain('compact')
-    expect(source.indexOf('VoiceprintAudioSourceBanner')).toBeLessThan(source.indexOf('session-buttons'))
+  it('renders only actions; the audio source banner lives in the workspace top bar', () => {
+    expect(source).not.toContain('VoiceprintAudioSourceBanner')
+    expect(source).not.toContain('audio-source')
   })
 })

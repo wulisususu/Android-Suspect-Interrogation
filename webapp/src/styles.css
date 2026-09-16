@@ -37,6 +37,10 @@ h1 { font-size: 21px; margin: 0 0 5px; }
 .topbar-field { color: #dbe7f0; font-size: 14px; }
 .recording { color: #ff8b8b; }
 .recording.muted { color: #9fb0bf; }
+.topbar-audio-source { border-color: #3d5a75; background: #17364f; }
+.topbar-audio-source strong { color: #dbe7f0; }
+.topbar-audio-source .security-chip { background: transparent; border-color: #3d5a75; color: #e8c47c !important; }
+.topbar-audio-source .security-chip.secure { border-color: #4d8a67; color: #9fd8b7 !important; }
 .device-button {
   border: 1px solid #557087; color: #e7f0f8; background: #17364f;
   border-radius: 8px; padding: 7px 10px;

@@ -12,6 +12,7 @@ import CaseProfilePage from '../components/CaseProfilePage.vue'
 import MossTranscriptionPanel from '../components/MossTranscriptionPanel.vue'
 import SessionControls from '../components/SessionControls.vue'
 import TemplateDrivenInterrogationPage from '../components/TemplateDrivenInterrogationPage.vue'
+import VoiceprintAudioSourceBanner from '../components/VoiceprintAudioSourceBanner.vue'
 import { voiceprintStartGuard } from '../components/VoiceprintPreparationPanel.vue'
 import { useAutoVoiceprintEnrollment } from '../composables/useAutoVoiceprintEnrollment'
 import { useInterrogationStore } from '../stores/interrogation'
@@ -218,6 +219,13 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
         <span class="topbar-field">主审：{{ store.caseSummary.officerName || '当前警官' }}</span>
         <span class="topbar-field">记录员：{{ recorderName }}</span>
         <AiSettingsPanel />
+        <VoiceprintAudioSourceBanner
+          class="topbar-audio-source"
+          compact
+          :source="autoVoiceprint.source.value"
+          :reason="autoVoiceprint.reason.value"
+          :secure-context="autoVoiceprint.secureContext.value"
+        />
         <span class="recording" :class="{ muted: store.session.status !== 'RUNNING' }">● {{ store.session.status === 'RUNNING' ? '审讯中' : store.session.status === 'PAUSED' ? '已暂停' : '未录入' }}</span>
       </header>
 
@@ -238,9 +246,6 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
           :session="store.session"
           :start-disabled="voiceprintGuard.disabled || questionDictationActive || questionDictationBusy"
           :start-disabled-reason="questionDictationActive || questionDictationBusy ? '请先停止准备阶段语音输入，再开始正式审讯。' : voiceprintGuard.reason"
-          :audio-source="autoVoiceprint.source.value"
-          :audio-reason="autoVoiceprint.reason.value"
-          :audio-secure-context="autoVoiceprint.secureContext.value"
           @start="store.startSession"
           @toggle-pause="store.togglePause"
           @finish="store.finishSession"
