@@ -13,8 +13,6 @@ import type {
   SessionState,
   TemporaryAsrFragment,
   TemporaryAsrSpeaker,
-  OfficerVoiceprint,
-  VoiceprintEnrollmentState,
   VoiceprintReadiness,
 } from '../types/interrogation'
 import type {
@@ -29,7 +27,6 @@ import type {
 import FormalTemplatePanel from './FormalTemplatePanel.vue'
 import LiveDialoguePanel from './LiveDialoguePanel.vue'
 import QuestionPreparationPanel from './QuestionPreparationPanel.vue'
-import VoiceprintEnrollmentGate from './VoiceprintEnrollmentGate.vue'
 import './templateInterrogation.css'
 
 const props = defineProps<{
@@ -53,11 +50,6 @@ const props = defineProps<{
   questionDictationDraft: string
   questionDictationError: string
   readiness: VoiceprintReadiness
-  officers: OfficerVoiceprint[]
-  selectedInterrogatorOfficerId: string | null
-  selectedRecorderOfficerId: string | null
-  voiceprintEnrollmentState: VoiceprintEnrollmentState
-  voiceprintBusy: boolean
 }>()
 
 const emit = defineEmits<{
@@ -66,11 +58,6 @@ const emit = defineEmits<{
   captureStop: [target?: AsrInsertionTarget]
   questionDictationStart: []
   questionDictationStop: []
-  suspectStart: []
-  suspectStop: []
-  selectInterrogator: [officerId: string | null]
-  selectRecorder: [officerId: string | null]
-  bindRoles: []
   loadLibrary: [category?: string]
   createQuestion: [input: CaseQuestionCreateInput]
   updateQuestion: [questionId: string, input: CaseQuestionUpdateInput]
@@ -314,22 +301,6 @@ async function confirmSignature() {
       </div>
 
       <div class="dialogue-column">
-        <VoiceprintEnrollmentGate
-          :compact="readiness.suspectReady"
-          :suspect-name="summary.suspectName"
-          :readiness="readiness"
-          :officers="officers"
-          :selected-interrogator-officer-id="selectedInterrogatorOfficerId"
-          :selected-recorder-officer-id="selectedRecorderOfficerId"
-          :enrollment-state="voiceprintEnrollmentState"
-          :busy="voiceprintBusy"
-          @suspect-start="emit('suspectStart')"
-          @suspect-stop="emit('suspectStop')"
-          @select-interrogator="emit('selectInterrogator', $event)"
-          @select-recorder="emit('selectRecorder', $event)"
-          @bind-roles="emit('bindRoles')"
-        />
-
         <LiveDialoguePanel
           v-if="readiness.suspectReady"
           :dialogue="dialogueHistory"
@@ -347,6 +318,10 @@ async function confirmSignature() {
           @resolve-qa-unit="(id, resolution) => emit('resolveQaUnit', id, resolution)"
           @correct-fragment="(id, speaker, reason) => emit('correctFragment', id, speaker, reason)"
         />
+        <div v-else class="dialogue-voiceprint-hint">
+          <p>嫌疑人声纹尚未注册。</p>
+          <p>请先切换到顶部「E 声纹注册」页完成注册，注册后此处才会开始实时语音对话。</p>
+        </div>
       </div>
     </div>
 

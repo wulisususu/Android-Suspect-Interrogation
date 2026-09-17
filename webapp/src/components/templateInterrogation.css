@@ -55,9 +55,23 @@
   background: #e3eaf0;
 }
 
-.dialogue-column > .voiceprint-enrollment-gate {
+.dialogue-column > .live-dialogue-panel {
   min-width: 0;
 }
+
+.dialogue-voiceprint-hint {
+  align-self: center;
+  justify-self: center;
+  margin: 0 16px;
+  padding: 18px 22px;
+  border: 1px dashed #a9b9c8;
+  border-radius: 10px;
+  background: #f6f9fc;
+  color: #5d7186;
+  font: 13px/1.7 system-ui, sans-serif;
+  text-align: center;
+}
+.dialogue-voiceprint-hint p { margin: 2px 0; }
 
 .panel-kicker {
   display: block;

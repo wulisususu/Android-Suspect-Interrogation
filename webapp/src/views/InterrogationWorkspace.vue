@@ -13,6 +13,7 @@ import MossTranscriptionPanel from '../components/MossTranscriptionPanel.vue'
 import SessionControls from '../components/SessionControls.vue'
 import TemplateDrivenInterrogationPage from '../components/TemplateDrivenInterrogationPage.vue'
 import VoiceprintAudioSourceBanner from '../components/VoiceprintAudioSourceBanner.vue'
+import VoiceprintSetupPage from '../components/VoiceprintSetupPage.vue'
 import { voiceprintStartGuard } from '../components/VoiceprintPreparationPanel.vue'
 import { useAutoVoiceprintEnrollment } from '../composables/useAutoVoiceprintEnrollment'
 import { useInterrogationStore } from '../stores/interrogation'
@@ -26,7 +27,7 @@ import type {
   RoundReassociateInput,
 } from '../types/templateInterrogation'
 
-type WorkspacePage = 'profile' | 'overview' | 'interrogation' | 'moss'
+type WorkspacePage = 'profile' | 'overview' | 'interrogation' | 'moss' | 'voiceprint'
 
 const props = defineProps<{ caseId: string }>()
 defineEmits<{ back: [] }>()
@@ -242,6 +243,9 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
         <button :class="{ active: activePage === 'moss' }" @click="activePage = 'moss'">
           <b>D</b><span>MOSS 转写</span>
         </button>
+        <button :class="{ active: activePage === 'voiceprint' }" @click="activePage = 'voiceprint'">
+          <b>E</b><span>声纹注册</span>
+        </button>
         <SessionControls
           :session="store.session"
           :start-disabled="voiceprintGuard.disabled || questionDictationActive || questionDictationBusy"
@@ -265,6 +269,22 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
 
         <MossTranscriptionPanel v-else-if="activePage === 'moss'" :case-id="store.caseId || props.caseId" />
 
+        <VoiceprintSetupPage
+          v-else-if="activePage === 'voiceprint'"
+          :suspect-name="store.caseSummary.suspectName || ''"
+          :readiness="store.voiceprintReadiness"
+          :officers="store.officerVoiceprints"
+          :selected-interrogator-officer-id="store.selectedInterrogatorOfficerId"
+          :selected-recorder-officer-id="store.selectedRecorderOfficerId"
+          :enrollment-state="store.voiceprintEnrollmentState"
+          :busy="store.voiceprintBusy"
+          @suspect-start="autoVoiceprint.startSuspect()"
+          @suspect-stop="autoVoiceprint.stopSuspect()"
+          @select-interrogator="store.selectInterrogatorOfficer($event)"
+          @select-recorder="store.selectRecorderOfficer($event)"
+          @bind-roles="store.bindVoiceprintRoles()"
+        />
+
         <div v-else class="interrogation-workspace-stack">
           <TemplateDrivenInterrogationPage
             :case-id="store.caseId"
@@ -287,21 +307,11 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
             :question-dictation-draft="questionDictationDraft"
             :question-dictation-error="questionDictationError"
             :readiness="store.voiceprintReadiness"
-            :officers="store.officerVoiceprints"
-            :selected-interrogator-officer-id="store.selectedInterrogatorOfficerId"
-            :selected-recorder-officer-id="store.selectedRecorderOfficerId"
-            :voiceprint-enrollment-state="store.voiceprintEnrollmentState"
-            :voiceprint-busy="store.voiceprintBusy"
             @saved="refreshCaseWorkspace"
             @capture-start="store.startCapture"
             @capture-stop="store.stopCapture($event)"
             @question-dictation-start="startQuestionDictation"
             @question-dictation-stop="stopQuestionDictation"
-            @suspect-start="autoVoiceprint.startSuspect()"
-            @suspect-stop="autoVoiceprint.stopSuspect()"
-            @select-interrogator="store.selectInterrogatorOfficer($event)"
-            @select-recorder="store.selectRecorderOfficer($event)"
-            @bind-roles="store.bindVoiceprintRoles()"
             @load-library="loadQuestionLibrary"
             @create-question="createFormalQuestion"
             @update-question="updateFormalQuestion"
