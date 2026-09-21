@@ -35,6 +35,7 @@ import {
   updateTranscriptMessage,
   updateVoiceprintAssignments,
 } from '../api/interrogation'
+import { setBrowserAsrUnexpectedCloseListener } from '../audio/browserAsrCapture'
 import type { RuntimeSessionConnection } from '../runtime'
 import type {
   AsrCaptureStatus,
@@ -438,6 +439,23 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       if (isCurrentScope(scope)) captureBusy.value = false
     }
   }
+
+  // Browser audio WS can die mid-session (speech-worker hiccup, network blip).
+  // Auto-restart once per failure so a solo tester keeps recording; a 15s
+  // cooldown prevents a restart loop if the channel keeps dying.
+  let lastAudioRestartAt = 0
+  setBrowserAsrUnexpectedCloseListener(() => {
+    if (!capture.value.running || captureBusy.value) return
+    const scope = currentScope()
+    const now = Date.now()
+    if (now - lastAudioRestartAt < 15_000) {
+      feedbackIfCurrent(scope, '浏览器音频通道再次断开，请手动点击「停止录音」后重新「开始录音」', true)
+      return
+    }
+    lastAudioRestartAt = now
+    feedbackIfCurrent(scope, '浏览器音频通道已断开，正在自动重新开始录音…', true)
+    void stopCapture(undefined, false).then(() => startCapture())
+  })
 
   async function updatePendingFragment(fragmentId: string, editedText: string, speaker: TemporaryAsrSpeaker) {
     const scope = currentScope()

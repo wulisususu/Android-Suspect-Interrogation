@@ -44,6 +44,7 @@ class BrowserPcmStreamer {
   private mute: GainNode | null = null
   private socket: WebSocket | null = null
   private stopped = false
+  onUnexpectedClose: (() => void) | null = null
 
   async start(url: string) {
     const capability = browserVoiceprintCapability()
@@ -106,6 +107,11 @@ class BrowserPcmStreamer {
       }, 10_000)
       socket.onopen = () => {
         window.clearTimeout(timer)
+        // A mid-capture close used to be silent: audio chunks were dropped while
+        // the UI still showed "recording". Surface it so the caller can restart.
+        socket.onclose = () => {
+          if (!this.stopped) this.onUnexpectedClose?.()
+        }
         resolve(socket)
       }
       socket.onerror = () => {
@@ -136,9 +142,25 @@ class BrowserPcmStreamer {
 
 let activeCapture: { kind: CaptureKind; streamer: BrowserPcmStreamer } | null = null
 
+type UnexpectedCloseListener = () => void
+let formalUnexpectedCloseListener: UnexpectedCloseListener | null = null
+
+/**
+ * Fired when the formal browser ASR audio socket closes without the caller
+ * stopping it. The interrogation store uses this to auto-restart capture.
+ */
+export function setBrowserAsrUnexpectedCloseListener(listener: UnexpectedCloseListener | null) {
+  formalUnexpectedCloseListener = listener
+}
+
 async function startCapture(kind: CaptureKind, url: string) {
   await stopBrowserAudioCapture()
   const streamer = new BrowserPcmStreamer()
+  if (kind === 'FORMAL') {
+    streamer.onUnexpectedClose = () => {
+      if (activeCapture?.streamer === streamer) formalUnexpectedCloseListener?.()
+    }
+  }
   activeCapture = { kind, streamer }
   try {
     await streamer.start(url)
