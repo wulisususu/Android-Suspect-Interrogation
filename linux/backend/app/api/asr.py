@@ -12,6 +12,7 @@ from app.database.session import begin_sqlite_immediate
 from app.database.models import ASRFragment
 from app.domain.errors import DomainError
 from app.repositories import asr_fragments as asr_repo
+from app.services.serializers import iso_utc
 from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
 from app.repositories import recognition_evidence as evidence_repo
@@ -80,8 +81,8 @@ def _fragment_payload(fragment: ASRFragment, db: Session | None = None) -> dict[
         "modelId": fragment.model_id,
         "modelVersion": fragment.model_version,
         "confirmedMessageId": fragment.confirmed_message_id,
-        "createdAt": fragment.created_at.isoformat() if fragment.created_at is not None else None,
-        "updatedAt": fragment.updated_at.isoformat() if fragment.updated_at is not None else None,
+        "createdAt": iso_utc(fragment.created_at),
+        "updatedAt": iso_utc(fragment.updated_at),
     }
     if db is not None:
         payload["recognitionEvidence"] = evidence_repo.evidence_payload(evidence_repo.get_evidence(db, fragment.id))

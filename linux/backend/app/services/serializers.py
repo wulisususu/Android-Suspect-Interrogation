@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 from app.database.models import (
     AuditLog, Case, CaseQuestion, DocumentSnapshot, Fact, InterrogationSession, Message,
@@ -7,8 +8,22 @@ from app.database.models import (
 from app.domain.enums import WorkflowState
 
 
-def _iso(value):
-    return value.isoformat() if value else None
+def iso_utc(value: datetime | None) -> str | None:
+    """Serialize a datetime as an offset-aware ISO string.
+
+    SQLite round-trips lose tzinfo, so naive values are UTC by convention here.
+    Without the explicit offset the browser parses them as *local* time, which
+    shifted every displayed and sorted timestamp by the timezone offset.
+    """
+    if not value:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
+def _iso(value: datetime | None) -> str | None:
+    return iso_utc(value)
 
 
 def _json_list(value: str) -> list[str]:
