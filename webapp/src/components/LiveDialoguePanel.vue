@@ -149,7 +149,7 @@ function armSilenceTimer() {
   botSilenceTimer = setTimeout(() => { void onBotSilence() }, BOT_SILENCE_MS)
 }
 
-function toggleBot() {
+async function toggleBot() {
   if (botActive.value) {
     stopBot()
     return
@@ -161,8 +161,31 @@ function toggleBot() {
   botActive.value = true
   botEmptyStreak = 0
   botQueue = props.questions.filter((item) => item.active && !(item.rounds && item.rounds.length))
-  if (!props.captureRunning) emit('captureToggle')
-  askNextBotQuestion()
+  if (!props.captureRunning) {
+    emit('captureToggle')
+    // The REST start is async: wait until the backend capture session really
+    // exists before injecting the first question, otherwise the injection is
+    // rejected with "no active capture".
+    const started = await waitForCaptureRunning(10_000)
+    if (!started) {
+      pushBotTurn('（BOT）录音未能自动开启，请手动点击「开始录音」后再点 BOT。')
+      stopBot()
+      return
+    }
+  }
+  await askNextBotQuestion()
+}
+
+function waitForCaptureRunning(timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs
+    const timer = setInterval(() => {
+      if (props.captureRunning || Date.now() > deadline) {
+        clearInterval(timer)
+        resolve(props.captureRunning)
+      }
+    }, 300)
+  })
 }
 
 function stopBot() {
