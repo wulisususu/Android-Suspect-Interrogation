@@ -330,3 +330,17 @@ def test_hallucinated_target_id_falls_back_to_exact_question_text(tmp_path):
     finally:
         db.close()
         engine.dispose()
+
+def test_locked_target_without_advisory_answer_still_canonicalizes_to_fixed(tmp_path):
+    # MiniCPM-style output: correct locked template target, MATCH_EXISTING
+    # classification, formal_answer null. The locked target metadata must flip
+    # the classification to MATCH_FIXED so auto-apply can proceed.
+    engine, db, _case, unit, fixed, _dynamic = make_context(tmp_path)
+    try:
+        supervisor = FakeSupervisor(text=route_payload("MATCH_EXISTING", target=fixed.id, answer=None))
+        decision = FormalRecordRouter(db, ai_supervisor=supervisor).route(unit.id)
+        assert decision.classification is RouteClass.MATCH_FIXED
+        assert decision.target_question_id == fixed.id
+    finally:
+        db.close()
+        engine.dispose()

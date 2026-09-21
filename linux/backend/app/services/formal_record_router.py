@@ -47,7 +47,10 @@ def canonicalize_existing_target_decision(
 
     if decision.classification not in {RouteClass.MATCH_FIXED, RouteClass.MATCH_EXISTING}:
         return decision
-    if target is None or not decision.target_question_id or not decision.formal_answer:
+    # The model's formal_answer is advisory (raw transcript answers are
+    # canonical), so a missing advisory answer must not suppress the
+    # classification flip that locked/live target metadata demands.
+    if target is None or not decision.target_question_id:
         return decision
 
     if bool(getattr(target, "locked", False)) and getattr(target, "template_key", None):
