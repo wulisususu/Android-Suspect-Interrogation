@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import type { TemporaryAsrFragment, TemporaryAsrSpeaker } from '../types/interrogation'
-import { judgeDevBotReply } from '../api/devBot'
+import { judgeDevBotReply, devBotAsk } from '../api/devBot'
 import type {
   FormalQAUnit,
   FormalQuestion,
@@ -63,7 +63,7 @@ const botTurns = ref<TemporaryAsrFragment[]>([])
 const botStorageKey = computed(() => `${BOT_STORAGE_PREFIX}${props.caseId}`)
 
 function isBotFragment(item: TemporaryAsrFragment) {
-  return item.id.startsWith('dev-bot-')
+  return item.id.startsWith('dev-bot-') || item.speakerSource === 'MANUAL'
 }
 
 function botTurnFrom(text: string, createdAt: number, id: string): TemporaryAsrFragment {
@@ -171,7 +171,7 @@ function stopBot() {
   clearBotSilenceTimer()
 }
 
-function askNextBotQuestion() {
+async function askNextBotQuestion() {
   clearBotSilenceTimer()
   const question = botQueue.shift()
   if (!question) {
@@ -181,7 +181,15 @@ function askNextBotQuestion() {
   }
   botCurrent = question
   botBaselineIds = suspectFragmentIds()
-  pushBotTurn(question.text)
+  // The question is injected as a REAL interrogator fragment so the suspect
+  // answer flows through the normal QA-unit / formal-record routing pipeline.
+  try {
+    await devBotAsk(props.caseId, question.text)
+  } catch (err) {
+    pushBotTurn(`（BOT 提问失败：${err instanceof Error ? err.message : '未知错误'}）BOT 已暂停。`)
+    stopBot()
+    return
+  }
   armSilenceTimer()
 }
 

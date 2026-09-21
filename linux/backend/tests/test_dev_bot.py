@@ -2,7 +2,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.dev_bot import parse_verdict
+from app.domain.errors import DomainError
 from app.main import create_app
+
+
+class FakeCaptureService:
+    def __init__(self, error=None):
+        self.calls = []
+        self.error = error
+
+    def inject_officer_text(self, case_id, text):
+        self.calls.append((case_id, text))
+        if self.error is not None:
+            raise self.error
+        return {"fragmentId": "f-1", "speaker": "INTERROGATOR", "rawText": text}
 
 
 @pytest.fixture(name="client")
@@ -39,3 +52,25 @@ def test_judge_returns_parsed_verdict(client, monkeypatch):
     body = resp.json()
     assert body["ok"] is True
     assert body["data"] == {"isAnswer": True, "comment": "回答了姓名"}
+
+
+def test_bot_ask_injects_real_officer_fragment():
+    fake = FakeCaptureService()
+    app = create_app()
+    app.state.asr_capture_service = fake
+    client = TestClient(app)
+    resp = client.post("/api/v1/dev/bot/ask", json={"case_id": "C-1", "text": "你因何事来公安机关？"})
+    assert resp.status_code == 200
+    assert resp.json()["data"]["speaker"] == "INTERROGATOR"
+    assert fake.calls == [("C-1", "你因何事来公安机关？")]
+
+
+def test_bot_ask_surfaces_capture_not_active():
+    app = create_app()
+    app.state.asr_capture_service = FakeCaptureService(
+        error=DomainError("ASR_CAPTURE_NOT_ACTIVE", "当前没有进行中的正式录音", 409)
+    )
+    client = TestClient(app)
+    resp = client.post("/api/v1/dev/bot/ask", json={"case_id": "C-1", "text": "你因何事来公安机关？"})
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "ASR_CAPTURE_NOT_ACTIVE"

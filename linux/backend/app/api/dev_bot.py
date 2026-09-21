@@ -12,7 +12,7 @@ import os
 from typing import Any
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from app.api.responses import envelope
@@ -88,6 +88,22 @@ def parse_verdict(content: str) -> dict[str, Any]:
     is_answer = bool(data.get("is_answer")) if isinstance(data, dict) else False
     reason = str(data.get("reason") or "") if isinstance(data, dict) else ""
     return {"isAnswer": is_answer, "comment": reason}
+
+
+class BotAskRequest(BaseModel):
+    case_id: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/dev/bot/ask")
+def bot_ask(body: BotAskRequest, request: Request):
+    """DEV-ONLY: insert the BOT question as a real interrogator fragment so the
+    suspect answer can flow through the normal formal-record matching pipeline."""
+    service = getattr(request.app.state, "asr_capture_service", None)
+    if service is None:
+        raise DomainError("DEV_BOT_UNAVAILABLE", "录音服务未配置", 503)
+    payload = service.inject_officer_text(body.case_id, body.text)
+    return envelope(payload)
 
 
 @router.post("/dev/bot/judge")

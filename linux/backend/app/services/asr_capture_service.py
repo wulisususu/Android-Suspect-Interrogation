@@ -279,6 +279,48 @@ class AsrCaptureService:
                 raise DomainError("ASR_CAPTURE_STOP_TIMEOUT", "语音采集线程未能及时停止", 504)
         return self.status(case_id)
 
+    def inject_officer_text(self, case_id: str, text: str) -> dict[str, Any]:
+        """DEV-ONLY BOT hook.
+
+        Persists an interrogator question as a REAL ASR fragment and feeds it to
+        the normal QA-unit builder / formal-record routing, so a solo tester can
+        exercise the exact pipeline a spoken officer question would take. Not
+        part of the production interrogation flow.
+        """
+        text = str(text or "").strip()
+        if not text:
+            raise DomainError("DEV_BOT_TEXT_REQUIRED", "BOT 问题文本不能为空", 400)
+        with self._lock:
+            runtime = self._active.get(case_id)
+        if runtime is None:
+            raise DomainError("ASR_CAPTURE_NOT_ACTIVE", "当前没有进行中的正式录音，请先开始审讯并开启录音", 409)
+
+        started_ms = runtime.ordinal * 5000
+        with self.session_factory() as db:
+            fragment = asr_repo.create_fragment(
+                db,
+                capture_session_id=runtime.capture_session_id,
+                case_id=case_id,
+                ordinal=runtime.ordinal,
+                started_at_ms=started_ms,
+                ended_at_ms=started_ms + 1000,
+                raw_text=text,
+                speaker="INTERROGATOR",
+                speaker_source="MANUAL",
+                voiceprint_verified=False,
+                low_confidence=False,
+                model_id="dev-bot",
+                speaker_name="BOT 民警",
+            )
+            db.commit()
+        payload = self._fragment_payload(fragment)
+        with self._lock:
+            runtime.ordinal += 1
+        self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)
+        if self.fragment_sink is not None:
+            self.fragment_sink(case_id, fragment.id)
+        return payload
+
     def status(self, case_id: str) -> dict[str, Any]:
         case_id = str(case_id).strip()
         with self._lock:

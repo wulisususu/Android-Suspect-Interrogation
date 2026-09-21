@@ -15,3 +15,15 @@ export async function judgeDevBotReply(question: string, reply: string): Promise
   }
   return { isAnswer: Boolean(payload.data?.isAnswer), comment: String(payload.data?.comment || '') }
 }
+
+export async function devBotAsk(caseId: string, text: string): Promise<void> {
+  const resp = await fetch('/api/v1/dev/bot/ask', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ case_id: caseId, text }),
+  })
+  const payload = await resp.json().catch(() => null)
+  if (!resp.ok || !payload || payload.ok === false) {
+    throw new Error(payload?.message || `BOT 提问接口失败（HTTP ${resp.status}）`)
+  }
+}
