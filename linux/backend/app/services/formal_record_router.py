@@ -320,13 +320,40 @@ def _parse_payload(raw: str) -> dict[str, Any]:
         raise ValueError("empty model output")
     if text.startswith("```"):
         match = _FENCED_JSON.fullmatch(text)
-        if match is None:
-            raise ValueError("invalid fenced JSON output")
-        text = match.group(1)
-    elif not (text.startswith("{") and text.endswith("}")):
-        raise ValueError("model output must be JSON only")
-    payload = json.loads(text)
-    if not isinstance(payload, dict) or set(payload) != _EXPECTED_KEYS:
+        if match is not None:
+            text = match.group(1)
+    # Small local models wrap the JSON in prose or emit harmless extra fields
+    # (e.g. reason_code). Extract the first balanced object and require the
+    # contract keys to be present; unknown extra keys are ignored.
+    start = text.find("{")
+    if start < 0:
+        raise ValueError("model output contains no JSON object")
+    depth = 0
+    end = -1
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        ch = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    if end < 0:
+        raise ValueError("model output contains an unbalanced JSON object")
+    payload = json.loads(text[start:end])
+    if not isinstance(payload, dict) or not _EXPECTED_KEYS.issubset(payload):
         raise ValueError("model output shape mismatch")
     return payload
 

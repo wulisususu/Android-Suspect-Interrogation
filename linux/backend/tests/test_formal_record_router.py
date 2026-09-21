@@ -184,7 +184,6 @@ def test_single_fenced_json_block_is_accepted(tmp_path):
 @pytest.mark.parametrize(
     "model_text",
     [
-        'Result: {"classification":"IGNORE","target_question_id":null,"formal_question":null,"formal_answer":null,"confidence":0.8,"candidate_question_ids":[],"reason_code":"NO_VALUE"}',
         route_payload("UNKNOWN_CLASS", target=None),
         route_payload("MATCH_FIXED", target="Q-FIXED", confidence=1.2),
     ],
@@ -196,6 +195,25 @@ def test_malformed_or_invalid_model_output_degrades_to_review(tmp_path, model_te
         assert decision.classification is RouteClass.NEEDS_REVIEW
         assert decision.target_question_id is None
         assert decision.reason_code == "INVALID_MODEL_OUTPUT"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_model_output_with_prose_and_extra_keys_still_parses(tmp_path):
+    # Small local models wrap the JSON in prose and emit harmless extra fields;
+    # the parser must recover the contract keys instead of dropping the verdict.
+    model_text = (
+        '好的，结果如下：{"classification":"IGNORE","target_question_id":null,'
+        '"formal_question":null,"formal_answer":null,"confidence":0.0,'
+        '"candidate_question_ids":[],"reason_code":"NO_VALUE"} 以上。'
+    )
+    engine, db, _case, unit, _fixed, _dynamic = make_context(tmp_path)
+    try:
+        decision = FormalRecordRouter(db, ai_supervisor=FakeSupervisor(text=model_text)).route(unit.id)
+        assert decision.classification is RouteClass.IGNORE
+        assert decision.target_question_id is None
+        assert decision.reason_code != "INVALID_MODEL_OUTPUT"
     finally:
         db.close()
         engine.dispose()

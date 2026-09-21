@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from sqlalchemy.orm import Session
 
 from app.domain.errors import DomainError
@@ -14,11 +16,21 @@ from app.services.template_workspace_service import TemplateWorkspaceService
 
 
 _MANUAL_ACTIONS = {"CREATE_LIVE", "LINK_QA", "LINK_ANSWER", "IGNORE"}
-_AUTO_APPLY_MIN_CONFIDENCE = {
+_DEFAULT_AUTO_APPLY_MIN_CONFIDENCE = {
     RouteClass.MATCH_FIXED: 0.88,
     RouteClass.MATCH_EXISTING: 0.88,
     RouteClass.CREATE_LIVE_FROM_SPEECH: 0.93,
 }
+# Deployments running small local models may lower (or zero) the gate via env;
+# the defaults keep conservative auto-application for stronger models.
+_env_gate = os.environ.get("SUSPECT_AUTO_ROUTE_MIN_CONFIDENCE")
+if _env_gate is not None:
+    try:
+        _env_value = max(0.0, min(1.0, float(_env_gate)))
+        _DEFAULT_AUTO_APPLY_MIN_CONFIDENCE = {key: _env_value for key in _DEFAULT_AUTO_APPLY_MIN_CONFIDENCE}
+    except ValueError:
+        pass
+_AUTO_APPLY_MIN_CONFIDENCE = _DEFAULT_AUTO_APPLY_MIN_CONFIDENCE
 
 
 class FormalRecordRoutingService:
