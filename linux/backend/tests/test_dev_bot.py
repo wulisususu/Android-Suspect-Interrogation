@@ -85,3 +85,27 @@ def test_bot_ask_surfaces_capture_not_active():
     resp = client.post("/api/v1/dev/bot/ask", json={"case_id": "C-1", "text": "你因何事来公安机关？"})
     assert resp.status_code == 409
     assert resp.json()["code"] == "ASR_CAPTURE_NOT_ACTIVE"
+
+
+def test_clean_generated_question_strips_formatting():
+    from app.api.dev_bot import _clean_generated_question
+
+    assert _clean_generated_question("问：你为什么要偷电脑？") == "你为什么要偷电脑？"
+    assert _clean_generated_question('"你当时把电脑卖到哪里了？"\n解释：……') == "你当时把电脑卖到哪里了？"
+    assert _clean_generated_question("Q: 还有同伙吗？") == "还有同伙吗？"
+
+
+def test_next_question_generates_from_cloud(monkeypatch):
+    async def fake_post_messages(messages, *, temperature, max_tokens, json_mode=False):
+        assert "已经问过的问题" in messages[1]["content"]
+        return "你偷来的笔记本电脑现在在哪里？"
+
+    monkeypatch.setattr("app.api.dev_bot._post_messages", fake_post_messages)
+    app = create_app()
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/dev/bot/next-question",
+        json={"case_id": "CASE-X", "asked": ["你因何事来公安机关？"], "answers": ["因为偷东西"]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["question"] == "你偷来的笔记本电脑现在在哪里？"

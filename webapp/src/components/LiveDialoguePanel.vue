@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import type { TemporaryAsrFragment, TemporaryAsrSpeaker } from '../types/interrogation'
-import { judgeDevBotReply, devBotAsk } from '../api/devBot'
+import { judgeDevBotReply, devBotAsk, devBotNextQuestion } from '../api/devBot'
 import type {
   FormalQAUnit,
   FormalQuestion,
@@ -49,15 +49,20 @@ const visibleDialogue = computed(() => groupLiveDialogueFragments([...props.dial
 // block is a test rig and must never grow into the production flow.
 // ---------------------------------------------------------------------------
 const BOT_SILENCE_MS = 20_000
+const BOT_MAX_DYNAMIC = 10
 const BOT_STORAGE_PREFIX = 'dev-bot-turns:'
 let botSeq = 0
 let botQueue: FormalQuestion[] = []
-let botCurrent: FormalQuestion | null = null
+let botCurrent: { id: string; text: string } | null = null
 let botBaselineIds = new Set<string>()
 let botEmptyStreak = 0
+let botDynamicCount = 0
+let botAskedTexts: string[] = []
+let botAnswerTexts: string[] = []
 let botSilenceTimer: ReturnType<typeof setTimeout> | undefined
 const botActive = ref(false)
 const botJudging = ref(false)
+const botGenerating = ref(false)
 const botTurns = ref<TemporaryAsrFragment[]>([])
 
 const botStorageKey = computed(() => `${BOT_STORAGE_PREFIX}${props.caseId}`)
@@ -178,6 +183,9 @@ async function toggleBot() {
   }
   botActive.value = true
   botEmptyStreak = 0
+  botDynamicCount = 0
+  botAskedTexts = []
+  botAnswerTexts = []
   loadBotAnswered()
   // Skip questions already routed into the formal record (rounds) and ones the
   // judge already accepted, so a refresh never re-asks answered questions.
@@ -214,6 +222,7 @@ function waitForCaptureRunning(timeoutMs: number): Promise<boolean> {
 function stopBot() {
   botActive.value = false
   botCurrent = null
+  botGenerating.value = false
   clearBotSilenceTimer()
 }
 
@@ -221,8 +230,7 @@ async function askNextBotQuestion() {
   clearBotSilenceTimer()
   const question = botQueue.shift()
   if (!question) {
-    botCurrent = null
-    pushBotTurn('（BOT）问题已全部问完。')
+    await askDynamicQuestion()
     return
   }
   botCurrent = question
@@ -231,10 +239,38 @@ async function askNextBotQuestion() {
   // answer flows through the normal QA-unit / formal-record routing pipeline.
   try {
     await devBotAsk(props.caseId, question.text)
+    botAskedTexts.push(question.text)
   } catch (err) {
     pushBotTurn(`（BOT 提问失败：${err instanceof Error ? err.message : '未知错误'}）BOT 已暂停。`)
     stopBot()
     return
+  }
+  armSilenceTimer()
+}
+
+async function askDynamicQuestion() {
+  if (!botActive.value) return
+  if (botDynamicCount >= BOT_MAX_DYNAMIC) {
+    botCurrent = null
+    pushBotTurn(`（BOT）动态追问已达测试上限 ${BOT_MAX_DYNAMIC} 条，停止提问。`)
+    stopBot()
+    return
+  }
+  botGenerating.value = true
+  try {
+    const text = await devBotNextQuestion(props.caseId, botAskedTexts, botAnswerTexts)
+    if (!botActive.value) return
+    botDynamicCount += 1
+    botCurrent = { id: `dynamic-${botDynamicCount}`, text }
+    botBaselineIds = suspectFragmentIds()
+    await devBotAsk(props.caseId, text)
+    botAskedTexts.push(text)
+  } catch (err) {
+    pushBotTurn(`（BOT 生成追问失败：${err instanceof Error ? err.message : '未知错误'}）BOT 已暂停。`)
+    stopBot()
+    return
+  } finally {
+    botGenerating.value = false
   }
   armSilenceTimer()
 }
@@ -265,6 +301,7 @@ async function onBotSilence() {
     const verdict = await judgeDevBotReply(question.text, reply)
     if (verdict.isAnswer) {
       markBotAnswered(question.id)
+      botAnswerTexts.push(reply)
       botCurrent = null
       askNextBotQuestion()
     } else {
@@ -449,10 +486,10 @@ onMounted(() => {
       <div class="live-dialogue-actions">
         <button
           class="bot-toggle"
-          :class="{ active: botActive, judging: botJudging }"
+          :class="{ active: botActive, judging: botJudging || botGenerating }"
           :title="botActive ? '停止 BOT 民警' : 'BOT 扮演民警自动提问（测试用）'"
           @click="toggleBot"
-        >{{ botActive ? (botJudging ? 'BOT 判定中…' : 'BOT 提问中') : 'BOT' }}</button>
+        >{{ botActive ? (botGenerating ? 'BOT 生成中…' : botJudging ? 'BOT 判定中…' : 'BOT 提问中') : 'BOT' }}</button>
         <button
           class="capture-toggle"
           :class="{ active: captureRunning }"
