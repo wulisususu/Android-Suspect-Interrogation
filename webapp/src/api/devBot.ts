@@ -1,0 +1,17 @@
+export interface DevBotJudgement {
+  isAnswer: boolean
+  comment: string
+}
+
+export async function judgeDevBotReply(question: string, reply: string): Promise<DevBotJudgement> {
+  const resp = await fetch('/api/v1/dev/bot/judge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, reply }),
+  })
+  const payload = await resp.json().catch(() => null)
+  if (!resp.ok || !payload || payload.ok === false) {
+    throw new Error(payload?.message || `云端判定接口失败（HTTP ${resp.status}）`)
+  }
+  return { isAnswer: Boolean(payload.data?.isAnswer), comment: String(payload.data?.comment || '') }
+}

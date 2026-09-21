@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import type { TemporaryAsrFragment, TemporaryAsrSpeaker } from '../types/interrogation'
+import { judgeDevBotReply } from '../api/devBot'
 import type {
   FormalQAUnit,
   FormalQuestion,
@@ -37,7 +38,152 @@ const correctionSpeaker = ref<Record<string, TemporaryAsrSpeaker>>({})
 const correctionReason = ref<Record<string, string>>({})
 const qaReviewUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'NEEDS_REVIEW'))
 const qaResolvedUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'APPLIED' || unit.status === 'IGNORED'))
-const visibleDialogue = computed(() => groupLiveDialogueFragments(props.dialogue))
+const visibleDialogue = computed(() => groupLiveDialogueFragments([...props.dialogue, ...botTurns.value]))
+
+// ---------------------------------------------------------------------------
+// Dev-only BOT interrogator: one person plays both roles. The bot asks the
+// case's formal questions as text; the tester replies by voice through the
+// normal ASR capture. A reply counts when no new suspect fragment arrives for
+// 10s, then the cloud LLM judges whether it answers the question. This whole
+// block is a test rig and must never grow into the production flow.
+// ---------------------------------------------------------------------------
+const BOT_SILENCE_MS = 10_000
+let botSeq = 0
+let botQueue: FormalQuestion[] = []
+let botCurrent: FormalQuestion | null = null
+let botBaselineIds = new Set<string>()
+let botSilenceTimer: ReturnType<typeof setTimeout> | undefined
+const botActive = ref(false)
+const botJudging = ref(false)
+const botTurns = ref<TemporaryAsrFragment[]>([])
+
+function isBotFragment(item: TemporaryAsrFragment) {
+  return item.id.startsWith('dev-bot-')
+}
+
+function botTurn(text: string): TemporaryAsrFragment {
+  botSeq += 1
+  const now = Date.now()
+  return {
+    id: `dev-bot-${botSeq}`,
+    captureSessionId: 'dev-bot',
+    caseId: '',
+    ordinal: 1_000_000 + botSeq,
+    startedAtMs: now,
+    endedAtMs: now,
+    rawText: text,
+    editedText: '',
+    speaker: 'INTERROGATOR',
+    speakerId: null,
+    speakerName: 'BOT 民警',
+    speakerScore: null,
+    secondBestScore: null,
+    speakerThreshold: null,
+    speakerMargin: null,
+    speakerSource: 'MANUAL',
+    voiceprintVerified: false,
+    confidence: null,
+    confidenceSource: 'UNAVAILABLE',
+    lowConfidence: false,
+    state: 'CONFIRMED',
+    confirmedQaId: null,
+    confirmedMessageId: null,
+    recognitionEvidence: null,
+    recognitionRevisions: [],
+    audio: { captureSessionId: 'dev-bot', startOffsetMs: 0, endOffsetMs: 0, available: false },
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+function pushBotTurn(text: string) {
+  botTurns.value = [...botTurns.value, botTurn(text)]
+}
+
+function clearBotSilenceTimer() {
+  if (botSilenceTimer) clearTimeout(botSilenceTimer)
+  botSilenceTimer = undefined
+}
+
+function suspectFragmentIds() {
+  return new Set(props.dialogue.filter((item) => item.speaker === 'SUSPECT').map((item) => item.id))
+}
+
+function armSilenceTimer() {
+  clearBotSilenceTimer()
+  botSilenceTimer = setTimeout(() => { void onBotSilence() }, BOT_SILENCE_MS)
+}
+
+function toggleBot() {
+  if (botActive.value) {
+    stopBot()
+    return
+  }
+  botActive.value = true
+  botQueue = props.questions.filter((item) => item.active && !(item.rounds && item.rounds.length))
+  if (!props.captureRunning) emit('captureToggle')
+  askNextBotQuestion()
+}
+
+function stopBot() {
+  botActive.value = false
+  botCurrent = null
+  clearBotSilenceTimer()
+}
+
+function askNextBotQuestion() {
+  clearBotSilenceTimer()
+  const question = botQueue.shift()
+  if (!question) {
+    botCurrent = null
+    pushBotTurn('（BOT）问题已全部问完。')
+    return
+  }
+  botCurrent = question
+  botBaselineIds = suspectFragmentIds()
+  pushBotTurn(question.text)
+  armSilenceTimer()
+}
+
+async function onBotSilence() {
+  const question = botCurrent
+  if (!botActive.value || !question) return
+  const reply = props.dialogue
+    .filter((item) => item.speaker === 'SUSPECT' && !botBaselineIds.has(item.id))
+    .map((item) => (item.editedText || item.rawText || '').trim())
+    .filter(Boolean)
+    .join(' ')
+  botJudging.value = true
+  try {
+    const verdict = await judgeDevBotReply(question.text, reply)
+    if (verdict.isAnswer) {
+      botCurrent = null
+      askNextBotQuestion()
+    } else {
+      pushBotTurn(`（BOT 判定：还不算回答）${verdict.comment || '请再说明一下。'}`)
+      botBaselineIds = suspectFragmentIds()
+      armSilenceTimer()
+    }
+  } catch (err) {
+    pushBotTurn(`（BOT 判定失败：${err instanceof Error ? err.message : '未知错误'}）跳过本题，继续下一题。`)
+    botCurrent = null
+    askNextBotQuestion()
+  } finally {
+    botJudging.value = false
+  }
+}
+
+watch(() => props.dialogue.length, () => {
+  if (!botActive.value || !botCurrent) return
+  const hasNewSuspectText = props.dialogue.some(
+    (item) => item.speaker === 'SUSPECT' && !botBaselineIds.has(item.id) && (item.editedText || item.rawText || '').trim(),
+  )
+  if (hasNewSuspectText) armSilenceTimer()
+})
+
+onUnmounted(() => {
+  clearBotSilenceTimer()
+})
 
 const elapsed = computed(() => {
   const total = Math.floor(props.captureElapsedMs / 1000)
@@ -178,15 +324,23 @@ onMounted(() => { void scrollToLatest(true) })
         <span class="panel-kicker">原文 / 实时转写</span>
         <h2>实时语音对话</h2>
       </div>
-      <button
-        class="capture-toggle"
-        :class="{ active: captureRunning }"
-        :disabled="captureBusy || !captureAvailable"
-        @click="emit('captureToggle')"
-      >
-        <span class="record-dot"></span>
-        {{ captureRunning ? `停止录音 ${elapsed}` : '开始录音' }}
-      </button>
+      <div class="live-dialogue-actions">
+        <button
+          class="bot-toggle"
+          :class="{ active: botActive, judging: botJudging }"
+          :title="botActive ? '停止 BOT 民警' : 'BOT 扮演民警自动提问（测试用）'"
+          @click="toggleBot"
+        >{{ botActive ? (botJudging ? 'BOT 判定中…' : 'BOT 提问中') : 'BOT' }}</button>
+        <button
+          class="capture-toggle"
+          :class="{ active: captureRunning }"
+          :disabled="captureBusy || !captureAvailable"
+          @click="emit('captureToggle')"
+        >
+          <span class="record-dot"></span>
+          {{ captureRunning ? `停止录音 ${elapsed}` : '开始录音' }}
+        </button>
+      </div>
     </header>
 
     <div ref="feed" class="dialogue-feed" @scroll="onFeedScroll">
@@ -285,7 +439,7 @@ onMounted(() => { void scrollToLatest(true) })
             </div>
             </details>
 
-            <div v-else class="recognition-evidence-missing">
+            <div v-else-if="!isBotFragment(item)" class="recognition-evidence-missing">
               识别证据尚未独立入库（历史数据迁移后将自动补齐）
             </div>
           </template>

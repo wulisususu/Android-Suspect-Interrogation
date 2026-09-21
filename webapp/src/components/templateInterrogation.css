@@ -528,6 +528,19 @@ button:disabled {
   background: #e6edf2;
 }
 
+.live-dialogue-actions { display: flex; align-items: center; gap: 8px; }
+.bot-toggle {
+  border: 1px solid #8fa9c4;
+  border-radius: 7px;
+  background: #fff;
+  color: #2b4a68;
+  font: 700 12px/1 system-ui, sans-serif;
+  padding: 9px 10px;
+  cursor: pointer;
+}
+.bot-toggle.active { border-color: #2f80ed; background: #e9f3ff; color: #17669e; }
+.bot-toggle.judging { opacity: .65; cursor: progress; }
+
 .capture-toggle {
   display: flex;
   align-items: center;
