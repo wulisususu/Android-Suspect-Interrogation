@@ -11,11 +11,11 @@ class FakeCaptureService:
         self.calls = []
         self.error = error
 
-    def inject_officer_text(self, case_id, text):
-        self.calls.append((case_id, text))
+    def inject_officer_text(self, case_id, text, role="INTERROGATOR"):
+        self.calls.append((case_id, text, role))
         if self.error is not None:
             raise self.error
-        return {"fragmentId": "f-1", "speaker": "INTERROGATOR", "rawText": text}
+        return {"fragmentId": "f-1", "speaker": role, "rawText": text}
 
 
 @pytest.fixture(name="client")
@@ -62,7 +62,18 @@ def test_bot_ask_injects_real_officer_fragment():
     resp = client.post("/api/v1/dev/bot/ask", json={"case_id": "C-1", "text": "你因何事来公安机关？"})
     assert resp.status_code == 200
     assert resp.json()["data"]["speaker"] == "INTERROGATOR"
-    assert fake.calls == [("C-1", "你因何事来公安机关？")]
+    assert fake.calls == [("C-1", "你因何事来公安机关？", "INTERROGATOR")]
+
+
+def test_bot_ask_supports_suspect_role():
+    fake = FakeCaptureService()
+    app = create_app()
+    app.state.asr_capture_service = fake
+    client = TestClient(app)
+    resp = client.post("/api/v1/dev/bot/ask", json={"case_id": "C-1", "text": "不申请", "role": "SUSPECT"})
+    assert resp.status_code == 200
+    assert resp.json()["data"]["speaker"] == "SUSPECT"
+    assert fake.calls == [("C-1", "不申请", "SUSPECT")]
 
 
 def test_bot_ask_surfaces_capture_not_active():
