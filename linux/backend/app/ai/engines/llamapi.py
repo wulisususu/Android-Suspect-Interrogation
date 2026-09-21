@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 from collections.abc import Iterable
 from typing import Any
@@ -181,11 +182,18 @@ class LlamaPiLLMEngine(LLMEngine):
     ) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
         body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers: dict[str, str] = {"Accept": "application/json", "Content-Type": "application/json"}
+        # Optional bearer auth lets this OpenAI-compatible adapter also target
+        # hosted gateways (e.g. DeepSeek) for test deployments; local LlamaPi
+        # needs no key.
+        api_key = os.environ.get("LLAMAPI_API_KEY", "").strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         request = Request(
             url,
             data=body,
             method=method,
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            headers=headers,
         )
         try:
             with urlopen(request, timeout=self.timeout) as response:

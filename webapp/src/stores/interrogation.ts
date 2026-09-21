@@ -454,7 +454,21 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     }
     lastAudioRestartAt = now
     feedbackIfCurrent(scope, '浏览器音频通道已断开，正在自动重新开始录音…', true)
-    void stopCapture(undefined, false).then(() => startCapture())
+    void (async () => {
+      try {
+        await stopCapture(undefined, false)
+      } catch {
+        // A stop timeout usually means the dead session is being torn down
+        // server-side; settle briefly and try to start a fresh capture anyway.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      if (!isCurrentScope(currentScope())) return
+      try {
+        await startCapture()
+      } catch (err) {
+        feedbackIfCurrent(currentScope(), `自动重启录音失败：${backendErrorMessage(err)}`, true)
+      }
+    })()
   })
 
   async function updatePendingFragment(fragmentId: string, editedText: string, speaker: TemporaryAsrSpeaker) {
