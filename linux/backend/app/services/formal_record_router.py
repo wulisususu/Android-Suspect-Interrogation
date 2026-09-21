@@ -71,6 +71,7 @@ def canonicalize_existing_target_decision(
 
 _AMBIGUOUS_REFERENCE_RE = re.compile(r"(?:那个|这个|刚才(?:那个|这个)?)(?:时间|时候|问题|情况|事|事情)")
 _TIME_QUESTION_RE = re.compile(r"(?:什么时候|何时|几点|时间|哪天)")
+_QUESTION_NOISE_RE = re.compile(r"[\s，。？！,.?!；;：:、\"'“”‘’()（）]+")
 
 
 def _unique_targets(target_ids: tuple[str, ...] | list[str]) -> tuple[str, ...]:
@@ -403,6 +404,11 @@ class FormalRecordRouter:
                 # policy validation even though the field is unused.
                 decision = replace(decision, formal_question=None)
             target = self._case_question(unit.case_id, decision.target_question_id)
+            if target is None and decision.classification in {RouteClass.MATCH_FIXED, RouteClass.MATCH_EXISTING}:
+                resolved = self._resolve_target_by_text(unit.case_id, unit.raw_question_text)
+                if resolved is not None:
+                    decision = replace(decision, target_question_id=resolved.id)
+                    target = resolved
             decision = canonicalize_existing_target_decision(decision, target)
             decision = repair_existing_target_intent_mismatch(
                 decision,
@@ -527,6 +533,29 @@ class FormalRecordRouter:
             return question_repo.get_case(self.db, case_id, question_id)
         except Exception:
             return None
+
+    def _resolve_target_by_text(self, case_id: str, question_text: str | None):
+        """Deterministically resolve a target when the model echoed a wrong id.
+
+        Small local models sometimes return the QA unit's own id as the target.
+        When the spoken question text exactly (normalized) matches one case
+        question's text or alias, that unique question becomes the target so
+        fixed template questions still archive automatically.
+        """
+        normalized = _QUESTION_NOISE_RE.sub("", str(question_text or ""))
+        if not normalized:
+            return None
+        matches = []
+        for question in question_repo.list_case(self.db, case_id):
+            candidates = [_QUESTION_NOISE_RE.sub("", str(getattr(question, "text", "") or ""))]
+            try:
+                for alias in json.loads(getattr(question, "aliases_json", "") or "[]"):
+                    candidates.append(_QUESTION_NOISE_RE.sub("", str(alias or "")))
+            except (TypeError, ValueError):
+                pass
+            if any(candidate and candidate == normalized for candidate in candidates):
+                matches.append(question)
+        return matches[0] if len(matches) == 1 else None
 
     def _has_question_fragment(self, unit) -> bool:
         return any(link.role == "QUESTION" for link in unit.fragments)

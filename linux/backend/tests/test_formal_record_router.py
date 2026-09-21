@@ -312,3 +312,21 @@ def test_model_exception_degrades_to_review_without_reasoning_text(tmp_path):
     finally:
         db.close()
         engine.dispose()
+
+
+def test_hallucinated_target_id_falls_back_to_exact_question_text(tmp_path):
+    # Observed with local small models: the model echoes the QA unit's own id as
+    # the target. When the spoken question exactly matches a case question text,
+    # the deterministic fallback must resolve the real target instead of
+    # dropping the verdict into review.
+    engine, db, _case, unit, fixed, _dynamic = make_context(tmp_path)
+    try:
+        unit.raw_question_text = fixed.text
+        db.flush()
+        supervisor = FakeSupervisor(text=route_payload("MATCH_EXISTING", target=unit.id))
+        decision = FormalRecordRouter(db, ai_supervisor=supervisor).route(unit.id)
+        assert decision.target_question_id == fixed.id
+        assert decision.classification is RouteClass.MATCH_FIXED
+    finally:
+        db.close()
+        engine.dispose()
