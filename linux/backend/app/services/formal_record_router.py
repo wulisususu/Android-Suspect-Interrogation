@@ -322,6 +322,11 @@ def _parse_payload(raw: str) -> dict[str, Any]:
     text = str(raw or "").strip()
     if not text:
         raise ValueError("empty model output")
+    # Qwen/MiniCPM chat templates may emit a thinking block even with reasoning
+    # disabled; it eats into the token budget and hides the JSON payload.
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    if not text:
+        raise ValueError("model output was only a thinking block")
     if text.startswith("```"):
         match = _FENCED_JSON.fullmatch(text)
         if match is not None:
@@ -386,7 +391,7 @@ class FormalRecordRouter:
                 options={
                     "temperature": 0.1,
                     "top_p": 0.8,
-                    "max_tokens": 192,
+                    "max_tokens": 512,
                     "enable_thinking": False,
                 },
             )
