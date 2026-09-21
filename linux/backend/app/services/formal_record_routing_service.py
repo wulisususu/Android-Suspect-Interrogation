@@ -52,13 +52,13 @@ class FormalRecordRoutingService:
 
         if decision.classification is RouteClass.MATCH_FIXED:
             question = self._valid_target(unit.case_id, decision.target_question_id, fixed=True)
-            if question is None or not decision.formal_answer:
+            if question is None:
                 return self._review(unit, decision, reason_code="INVALID_AUTO_DECISION")
             return self._apply_existing(unit, question, decision, audit_action="QA_ROUTE_AUTO_APPLIED")
 
         if decision.classification is RouteClass.MATCH_EXISTING:
             question = self._valid_target(unit.case_id, decision.target_question_id, fixed=False)
-            if question is None or not decision.formal_answer:
+            if question is None:
                 return self._review(unit, decision, reason_code="INVALID_AUTO_DECISION")
             return self._apply_existing(unit, question, decision, audit_action="QA_ROUTE_AUTO_APPLIED")
 
