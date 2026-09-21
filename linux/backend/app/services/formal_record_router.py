@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -13,6 +14,9 @@ from app.repositories import asr_fragments as asr_repo
 from app.repositories import qa_units as qa_repo
 from app.repositories import template_questions as question_repo
 from app.services.question_matching import is_operational_utterance, is_question_utterance
+
+
+logger = logging.getLogger(__name__)
 
 
 class RouteClass(str, Enum):
@@ -400,6 +404,13 @@ class FormalRecordRouter:
                 return self._invalid(result.model_id)
             return decision
         except Exception:
+            raw = getattr(result, "text", "")
+            logger.warning(
+                "formal routing model output unparsable for qa unit %s (%s chars): %.400s",
+                qa_unit_id,
+                len(raw or ""),
+                raw or "<none>",
+            )
             return self._invalid(getattr(result, "model_id", None))
 
     def _decision_from_payload(self, payload: dict[str, Any], *, model_id: str | None) -> FormalRecordRouteDecision:
