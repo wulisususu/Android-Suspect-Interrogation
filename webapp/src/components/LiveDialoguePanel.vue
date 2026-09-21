@@ -47,11 +47,12 @@ const visibleDialogue = computed(() => groupLiveDialogueFragments([...props.dial
 // 10s, then the cloud LLM judges whether it answers the question. This whole
 // block is a test rig and must never grow into the production flow.
 // ---------------------------------------------------------------------------
-const BOT_SILENCE_MS = 10_000
+const BOT_SILENCE_MS = 20_000
 let botSeq = 0
 let botQueue: FormalQuestion[] = []
 let botCurrent: FormalQuestion | null = null
 let botBaselineIds = new Set<string>()
+let botEmptyStreak = 0
 let botSilenceTimer: ReturnType<typeof setTimeout> | undefined
 const botActive = ref(false)
 const botJudging = ref(false)
@@ -119,7 +120,12 @@ function toggleBot() {
     stopBot()
     return
   }
+  if (!props.captureAvailable) {
+    pushBotTurn('（BOT）当前录音不可用：请先点「开始审讯」让会话进入审讯中，确认录音可用后再点 BOT。')
+    return
+  }
   botActive.value = true
+  botEmptyStreak = 0
   botQueue = props.questions.filter((item) => item.active && !(item.rounds && item.rounds.length))
   if (!props.captureRunning) emit('captureToggle')
   askNextBotQuestion()
@@ -153,6 +159,19 @@ async function onBotSilence() {
     .map((item) => (item.editedText || item.rawText || '').trim())
     .filter(Boolean)
     .join(' ')
+  if (!reply) {
+    botEmptyStreak += 1
+    if (!props.captureRunning || botEmptyStreak >= 3) {
+      pushBotTurn('（BOT）连续 20 秒都没有转写到你的回复，BOT 已暂停。请确认「开始审讯」和录音已开启，再点 BOT 重试。')
+      stopBot()
+      return
+    }
+    pushBotTurn('（BOT）20 秒内没有转写到你的回复，请对着麦克风说话。')
+    botBaselineIds = suspectFragmentIds()
+    armSilenceTimer()
+    return
+  }
+  botEmptyStreak = 0
   botJudging.value = true
   try {
     const verdict = await judgeDevBotReply(question.text, reply)
@@ -179,6 +198,16 @@ watch(() => props.dialogue.length, () => {
     (item) => item.speaker === 'SUSPECT' && !botBaselineIds.has(item.id) && (item.editedText || item.rawText || '').trim(),
   )
   if (hasNewSuspectText) armSilenceTimer()
+})
+
+// Keep the transcription bubble mounted between utterances so the partial text
+// does not flash away while the capture is running.
+const livePartialText = ref('')
+watch(() => props.partialText, (value) => {
+  if (value) livePartialText.value = value
+})
+watch(() => props.captureRunning, (running) => {
+  if (!running) livePartialText.value = ''
 })
 
 onUnmounted(() => {
@@ -488,9 +517,13 @@ onMounted(() => { void scrollToLatest(true) })
         </article>
       </template>
 
-      <article v-if="partialText" class="dialogue-turn side-left partial-turn">
-        <div class="dialogue-meta"><span>正在转写</span></div>
-        <div class="dialogue-bubble">{{ partialText }}</div>
+      <article
+        v-if="partialText || livePartialText"
+        class="dialogue-turn side-left partial-turn"
+        :class="{ stale: !partialText && !!livePartialText }"
+      >
+        <div class="dialogue-meta"><span>{{ partialText ? '正在转写' : '等待下一段' }}</span></div>
+        <div class="dialogue-bubble">{{ partialText || livePartialText }}</div>
       </article>
     </div>
 
@@ -527,6 +560,7 @@ onMounted(() => { void scrollToLatest(true) })
   border-top: 1px solid rgba(76, 112, 156, .16);
 }
 .partial-turn .dialogue-bubble { border-style: solid; }
+.partial-turn.stale .dialogue-bubble { opacity: .45; }
 .evidence-grid div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .evidence-grid small { color: #728194; }
 .evidence-grid strong { color: #27394b; overflow-wrap: anywhere; }
