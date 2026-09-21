@@ -412,6 +412,14 @@ class FormalRecordRouter:
             )
             decision = preserve_existing_answer_facts(decision, raw_answer=unit.raw_answer_text)
             if not self._policy_valid(unit, decision):
+                logger.warning(
+                    "formal routing policy rejected qa unit %s: cls=%s target=%s formal_q=%r confidence=%s",
+                    qa_unit_id,
+                    decision.classification.value,
+                    decision.target_question_id,
+                    decision.formal_question,
+                    decision.confidence,
+                )
                 return self._invalid(result.model_id)
             return decision
         except Exception:
