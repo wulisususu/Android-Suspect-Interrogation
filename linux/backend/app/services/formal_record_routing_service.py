@@ -54,12 +54,18 @@ class FormalRecordRoutingService:
             question = self._valid_target(unit.case_id, decision.target_question_id, fixed=True)
             if question is None:
                 return self._review(unit, decision, reason_code="INVALID_AUTO_DECISION")
+            if not str(unit.raw_answer_text or "").strip():
+                # An empty answer has no testimony to archive; auto-applying
+                # would write an empty round into the formal record.
+                return self._review(unit, decision, reason_code="EMPTY_ANSWER_REVIEW")
             return self._apply_existing(unit, question, decision, audit_action="QA_ROUTE_AUTO_APPLIED")
 
         if decision.classification is RouteClass.MATCH_EXISTING:
             question = self._valid_target(unit.case_id, decision.target_question_id, fixed=False)
             if question is None:
                 return self._review(unit, decision, reason_code="INVALID_AUTO_DECISION")
+            if not str(unit.raw_answer_text or "").strip():
+                return self._review(unit, decision, reason_code="EMPTY_ANSWER_REVIEW")
             return self._apply_existing(unit, question, decision, audit_action="QA_ROUTE_AUTO_APPLIED")
 
         if decision.classification is RouteClass.CREATE_LIVE_FROM_SPEECH:
