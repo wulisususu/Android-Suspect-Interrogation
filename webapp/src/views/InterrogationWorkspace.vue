@@ -233,14 +233,14 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
         <button :class="{ active: activePage === 'profile' }" @click="activePage = 'profile'">
           <b>A</b><span>身份信息</span>
         </button>
+        <button :class="{ active: activePage === 'voiceprint' }" @click="activePage = 'voiceprint'">
+          <b>B</b><span>声纹注册</span>
+        </button>
         <button :class="{ active: activePage === 'interrogation' }" @click="openInterrogation">
-          <b>B</b><span>审讯记录</span>
+          <b>C</b><span>审讯记录</span>
         </button>
         <button :class="{ active: activePage === 'moss' }" @click="activePage = 'moss'">
-          <b>C</b><span>MOSS 转写</span>
-        </button>
-        <button :class="{ active: activePage === 'voiceprint' }" @click="activePage = 'voiceprint'">
-          <b>D</b><span>声纹注册</span>
+          <b>D</b><span>MOSS 转写</span>
         </button>
         <SessionControls
           :session="store.session"

@@ -159,7 +159,7 @@
 .preview-placeholder { color: #93a3af; text-align: center; line-height: 1.8; font-size: 13px; }
 .ocr-raw-box { min-height: 170px; padding: 12px; border: 1px solid #e1e8ed; border-radius: 10px; background: #fbfcfd; }
 .ocr-raw-box pre { max-height: 170px; margin: 0; overflow: auto; white-space: pre-wrap; color: #536572; font: 12px/1.6 Consolas, monospace; }
-/* B：审讯记录 */
+/* C：审讯记录 */
 .interrogation-page { display: flex; flex-direction: column; }
 .interrogation-header { flex: 0 0 auto; }
 .ai-generate-button {
