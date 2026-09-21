@@ -234,15 +234,8 @@ watch(() => props.dialogue.length, () => {
   if (hasNewSuspectText) armSilenceTimer()
 })
 
-// Keep the transcription bubble mounted between utterances so the partial text
-// does not flash away while the capture is running.
-const livePartialText = ref('')
-watch(() => props.partialText, (value) => {
-  if (value) livePartialText.value = value
-})
-watch(() => props.captureRunning, (running) => {
-  if (!running) livePartialText.value = ''
-})
+// While capture runs, the transcription bubble stays mounted (with a 待输入
+// placeholder when idle) so the partial text does not flash between utterances.
 
 onUnmounted(() => {
   clearBotSilenceTimer()
@@ -560,13 +553,9 @@ onMounted(() => {
         </article>
       </template>
 
-      <article
-        v-if="partialText || livePartialText"
-        class="dialogue-turn side-left partial-turn"
-        :class="{ stale: !partialText && !!livePartialText }"
-      >
-        <div class="dialogue-meta"><span>{{ partialText ? '正在转写' : '等待下一段' }}</span></div>
-        <div class="dialogue-bubble">{{ partialText || livePartialText }}</div>
+      <article v-if="captureRunning" class="dialogue-turn side-left partial-turn" :class="{ idle: !partialText }">
+        <div class="dialogue-meta"><span>{{ partialText ? '正在转写' : '待输入' }}</span></div>
+        <div class="dialogue-bubble">{{ partialText || '（待输入…请说话）' }}</div>
       </article>
     </div>
 
@@ -603,7 +592,7 @@ onMounted(() => {
   border-top: 1px solid rgba(76, 112, 156, .16);
 }
 .partial-turn .dialogue-bubble { border-style: solid; }
-.partial-turn.stale .dialogue-bubble { opacity: .45; }
+.partial-turn.idle .dialogue-bubble { opacity: .4; }
 .evidence-grid div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .evidence-grid small { color: #728194; }
 .evidence-grid strong { color: #27394b; overflow-wrap: anywhere; }
