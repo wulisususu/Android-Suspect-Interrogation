@@ -464,12 +464,14 @@ class FormalRecordRouter:
     def _policy_valid(self, unit, decision: FormalRecordRouteDecision) -> bool:
         if decision.classification is RouteClass.MATCH_FIXED:
             target = self._case_question(unit.case_id, decision.target_question_id)
+            # Since raw-transcript answers became canonical (the model's
+            # formal_answer is advisory only), an empty model answer must not
+            # block an otherwise correct fixed-question match.
             return bool(
                 target is not None
                 and target.locked
                 and target.template_key
                 and decision.formal_question is None
-                and decision.formal_answer
             )
 
         if decision.classification is RouteClass.MATCH_EXISTING:
@@ -479,7 +481,6 @@ class FormalRecordRouter:
                 and not target.locked
                 and target.source in {"CASE", "LIVE"}
                 and decision.formal_question is None
-                and decision.formal_answer
             )
 
         if decision.classification is RouteClass.CREATE_LIVE_FROM_SPEECH:
