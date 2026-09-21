@@ -6,7 +6,7 @@ from app.api.responses import envelope
 from app.api.schemas import (
     LegacyActorRequest, LegacyCaseCreateRequest, LegacyCaseUpdateRequest, LegacyDeviceActionRequest,
     LegacyFactUpdateRequest, LegacyMessageMarkRequest, LegacyMessageUpdateRequest, LegacyStageRequest,
-    LegacyTimelineCreateRequest, LegacyWorkMessageRequest,
+    LegacyWorkMessageRequest,
 )
 from app.services.case_service import CaseService
 from app.services.device_service import DeviceService
@@ -97,18 +97,6 @@ def legacy_update_fact(case_id: str, fact_key: str, body: LegacyFactUpdateReques
     patch = body.model_dump(exclude_none=True)
     actor_id = patch.pop("actor_id", None)
     return envelope(CaseService(db).update_fact(case_id, fact_key, patch, actor_id), "事实项已更新")
-
-
-@router.get("/api/cases/{case_id}/timeline")
-def legacy_timeline(case_id: str, db: Session = Depends(get_db)):
-    return envelope(CaseService(db).list_timeline(case_id))
-
-
-@router.post("/api/cases/{case_id}/timeline")
-def legacy_add_timeline(case_id: str, body: LegacyTimelineCreateRequest, db: Session = Depends(get_db)):
-    payload = body.model_dump(exclude_none=True)
-    actor_id = payload.pop("actor_id", None)
-    return envelope(CaseService(db).add_timeline(case_id, payload, actor_id), "时间线事件已添加")
 
 
 @router.get("/api/cases/{case_id}/session")

@@ -32,7 +32,6 @@ import type {
   SessionStatus,
   TemporaryAsrFragment,
   TemporaryAsrSpeaker,
-  TimelineEvent,
   TranscriptMessage,
   VoiceprintCaptureStatus,
   VoiceprintEnrollmentResult,
@@ -367,7 +366,6 @@ export async function fetchCases(limit = 50, query = ''): Promise<CaseSummary[]>
 export async function fetchCase(caseId: string): Promise<CaseSummary> { return normalizeCaseSummary(await runtime().invoke<unknown>('case.get', { caseId }), { id: caseId }) }
 export function fetchMessages(caseId: string): Promise<TranscriptMessage[]> { return runtime().invoke<TranscriptMessage[]>('message.list', { caseId, limit: 1000 }) }
 export function fetchFacts(caseId: string): Promise<FactItem[]> { return runtime().invoke<FactItem[]>('fact.list', { caseId }) }
-export function fetchTimeline(caseId: string): Promise<TimelineEvent[]> { return runtime().invoke<TimelineEvent[]>('timeline.list', { caseId }) }
 export async function fetchSessionState(caseId: string): Promise<SessionState> { return normalizeSessionState(await runtime().invoke<unknown>('session.get', { caseId }), caseId) }
 export function persistQuestionOrAnswer(caseId: string, text: string, speaker: '民警' | '嫌疑人'): Promise<TranscriptMessage> { return runtime().invoke<TranscriptMessage>('message.add', { caseId, text, speaker }) }
 export function updateTranscriptMessage(caseId: string, messageId: string, text: string): Promise<TranscriptMessage> { return runtime().invoke<TranscriptMessage>('message.update', { caseId, messageId, text, reason: '警官在审讯工作台修订' }) }

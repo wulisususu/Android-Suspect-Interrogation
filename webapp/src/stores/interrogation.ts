@@ -15,7 +15,6 @@ import {
   fetchRevisions,
   fetchRuntimeCapabilities,
   fetchSessionState,
-  fetchTimeline,
   fetchVoiceprintEnrollmentStatus,
   fetchVoiceprintReadiness,
   finishSession as finishSessionApi,
@@ -49,7 +48,6 @@ import type {
   SessionState,
   TemporaryAsrFragment,
   TemporaryAsrSpeaker,
-  TimelineEvent,
   TranscriptMessage,
   VoiceprintEnrollmentState,
   VoiceprintReadiness,
@@ -154,7 +152,6 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   const caseSummary = ref<CaseSummary>(emptyCaseSummary(caseId.value))
   const session = ref<SessionState>(emptySession(caseId.value))
   const transcript = ref<TranscriptMessage[]>([])
-  const timeline = ref<TimelineEvent[]>([])
   const facts = ref<FactItem[]>([])
   const voiceprintReadiness = ref<VoiceprintReadiness>(emptyVoiceprintReadiness())
   const officerVoiceprints = ref<OfficerVoiceprint[]>([])
@@ -226,7 +223,6 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     caseSummary.value = emptyCaseSummary(nextCaseId)
     session.value = emptySession(nextCaseId)
     transcript.value = []
-    timeline.value = []
     facts.value = []
     voiceprintReadiness.value = emptyVoiceprintReadiness()
     officerVoiceprints.value = []
@@ -370,10 +366,9 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
       const runtimeCapabilities = await fetchRuntimeCapabilities()
       captureAvailable.value = runtimeCapabilities.recording.state === 'AVAILABLE' || runtimeCapabilities.asr.state === 'AVAILABLE'
-      const [messages, factItems, timelineItems, sessionState, captureStatus, readiness, officers] = await Promise.all([
+      const [messages, factItems, sessionState, captureStatus, readiness, officers] = await Promise.all([
         fetchMessages(requestedCaseId),
         fetchFacts(requestedCaseId),
-        fetchTimeline(requestedCaseId),
         fetchSessionState(requestedCaseId),
         captureAvailable.value ? fetchAsrCaptureStatus(requestedCaseId) : Promise.resolve(null),
         fetchVoiceprintReadiness(requestedCaseId),
@@ -387,7 +382,6 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       caseSummary.value = summary
       transcript.value = messages
       facts.value = factItems
-      timeline.value = timelineItems
       session.value = sessionState
       voiceprintReadiness.value = readiness
       officerVoiceprints.value = officers
@@ -863,7 +857,6 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     caseSummary,
     session,
     transcript,
-    timeline,
     facts,
     completion,
     stateText,

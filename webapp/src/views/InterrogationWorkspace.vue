@@ -7,7 +7,6 @@ import {
   stopQuestionPreparationDictation,
 } from '../api/templateInterrogation'
 import AiSettingsPanel from '../components/AiSettingsPanel.vue'
-import CaseOverviewPage from '../components/CaseOverviewPage.vue'
 import CaseProfilePage from '../components/CaseProfilePage.vue'
 import MossTranscriptionPanel from '../components/MossTranscriptionPanel.vue'
 import SessionControls from '../components/SessionControls.vue'
@@ -27,7 +26,7 @@ import type {
   RoundReassociateInput,
 } from '../types/templateInterrogation'
 
-type WorkspacePage = 'profile' | 'overview' | 'interrogation' | 'moss' | 'voiceprint'
+type WorkspacePage = 'profile' | 'interrogation' | 'moss' | 'voiceprint'
 
 const props = defineProps<{ caseId: string }>()
 defineEmits<{ back: [] }>()
@@ -208,7 +207,7 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
   <main class="workspace">
     <section v-if="store.loading" class="case-loading" aria-live="polite" aria-busy="true">
       <h1>正在加载案件</h1>
-      <p>正在读取案件身份、审讯记录、声纹状态和案件梳理数据…</p>
+      <p>正在读取案件身份、审讯记录、声纹状态等数据…</p>
     </section>
 
     <template v-else>
@@ -234,17 +233,14 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
         <button :class="{ active: activePage === 'profile' }" @click="activePage = 'profile'">
           <b>A</b><span>身份信息</span>
         </button>
-        <button :class="{ active: activePage === 'overview' }" @click="activePage = 'overview'">
-          <b>B</b><span>案件梳理</span>
-        </button>
         <button :class="{ active: activePage === 'interrogation' }" @click="openInterrogation">
-          <b>C</b><span>审讯记录</span>
+          <b>B</b><span>审讯记录</span>
         </button>
         <button :class="{ active: activePage === 'moss' }" @click="activePage = 'moss'">
-          <b>D</b><span>MOSS 转写</span>
+          <b>C</b><span>MOSS 转写</span>
         </button>
         <button :class="{ active: activePage === 'voiceprint' }" @click="activePage = 'voiceprint'">
-          <b>E</b><span>声纹注册</span>
+          <b>D</b><span>声纹注册</span>
         </button>
         <SessionControls
           :session="store.session"
@@ -264,8 +260,6 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
 
       <section class="workspace-page-body" :class="{ 'interrogation-workspace-body': activePage === 'interrogation' }">
         <CaseProfilePage v-if="activePage === 'profile'" :summary="store.caseSummary" :facts="store.facts" @saved="refreshCaseWorkspace" />
-
-        <CaseOverviewPage v-else-if="activePage === 'overview'" :timeline="store.timeline" :facts="store.facts" />
 
         <MossTranscriptionPanel v-else-if="activePage === 'moss'" :case-id="store.caseId || props.caseId" />
 

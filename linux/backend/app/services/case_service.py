@@ -10,9 +10,8 @@ from app.repositories import cases as case_repo
 from app.repositories import devices as device_repo
 from app.repositories import facts as fact_repo
 from app.repositories import persons as person_repo
-from app.repositories import timeline as timeline_repo
 from app.services.formal_record_policy import assert_formal_record_mutable
-from app.services.serializers import audit_dict, case_dict, fact_dict, person_dict, timeline_dict
+from app.services.serializers import audit_dict, case_dict, fact_dict, person_dict
 from app.workflow.state import StateMachine
 
 
@@ -158,18 +157,6 @@ class CaseService:
         audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="FACT_UPDATE", target_type="FACT", target_id=fact_key, before=before_item or {}, after=after_item)
         self.db.commit()
         return after_item
-
-    def list_timeline(self, case_id: str) -> list[dict]:
-        case_repo.get(self.db, case_id)
-        return [timeline_dict(row) for row in timeline_repo.list_for_case(self.db, case_id)]
-
-    def add_timeline(self, case_id: str, payload: dict, actor_id: str | None = None) -> dict:
-        assert_formal_record_mutable(self.db, case_id)
-        row = timeline_repo.create(self.db, case_id, payload)
-        data = timeline_dict(row)
-        audit_repo.add(self.db, case_id=case_id, actor_id=actor_id, action="TIMELINE_CREATE", target_type="TIMELINE", target_id=row.id, after=data)
-        self.db.commit()
-        return data
 
     def list_audit(self, case_id: str, limit: int = 200) -> list[dict]:
         case_repo.get(self.db, case_id)

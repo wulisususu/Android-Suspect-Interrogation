@@ -2,7 +2,7 @@ import json
 
 from app.database.models import (
     AuditLog, Case, CaseQuestion, DocumentSnapshot, Fact, InterrogationSession, Message,
-    MessageRevision, PendingQuestion, Person, QAUnit, QuestionRound, SignatureRecord, StandardQuestion, TimelineEvent,
+    MessageRevision, PendingQuestion, Person, QAUnit, QuestionRound, SignatureRecord, StandardQuestion,
 )
 from app.domain.enums import WorkflowState
 
@@ -84,10 +84,6 @@ def fact_dict(row: Fact) -> dict:
     if row.suggestion is not None:
         data["suggestion"] = row.suggestion
     return data
-
-
-def timeline_dict(row: TimelineEvent) -> dict:
-    return {"id": row.id, "time": row.time_label, "title": row.title, "detail": row.detail, "evidence": json.loads(row.evidence_json or "[]")}
 
 
 def audit_dict(row: AuditLog) -> dict:

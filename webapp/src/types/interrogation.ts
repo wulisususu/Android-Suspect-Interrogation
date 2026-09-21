@@ -31,14 +31,6 @@ export interface FactItem {
   suggestion?: string
 }
 
-export interface TimelineEvent {
-  id: string
-  time: string
-  title: string
-  detail: string
-  evidence?: string[]
-}
-
 export interface CaseSummary {
   id: string
   suspectName: string

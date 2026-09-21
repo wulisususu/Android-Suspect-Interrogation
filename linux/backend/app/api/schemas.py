@@ -105,13 +105,6 @@ class FactUpdateRequest(ActorRequest):
     suggestion: str | None = None
 
 
-class TimelineCreateRequest(ActorRequest):
-    time: str = ""
-    title: str = "时间线事件"
-    detail: str = ""
-    evidence: list[str] = Field(default_factory=list)
-
-
 class DeviceActionRequest(FormalRequest):
     type: str
 
@@ -218,10 +211,6 @@ class LegacyStageRequest(StageRequest):
 
 
 class LegacyFactUpdateRequest(FactUpdateRequest):
-    model_config = LegacyRequest.model_config
-
-
-class LegacyTimelineCreateRequest(TimelineCreateRequest):
     model_config = LegacyRequest.model_config
 
 

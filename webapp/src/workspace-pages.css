@@ -73,7 +73,7 @@
   gap: 18px;
   background: #fff;
 }
-.page-card-header h2, .overview-panel > header h2 { margin: 0; font-size: 18px; color: #26394b; }
+.page-card-header h2 { margin: 0; font-size: 18px; color: #26394b; }
 .page-card-header p { margin: 5px 0 0; color: #7b8994; font-size: 12px; }
 .primary-action {
   border: 0;
@@ -159,72 +159,7 @@
 .preview-placeholder { color: #93a3af; text-align: center; line-height: 1.8; font-size: 13px; }
 .ocr-raw-box { min-height: 170px; padding: 12px; border: 1px solid #e1e8ed; border-radius: 10px; background: #fbfcfd; }
 .ocr-raw-box pre { max-height: 170px; margin: 0; overflow: auto; white-space: pre-wrap; color: #536572; font: 12px/1.6 Consolas, monospace; }
-
-/* B：案件梳理，按参考图保持左右一模一样的双栏 */
-.overview-grid {
-  height: 100%;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 16px;
-}
-.overview-panel {
-  min-height: 0;
-  background: #fff;
-  border-radius: 14px;
-  box-shadow: 0 3px 16px rgba(20, 50, 80, .08);
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-.overview-panel > header {
-  min-height: 62px;
-  padding: 0 20px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid #edf1f4;
-}
-.overview-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
-.timeline-overview-body { padding: 16px 18px 28px; }
-.overview-timeline-list { padding: 2px 4px; }
-.overview-timeline-item {
-  position: relative;
-  margin-left: 8px;
-  padding: 4px 8px 24px 22px;
-  border-left: 2px solid #85b8ec;
-}
-.overview-timeline-item::before {
-  content: "";
-  position: absolute;
-  left: -6px;
-  top: 8px;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: #2f80ed;
-  box-shadow: 0 0 0 4px #eaf3ff;
-}
-.overview-time { margin-bottom: 5px; color: #2673c9; font-size: 12px; font-weight: 700; }
-.overview-timeline-item strong { color: #2f4050; font-size: 14px; }
-.overview-timeline-item p { margin: 6px 0; color: #61717d; line-height: 1.6; font-size: 13px; }
-.overview-evidence { display: flex; flex-wrap: wrap; gap: 5px; }
-.overview-evidence span { padding: 3px 7px; border-radius: 999px; background: #edf7ef; color: #17734b; font-size: 10px; }
-.overview-completion { padding: 6px 9px; border-radius: 999px; background: #e8f7ee; color: #16744b; font-size: 12px; }
-.fact-overview-list { padding: 10px 14px 18px; }
-.overview-fact-item { padding: 13px 14px; border: 1px solid #e2e8ee; border-radius: 12px; margin-bottom: 0; }
-.overview-fact-item + .overview-fact-item { margin-top: -1px; }
-.overview-fact-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.overview-fact-head strong { color: #2b4152; font-size: 15px; }
-.overview-fact-item p { margin: 8px 0; color: #566775; font-size: 13px; }
-.overview-fact-status { border-radius: 7px; padding: 4px 7px; font-size: 11px; }
-.overview-fact-status[data-status="confirmed"] { color: #16744b; background: #e8f7ee; }
-.overview-fact-status[data-status="pending"] { color: #aa6900; background: #fff1d8; }
-.overview-fact-status[data-status="conflict"] { color: #b42318; background: #feeceb; }
-.overview-fact-status[data-status="missing"] { color: #6c7780; background: #eef1f3; }
-.overview-suggestion { padding: 8px 10px; border-radius: 7px; background: #edf5ff; color: #176bd0; font-size: 12px; }
-
-/* C：审讯记录 */
+/* B：审讯记录 */
 .interrogation-page { display: flex; flex-direction: column; }
 .interrogation-header { flex: 0 0 auto; }
 .ai-generate-button {

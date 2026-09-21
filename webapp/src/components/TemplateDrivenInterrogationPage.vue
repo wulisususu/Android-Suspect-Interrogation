@@ -320,7 +320,7 @@ async function confirmSignature() {
         />
         <div v-else class="dialogue-voiceprint-hint">
           <p>嫌疑人声纹尚未注册。</p>
-          <p>请先切换到顶部「E 声纹注册」页完成注册，注册后此处才会开始实时语音对话。</p>
+          <p>请先切换到顶部「D 声纹注册」页完成注册，注册后此处才会开始实时语音对话。</p>
         </div>
       </div>
     </div>

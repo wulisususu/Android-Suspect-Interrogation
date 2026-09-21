@@ -75,9 +75,6 @@ def test_canonical_api_full_case_flow(tmp_path, enroll_test_suspect_voiceprint):
         fact = payload(client.put(f"/api/v1/cases/{case_id}/facts/time", json={"value": "20:00", "status": "confirmed", "actor_id": "op-1"}))
         assert fact["value"] == "20:00"
 
-        timeline = payload(client.post(f"/api/v1/cases/{case_id}/timeline", json={"time": "20:00", "title": "到达", "detail": "到达现场", "evidence": ["CAM-1"], "actor_id": "op-1"}))
-        assert timeline["evidence"] == ["CAM-1"]
-
         assert payload(client.post(f"/api/v1/cases/{case_id}/session/pause", json={}))["state"] == "PAUSED"
         assert payload(client.post(f"/api/v1/cases/{case_id}/session/resume", json={}))["state"] == "QUESTIONING"
         assert payload(client.post(f"/api/v1/cases/{case_id}/session/stage", json={"stage": "STATEMENT"}))["stage"] == "STATEMENT"

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.api.responses import envelope
-from app.api.schemas import CaseCreateRequest, CaseIntakeRequest, CaseUpdateRequest, FactUpdateRequest, TimelineCreateRequest
+from app.api.schemas import CaseCreateRequest, CaseIntakeRequest, CaseUpdateRequest, FactUpdateRequest
 from app.services.case_service import CaseService
 
 router = APIRouter(prefix="/cases", tags=["cases"])
@@ -53,18 +53,6 @@ def update_fact(case_id: str, fact_key: str, body: FactUpdateRequest, db: Sessio
     patch = body.model_dump(exclude_none=True)
     actor_id = patch.pop("actor_id", None)
     return envelope(CaseService(db).update_fact(case_id, fact_key, patch, actor_id), "事实项已更新")
-
-
-@router.get("/{case_id}/timeline")
-def list_timeline(case_id: str, db: Session = Depends(get_db)):
-    return envelope(CaseService(db).list_timeline(case_id))
-
-
-@router.post("/{case_id}/timeline")
-def add_timeline(case_id: str, body: TimelineCreateRequest, db: Session = Depends(get_db)):
-    data = body.model_dump(exclude_none=True)
-    actor_id = data.pop("actor_id", None)
-    return envelope(CaseService(db).add_timeline(case_id, data, actor_id), "时间线事件已添加")
 
 
 @router.get("/{case_id}/audit")

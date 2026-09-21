@@ -109,6 +109,12 @@ class Fact(TimestampMixin, Base):
 
 
 class TimelineEvent(Base):
+    """Legacy case-overview table. The feature was removed, but the model must
+    stay: alembic revision 0001 creates tables from Base.metadata, so dropping
+    this class would break the historical migration chain. No code reads or
+    writes this table anymore.
+    """
+
     __tablename__ = "timeline_events"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
