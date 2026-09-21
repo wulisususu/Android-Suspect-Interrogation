@@ -201,19 +201,20 @@ def test_malformed_or_invalid_model_output_degrades_to_review(tmp_path, model_te
 
 
 def test_model_output_with_prose_and_extra_keys_still_parses(tmp_path):
-    # Small local models wrap the JSON in prose and emit harmless extra fields;
-    # the parser must recover the contract keys instead of dropping the verdict.
+    # Small local models wrap the JSON in prose, echo the question into
+    # formal_question, and emit harmless extra fields; the router must recover
+    # the verdict instead of dropping it into review.
     model_text = (
-        '好的，结果如下：{"classification":"IGNORE","target_question_id":null,'
-        '"formal_question":null,"formal_answer":null,"confidence":0.0,'
+        '好的，结果如下：{"classification":"MATCH_EXISTING","target_question_id":"Q-LIVE",'
+        '"formal_question":"你和张某是什么关系？","formal_answer":null,"confidence":0.0,'
         '"candidate_question_ids":[],"reason_code":"NO_VALUE"} 以上。'
     )
     engine, db, _case, unit, _fixed, _dynamic = make_context(tmp_path)
     try:
         decision = FormalRecordRouter(db, ai_supervisor=FakeSupervisor(text=model_text)).route(unit.id)
-        assert decision.classification is RouteClass.IGNORE
-        assert decision.target_question_id is None
-        assert decision.reason_code != "INVALID_MODEL_OUTPUT"
+        assert decision.classification is RouteClass.MATCH_EXISTING
+        assert decision.target_question_id == "Q-LIVE"
+        assert decision.formal_question is None
     finally:
         db.close()
         engine.dispose()

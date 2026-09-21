@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -396,6 +396,12 @@ class FormalRecordRouter:
                 },
             )
             decision = self._decision_from_payload(_parse_payload(result.text), model_id=result.model_id)
+            if decision.classification in {RouteClass.MATCH_FIXED, RouteClass.MATCH_EXISTING}:
+                # For matches the formal question text comes from the matched
+                # target question, never from the model. Small models like to
+                # echo the question into formal_question, which would trip
+                # policy validation even though the field is unused.
+                decision = replace(decision, formal_question=None)
             target = self._case_question(unit.case_id, decision.target_question_id)
             decision = canonicalize_existing_target_decision(decision, target)
             decision = repair_existing_target_intent_mismatch(
