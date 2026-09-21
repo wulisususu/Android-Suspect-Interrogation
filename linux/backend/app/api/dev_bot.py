@@ -93,6 +93,7 @@ def parse_verdict(content: str) -> dict[str, Any]:
 class BotAskRequest(BaseModel):
     case_id: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=2000)
+    role: str = Field(default="INTERROGATOR", pattern="^(INTERROGATOR|SUSPECT)$")
 
 
 @router.post("/dev/bot/ask")
@@ -102,7 +103,7 @@ def bot_ask(body: BotAskRequest, request: Request):
     service = getattr(request.app.state, "asr_capture_service", None)
     if service is None:
         raise DomainError("DEV_BOT_UNAVAILABLE", "录音服务未配置", 503)
-    payload = service.inject_officer_text(body.case_id, body.text)
+    payload = service.inject_officer_text(body.case_id, body.text, body.role)
     return envelope(payload)
 
 

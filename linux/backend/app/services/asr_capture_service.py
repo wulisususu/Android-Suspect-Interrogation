@@ -279,15 +279,18 @@ class AsrCaptureService:
                 raise DomainError("ASR_CAPTURE_STOP_TIMEOUT", "语音采集线程未能及时停止", 504)
         return self.status(case_id)
 
-    def inject_officer_text(self, case_id: str, text: str) -> dict[str, Any]:
+    def inject_officer_text(self, case_id: str, text: str, role: str = "INTERROGATOR") -> dict[str, Any]:
         """DEV-ONLY BOT hook.
 
-        Persists an interrogator question as a REAL ASR fragment and feeds it to
-        the normal QA-unit builder / formal-record routing, so a solo tester can
-        exercise the exact pipeline a spoken officer question would take. Not
-        part of the production interrogation flow.
+        Persists a question (INTERROGATOR) or a reply (SUSPECT) as a REAL ASR
+        fragment and feeds it to the normal QA-unit builder / formal-record
+        routing, so a solo tester can exercise the exact pipeline spoken turns
+        would take. Not part of the production interrogation flow.
         """
         text = str(text or "").strip()
+        role = str(role or "INTERROGATOR").strip().upper()
+        if role not in {"INTERROGATOR", "SUSPECT"}:
+            raise DomainError("DEV_BOT_ROLE_INVALID", "BOT 注入角色只支持 INTERROGATOR/SUSPECT", 400)
         if not text:
             raise DomainError("DEV_BOT_TEXT_REQUIRED", "BOT 问题文本不能为空", 400)
         with self._lock:
@@ -305,12 +308,12 @@ class AsrCaptureService:
                 started_at_ms=started_ms,
                 ended_at_ms=started_ms + 1000,
                 raw_text=text,
-                speaker="INTERROGATOR",
+                speaker=role,
                 speaker_source="MANUAL",
                 voiceprint_verified=False,
                 low_confidence=False,
                 model_id="dev-bot",
-                speaker_name="BOT 民警",
+                speaker_name=("BOT 民警" if role == "INTERROGATOR" else "BOT 嫌疑人"),
             )
             db.commit()
         payload = self._fragment_payload(fragment)
