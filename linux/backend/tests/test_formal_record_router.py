@@ -344,3 +344,18 @@ def test_locked_target_without_advisory_answer_still_canonicalizes_to_fixed(tmp_
     finally:
         db.close()
         engine.dispose()
+
+def test_exact_spoken_text_overrides_a_wrong_existing_model_target(tmp_path):
+    # The model may pick a real but wrong question id; when the spoken question
+    # exactly matches another case question's text, that question must win.
+    engine, db, _case, unit, fixed, _dynamic = make_context(tmp_path)
+    try:
+        unit.raw_question_text = fixed.text
+        db.flush()
+        supervisor = FakeSupervisor(text=route_payload("MATCH_EXISTING", target="Q-LIVE"))
+        decision = FormalRecordRouter(db, ai_supervisor=supervisor).route(unit.id)
+        assert decision.target_question_id == fixed.id
+        assert decision.classification is RouteClass.MATCH_FIXED
+    finally:
+        db.close()
+        engine.dispose()

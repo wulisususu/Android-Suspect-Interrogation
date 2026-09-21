@@ -407,11 +407,14 @@ class FormalRecordRouter:
                 # policy validation even though the field is unused.
                 decision = replace(decision, formal_question=None)
             target = self._case_question(unit.case_id, decision.target_question_id)
-            if target is None and decision.classification in {RouteClass.MATCH_FIXED, RouteClass.MATCH_EXISTING}:
-                resolved = self._resolve_target_by_text(unit.case_id, unit.raw_question_text)
-                if resolved is not None:
-                    decision = replace(decision, target_question_id=resolved.id)
-                    target = resolved
+            if decision.classification in {RouteClass.MATCH_FIXED, RouteClass.MATCH_EXISTING}:
+                # An exact spoken-text match beats the model's target pick:
+                # questions asked verbatim (bot or template-driven) always
+                # resolve deterministically, while small models confuse ids.
+                exact = self._resolve_target_by_text(unit.case_id, unit.raw_question_text)
+                if exact is not None and (target is None or target.id != exact.id):
+                    decision = replace(decision, target_question_id=exact.id)
+                    target = exact
             decision = canonicalize_existing_target_decision(decision, target)
             decision = repair_existing_target_intent_mismatch(
                 decision,
