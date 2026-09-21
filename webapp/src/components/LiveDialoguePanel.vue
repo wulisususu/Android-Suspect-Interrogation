@@ -13,6 +13,7 @@ import type {
 import { dialoguePresentation, groupLiveDialogueFragments } from '../utils/templateInterrogation'
 
 const props = defineProps<{
+  caseId: string
   dialogue: TemporaryAsrFragment[]
   partialText: string
   pendingQuestions: PendingFormalQuestion[]
@@ -48,6 +49,7 @@ const visibleDialogue = computed(() => groupLiveDialogueFragments([...props.dial
 // block is a test rig and must never grow into the production flow.
 // ---------------------------------------------------------------------------
 const BOT_SILENCE_MS = 20_000
+const BOT_STORAGE_PREFIX = 'dev-bot-turns:'
 let botSeq = 0
 let botQueue: FormalQuestion[] = []
 let botCurrent: FormalQuestion | null = null
@@ -58,20 +60,21 @@ const botActive = ref(false)
 const botJudging = ref(false)
 const botTurns = ref<TemporaryAsrFragment[]>([])
 
+const botStorageKey = computed(() => `${BOT_STORAGE_PREFIX}${props.caseId}`)
+
 function isBotFragment(item: TemporaryAsrFragment) {
   return item.id.startsWith('dev-bot-')
 }
 
-function botTurn(text: string): TemporaryAsrFragment {
-  botSeq += 1
-  const now = Date.now()
+function botTurnFrom(text: string, createdAt: number, id: string): TemporaryAsrFragment {
+  const seq = Number(id.slice('dev-bot-'.length)) || 0
   return {
-    id: `dev-bot-${botSeq}`,
+    id,
     captureSessionId: 'dev-bot',
     caseId: '',
-    ordinal: 1_000_000 + botSeq,
-    startedAtMs: now,
-    endedAtMs: now,
+    ordinal: 1_000_000 + seq,
+    startedAtMs: createdAt,
+    endedAtMs: createdAt,
     rawText: text,
     editedText: '',
     speaker: 'INTERROGATOR',
@@ -92,13 +95,44 @@ function botTurn(text: string): TemporaryAsrFragment {
     recognitionEvidence: null,
     recognitionRevisions: [],
     audio: { captureSessionId: 'dev-bot', startOffsetMs: 0, endOffsetMs: 0, available: false },
-    createdAt: now,
-    updatedAt: now,
+    createdAt,
+    updatedAt: createdAt,
   }
+}
+
+function botTurn(text: string): TemporaryAsrFragment {
+  botSeq += 1
+  return botTurnFrom(text, Date.now(), `dev-bot-${botSeq}`)
+}
+
+function persistBotTurns() {
+  try {
+    const data = botTurns.value.map((item) => ({ id: item.id, text: item.rawText, createdAt: item.createdAt }))
+    localStorage.setItem(botStorageKey.value, JSON.stringify(data.slice(-300)))
+  } catch { /* storage unavailable — bot turns stay in-memory only */ }
+}
+
+function restoreBotTurns() {
+  try {
+    const raw = localStorage.getItem(botStorageKey.value)
+    if (!raw) return
+    const parsed = JSON.parse(raw) as Array<{ id?: unknown; text?: unknown; createdAt?: unknown }>
+    if (!Array.isArray(parsed)) return
+    let maxSeq = 0
+    const restored: TemporaryAsrFragment[] = []
+    for (const item of parsed) {
+      if (typeof item?.id !== 'string' || typeof item?.text !== 'string' || typeof item?.createdAt !== 'number') continue
+      restored.push(botTurnFrom(item.text, item.createdAt, item.id))
+      maxSeq = Math.max(maxSeq, Number(item.id.slice('dev-bot-'.length)) || 0)
+    }
+    botTurns.value = restored
+    botSeq = Math.max(botSeq, maxSeq)
+  } catch { /* corrupted snapshot — start clean */ }
 }
 
 function pushBotTurn(text: string) {
   botTurns.value = [...botTurns.value, botTurn(text)]
+  persistBotTurns()
 }
 
 function clearBotSilenceTimer() {
@@ -343,7 +377,16 @@ watch(
   () => { void scrollToLatest() },
 )
 
-onMounted(() => { void scrollToLatest(true) })
+watch(() => props.caseId, () => {
+  stopBot()
+  restoreBotTurns()
+  void scrollToLatest(true)
+})
+
+onMounted(() => {
+  restoreBotTurns()
+  void scrollToLatest(true)
+})
 </script>
 
 <template>

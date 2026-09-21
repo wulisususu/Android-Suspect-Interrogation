@@ -303,6 +303,7 @@ async function confirmSignature() {
       <div class="dialogue-column">
         <LiveDialoguePanel
           v-if="readiness.suspectReady"
+          :case-id="caseId"
           :dialogue="dialogueHistory"
           :partial-text="capture.partialText"
           :pending-questions="workspace.pendingQuestions"
