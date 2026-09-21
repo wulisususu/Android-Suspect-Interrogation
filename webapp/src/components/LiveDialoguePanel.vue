@@ -61,9 +61,27 @@ const botJudging = ref(false)
 const botTurns = ref<TemporaryAsrFragment[]>([])
 
 const botStorageKey = computed(() => `${BOT_STORAGE_PREFIX}${props.caseId}`)
+const botAnsweredKey = computed(() => `dev-bot-answered:${props.caseId}`)
+let botAnsweredIds = new Set<string>()
+
+function loadBotAnswered() {
+  try {
+    const raw = localStorage.getItem(botAnsweredKey.value)
+    botAnsweredIds = new Set(raw ? (JSON.parse(raw) as string[]) : [])
+  } catch {
+    botAnsweredIds = new Set()
+  }
+}
+
+function markBotAnswered(questionId: string) {
+  botAnsweredIds.add(questionId)
+  try {
+    localStorage.setItem(botAnsweredKey.value, JSON.stringify([...botAnsweredIds]))
+  } catch { /* storage unavailable */ }
+}
 
 function isBotFragment(item: TemporaryAsrFragment) {
-  return item.id.startsWith('dev-bot-') || item.speakerSource === 'MANUAL'
+  return item.id.startsWith('dev-bot-') || item.modelId === 'dev-bot'
 }
 
 function botTurnFrom(text: string, createdAt: number, id: string): TemporaryAsrFragment {
@@ -160,7 +178,12 @@ async function toggleBot() {
   }
   botActive.value = true
   botEmptyStreak = 0
-  botQueue = props.questions.filter((item) => item.active && !(item.rounds && item.rounds.length))
+  loadBotAnswered()
+  // Skip questions already routed into the formal record (rounds) and ones the
+  // judge already accepted, so a refresh never re-asks answered questions.
+  botQueue = props.questions.filter(
+    (item) => item.active && !(item.rounds && item.rounds.length) && !botAnsweredIds.has(item.id),
+  )
   if (!props.captureRunning) {
     emit('captureToggle')
     // The REST start is async: wait until the backend capture session really
@@ -241,6 +264,7 @@ async function onBotSilence() {
   try {
     const verdict = await judgeDevBotReply(question.text, reply)
     if (verdict.isAnswer) {
+      markBotAnswered(question.id)
       botCurrent = null
       askNextBotQuestion()
     } else {
@@ -404,11 +428,13 @@ watch(
 watch(() => props.caseId, () => {
   stopBot()
   restoreBotTurns()
+  loadBotAnswered()
   void scrollToLatest(true)
 })
 
 onMounted(() => {
   restoreBotTurns()
+  loadBotAnswered()
   void scrollToLatest(true)
 })
 </script>
