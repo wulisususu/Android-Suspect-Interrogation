@@ -69,6 +69,7 @@ const emit = defineEmits<{
   reassociateRound: [roundId: string, input: RoundReassociateInput]
   updateAnswer: [roundId: string, answerText: string]
   attachFragmentAnswer: [questionId: string, fragmentIds: string[]]
+  print: []
   saveLibrary: [questionId: string]
   correctFragment: [fragmentId: string, speaker: TemporaryAsrSpeaker, reason: string]
   updateHeader: [target: 'case' | 'fact', key: string, value: string]
@@ -296,6 +297,7 @@ async function confirmSignature() {
           @resolve-qa-unit="(qaUnitId, resolution) => emit('resolveQaUnit', qaUnitId, resolution)"
           @update-answer="(id, text) => emit('updateAnswer', id, text)"
           @attach-fragment-answer="(questionId, fragmentIds) => emit('attachFragmentAnswer', questionId, fragmentIds)"
+          @print="emit('print')"
           @save-library="emit('saveLibrary', $event)"
           @freeze="finishAndFreeze"
           @sign="openSignature"

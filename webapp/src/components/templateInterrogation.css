@@ -764,3 +764,4 @@ button:disabled {
 @media(max-width:1200px){.formal-record-paper{margin:10px;padding:38px 34px;font-size:15px}.record-title-block h1{font-size:27px}.record-top-actions{justify-content:center}}
 @media print{.record-no-print,.live-dialogue-panel,.record-preparation-drawer{display:none!important}.template-interrogation-grid{display:block!important}.formal-column{width:100%!important}.formal-record-shell{background:#fff;overflow:visible}.formal-record-paper{max-width:none;min-height:0;margin:0;padding:18mm 16mm;box-shadow:none;font-size:12pt}.record-qa,.record-meta-grid p{break-inside:avoid}.record-title-block h1{font-size:22pt}}
  .answer-draggable{cursor:grab}.answer-draggable:active{cursor:grabbing}
+@media print{.workspace>.topbar,.workspace>.workspace-page-tabs,.workspace>.workspace-toast-region,.workspace .dialogue-column{display:none!important}.workspace-page-body{padding:0!important}.interrogation-workspace-stack{height:auto!important}}

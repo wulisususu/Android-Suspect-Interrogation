@@ -26,6 +26,7 @@ const emit = defineEmits<{
   saveLibrary: [questionId: string]
   insertPending: [pendingId: string, afterQuestionId: string | null]
   resolveQaUnit: [qaUnitId: string, resolution: QAUnitResolution]
+  print: []
   freeze: []
   sign: [role: DocumentSignerRole]
   updateHeader: [target: 'case' | 'fact', key: string, value: string]
@@ -182,6 +183,9 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
       <header class="record-paper-header">
         <div class="record-title-block"><h1>询问笔录</h1><span>第 1 次</span></div>
         <div class="record-top-actions record-no-print">
+          <button :disabled="busy || signingBusy !== ''" @click="emit('print')">
+            {{ documentFrozen ? '打印正式笔录' : '打印预览' }}
+          </button>
           <button class="primary" :disabled="documentFrozen || signingBusy !== '' || captureRunning" @click="emit('freeze')">
             {{ signingBusy === 'freeze' ? '正在冻结…' : documentFrozen ? '笔录已冻结' : '结束并冻结笔录' }}
           </button>

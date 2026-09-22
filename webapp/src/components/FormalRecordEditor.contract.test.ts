@@ -7,6 +7,7 @@ const formal = fs.readFileSync(path.join(root, 'FormalTemplatePanel.vue'), 'utf8
 const live = fs.readFileSync(path.join(root, 'LiveDialoguePanel.vue'), 'utf8')
 const interrogationStore = fs.readFileSync(path.join(root, '../stores/interrogation.ts'), 'utf8')
 const templateStore = fs.readFileSync(path.join(root, '../stores/templateInterrogation.ts'), 'utf8')
+const workspace = fs.readFileSync(path.join(root, '../views/InterrogationWorkspace.vue'), 'utf8')
 
 describe('formal record editor source contract', () => {
   it('renders paper-style fixed/body/closing sections and top-right signing controls', () => {
@@ -16,6 +17,13 @@ describe('formal record editor source contract', () => {
     expect(formal).toContain('closingQuestions')
     expect(formal).toContain('被询问人签名')
     expect(formal).toContain('结束并冻结笔录')
+  })
+
+  it('exposes printing from the formal record header and hides non-record content', () => {
+    expect(formal).toContain('打印预览')
+    expect(formal).toContain("emit('print')")
+    expect(workspace).toContain('window.print()')
+    expect(workspace).toContain('@print="printFormalRecord"')
   })
 
   it('keeps legacy pending drag compatibility and adds the qa-unit drag MIME', () => {
