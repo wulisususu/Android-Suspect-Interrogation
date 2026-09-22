@@ -23,6 +23,7 @@ const emit = defineEmits<{
   removeQuestion: [questionId: string]
   updateAnswer: [targetId: string, answerText: string]
   attachFragmentAnswer: [questionId: string, fragmentIds: string[]]
+  createLiveQuestionFromFragments: [fragmentIds: string[], afterQuestionId: string | null]
   saveLibrary: [questionId: string]
   insertPending: [pendingId: string, afterQuestionId: string | null]
   resolveQaUnit: [qaUnitId: string, resolution: QAUnitResolution]
@@ -161,9 +162,16 @@ function dropAnswerOnQuestion(event: DragEvent, questionId: string) {
   if (payload?.mode === 'ANSWER') emit('resolveQaUnit', payload.qaUnitId, { action: 'LINK_ANSWER', caseQuestionId: questionId })
 }
 
+function dropLiveQuestionFromFragments(event: DragEvent, afterQuestionId: string | null) {
+  event.preventDefault(); dragOverKey.value = ''
+  if (props.documentFrozen) return
+  const fragmentIds = fragmentDragPayload(event)
+  if (fragmentIds.length) emit('createLiveQuestionFromFragments', [fragmentIds[0]], afterQuestionId)
+}
+
 function dropGap(event: DragEvent, afterQuestionId: string | null) {
   if (event.dataTransfer?.types.includes(FORMAL_ANSWER_FRAGMENT_MIME)) {
-    event.preventDefault(); dragOverKey.value = ''
+    dropLiveQuestionFromFragments(event, afterQuestionId)
     return
   }
   if (event.dataTransfer?.types.includes(QA_MIME)) { dropQaCreateLive(event); return }
@@ -220,7 +228,7 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
       </section>
 
       <div class="record-section-label record-no-print"><span>案件动态问答区</span><small>右侧实时对话可拖入；本区可拖动排序、编辑或移出</small></div>
-      <div class="record-drop-zone record-no-print" :class="{ active: dragOverKey === 'body-start' }" @dragover="allowPendingDrop($event, 'body-start')" @dragleave="dragOverKey = ''" @drop="dropGap($event, lastOpeningId)">拖到这里插入为第一条案件问题 / 整组问答</div>
+      <div class="record-drop-zone record-no-print" :class="{ active: dragOverKey === 'body-start' }" @dragover="allowPendingDrop($event, 'body-start')" @dragleave="dragOverKey = ''" @drop="dropGap($event, lastOpeningId)">拖到这里插入为第一条案件问题 / 民警提问 / 整组问答</div>
 
       <section class="record-qa-section body-section">
         <article v-for="q in bodyQuestions" :key="q.id" class="record-qa body-question" draggable="true" @dragstart="startBodyDrag($event, q.id)" @dragover.prevent @drop="dropBody($event, q.id)">
@@ -228,7 +236,7 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
           <label class="record-question editable-question qa-question-drop" @dragover="allowPendingDrop($event, `qa-${q.id}`)" @drop.stop="dropQaOnQuestion($event, q.id)"><b>问：</b><textarea v-model="questionDrafts[q.id]" :disabled="busy || documentFrozen" rows="1" @input="autoGrow($event)" @blur="saveQuestion(q)"></textarea><small class="record-no-print">整组 QA 可拖到本题</small></label>
           <label class="record-answer qa-answer-drop" @dragover="allowPendingDrop($event, `answer-${q.id}`)" @dragleave="dragOverKey = ''" @drop.stop="dropAnswerOnQuestion($event, q.id)"><b>答：</b><textarea v-model="canonicalAnswerDrafts[q.id]" :disabled="busy || documentFrozen" rows="2" placeholder="等待现场回答" @input="autoGrow($event)" @blur="saveCanonicalAnswer(q)"></textarea><small class="record-no-print">聊天记录或答案可拖到这里</small></label>
           <small v-if="latestRound(q.id)?.actualQuestionText && latestRound(q.id)?.actualQuestionText !== q.text" class="actual-question record-no-print">现场原问法：{{ latestRound(q.id)?.actualQuestionText }}</small>
-          <div class="record-drop-zone compact record-no-print" :class="{ active: dragOverKey === q.id }" @dragover="allowPendingDrop($event, q.id)" @dragleave="dragOverKey = ''" @drop="dropGap($event, q.id)">拖到这里，插入在本题之后 / 新建现场问题</div>
+          <div class="record-drop-zone compact record-no-print" :class="{ active: dragOverKey === q.id }" @dragover="allowPendingDrop($event, q.id)" @dragleave="dragOverKey = ''" @drop="dropGap($event, q.id)">拖到这里，插入在本题之后 / 民警提问新建现场问题</div>
         </article>
         <div v-if="!bodyQuestions.length" class="record-body-empty record-no-print">案件动态问答区暂为空。将右侧民警提问拖到这里，或从问题准备区加入。</div>
       </section>

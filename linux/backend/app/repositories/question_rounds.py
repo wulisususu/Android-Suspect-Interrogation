@@ -78,6 +78,32 @@ def latest_for_question(db: Session, case_id: str, case_question_id: str) -> Que
     return db.scalar(stmt)
 
 
+def find_for_officer_fragment(db: Session, *, case_id: str, fragment_id: str) -> QuestionRound | None:
+    stmt = (
+        select(QuestionRound)
+        .where(
+            QuestionRound.case_id == case_id,
+            QuestionRound.officer_fragment_id == fragment_id,
+            QuestionRound.status != "DETACHED",
+        )
+        .limit(1)
+    )
+    return db.scalar(stmt)
+
+
+def find_pending_for_officer_fragment(db: Session, *, case_id: str, fragment_id: str) -> PendingQuestion | None:
+    stmt = (
+        select(PendingQuestion)
+        .where(
+            PendingQuestion.case_id == case_id,
+            PendingQuestion.officer_fragment_id == fragment_id,
+            PendingQuestion.status.in_(["PENDING", "DEFERRED"]),
+        )
+        .limit(1)
+    )
+    return db.scalar(stmt)
+
+
 def find_for_qa_unit(
     db: Session,
     *,

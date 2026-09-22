@@ -179,6 +179,11 @@ class FragmentAnswerRequest(FormalRequest):
     fragment_ids: list[str] = Field(alias="fragmentIds", min_length=1)
 
 
+class LiveQuestionFragmentRequest(FormalRequest):
+    fragment_id: str = Field(alias="fragmentId", min_length=1)
+    after_question_id: str | None = Field(default=None, alias="afterQuestionId")
+
+
 class SaveQuestionToLibraryRequest(FormalRequest):
     category: str = "通用"
 

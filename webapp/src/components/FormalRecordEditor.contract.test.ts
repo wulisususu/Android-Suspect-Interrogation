@@ -51,6 +51,13 @@ describe('formal record editor source contract', () => {
     expect(formal).toContain('聊天记录或答案可拖到这里')
   })
 
+  it('accepts officer dialogue fragments on dynamic question gaps', () => {
+    expect(formal).toContain('dropLiveQuestionFromFragments')
+    expect(formal).toContain("emit('createLiveQuestionFromFragments'")
+    expect(templateStore).toContain('createLiveQuestionFromFragments')
+    expect(workspace).toContain('@create-live-question-from-fragments=')
+  })
+
   it('renders the canonical case-question answer while retaining round provenance', () => {
     expect(formal).toContain('formalAnswerText')
     expect(formal).toContain('canonicalAnswerDrafts')

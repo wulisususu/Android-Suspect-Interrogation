@@ -6,6 +6,7 @@ import {
   addPendingQuestion,
   attachQuestionAnswerFragments,
   createCaseQuestion as createCaseQuestionApi,
+  createLiveQuestionFromFragment as createLiveQuestionFromFragmentApi,
   deactivateCaseQuestion as deactivateCaseQuestionApi,
   ensureFormalRecord,
   fetchQuestionLibrary,
@@ -214,6 +215,12 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     await runMutation((scope) => createCaseQuestionApi(scope.caseId, input))
   }
 
+  async function createLiveQuestionFromFragments(fragmentIds: string[], afterQuestionId: string | null) {
+    const fragmentId = fragmentIds[0]
+    if (!fragmentId) return
+    await runMutation((scope) => createLiveQuestionFromFragmentApi(scope.caseId, fragmentId, afterQuestionId))
+  }
+
   async function updateCaseQuestion(questionId: string, input: CaseQuestionUpdateInput) {
     await runMutation((scope) => updateCaseQuestionApi(scope.caseId, questionId, input))
   }
@@ -301,6 +308,7 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     refreshWorkspace,
     handleAsrFragment,
     createCaseQuestion,
+    createLiveQuestionFromFragments,
     updateCaseQuestion,
     reorderCaseQuestions,
     deactivateCaseQuestion,

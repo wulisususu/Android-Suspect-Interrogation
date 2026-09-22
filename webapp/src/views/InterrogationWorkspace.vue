@@ -153,6 +153,7 @@ function rollbackQaUnit(qaUnitId: string) { return runTemplateAction(() => templ
 function reassociateFormalRound(roundId: string, input: RoundReassociateInput) { return runTemplateAction(() => templateStore.reassociateRound(roundId, input)) }
 function updateFormalAnswer(roundId: string, answerText: string) { return runTemplateAction(() => templateStore.updateRoundAnswer(roundId, answerText)) }
 function attachFormalFragmentAnswer(questionId: string, fragmentIds: string[]) { return runTemplateAction(() => templateStore.attachFragmentAnswer(questionId, fragmentIds)) }
+function createLiveQuestionFromFragments(fragmentIds: string[], afterQuestionId: string | null) { return runTemplateAction(() => templateStore.createLiveQuestionFromFragments(fragmentIds, afterQuestionId)) }
 function printFormalRecord() { window.print() }
 function saveFormalQuestionToLibrary(questionId: string) { return runTemplateAction(() => templateStore.saveQuestionToLibrary(questionId)) }
 
@@ -319,6 +320,7 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
             @reassociate-round="reassociateFormalRound"
             @update-answer="updateFormalAnswer"
             @attach-fragment-answer="attachFormalFragmentAnswer"
+            @create-live-question-from-fragments="createLiveQuestionFromFragments"
             @print="printFormalRecord"
             @save-library="saveFormalQuestionToLibrary"
             @correct-fragment="correctRecognitionFragment"

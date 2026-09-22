@@ -91,6 +91,13 @@ export async function createCaseQuestion(caseId: string, input: CaseQuestionCrea
   ))
 }
 
+export async function createLiveQuestionFromFragment(caseId: string, fragmentId: string, afterQuestionId?: string | null): Promise<unknown> {
+  return unwrap(await http.post<BackendEnvelope<unknown>>(
+    `/api/v1/cases/${encodeURIComponent(caseId)}/questions/from-fragment`,
+    { fragmentId, afterQuestionId: afterQuestionId ?? null },
+  ))
+}
+
 export async function updateCaseQuestion(caseId: string, questionId: string, input: CaseQuestionUpdateInput): Promise<FormalQuestion> {
   return unwrap(await http.patch<BackendEnvelope<FormalQuestion>>(
     `/api/v1/cases/${encodeURIComponent(caseId)}/questions/${encodeURIComponent(questionId)}`,

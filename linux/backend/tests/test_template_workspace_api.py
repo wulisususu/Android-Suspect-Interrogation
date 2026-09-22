@@ -297,3 +297,90 @@ def test_dragged_fragment_can_be_saved_as_formal_answer_with_provenance(tmp_path
         saved_question = next(item for item in workspace["questions"] if item["id"] == question["id"])
         assert saved_question["formalAnswerText"] == "晚上八点。"
         assert saved_question["rounds"][0]["answerFragmentIds"] == [fragment_id]
+
+
+def test_officer_fragment_can_create_live_question_from_dynamic_drop(tmp_path):
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'template-live-question-drop.db'}",
+        hardware_gateway=MockHardwareGateway(simulated=True),
+    )
+    with TestClient(app) as client:
+        case_id = create_case(client)
+        anchor = payload(
+            client.post(
+                f"/api/v1/cases/{case_id}/questions",
+                json={"text": "已存在的问题", "source": "CASE"},
+            )
+        )
+
+        with app.state.session_factory() as db:
+            session = InterrogationSession(
+                id="SESSION-LIVE-QUESTION-DROP",
+                case_id=case_id,
+                status="RUNNING",
+                stage="QUESTIONING",
+            )
+            db.add(session)
+            db.flush()
+            capture = asr_repo.create_capture_session(
+                db,
+                case_id=case_id,
+                interrogation_session_id=session.id,
+                sample_rate=16000,
+            )
+            officer = asr_repo.create_fragment(
+                db,
+                capture_session_id=capture.id,
+                case_id=case_id,
+                ordinal=1,
+                started_at_ms=1000,
+                ended_at_ms=1600,
+                raw_text="你当时把笔记本放在哪里？",
+                speaker="INTERROGATOR",
+                speaker_source="MANUAL",
+                voiceprint_verified=True,
+                low_confidence=False,
+                model_id="test-asr",
+            )
+            suspect = asr_repo.create_fragment(
+                db,
+                capture_session_id=capture.id,
+                case_id=case_id,
+                ordinal=2,
+                started_at_ms=2000,
+                ended_at_ms=2600,
+                raw_text="我放在桌子上。",
+                speaker="SUSPECT",
+                speaker_source="MANUAL",
+                voiceprint_verified=True,
+                low_confidence=False,
+                model_id="test-asr",
+            )
+            db.commit()
+            officer_id = officer.id
+            suspect_id = suspect.id
+
+        created = payload(
+            client.post(
+                f"/api/v1/cases/{case_id}/questions/from-fragment",
+                json={"fragmentId": officer_id, "afterQuestionId": anchor["id"]},
+            )
+        )
+        assert created["question"]["text"] == "你当时把笔记本放在哪里？"
+        assert created["question"]["source"] == "LIVE"
+        assert created["round"]["caseQuestionId"] == created["question"]["id"]
+        assert created["round"]["officerFragmentId"] == officer_id
+        assert created["round"]["status"] == "ACTIVE"
+
+        workspace = payload(client.get(f"/api/v1/cases/{case_id}/template-workspace"))
+        assert [item["text"] for item in workspace["questions"]] == [
+            "已存在的问题",
+            "你当时把笔记本放在哪里？",
+        ]
+
+        rejected = client.post(
+            f"/api/v1/cases/{case_id}/questions/from-fragment",
+            json={"fragmentId": suspect_id, "afterQuestionId": anchor["id"]},
+        )
+        assert rejected.status_code == 400
+        assert "民警" in rejected.json()["message"]

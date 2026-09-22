@@ -7,6 +7,7 @@ from app.api.schemas import (
     CaseQuestionCreateRequest,
     CaseQuestionUpdateRequest,
     FragmentAnswerRequest,
+    LiveQuestionFragmentRequest,
     PendingAddRequest,
     PendingLinkRequest,
     QuestionReorderRequest,
@@ -70,6 +71,17 @@ def create_case_question(case_id: str, body: CaseQuestionCreateRequest, db: Sess
     )
     db.commit()
     return envelope(result, "问题已加入本案笔录")
+
+
+@router.post("/cases/{case_id}/questions/from-fragment")
+def create_live_question_from_fragment(case_id: str, body: LiveQuestionFragmentRequest, db: Session = Depends(get_db)):
+    result = TemplateWorkspaceService(db).create_live_question_from_fragment(
+        case_id,
+        fragment_id=body.fragment_id,
+        after_question_id=body.after_question_id,
+    )
+    db.commit()
+    return envelope(result, "实时问题已加入正式笔录")
 
 
 @router.patch("/cases/{case_id}/questions/{question_id}")

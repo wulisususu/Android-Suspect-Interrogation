@@ -15,6 +15,7 @@ from app.services.formal_record_policy import assert_formal_record_mutable, is_f
 from app.services.serializers import case_question_dict, pending_question_dict, qa_unit_dict, question_round_dict, standard_question_dict
 
 _ALLOWED_SOURCES = {"STANDARD", "CASE", "LIVE"}
+_OFFICER_FRAGMENT_SPEAKERS = {"INTERROGATOR", "RECORDER", "OFFICER_FALLBACK"}
 
 # Wording is transcribed from the supplied Nantong Chongchuan inquiry-record samples.
 # The key is versioned so later legal/template changes never rewrite frozen historical records.
@@ -169,6 +170,88 @@ class TemplateWorkspaceService:
             other.insert(index, row)
             self._apply_order(other)
         return case_question_dict(row, rounds=[])
+
+    def create_live_question_from_fragment(
+        self,
+        case_id: str,
+        *,
+        fragment_id: str,
+        after_question_id: str | None = None,
+    ) -> dict:
+        self._assert_case_mutable(case_id)
+        fragment = asr_repo.get_fragment(self.db, fragment_id)
+        if fragment.case_id != case_id:
+            raise DomainError("ASR_FRAGMENT_NOT_FOUND", "ASR 临时片段不存在", 404)
+        if str(fragment.speaker or "UNKNOWN") not in _OFFICER_FRAGMENT_SPEAKERS:
+            raise DomainError("LIVE_QUESTION_OFFICER_FRAGMENT_REQUIRED", "只有主审或记录民警的提问片段可以新建动态问题", 400)
+
+        existing_round = round_repo.find_for_officer_fragment(
+            self.db,
+            case_id=case_id,
+            fragment_id=fragment.id,
+        )
+        if existing_round is not None:
+            question = question_repo.get_case(self.db, case_id, existing_round.case_question_id)
+            return {
+                "question": case_question_dict(question, rounds=[existing_round]),
+                "round": question_round_dict(existing_round),
+            }
+
+        text = str(fragment.edited_text or fragment.raw_text or "").strip()
+        if not text:
+            raise DomainError("ASR_FRAGMENT_EMPTY", "所选语音片段没有可录入的文字", 400)
+        capture = asr_repo.get_capture_session(self.db, fragment.capture_session_id)
+        session_id = capture.interrogation_session_id
+        pending = round_repo.find_pending_for_officer_fragment(
+            self.db,
+            case_id=case_id,
+            fragment_id=fragment.id,
+        )
+        if pending is not None:
+            text = pending.question_text
+            session_id = pending.session_id or session_id
+            buffered_answer = pending.buffered_answer_text
+            buffered_fragment_ids = _load_list(pending.buffered_fragment_ids_json)
+            round_status = "CLOSED" if pending.status == "DEFERRED" else "ACTIVE"
+        else:
+            buffered_answer = ""
+            buffered_fragment_ids = []
+            round_status = "ACTIVE" if session_id else "CLOSED"
+
+        if session_id and pending is None:
+            round_repo.defer_active_pending(self.db, case_id, session_id)
+            round_repo.close_active(self.db, case_id, session_id)
+
+        created = self.add_case_question(
+            case_id,
+            text=text,
+            source="LIVE",
+            after_question_id=after_question_id,
+        )
+        round_row = round_repo.create_round(
+            self.db,
+            case_id=case_id,
+            session_id=session_id,
+            case_question_id=created["id"],
+            actual_question_text=text,
+            officer_fragment_id=fragment.id,
+            answer_text=buffered_answer,
+            answer_fragment_ids=buffered_fragment_ids,
+            status=round_status,
+        )
+        if pending is not None:
+            pending.status = "ADDED"
+        question = question_repo.get_case(self.db, case_id, created["id"])
+        question_repo.set_canonical_answer(
+            self.db,
+            question,
+            answer_text=round_row.answer_text,
+            first_asked_at=round_row.started_at,
+        )
+        return {
+            "question": case_question_dict(question, rounds=[round_row]),
+            "round": question_round_dict(round_row),
+        }
 
     def update_case_question(self, case_id: str, question_id: str, *, text: str | None = None, regex_patterns: list[str] | None = None) -> dict:
         self._assert_case_mutable(case_id)
