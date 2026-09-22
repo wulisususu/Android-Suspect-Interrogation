@@ -68,6 +68,7 @@ const emit = defineEmits<{
   rollbackQaUnit: [qaUnitId: string]
   reassociateRound: [roundId: string, input: RoundReassociateInput]
   updateAnswer: [roundId: string, answerText: string]
+  attachFragmentAnswer: [questionId: string, fragmentIds: string[]]
   saveLibrary: [questionId: string]
   correctFragment: [fragmentId: string, speaker: TemporaryAsrSpeaker, reason: string]
   updateHeader: [target: 'case' | 'fact', key: string, value: string]
@@ -294,6 +295,7 @@ async function confirmSignature() {
           @insert-pending="(pendingId, afterQuestionId) => emit('resolvePending', pendingId, { action: 'ADD', afterQuestionId })"
           @resolve-qa-unit="(qaUnitId, resolution) => emit('resolveQaUnit', qaUnitId, resolution)"
           @update-answer="(id, text) => emit('updateAnswer', id, text)"
+          @attach-fragment-answer="(questionId, fragmentIds) => emit('attachFragmentAnswer', questionId, fragmentIds)"
           @save-library="emit('saveLibrary', $event)"
           @freeze="finishAndFreeze"
           @sign="openSignature"

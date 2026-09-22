@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 import { backendErrorMessage, listAsrFragments } from '../api/interrogation'
 import {
   addPendingQuestion,
+  attachQuestionAnswerFragments,
   createCaseQuestion as createCaseQuestionApi,
   deactivateCaseQuestion as deactivateCaseQuestionApi,
   ensureFormalRecord,
@@ -260,6 +261,10 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     })
   }
 
+  async function attachFragmentAnswer(questionId: string, fragmentIds: string[]) {
+    await runMutation((scope) => attachQuestionAnswerFragments(scope.caseId, questionId, fragmentIds))
+  }
+
   async function loadQuestionLibrary(category?: string) {
     const scope = currentScope()
     try {
@@ -304,6 +309,7 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     rollbackQaUnit,
     reassociateRound,
     updateRoundAnswer,
+    attachFragmentAnswer,
     loadQuestionLibrary,
     saveQuestionToLibrary,
   }

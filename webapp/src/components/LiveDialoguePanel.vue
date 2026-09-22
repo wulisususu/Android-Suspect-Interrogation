@@ -400,11 +400,16 @@ function resolve(pending: PendingFormalQuestion, resolution: PendingResolution) 
   emit('resolvePending', pending.id, resolution)
 }
 
-function startPendingDrag(event: DragEvent, fragmentId: string) {
-  const pending = pendingFor(fragmentId)
-  if (!pending || !event.dataTransfer) return
+const FORMAL_ANSWER_FRAGMENT_MIME = 'application/x-formal-answer-fragments'
+
+function startDialogueDrag(event: DragEvent, fragments: TemporaryAsrFragment[]) {
+  if (!event.dataTransfer) return
+  const fragmentIds = fragments.filter((item) => !isBotFragment(item)).map((item) => item.id)
+  if (!fragmentIds.length) return
   event.dataTransfer.effectAllowed = 'copy'
-  event.dataTransfer.setData('application/x-formal-pending-question', JSON.stringify({ pendingId: pending.id }))
+  event.dataTransfer.setData(FORMAL_ANSWER_FRAGMENT_MIME, JSON.stringify({ fragmentIds }))
+  const pending = pendingFor(fragmentIds[0])
+  if (pending) event.dataTransfer.setData('application/x-formal-pending-question', JSON.stringify({ pendingId: pending.id }))
 }
 
 function startQaDrag(event: DragEvent, payload: { qaUnitId: string; mode: 'QA' | 'ANSWER' }) {
@@ -539,10 +544,10 @@ onMounted(() => {
       <template v-for="turn in visibleDialogue" :key="turn.key">
         <article
           class="dialogue-turn"
-          :class="[`side-${dialoguePresentation(turn.primary).side}`, { 'pending-draggable': !!pendingFor(turn.primary.id) }]"
+          :class="[`side-${dialoguePresentation(turn.primary).side}`, { 'pending-draggable': !!pendingFor(turn.primary.id), 'answer-draggable': turn.fragments.some((item) => !isBotFragment(item)) }]"
           :data-fragment-id="turn.primary.id"
-          :draggable="!!pendingFor(turn.primary.id)"
-          @dragstart="startPendingDrag($event, turn.primary.id)"
+          :draggable="turn.fragments.some((item) => !isBotFragment(item))"
+          @dragstart="startDialogueDrag($event, turn.fragments)"
         >
           <div class="dialogue-meta">
             <span>{{ dialoguePresentation(turn.primary).badge }}</span>

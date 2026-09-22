@@ -175,6 +175,10 @@ class RoundUpdateRequest(FormalRequest):
     answer_text: str = Field(alias="answerText")
 
 
+class FragmentAnswerRequest(FormalRequest):
+    fragment_ids: list[str] = Field(alias="fragmentIds", min_length=1)
+
+
 class SaveQuestionToLibraryRequest(FormalRequest):
     category: str = "通用"
 

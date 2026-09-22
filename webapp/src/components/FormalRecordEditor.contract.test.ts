@@ -36,6 +36,13 @@ describe('formal record editor source contract', () => {
     expect(formal).toContain("action: 'LINK_ANSWER'")
   })
 
+  it('accepts raw dialogue fragments on every formal answer area', () => {
+    expect(live).toContain('application/x-formal-answer-fragments')
+    expect(formal).toContain('application/x-formal-answer-fragments')
+    expect(formal).toContain("emit('attachFragmentAnswer'")
+    expect(formal).toContain('聊天记录或答案可拖到这里')
+  })
+
   it('renders the canonical case-question answer while retaining round provenance', () => {
     expect(formal).toContain('formalAnswerText')
     expect(formal).toContain('canonicalAnswerDrafts')

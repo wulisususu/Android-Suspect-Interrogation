@@ -5,6 +5,7 @@ import json
 from sqlalchemy.orm import Session
 
 from app.domain.errors import DomainError
+from app.repositories import asr_fragments as asr_repo
 from app.repositories import cases as case_repo
 from app.repositories import qa_units as qa_repo
 from app.repositories import question_rounds as round_repo
@@ -189,6 +190,60 @@ class TemplateWorkspaceService:
 
     def upsert_case_question_answer(self, case_id: str, question_id: str, *, answer_text: str) -> dict:
         return FormalRecordAnswerService(self.db).upsert(case_id, question_id, answer_text=answer_text)
+
+    def attach_case_question_answer_fragments(self, case_id: str, question_id: str, *, fragment_ids: list[str]) -> dict:
+        self._assert_case_mutable(case_id)
+        question = question_repo.get_case(self.db, case_id, question_id)
+        requested_ids: list[str] = []
+        for value in fragment_ids:
+            fragment_id = str(value or "").strip()
+            if fragment_id and fragment_id not in requested_ids:
+                requested_ids.append(fragment_id)
+        if not requested_ids:
+            raise DomainError("ASR_FRAGMENT_REQUIRED", "至少选择一个语音片段", 400)
+
+        fragments: list[tuple[str, str, str]] = []
+        for fragment_id in requested_ids:
+            fragment = asr_repo.get_fragment(self.db, fragment_id)
+            if fragment.case_id != case_id:
+                raise DomainError("ASR_FRAGMENT_NOT_FOUND", "ASR 临时片段不存在", 404)
+            text = str(fragment.edited_text or fragment.raw_text or "").strip()
+            if text:
+                fragments.append((fragment.id, text, fragment.capture_session_id))
+        if not fragments:
+            raise DomainError("ASR_FRAGMENT_EMPTY", "所选语音片段没有可录入的文字", 400)
+
+        round_row = round_repo.latest_for_question(self.db, case_id, question_id)
+        existing_ids = set(_load_list(round_row.answer_fragment_ids_json)) if round_row is not None else set()
+        new_fragments = [item for item in fragments if item[0] not in existing_ids]
+        if round_row is None:
+            capture = asr_repo.get_capture_session(self.db, fragments[0][2])
+            round_row = round_repo.create_round(
+                self.db,
+                case_id=case_id,
+                session_id=capture.interrogation_session_id,
+                case_question_id=question_id,
+                actual_question_text=question.text,
+                officer_fragment_id=None,
+                answer_text="".join(item[1] for item in new_fragments),
+                answer_fragment_ids=[item[0] for item in new_fragments],
+                status="CLOSED",
+            )
+        elif new_fragments:
+            round_repo.append_round_answer(
+                self.db,
+                round_row,
+                "".join(item[1] for item in new_fragments),
+                [item[0] for item in new_fragments],
+            )
+
+        question_repo.set_canonical_answer(
+            self.db,
+            question,
+            answer_text=round_row.answer_text,
+            first_asked_at=round_row.started_at,
+        )
+        return question_round_dict(round_row)
 
     def deactivate_case_question(self, case_id: str, question_id: str) -> dict:
         self._assert_case_mutable(case_id)

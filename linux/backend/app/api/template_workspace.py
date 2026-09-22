@@ -6,6 +6,7 @@ from app.api.responses import envelope
 from app.api.schemas import (
     CaseQuestionCreateRequest,
     CaseQuestionUpdateRequest,
+    FragmentAnswerRequest,
     PendingAddRequest,
     PendingLinkRequest,
     QuestionReorderRequest,
@@ -92,6 +93,17 @@ def upsert_case_question_answer(case_id: str, question_id: str, body: RoundUpdat
     )
     db.commit()
     return envelope(result, "正式回答已保存")
+
+
+@router.post("/cases/{case_id}/questions/{question_id}/answer-fragments")
+def attach_case_question_answer_fragments(case_id: str, question_id: str, body: FragmentAnswerRequest, db: Session = Depends(get_db)):
+    result = TemplateWorkspaceService(db).attach_case_question_answer_fragments(
+        case_id,
+        question_id,
+        fragment_ids=body.fragment_ids,
+    )
+    db.commit()
+    return envelope(result, "语音片段已录入正式回答")
 
 
 @router.post("/cases/{case_id}/questions/reorder")

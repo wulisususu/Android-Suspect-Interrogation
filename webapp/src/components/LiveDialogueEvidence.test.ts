@@ -63,4 +63,12 @@ describe('recognition evidence workbench contract', () => {
     expect(workspaceSource).toContain('rollbackQaUnit')
     expect(apiSource).toContain('/rollback')
   })
+
+  it('makes persisted raw dialogue turns draggable into formal answers', () => {
+    expect(dialogueSource).toContain('startDialogueDrag')
+    expect(dialogueSource).toContain('answer-draggable')
+    expect(pageSource).toContain('attachFragmentAnswer')
+    expect(workspaceSource).toContain('attachFormalFragmentAnswer')
+    expect(apiSource).toContain('/answer-fragments')
+  })
 })

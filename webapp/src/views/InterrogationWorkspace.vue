@@ -152,6 +152,7 @@ function resolveQaUnit(qaUnitId: string, resolution: QAUnitResolution) { return 
 function rollbackQaUnit(qaUnitId: string) { return runTemplateAction(() => templateStore.rollbackQaUnit(qaUnitId)) }
 function reassociateFormalRound(roundId: string, input: RoundReassociateInput) { return runTemplateAction(() => templateStore.reassociateRound(roundId, input)) }
 function updateFormalAnswer(roundId: string, answerText: string) { return runTemplateAction(() => templateStore.updateRoundAnswer(roundId, answerText)) }
+function attachFormalFragmentAnswer(questionId: string, fragmentIds: string[]) { return runTemplateAction(() => templateStore.attachFragmentAnswer(questionId, fragmentIds)) }
 function saveFormalQuestionToLibrary(questionId: string) { return runTemplateAction(() => templateStore.saveQuestionToLibrary(questionId)) }
 
 async function saveRecordHeader(target: 'case' | 'fact', key: string, value: string) {
@@ -316,6 +317,7 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
             @rollback-qa-unit="rollbackQaUnit"
             @reassociate-round="reassociateFormalRound"
             @update-answer="updateFormalAnswer"
+            @attach-fragment-answer="attachFormalFragmentAnswer"
             @save-library="saveFormalQuestionToLibrary"
             @correct-fragment="correctRecognitionFragment"
             @update-header="saveRecordHeader"
