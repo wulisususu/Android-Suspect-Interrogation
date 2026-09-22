@@ -217,6 +217,16 @@ class OfficerVoiceprint(TimestampMixin, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class CaseVoiceRoleDraft(TimestampMixin, Base):
+    __tablename__ = "case_voice_role_drafts"
+    __table_args__ = (UniqueConstraint("case_id", name="uq_case_voice_role_draft_case"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    interrogator_officer_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    recorder_officer_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
 class SessionVoiceAssignment(TimestampMixin, Base):
     __tablename__ = "session_voice_assignments"
 

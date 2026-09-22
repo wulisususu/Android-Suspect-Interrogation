@@ -17,6 +17,7 @@ import {
   fetchSessionState,
   fetchVoiceprintEnrollmentStatus,
   fetchVoiceprintReadiness,
+  fetchVoiceprintRoleDraft,
   finishSession as finishSessionApi,
   markTranscriptMessage,
   normalizeTemporaryAsrFragment,
@@ -34,6 +35,7 @@ import {
   updateAsrFragment,
   updateTranscriptMessage,
   updateVoiceprintAssignments,
+  updateVoiceprintRoleDraft,
 } from '../api/interrogation'
 import { setBrowserAsrUnexpectedCloseListener } from '../audio/browserAsrCapture'
 import type { RuntimeSessionConnection } from '../runtime'
@@ -367,13 +369,14 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
       const runtimeCapabilities = await fetchRuntimeCapabilities()
       captureAvailable.value = runtimeCapabilities.recording.state === 'AVAILABLE' || runtimeCapabilities.asr.state === 'AVAILABLE'
-      const [messages, factItems, sessionState, captureStatus, readiness, officers] = await Promise.all([
+      const [messages, factItems, sessionState, captureStatus, readiness, officers, roleDraft] = await Promise.all([
         fetchMessages(requestedCaseId),
         fetchFacts(requestedCaseId),
         fetchSessionState(requestedCaseId),
         captureAvailable.value ? fetchAsrCaptureStatus(requestedCaseId) : Promise.resolve(null),
         fetchVoiceprintReadiness(requestedCaseId),
         fetchOfficerVoiceprints(true),
+        fetchVoiceprintRoleDraft(requestedCaseId),
       ])
 
       if (!isCurrentScope(scope)) return
@@ -386,6 +389,8 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       session.value = sessionState
       voiceprintReadiness.value = readiness
       officerVoiceprints.value = officers
+      selectedInterrogatorOfficerId.value = roleDraft.interrogatorOfficerId
+      selectedRecorderOfficerId.value = roleDraft.recorderOfficerId
       initializeRuntimeEvents(scope)
       if (captureStatus) applyCaptureStatus(captureStatus, scope)
     } catch (err) {
@@ -709,11 +714,20 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   async function bindVoiceprintRoles(actorId?: string) {
     const scope = currentScope()
-    if (session.value.status === 'READY') {
-      feedbackIfCurrent(scope, '民警角色选择已暂存；开始审讯后会绑定到本次 session')
-      return
-    }
     try {
+      const draft = await updateVoiceprintRoleDraft(
+        scope.caseId,
+        selectedInterrogatorOfficerId.value,
+        selectedRecorderOfficerId.value,
+        actorId,
+      )
+      if (!isCurrentScope(scope)) return
+      selectedInterrogatorOfficerId.value = draft.interrogatorOfficerId
+      selectedRecorderOfficerId.value = draft.recorderOfficerId
+      if (session.value.status === 'READY') {
+        feedbackIfCurrent(scope, '案件级民警角色草稿已保存；开始审讯后会绑定到本次 session')
+        return
+      }
       const readiness = await updateVoiceprintAssignments(
         scope.caseId,
         selectedInterrogatorOfficerId.value,

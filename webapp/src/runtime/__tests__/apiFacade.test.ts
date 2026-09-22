@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   fetchOfficerVoiceprints,
+  fetchVoiceprintRoleDraft,
   fetchVoiceprintEnrollmentStatus,
   fetchVoiceprintReadiness,
   normalizeTemporaryAsrFragment,
@@ -11,6 +12,7 @@ import {
   stopOfficerVoiceprintEnrollment,
   stopSuspectVoiceprintEnrollment,
   updateVoiceprintAssignments,
+  updateVoiceprintRoleDraft,
 } from '../../api/interrogation'
 import { freezeDocument, signDocument } from '../../api/documentSigning'
 import { resetRuntimeAdapterForTests } from '../index'
@@ -30,6 +32,8 @@ function fakeAdapter() {
       if (operation.includes('enrollment')) return { simulated: false, state: 'OK' } as T
       if (operation === 'officerVoiceprint.revoke') return { officerId: 'POL-1', active: false } as T
       if (operation === 'voiceprint.assignments.update') return { suspectReady: true, interrogatorReady: true, recorderReady: false, recognitionMode: 'SUSPECT_PLUS_INTERROGATOR', canStart: true } as T
+      if (operation === 'voiceprint.roleDraft.get') return { caseId: 'case-1', interrogatorOfficerId: 'POL-1', recorderOfficerId: null } as T
+      if (operation === 'voiceprint.roleDraft.update') return { caseId: 'case-1', interrogatorOfficerId: 'POL-1', recorderOfficerId: null } as T
       throw new Error(`unexpected ${operation}`)
     },
     async getCapabilities(): Promise<RuntimeCapabilities> { throw new Error('not needed') },
@@ -65,6 +69,8 @@ describe('application API runtime delegation', () => {
     await stopOfficerVoiceprintEnrollment('POL-1', 'actor-1')
     await revokeOfficerVoiceprint('POL-1', 'actor-1')
     await updateVoiceprintAssignments('case-1', 'POL-1', 'POL-2', 'actor-1')
+    await fetchVoiceprintRoleDraft('case-1')
+    await updateVoiceprintRoleDraft('case-1', 'POL-1', null, 'actor-1')
 
     expect(calls).toEqual([
       { operation: 'voiceprint.readiness', payload: { caseId: 'case-1' } },
@@ -78,6 +84,11 @@ describe('application API runtime delegation', () => {
       {
         operation: 'voiceprint.assignments.update',
         payload: { caseId: 'case-1', interrogatorOfficerId: 'POL-1', recorderOfficerId: 'POL-2', actorId: 'actor-1' },
+      },
+      { operation: 'voiceprint.roleDraft.get', payload: { caseId: 'case-1' } },
+      {
+        operation: 'voiceprint.roleDraft.update',
+        payload: { caseId: 'case-1', interrogatorOfficerId: 'POL-1', recorderOfficerId: null, actorId: 'actor-1' },
       },
     ])
   })

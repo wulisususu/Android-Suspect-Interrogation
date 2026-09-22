@@ -325,6 +325,12 @@ export interface VoiceprintReadiness extends VoiceprintBackendReadiness {
   recognitionModeVerificationSource?: string
 }
 
+export interface VoiceprintRoleDraft {
+  caseId: string
+  interrogatorOfficerId: string | null
+  recorderOfficerId: string | null
+}
+
 export interface OfficerVoiceprint {
   voiceprintId?: string
   officerId: string

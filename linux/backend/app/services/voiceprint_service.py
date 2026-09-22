@@ -5,12 +5,13 @@ import math
 import statistics
 import struct
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ai.errors import AIError, BackendUnavailableError
-from app.database.models import OfficerVoiceprint, SessionVoiceAssignment
+from app.database.models import CaseVoiceRoleDraft, OfficerVoiceprint, SessionVoiceAssignment
 from app.domain.errors import DomainError
 from app.repositories import audit as audit_repo
 from app.repositories import cases as case_repo
@@ -371,6 +372,79 @@ class VoiceprintService:
             "recognitionMode": assignment.recognition_mode,
             "canStart": True,
         }
+
+    @staticmethod
+    def _role_draft_dict(case_id: str, draft: CaseVoiceRoleDraft | None) -> dict:
+        return {
+            "caseId": case_id,
+            "interrogatorOfficerId": draft.interrogator_officer_id if draft else None,
+            "recorderOfficerId": draft.recorder_officer_id if draft else None,
+        }
+
+    def get_role_draft(self, case_id: str) -> dict:
+        case_repo.get(self.db, case_id)
+        draft = self.db.scalar(
+            select(CaseVoiceRoleDraft).where(CaseVoiceRoleDraft.case_id == case_id)
+        )
+        return self._role_draft_dict(case_id, draft)
+
+    def save_role_draft(
+        self,
+        case_id: str,
+        interrogator_officer_id: str | None,
+        recorder_officer_id: str | None,
+        actor_id: str | None = None,
+        *,
+        commit: bool = True,
+    ) -> dict:
+        case_repo.get(self.db, case_id)
+        interrogator_id = self._optional_id(interrogator_officer_id)
+        recorder_id = self._optional_id(recorder_officer_id)
+        for officer_id in (interrogator_id, recorder_id):
+            if officer_id is not None:
+                officer = voiceprint_repo.get_officer(
+                    self.db,
+                    officer_id,
+                    model_key=self.authoritative_speaker_backend,
+                    active_only=False,
+                )
+                if officer is None:
+                    raise DomainError(
+                        "OFFICER_VOICEPRINT_NOT_FOUND",
+                        f"民警 {officer_id} 未登记 {self.authoritative_speaker_backend} 声纹",
+                        404,
+                    )
+                if not officer.active or officer.revoked_at is not None:
+                    raise DomainError(
+                        "OFFICER_VOICEPRINT_NOT_ACTIVE",
+                        f"民警 {officer_id} 的 {self.authoritative_speaker_backend} 声纹档案已停用",
+                        409,
+                    )
+
+        draft = self.db.scalar(
+            select(CaseVoiceRoleDraft).where(CaseVoiceRoleDraft.case_id == case_id)
+        )
+        before = self._role_draft_dict(case_id, draft)
+        if draft is None:
+            draft = CaseVoiceRoleDraft(id=str(uuid4()), case_id=case_id)
+            self.db.add(draft)
+        draft.interrogator_officer_id = interrogator_id
+        draft.recorder_officer_id = recorder_id
+        self.db.flush()
+        after = self._role_draft_dict(case_id, draft)
+        audit_repo.add(
+            self.db,
+            case_id=case_id,
+            actor_id=actor_id,
+            action="CASE_VOICE_ROLE_DRAFT_SAVE",
+            target_type="CASE_VOICE_ROLE_DRAFT",
+            target_id=draft.id,
+            before=before,
+            after=after,
+        )
+        if commit:
+            self.db.commit()
+        return after
 
     def validate_role_binding(
         self,

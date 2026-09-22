@@ -33,12 +33,13 @@ QWEN_ROUTING_TABLES = {
 MOSS_TRANSCRIPTION_TABLES = {
     "moss_transcriptions", "moss_transcription_revisions", "moss_speaker_mappings",
 }
+CASE_DRAFT_TABLES = {"case_voice_role_drafts"}
 REQUIRED_TABLES = (
     CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES | OFFICER_LIBRARY_TABLES |
     CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES | QWEN_ROUTING_TABLES |
-    MOSS_TRANSCRIPTION_TABLES
+    MOSS_TRANSCRIPTION_TABLES | CASE_DRAFT_TABLES
 )
-ALEMBIC_HEAD = "0014_signature_snapshot_role_unique"
+ALEMBIC_HEAD = "0015_case_voice_role_draft"
 
 
 def _run_alembic(tmp_path, target: str):

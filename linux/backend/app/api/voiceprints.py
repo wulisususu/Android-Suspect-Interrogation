@@ -165,6 +165,29 @@ def readiness(case_id: str, request: Request, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/cases/{case_id}/voiceprints/role-draft")
+def get_role_draft(case_id: str, request: Request, db: Session = Depends(get_db)):
+    return envelope(_service(request, db).get_role_draft(case_id))
+
+
+@router.put("/cases/{case_id}/voiceprints/role-draft")
+def save_role_draft(
+    case_id: str,
+    body: VoiceRoleAssignmentBody,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    return envelope(
+        _service(request, db).save_role_draft(
+            case_id,
+            body.interrogator_officer_id,
+            body.recorder_officer_id,
+            actor_id=body.actor_id,
+        ),
+        "案件级民警角色草稿已保存",
+    )
+
+
 @router.get("/voiceprints/enrollment/status")
 def enrollment_status(request: Request):
     return envelope(_capture_service(request).status())

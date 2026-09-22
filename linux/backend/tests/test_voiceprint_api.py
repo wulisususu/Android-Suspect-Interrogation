@@ -224,6 +224,35 @@ def test_officer_library_and_full_role_assignment_api(tmp_path):
         assert revoked["active"] is False
 
 
+def test_case_voice_role_draft_survives_reload_before_session_start(tmp_path):
+    app = app_with_voiceprint_fakes(tmp_path)
+    with TestClient(app) as client:
+        case_id = create_identity_ready_case(client)
+        officer = enroll_officer(client, "P-001", "张警官")
+        assert officer["active"] is True
+
+        initial = payload(client.get(f"/api/v1/cases/{case_id}/voiceprints/role-draft"))
+        assert initial == {
+            "caseId": case_id,
+            "interrogatorOfficerId": None,
+            "recorderOfficerId": None,
+        }
+
+        saved = payload(client.put(f"/api/v1/cases/{case_id}/voiceprints/role-draft", json={
+            "interrogator_officer_id": "P-001",
+            "recorder_officer_id": None,
+            "actor_id": "op",
+        }))
+        assert saved == {
+            "caseId": case_id,
+            "interrogatorOfficerId": "P-001",
+            "recorderOfficerId": None,
+        }
+
+        reloaded = payload(client.get(f"/api/v1/cases/{case_id}/voiceprints/role-draft"))
+        assert reloaded == saved
+
+
 def test_session_start_binds_voiceprint_roles_atomically(tmp_path):
     app = app_with_voiceprint_fakes(tmp_path)
     with TestClient(app) as client:

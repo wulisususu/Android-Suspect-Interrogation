@@ -36,6 +36,7 @@ import type {
   VoiceprintCaptureStatus,
   VoiceprintEnrollmentResult,
   VoiceprintReadiness,
+  VoiceprintRoleDraft,
   VoiceRecognitionMode,
 } from '../types/interrogation'
 
@@ -147,6 +148,19 @@ function normalizeVoiceprintReadiness(value: unknown): VoiceprintReadiness {
     ...(raw.recognitionModeVerificationSource === undefined || raw.recognitionModeVerificationSource === null
       ? {}
       : { recognitionModeVerificationSource: String(raw.recognitionModeVerificationSource) }),
+  }
+}
+
+function normalizeVoiceprintRoleDraft(value: unknown): VoiceprintRoleDraft {
+  const raw = asRecord(value)
+  return {
+    caseId: String(raw.caseId ?? raw.case_id ?? ''),
+    interrogatorOfficerId: raw.interrogatorOfficerId == null && raw.interrogator_officer_id == null
+      ? null
+      : String(raw.interrogatorOfficerId ?? raw.interrogator_officer_id),
+    recorderOfficerId: raw.recorderOfficerId == null && raw.recorder_officer_id == null
+      ? null
+      : String(raw.recorderOfficerId ?? raw.recorder_officer_id),
   }
 }
 
@@ -395,6 +409,9 @@ export async function changeSessionStage(caseId: string, stage: InterrogationSta
 export function invokeDeviceAction(type: 'identity' | 'fingerprint' | 'signature'): Promise<DeviceActionResult> { return runtime().invoke<DeviceActionResult>('device.action', { type }) }
 
 export async function fetchVoiceprintReadiness(caseId: string): Promise<VoiceprintReadiness> { return normalizeVoiceprintReadiness(await runtime().invoke<unknown>('voiceprint.readiness', { caseId })) }
+export async function fetchVoiceprintRoleDraft(caseId: string): Promise<VoiceprintRoleDraft> {
+  return normalizeVoiceprintRoleDraft(await runtime().invoke<unknown>('voiceprint.roleDraft.get', { caseId }))
+}
 export async function fetchVoiceprintEnrollmentStatus(): Promise<VoiceprintCaptureStatus> { return normalizeVoiceprintCaptureStatus(await runtime().invoke<unknown>('voiceprint.enrollment.status', {})) }
 export function startSuspectVoiceprintEnrollment(caseId: string, actorId?: string): Promise<VoiceprintEnrollmentResult> { return runtime().invoke<VoiceprintEnrollmentResult>('voiceprint.suspect.enrollment.start', { caseId, actorId }) }
 export function stopSuspectVoiceprintEnrollment(caseId: string, actorId?: string): Promise<VoiceprintEnrollmentResult> { return runtime().invoke<VoiceprintEnrollmentResult>('voiceprint.suspect.enrollment.stop', { caseId, actorId }, { timeoutMs: 120_000 }) }
@@ -407,6 +424,14 @@ export function stopOfficerVoiceprintEnrollment(officerId: string, actorId?: str
 export async function revokeOfficerVoiceprint(officerId: string, actorId?: string): Promise<OfficerVoiceprint> { return normalizeOfficerVoiceprint(await runtime().invoke<unknown>('officerVoiceprint.revoke', { officerId, actorId })) }
 export async function updateVoiceprintAssignments(caseId: string, interrogatorOfficerId?: string | null, recorderOfficerId?: string | null, actorId?: string): Promise<VoiceprintReadiness> {
   return normalizeVoiceprintReadiness(await runtime().invoke<unknown>('voiceprint.assignments.update', { caseId, interrogatorOfficerId: interrogatorOfficerId ?? null, recorderOfficerId: recorderOfficerId ?? null, actorId }))
+}
+export async function updateVoiceprintRoleDraft(caseId: string, interrogatorOfficerId?: string | null, recorderOfficerId?: string | null, actorId?: string): Promise<VoiceprintRoleDraft> {
+  return normalizeVoiceprintRoleDraft(await runtime().invoke<unknown>('voiceprint.roleDraft.update', {
+    caseId,
+    interrogatorOfficerId: interrogatorOfficerId ?? null,
+    recorderOfficerId: recorderOfficerId ?? null,
+    actorId,
+  }))
 }
 
 export async function fetchAsrCaptureStatus(caseId: string): Promise<AsrCaptureStatus> { return normalizeCaptureStatus(caseId, await runtime().invoke<unknown>('asr.capture.status', { caseId })) }

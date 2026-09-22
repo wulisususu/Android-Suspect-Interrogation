@@ -14,6 +14,23 @@ function unavailable(operation: string): never {
   )
 }
 
+function browserVoiceRoleDraft(caseId: string) {
+  const fallback = { caseId, interrogatorOfficerId: null, recorderOfficerId: null }
+  if (typeof localStorage === 'undefined') return fallback
+  try {
+    const stored = localStorage.getItem(`suspect-interrogation:voice-role-draft:${caseId}`)
+    if (!stored) return fallback
+    const parsed = JSON.parse(stored) as Record<string, unknown>
+    return {
+      caseId,
+      interrogatorOfficerId: parsed.interrogatorOfficerId == null ? null : String(parsed.interrogatorOfficerId),
+      recorderOfficerId: parsed.recorderOfficerId == null ? null : String(parsed.recorderOfficerId),
+    }
+  } catch {
+    return fallback
+  }
+}
+
 function voiceprintMock<T>(operation: string, payload: Record<string, unknown>): T | undefined {
   const simulated = true
   switch (operation) {
@@ -26,6 +43,19 @@ function voiceprintMock<T>(operation: string, payload: Record<string, unknown>):
         canStart: false,
         simulated,
       } as T
+    case 'voiceprint.roleDraft.get':
+      return browserVoiceRoleDraft(String(payload.caseId ?? '')) as T
+    case 'voiceprint.roleDraft.update': {
+      const draft = {
+        caseId: String(payload.caseId ?? ''),
+        interrogatorOfficerId: payload.interrogatorOfficerId == null ? null : String(payload.interrogatorOfficerId),
+        recorderOfficerId: payload.recorderOfficerId == null ? null : String(payload.recorderOfficerId),
+      }
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(`suspect-interrogation:voice-role-draft:${draft.caseId}`, JSON.stringify(draft))
+      }
+      return draft as T
+    }
     case 'voiceprint.enrollment.status':
       return { active: false, capturedDurationMs: 0, targetDurationMs: 30000, complete: false, simulated } as T
     case 'voiceprint.suspect.enrollment.start':

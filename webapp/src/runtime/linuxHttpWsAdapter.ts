@@ -128,6 +128,7 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
     case 'asr.fragment.applyToRecord': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/fragments/apply`, data: payload }
     case 'asr.fragment.discard': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/fragments/${fragmentId}/discard`, data: {} }
     case 'voiceprint.readiness': return { method: 'GET', url: `/api/v1/cases/${caseId}/voiceprints/readiness` }
+    case 'voiceprint.roleDraft.get': return { method: 'GET', url: `/api/v1/cases/${caseId}/voiceprints/role-draft` }
     case 'voiceprint.enrollment.status': return { method: 'GET', url: '/api/v1/voiceprints/enrollment/status' }
     case 'voiceprint.suspect.enrollment.start': return {
       method: 'POST',
@@ -162,6 +163,15 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
     case 'voiceprint.assignments.update': return {
       method: 'PUT',
       url: `/api/v1/cases/${caseId}/voiceprints/assignments`,
+      data: {
+        interrogator_officer_id: payload.interrogatorOfficerId,
+        recorder_officer_id: payload.recorderOfficerId,
+        actor_id: payload.actorId,
+      },
+    }
+    case 'voiceprint.roleDraft.update': return {
+      method: 'PUT',
+      url: `/api/v1/cases/${caseId}/voiceprints/role-draft`,
       data: {
         interrogator_officer_id: payload.interrogatorOfficerId,
         recorder_officer_id: payload.recorderOfficerId,
