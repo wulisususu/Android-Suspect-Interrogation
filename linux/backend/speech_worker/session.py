@@ -194,11 +194,20 @@ class SpeechSession:
         return events
 
     def _start_utterance(self, start_ms: int) -> SpeechEvent:
+        # FunASR 的流式 VAD 在它自己的处理网格上报边界（chunk_size_ms=200，且每
+        # max_single_segment_time 强制切一刀）。该网格可能比按字节累计的
+        # stream_offset_ms 领先不到一个 chunk；原先会被当成崩溃而中止整段采集。
+        # 改为钳位：边界只用于切分我们已持有的 PCM，下游索引本就有界。
         if start_ms > self.stream_offset_ms:
-            raise WorkerCrashedError(
-                "FunASR VAD start is beyond received audio",
-                details={"start_ms": start_ms, "stream_offset_ms": self.stream_offset_ms},
+            logger.warning(
+                "FunASR VAD start is beyond received audio; clamping",
+                extra={
+                    "session_id": self.session_id,
+                    "start_ms": start_ms,
+                    "stream_offset_ms": self.stream_offset_ms,
+                },
             )
+            start_ms = self.stream_offset_ms
 
         capture_start_ms = max(start_ms, self._pre_roll_start_ms)
         offset_ms = max(0, capture_start_ms - self._pre_roll_start_ms)
@@ -225,16 +234,28 @@ class SpeechSession:
         capture_start_ms = self._capture_start_ms
         if start_ms is None or capture_start_ms is None:
             return []
-        if end_ms <= start_ms:
-            raise WorkerCrashedError(
-                "FunASR VAD end must be after start",
-                details={"start_ms": start_ms, "end_ms": end_ms},
-            )
         if end_ms > self.stream_offset_ms:
-            raise WorkerCrashedError(
-                "FunASR VAD end is beyond received audio",
-                details={"end_ms": end_ms, "stream_offset_ms": self.stream_offset_ms},
+            logger.warning(
+                "FunASR VAD end is beyond received audio; clamping",
+                extra={
+                    "session_id": self.session_id,
+                    "end_ms": end_ms,
+                    "stream_offset_ms": self.stream_offset_ms,
+                },
             )
+            end_ms = self.stream_offset_ms
+        if end_ms <= start_ms:
+            # 钳位后可能退化为零长片段；丢掉这一片即可，绝不中止整段采集。
+            logger.warning(
+                "FunASR VAD segment collapsed after clamping; dropping it",
+                extra={
+                    "session_id": self.session_id,
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                },
+            )
+            self._reset_utterance()
+            return []
 
         captured_duration_ms = max(0, end_ms - capture_start_ms)
         utterance_bytes = min(len(self.current_utterance_pcm), self._ms_to_bytes(captured_duration_ms))

@@ -11,6 +11,7 @@ import type {
   QAUnitResolution,
 } from '../types/templateInterrogation'
 import { dialoguePresentation, groupLiveDialogueFragments } from '../utils/templateInterrogation'
+import { armDrop, pendingDrop } from '../composables/pendingDrop'
 
 const props = defineProps<{
   caseId: string
@@ -402,14 +403,51 @@ function resolve(pending: PendingFormalQuestion, resolution: PendingResolution) 
 
 const FORMAL_ANSWER_FRAGMENT_MIME = 'application/x-formal-answer-fragments'
 
+function dialogueDropEntries(fragments: TemporaryAsrFragment[]) {
+  const fragmentIds = fragments.filter((item) => !isBotFragment(item)).map((item) => item.id)
+  if (!fragmentIds.length) return []
+  const entries = [
+    { mime: FORMAL_ANSWER_FRAGMENT_MIME, data: JSON.stringify({ fragmentIds }) },
+  ]
+  const pending = pendingFor(fragmentIds[0])
+  if (pending) {
+    entries.push({
+      mime: 'application/x-formal-pending-question',
+      data: JSON.stringify({ pendingId: pending.id }),
+    })
+  }
+  return entries
+}
+
 function startDialogueDrag(event: DragEvent, fragments: TemporaryAsrFragment[]) {
   if (!event.dataTransfer) return
-  const fragmentIds = fragments.filter((item) => !isBotFragment(item)).map((item) => item.id)
-  if (!fragmentIds.length) return
+  const entries = dialogueDropEntries(fragments)
+  if (!entries.length) return
   event.dataTransfer.effectAllowed = 'copy'
-  event.dataTransfer.setData(FORMAL_ANSWER_FRAGMENT_MIME, JSON.stringify({ fragmentIds }))
-  const pending = pendingFor(fragmentIds[0])
-  if (pending) event.dataTransfer.setData('application/x-formal-pending-question', JSON.stringify({ pendingId: pending.id }))
+  for (const entry of entries) event.dataTransfer.setData(entry.mime, entry.data)
+}
+
+/** 触摸屏点选：等价于「按下了拖动但还没松手」，之后点笔录栏位即放置。 */
+function armDialogue(fragments: TemporaryAsrFragment[]) {
+  const entries = dialogueDropEntries(fragments)
+  if (entries.length) armDrop(entries, '对话片段')
+}
+
+function dialogueArmed(fragments: TemporaryAsrFragment[]) {
+  const ids = fragments.filter((item) => !isBotFragment(item)).map((item) => item.id)
+  const payload = pendingDrop.value
+  if (!ids.length || !payload) return false
+  return payload.entries.some(
+    (entry) => entry.mime === FORMAL_ANSWER_FRAGMENT_MIME && ids.every((id) => entry.data.includes(id)),
+  )
+}
+
+function wholeQaDropEntries(unit: FormalQAUnit) {
+  return [{ mime: 'application/x-formal-qa-unit', data: JSON.stringify({ qaUnitId: unit.id, mode: 'QA' }) }]
+}
+
+function answerQaDropEntries(unit: FormalQAUnit) {
+  return [{ mime: 'application/x-formal-qa-unit', data: JSON.stringify({ qaUnitId: unit.id, mode: 'ANSWER' }) }]
 }
 
 function startQaDrag(event: DragEvent, payload: { qaUnitId: string; mode: 'QA' | 'ANSWER' }) {
@@ -525,8 +563,8 @@ onMounted(() => {
           <p v-if="unit.aiSuggestedQuestionText" class="qa-suggestion"><b>AI 建议问：</b>{{ unit.aiSuggestedQuestionText }}</p>
           <p v-if="unit.aiSuggestedAnswerText" class="qa-suggestion"><b>AI 建议答：</b>{{ unit.aiSuggestedAnswerText }}</p>
           <div class="qa-review-actions">
-            <button draggable="true" @dragstart="startWholeQaDrag($event, unit)">拖动整组问答</button>
-            <button v-if="unit.answerFragmentIds.length" draggable="true" @dragstart="startAnswerDrag($event, unit)">仅拖动答案</button>
+            <button draggable="true" @dragstart="startWholeQaDrag($event, unit)" @click="armDrop(wholeQaDropEntries(unit), '整组问答')">拖动整组问答</button>
+            <button v-if="unit.answerFragmentIds.length" draggable="true" @dragstart="startAnswerDrag($event, unit)" @click="armDrop(answerQaDropEntries(unit), '仅答案')">仅拖动答案</button>
             <button class="qa-ignore" @click="resolveQa(unit, { action: 'IGNORE' })">忽略</button>
           </div>
         </article>
@@ -552,6 +590,11 @@ onMounted(() => {
           <div class="dialogue-meta">
             <span>{{ dialoguePresentation(turn.primary).badge }}</span>
             <time>{{ formatTime(turn.primary) }}</time>
+            <button
+              type="button"
+              style="margin-left:auto;border:1px solid #173b68;background:#fff;color:#173b68;border-radius:6px;padding:2px 8px;font:12px system-ui,sans-serif"
+              @click.stop="armDialogue(turn.fragments)"
+            >{{ dialogueArmed(turn.fragments) ? '已选中 ✓ 去笔录点一下' : '选中这段' }}</button>
           </div>
           <div class="dialogue-bubble"><strong v-if="speakerPrefix(turn.primary)" class="speaker-prefix">{{ speakerPrefix(turn.primary) }}</strong>{{ turn.text }}</div>
 

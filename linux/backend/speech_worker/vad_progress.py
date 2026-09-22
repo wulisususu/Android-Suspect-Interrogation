@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Protocol
 
 from app.ai.errors import WorkerCrashedError
 
+
+logger = logging.getLogger(__name__)
 
 PCM_SAMPLE_WIDTH_BYTES = 2
 
@@ -119,11 +122,18 @@ class VadProgressSession:
             )
 
     def _open_segment(self, start_ms: int) -> None:
+        # 与 _close_segment 的 bounded_end 钳位保持一致：VAD 网格可能比按字节
+        # 累计的 stream_offset_ms 领先不到一个 chunk，不该因此取消整段进度会话。
         if start_ms > self.stream_offset_ms:
-            raise WorkerCrashedError(
-                "FunASR VAD start is beyond received audio",
-                details={"start_ms": start_ms, "stream_offset_ms": self.stream_offset_ms},
+            logger.warning(
+                "FunASR VAD start is beyond received audio; clamping (enrollment progress)",
+                extra={
+                    "session_id": self.session_id,
+                    "start_ms": start_ms,
+                    "stream_offset_ms": self.stream_offset_ms,
+                },
             )
+            start_ms = self.stream_offset_ms
         if self._active_start_ms is None:
             self._active_start_ms = max(0, start_ms)
 
