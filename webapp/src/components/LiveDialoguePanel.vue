@@ -30,6 +30,7 @@ const emit = defineEmits<{
   captureToggle: []
   resolvePending: [pendingId: string, resolution: PendingResolution]
   resolveQaUnit: [qaUnitId: string, resolution: QAUnitResolution]
+  rollbackQaUnit: [qaUnitId: string]
   correctFragment: [fragmentId: string, speaker: TemporaryAsrSpeaker, reason: string]
 }>()
 
@@ -38,7 +39,7 @@ const pinnedToBottom = ref(true)
 const correctionSpeaker = ref<Record<string, TemporaryAsrSpeaker>>({})
 const correctionReason = ref<Record<string, string>>({})
 const qaReviewUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'NEEDS_REVIEW'))
-const qaResolvedUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'APPLIED' || unit.status === 'IGNORED'))
+const qaResolvedUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'APPLIED' || unit.status === 'IGNORED' || unit.status === 'ROLLED_BACK'))
 const visibleDialogue = computed(() => groupLiveDialogueFragments([...props.dialogue, ...botTurns.value]))
 
 // ---------------------------------------------------------------------------
@@ -424,9 +425,16 @@ function resolveQa(unit: FormalQAUnit, resolution: QAUnitResolution) {
   emit('resolveQaUnit', unit.id, resolution)
 }
 
+function rollbackQa(unit: FormalQAUnit) {
+  if (unit.status !== 'APPLIED') return
+  if (!window.confirm('仅回退本次正式笔录回答，问题和原始对话会保留。确定继续吗？')) return
+  emit('rollbackQaUnit', unit.id)
+}
+
 function qaStatusLabel(unit: FormalQAUnit) {
   if (unit.status === 'IGNORED' || unit.classification === 'IGNORE') return '已忽略·仅原始对话'
   if (unit.status === 'NEEDS_REVIEW') return '待处理'
+  if (unit.status === 'ROLLED_BACK') return '已回退·问题保留'
   if (unit.classification === 'MATCH_FIXED') return '已归档·固定模板'
   if (unit.classification === 'MATCH_EXISTING') return '已归档·已有问题'
   if (unit.classification === 'CREATE_LIVE_FROM_SPEECH') return '已新增·现场问题'
@@ -517,9 +525,10 @@ onMounted(() => {
             <button class="qa-ignore" @click="resolveQa(unit, { action: 'IGNORE' })">忽略</button>
           </div>
         </article>
-        <div v-for="unit in qaResolvedUnits" :key="`status-${unit.id}`" class="qa-routing-status" :class="{ 'qa-status-muted': unit.status === 'IGNORED' || unit.classification === 'IGNORE' }">
-          <span>{{ qaStatusLabel(unit) }}</span>
-          <small v-if="unit.rawQuestionText">{{ unit.rawQuestionText }}</small>
+        <div v-for="unit in qaResolvedUnits" :key="`status-${unit.id}`" class="qa-routing-status" :class="{ 'qa-status-muted': unit.status === 'IGNORED' || unit.status === 'ROLLED_BACK' || unit.classification === 'IGNORE' }">
+           <span>{{ qaStatusLabel(unit) }}</span>
+           <small v-if="unit.rawQuestionText">{{ unit.rawQuestionText }}</small>
+           <button v-if="unit.status === 'APPLIED'" class="qa-rollback" @click="rollbackQa(unit)">回退本次匹配</button>
         </div>
       </details>
       <div v-if="!visibleDialogue.length && !partialText" class="dialogue-empty">
@@ -750,6 +759,7 @@ onMounted(() => {
 .qa-review-actions .qa-ignore { cursor: pointer; }
 .qa-routing-status { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 8px; background: #edf6ef; color: #2d6040; font-size: 12px; }
 .qa-routing-status small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qa-rollback { margin-left: auto; border: 1px solid #d6a33a; border-radius: 6px; padding: 3px 7px; background: #fff; color: #815d13; cursor: pointer; }
 .qa-status-muted { background: #f2f3f5; color: #7a8088; opacity: .78; }
 .raw-fragment-list { display: grid; gap: 6px; padding: 9px 10px; border-top: 1px solid rgba(76, 112, 156, .16); }
 .raw-fragment-list div { display: grid; gap: 2px; }

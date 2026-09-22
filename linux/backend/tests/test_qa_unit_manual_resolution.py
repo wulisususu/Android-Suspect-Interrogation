@@ -301,6 +301,78 @@ def test_link_answer_has_answer_only_provenance_and_does_not_fabricate_question(
             assert unit.raw_answer_text == "我当时在家。"
 
 
+def test_rollback_applied_match_removes_only_formal_answer_and_allows_new_match(tmp_path):
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        case_id = create_case(client)
+        target = create_question(client, case_id, "你因何事来公安机关？")
+        seeded = seed_review_unit(
+            app,
+            case_id,
+            unit_id="QA-ROLLBACK-1",
+            raw_question="你应何时来公安机关",
+            raw_answer="我来配合调查。",
+        )
+        applied = payload(
+            client.post(
+                f"/api/v1/cases/{case_id}/qa-units/{seeded['unitId']}/resolve",
+                json={"action": "LINK_QA", "caseQuestionId": target["id"]},
+            )
+        )
+        assert applied["status"] == "APPLIED"
+
+        rolled_back = payload(
+            client.post(f"/api/v1/cases/{case_id}/qa-units/{seeded['unitId']}/rollback")
+        )
+        assert rolled_back["status"] == "ROLLED_BACK"
+
+        workspace = payload(client.get(f"/api/v1/cases/{case_id}/template-workspace"))
+        question = next(item for item in workspace["questions"] if item["id"] == target["id"])
+        assert question["text"] == "你因何事来公安机关？"
+        assert question["formalAnswerText"] == ""
+        assert all(row["caseQuestionId"] != target["id"] for row in workspace["rounds"])
+        unit = next(item for item in workspace["qaUnits"] if item["id"] == seeded["unitId"])
+        assert unit["status"] == "ROLLED_BACK"
+        assert unit["rawAnswerText"] == "我来配合调查。"
+
+        second = seed_review_unit(
+            app,
+            case_id,
+            unit_id="QA-ROLLBACK-2",
+            raw_question="你因何事来公安机关？",
+            raw_answer="接到通知后来配合调查。",
+            started_offset_ms=9000,
+        )
+        applied_again = payload(
+            client.post(
+                f"/api/v1/cases/{case_id}/qa-units/{second['unitId']}/resolve",
+                json={"action": "LINK_QA", "caseQuestionId": target["id"]},
+            )
+        )
+        assert applied_again["status"] == "APPLIED"
+
+
+def test_rollback_cannot_be_repeated_or_cross_case(tmp_path):
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        case_a = create_case(client, "ROLLBACK-A")
+        case_b = create_case(client, "ROLLBACK-B")
+        target = create_question(client, case_a)
+        seeded = seed_review_unit(app, case_a, unit_id="QA-ROLLBACK-ONCE")
+        payload(
+            client.post(
+                f"/api/v1/cases/{case_a}/qa-units/{seeded['unitId']}/resolve",
+                json={"action": "LINK_QA", "caseQuestionId": target["id"]},
+            )
+        )
+        first = client.post(f"/api/v1/cases/{case_a}/qa-units/{seeded['unitId']}/rollback")
+        assert first.status_code == 200
+        repeated = client.post(f"/api/v1/cases/{case_a}/qa-units/{seeded['unitId']}/rollback")
+        assert repeated.status_code == 409
+        cross_case = client.post(f"/api/v1/cases/{case_b}/qa-units/{seeded['unitId']}/rollback")
+        assert cross_case.status_code == 404
+
+
 def test_ignore_resolves_review_without_formal_mutation(tmp_path):
     app = make_app(tmp_path)
     with TestClient(app) as client:

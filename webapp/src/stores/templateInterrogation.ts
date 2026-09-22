@@ -14,6 +14,7 @@ import {
   reassociateRound as reassociateRoundApi,
   reorderCaseQuestions as reorderCaseQuestionsApi,
   resolveQaUnit as resolveQaUnitApi,
+  rollbackQaUnit as rollbackQaUnitApi,
   saveQuestionToLibrary as saveQuestionToLibraryApi,
   updateCaseQuestion as updateCaseQuestionApi,
   updateRoundAnswer as updateRoundAnswerApi,
@@ -242,6 +243,10 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     await runMutation((scope) => resolveQaUnitApi(scope.caseId, qaUnitId, resolution))
   }
 
+  async function rollbackQaUnit(qaUnitId: string) {
+    await runMutation((scope) => rollbackQaUnitApi(scope.caseId, qaUnitId))
+  }
+
   async function reassociateRound(roundId: string, input: RoundReassociateInput) {
     await runMutation((scope) => reassociateRoundApi(scope.caseId, roundId, input))
   }
@@ -296,6 +301,7 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     deactivateCaseQuestion,
     resolvePendingQuestion,
     resolveQaUnit,
+    rollbackQaUnit,
     reassociateRound,
     updateRoundAnswer,
     loadQuestionLibrary,

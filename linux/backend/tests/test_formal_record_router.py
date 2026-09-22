@@ -331,6 +331,80 @@ def test_hallucinated_target_id_falls_back_to_exact_question_text(tmp_path):
         db.close()
         engine.dispose()
 
+
+def test_invalid_model_output_falls_back_to_spoken_fixed_question_variant(tmp_path):
+    engine, db, _case, unit, fixed, _dynamic = make_context(tmp_path)
+    try:
+        unit.raw_question_text = "你应何时来公安机关"
+        db.flush()
+        decision = FormalRecordRouter(
+            db,
+            ai_supervisor=FakeSupervisor(text="无法按要求输出 JSON"),
+        ).route(unit.id)
+
+        assert decision.classification is RouteClass.MATCH_FIXED
+        assert decision.target_question_id == fixed.id
+        assert decision.formal_question is None
+        assert decision.formal_answer == unit.raw_answer_text
+        assert decision.reason_code == "DETERMINISTIC_FIXED_TEXT_FALLBACK"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_fixed_question_fallback_does_not_promote_non_question_statement(tmp_path):
+    engine, db, _case, unit, _fixed, _dynamic = make_context(tmp_path)
+    try:
+        unit.raw_question_text = "我昨天在公安机关配合调查"
+        db.flush()
+        decision = FormalRecordRouter(
+            db,
+            ai_supervisor=FakeSupervisor(text="无法按要求输出 JSON"),
+        ).route(unit.id)
+
+        assert decision.classification is RouteClass.NEEDS_REVIEW
+        assert decision.target_question_id is None
+        assert decision.reason_code == "INVALID_MODEL_OUTPUT"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_spoken_notice_prefix_matches_fixed_notice_question(tmp_path):
+    engine, db, case, unit, _fixed, _dynamic = make_context(tmp_path)
+    try:
+        notice = CaseQuestion(
+            id="Q-NOTICE",
+            case_id=case.id,
+            source="CASE",
+            standard_question_id=None,
+            text="这是《行政案件权利义务告知书》，交给你阅读。如果你不识字，我们可以向你宣读。",
+            regex_patterns_json="[]",
+            aliases_json="[]",
+            section_type="OPENING",
+            template_key="SUSPECT_INQUIRY_V1",
+            template_item_key="opening-notice",
+            locked=True,
+            formal_answer_text="",
+            sort_order=15,
+            active=True,
+        )
+        db.add(notice)
+        unit.raw_question_text = "呃这是行政案件权利义务告知书交给你阅读"
+        db.flush()
+
+        decision = FormalRecordRouter(
+            db,
+            ai_supervisor=FakeSupervisor(error=RuntimeError("model unavailable")),
+        ).route(unit.id)
+
+        assert decision.classification is RouteClass.MATCH_FIXED
+        assert decision.target_question_id == notice.id
+        assert decision.formal_answer == unit.raw_answer_text
+    finally:
+        db.close()
+        engine.dispose()
+
 def test_locked_target_without_advisory_answer_still_canonicalizes_to_fixed(tmp_path):
     # MiniCPM-style output: correct locked template target, MATCH_EXISTING
     # classification, formal_answer null. The locked target metadata must flip

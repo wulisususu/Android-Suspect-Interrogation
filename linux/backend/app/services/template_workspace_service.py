@@ -35,6 +35,22 @@ _FORMAL_RECORD_TEMPLATES = {
     },
 }
 
+_TEMPLATE_QUESTION_ALIASES = {
+    "opening-reason": [
+        "你应何时来公安机关",
+        "你因什么事来公安机关",
+        "你为什么来公安机关",
+        "你为何来公安机关",
+    ],
+    "opening-notice": [
+        "这是行政案件权利义务告知书交给你阅读",
+        "这是行政案件权利义务告知书交给你看",
+    ],
+    "opening-notice-confirm": [
+        "你看清楚了吗有什么要求",
+    ],
+}
+
 
 def _clean_text(value: str, *, code: str = "EMPTY_QUESTION") -> str:
     clean = str(value or "").strip()
@@ -101,7 +117,7 @@ class TemplateWorkspaceService:
                     continue
                 question_repo.create_case(
                     self.db, case_id=case_id, source="CASE", text=text, standard_question_id=None,
-                    regex_patterns_json="[]", aliases_json="[]", section_type=section,
+                    regex_patterns_json="[]", aliases_json=json.dumps(_TEMPLATE_QUESTION_ALIASES.get(item_key, []), ensure_ascii=False), section_type=section,
                     template_key=template_key, template_item_key=item_key, locked=True,
                 )
         self._apply_section_order(question_repo.list_case(self.db, case_id), template_key=template_key)

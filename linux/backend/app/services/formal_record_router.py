@@ -74,7 +74,41 @@ def canonicalize_existing_target_decision(
 
 _AMBIGUOUS_REFERENCE_RE = re.compile(r"(?:那个|这个|刚才(?:那个|这个)?)(?:时间|时候|问题|情况|事|事情)")
 _TIME_QUESTION_RE = re.compile(r"(?:什么时候|何时|几点|时间|哪天)")
-_QUESTION_NOISE_RE = re.compile(r"[\s，。？！,.?!；;：:、\"'“”‘’()（）]+")
+_QUESTION_NOISE_RE = re.compile(r"[\s，。？！,.?!；;：:、\"'“”‘’()（）《》【】]+")
+_SPOKEN_FILLER_RE = re.compile(r"^(?:呃|嗯|啊|那个|就是)+")
+
+
+def _normalize_spoken_fixed_text(text: str | None) -> str:
+    value = _SPOKEN_FILLER_RE.sub("", str(text or "").strip())
+    return _QUESTION_NOISE_RE.sub("", value)
+
+
+def _spoken_fixed_forms(question: Any) -> set[str]:
+    normalized = _normalize_spoken_fixed_text(getattr(question, "text", ""))
+    forms = {normalized} if normalized else set()
+    try:
+        aliases = json.loads(getattr(question, "aliases_json", "[]") or "[]")
+    except (TypeError, ValueError):
+        aliases = []
+    if isinstance(aliases, list):
+        forms.update(
+            clean for clean in (_normalize_spoken_fixed_text(item) for item in aliases) if clean
+        )
+
+    item_key = str(getattr(question, "template_item_key", "") or "")
+    if item_key == "opening-reason":
+        # ASR commonly confuses "因何事" with "应何时". This alias is scoped
+        # to the fixed opening question so a real time question is not changed.
+        for marker in ("因什么事", "为什么", "为何", "因何事"):
+            if marker in normalized:
+                forms.add(normalized.replace(marker, "应何时"))
+                forms.add(normalized.replace(marker, "什么时候"))
+    elif item_key == "opening-notice":
+        # The officer often stops after the first sentence of the printed
+        # notice. The spoken prefix is still the fixed notice instruction.
+        if normalized:
+            forms.add(normalized.split("如果")[0])
+    return forms
 
 
 def _unique_targets(target_ids: tuple[str, ...] | list[str]) -> tuple[str, ...]:
@@ -386,6 +420,10 @@ class FormalRecordRouter:
         if prechecked is not None:
             return prechecked
 
+        deterministic = self._deterministic_fixed_decision(unit)
+        if deterministic is not None:
+            return deterministic
+
         prompt = build_formal_record_routing_prompt(context=self._context(unit))
         result = None
         try:
@@ -432,7 +470,8 @@ class FormalRecordRouter:
                     decision.formal_question,
                     decision.confidence,
                 )
-                return self._invalid(result.model_id)
+                fallback = self._deterministic_fixed_decision(unit, model_id=result.model_id)
+                return fallback or self._invalid(result.model_id)
             return decision
         except Exception:
             raw = getattr(result, "text", "")
@@ -442,7 +481,9 @@ class FormalRecordRouter:
                 len(raw or ""),
                 raw or "<none>",
             )
-            return self._invalid(getattr(result, "model_id", None))
+            model_id = getattr(result, "model_id", None)
+            fallback = self._deterministic_fixed_decision(unit, model_id=model_id)
+            return fallback or self._invalid(model_id)
 
     def _decision_from_payload(self, payload: dict[str, Any], *, model_id: str | None) -> FormalRecordRouteDecision:
         classification = RouteClass(payload["classification"])
@@ -548,20 +589,32 @@ class FormalRecordRouter:
         question's text or alias, that unique question becomes the target so
         fixed template questions still archive automatically.
         """
-        normalized = _QUESTION_NOISE_RE.sub("", str(question_text or ""))
+        normalized = _normalize_spoken_fixed_text(question_text)
         if not normalized:
             return None
         matches = []
         for question in question_repo.list_case(self.db, case_id):
-            candidates = [_QUESTION_NOISE_RE.sub("", str(getattr(question, "text", "") or ""))]
-            try:
-                for alias in json.loads(getattr(question, "aliases_json", "") or "[]"):
-                    candidates.append(_QUESTION_NOISE_RE.sub("", str(alias or "")))
-            except (TypeError, ValueError):
-                pass
-            if any(candidate and candidate == normalized for candidate in candidates):
+            candidates = _spoken_fixed_forms(question)
+            if any(candidate and (candidate == normalized or (question.template_item_key == "opening-notice" and normalized.startswith(candidate))) for candidate in candidates):
                 matches.append(question)
         return matches[0] if len(matches) == 1 else None
+
+    def _deterministic_fixed_decision(self, unit, *, model_id: str | None = None):
+        if not str(unit.raw_answer_text or "").strip() or not str(unit.raw_question_text or "").strip():
+            return None
+        target = self._resolve_target_by_text(unit.case_id, unit.raw_question_text)
+        if target is None or not target.locked or not target.template_key:
+            return None
+        return FormalRecordRouteDecision(
+            classification=RouteClass.MATCH_FIXED,
+            target_question_id=target.id,
+            formal_question=None,
+            formal_answer=str(unit.raw_answer_text).strip(),
+            confidence=1.0,
+            candidate_question_ids=(target.id,),
+            reason_code="DETERMINISTIC_FIXED_TEXT_FALLBACK",
+            model_id=model_id,
+        )
 
     def _has_question_fragment(self, unit) -> bool:
         return any(link.role == "QUESTION" for link in unit.fragments)

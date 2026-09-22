@@ -110,6 +110,28 @@ def list_recent_closed(db: Session, case_id: str, *, limit: int = 2) -> list[QAU
     return list(db.scalars(stmt))
 
 
+def list_recent_unanswered(
+    db: Session,
+    case_id: str,
+    session_id: str,
+    *,
+    limit: int = 8,
+) -> list[QAUnit]:
+    stmt = (
+        select(QAUnit)
+        .where(
+            QAUnit.case_id == case_id,
+            QAUnit.session_id == session_id,
+            QAUnit.raw_question_text != "",
+            QAUnit.raw_answer_text == "",
+            QAUnit.status.in_(("CLOSED", "ROUTING", "NEEDS_REVIEW")),
+        )
+        .order_by(QAUnit.started_at.desc(), QAUnit.created_at.desc())
+        .limit(max(1, int(limit)))
+    )
+    return list(db.scalars(stmt))
+
+
 def mark_routing(db: Session, row: QAUnit) -> None:
     row.status = "ROUTING"
     db.flush()
@@ -139,3 +161,18 @@ def save_decision(
     row.reason_code = reason_code
     row.status = str(status)
     db.flush()
+
+
+def reopen_for_late_answer(db: Session, row: QAUnit) -> QAUnit:
+    row.status = "OPEN"
+    row.ended_at = None
+    row.classification = None
+    row.target_question_id = None
+    row.formal_question_text = None
+    row.formal_answer_text = None
+    row.candidate_question_ids_json = "[]"
+    row.confidence = None
+    row.model_id = None
+    row.reason_code = None
+    db.flush()
+    return row

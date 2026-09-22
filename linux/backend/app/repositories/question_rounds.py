@@ -78,6 +78,38 @@ def latest_for_question(db: Session, case_id: str, case_question_id: str) -> Que
     return db.scalar(stmt)
 
 
+def find_for_qa_unit(
+    db: Session,
+    *,
+    case_id: str,
+    case_question_id: str,
+    question_fragment_ids: list[str],
+    answer_fragment_ids: list[str],
+    answer_text: str,
+) -> QuestionRound | None:
+    question_ids = set(str(item) for item in question_fragment_ids)
+    answer_ids = set(str(item) for item in answer_fragment_ids)
+    answer_value = str(answer_text or "").strip()
+    candidates: list[tuple[int, QuestionRound]] = []
+    for row in list_for_question(db, case_id, case_question_id):
+        row_answer_ids = set(_json_ids(row.answer_fragment_ids_json))
+        score = 0
+        if answer_ids and row_answer_ids == answer_ids:
+            score += 4
+        elif answer_ids and row_answer_ids.intersection(answer_ids):
+            score += 2
+        if row.officer_fragment_id and row.officer_fragment_id in question_ids:
+            score += 3
+        if answer_value and row.answer_text.strip() == answer_value:
+            score += 1
+        if score:
+            candidates.append((score, row))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1].round_no, item[1].started_at), reverse=True)
+    return candidates[0][1]
+
+
 def get_round(db: Session, round_id: str) -> QuestionRound:
     row = db.get(QuestionRound, round_id)
     if row is None:
@@ -154,7 +186,6 @@ def next_round_no(db: Session, case_question_id: str) -> int:
     current = db.scalar(
         select(func.coalesce(func.max(QuestionRound.round_no), 0)).where(
             QuestionRound.case_question_id == case_question_id,
-            QuestionRound.status != "DETACHED",
         )
     ) or 0
     return int(current) + 1

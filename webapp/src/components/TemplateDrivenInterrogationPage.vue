@@ -65,6 +65,7 @@ const emit = defineEmits<{
   removeQuestion: [questionId: string]
   resolvePending: [pendingId: string, resolution: PendingResolution]
   resolveQaUnit: [qaUnitId: string, resolution: QAUnitResolution]
+  rollbackQaUnit: [qaUnitId: string]
   reassociateRound: [roundId: string, input: RoundReassociateInput]
   updateAnswer: [roundId: string, answerText: string]
   saveLibrary: [questionId: string]
@@ -317,6 +318,7 @@ async function confirmSignature() {
           @capture-toggle="toggleCapture"
           @resolve-pending="(id, resolution) => emit('resolvePending', id, resolution)"
           @resolve-qa-unit="(id, resolution) => emit('resolveQaUnit', id, resolution)"
+          @rollback-qa-unit="(id) => emit('rollbackQaUnit', id)"
           @correct-fragment="(id, speaker, reason) => emit('correctFragment', id, speaker, reason)"
         />
         <div v-else class="dialogue-voiceprint-hint">

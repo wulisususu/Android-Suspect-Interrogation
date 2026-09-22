@@ -28,9 +28,16 @@ class QAUnitBuilder:
     with the active exchange rather than turning a continuing answer into a new Q/A.
     """
 
-    def __init__(self, db: Session, *, idle_close_seconds: float = 4.0):
+    def __init__(
+        self,
+        db: Session,
+        *,
+        idle_close_seconds: float = 4.0,
+        late_answer_window_seconds: float = 30.0,
+    ):
         self.db = db
         self.idle_close_seconds = max(0.0, float(idle_close_seconds))
+        self.late_answer_window_seconds = max(0.0, float(late_answer_window_seconds))
 
     def consume_fragment(self, case_id: str, fragment_id: str) -> list[str]:
         fragment = asr_repo.get_fragment(self.db, fragment_id)
@@ -88,6 +95,18 @@ class QAUnitBuilder:
             return closed_ids
 
         if active is None:
+            recovered = self._recent_unanswered_question(case_id, session_id, fragment)
+            if recovered is not None:
+                qa_repo.append_fragment(
+                    self.db,
+                    recovered,
+                    fragment_id=fragment.id,
+                    role="ANSWER",
+                    position=self._next_position(recovered),
+                )
+                qa_repo.reopen_for_late_answer(self.db, recovered)
+                self._refresh_text(recovered)
+                return []
             orphan = qa_repo.create_open(
                 self.db,
                 case_id=case_id,
@@ -168,6 +187,22 @@ class QAUnitBuilder:
 
     def _has_answer(self, unit: QAUnit) -> bool:
         return any(link.role == "ANSWER" for link in self._links(unit))
+
+    def _recent_unanswered_question(
+        self,
+        case_id: str,
+        session_id: str,
+        fragment: ASRFragment,
+    ) -> QAUnit | None:
+        answer_at = self._fragment_time(fragment)
+        for candidate in qa_repo.list_recent_unanswered(self.db, case_id, session_id):
+            last = self._last_fragment(candidate)
+            if last is None:
+                continue
+            elapsed = (answer_at - self._fragment_time(last)).total_seconds()
+            if 0 <= elapsed <= self.late_answer_window_seconds:
+                return candidate
+        return None
 
     def _last_fragment(self, unit: QAUnit) -> ASRFragment | None:
         links = self._links(unit)

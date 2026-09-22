@@ -242,6 +242,99 @@ def test_orphan_suspect_answer_becomes_review_unit(tmp_path):
         engine.dispose()
 
 
+def test_late_suspect_answer_reopens_recent_closed_question_instead_of_orphaning(tmp_path):
+    engine, db, case, session, capture = make_context(tmp_path)
+    try:
+        builder = QAUnitBuilder(db, late_answer_window_seconds=30.0)
+        question = add_fragment(
+            db,
+            capture,
+            ordinal=1,
+            speaker="INTERROGATOR",
+            text="呃这是行政案件权利义务告知书交给你阅读",
+            start_ms=0,
+            end_ms=800,
+        )
+        assert builder.consume_fragment(case.id, question.id) == []
+        unit = qa_repo.active_for_session(db, case.id, session.id)
+        assert unit is not None
+        qa_repo.close(
+            db,
+            unit,
+            raw_question_text=unit.raw_question_text,
+            raw_answer_text="",
+            ended_at=capture.started_at + timedelta(milliseconds=800),
+        )
+        db.commit()
+
+        answer = add_fragment(
+            db,
+            capture,
+            ordinal=2,
+            speaker="SUSPECT",
+            text="好的我认字",
+            start_ms=1500,
+            end_ms=2200,
+        )
+        assert builder.consume_fragment(case.id, answer.id) == []
+
+        units = qa_repo.list_for_case(db, case.id)
+        assert len(units) == 1
+        assert units[0].id == unit.id
+        assert units[0].status == "OPEN"
+        assert units[0].raw_question_text == "呃这是行政案件权利义务告知书交给你阅读"
+        assert units[0].raw_answer_text == "好的我认字"
+        assert [link.role for link in units[0].fragments] == ["QUESTION", "ANSWER"]
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_late_answer_outside_window_remains_orphan_review(tmp_path):
+    engine, db, case, session, capture = make_context(tmp_path)
+    try:
+        builder = QAUnitBuilder(db, late_answer_window_seconds=3.0)
+        question = add_fragment(
+            db,
+            capture,
+            ordinal=1,
+            speaker="INTERROGATOR",
+            text="这是一个没有及时回答的问题？",
+            start_ms=0,
+            end_ms=800,
+        )
+        assert builder.consume_fragment(case.id, question.id) == []
+        unit = qa_repo.active_for_session(db, case.id, session.id)
+        assert unit is not None
+        qa_repo.close(
+            db,
+            unit,
+            raw_question_text=unit.raw_question_text,
+            raw_answer_text="",
+            ended_at=capture.started_at + timedelta(milliseconds=800),
+        )
+        db.commit()
+
+        answer = add_fragment(
+            db,
+            capture,
+            ordinal=2,
+            speaker="SUSPECT",
+            text="现在才回答。",
+            start_ms=10000,
+            end_ms=10700,
+        )
+        closed_ids = builder.consume_fragment(case.id, answer.id)
+
+        assert len(closed_ids) == 1
+        orphan = qa_repo.get(db, closed_ids[0])
+        assert orphan.id != unit.id
+        assert orphan.reason_code == "ORPHAN_ANSWER"
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_idle_close_after_four_seconds(tmp_path):
     engine, db, case, session, capture = make_context(tmp_path)
     try:

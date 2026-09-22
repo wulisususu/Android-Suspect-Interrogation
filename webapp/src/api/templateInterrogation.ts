@@ -166,6 +166,12 @@ export async function resolveQaUnit(caseId: string, qaUnitId: string, resolution
   ))
 }
 
+export async function rollbackQaUnit(caseId: string, qaUnitId: string): Promise<unknown> {
+  return unwrap(await http.post<BackendEnvelope<unknown>>(
+    `/api/v1/cases/${encodeURIComponent(caseId)}/qa-units/${encodeURIComponent(qaUnitId)}/rollback`,
+  ))
+}
+
 
 export async function ensureFormalRecord(caseId: string): Promise<TemplateWorkspace> {
   return unwrap(await http.post<BackendEnvelope<TemplateWorkspace>>(`/api/v1/cases/${encodeURIComponent(caseId)}/formal-record/ensure`))

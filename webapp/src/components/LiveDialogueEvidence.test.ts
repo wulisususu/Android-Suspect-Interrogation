@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import dialogueSource from './LiveDialoguePanel.vue?raw'
 import pageSource from './TemplateDrivenInterrogationPage.vue?raw'
 import workspaceSource from '../views/InterrogationWorkspace.vue?raw'
+import apiSource from '../api/templateInterrogation.ts?raw'
 
 
 describe('recognition evidence workbench contract', () => {
@@ -53,5 +54,13 @@ describe('recognition evidence workbench contract', () => {
     expect(pageSource).toContain('resolveQaUnit')
     expect(pageSource).toContain('workspace.qaUnits')
     expect(workspaceSource).toContain('resolveQaUnit')
+  })
+
+  it('exposes rollback for applied qa matches and keeps rolled-back matches one-way', () => {
+    expect(dialogueSource).toContain('回退本次匹配')
+    expect(dialogueSource).toContain("unit.status === 'APPLIED'")
+    expect(dialogueSource).toContain("unit.status === 'ROLLED_BACK'")
+    expect(workspaceSource).toContain('rollbackQaUnit')
+    expect(apiSource).toContain('/rollback')
   })
 })

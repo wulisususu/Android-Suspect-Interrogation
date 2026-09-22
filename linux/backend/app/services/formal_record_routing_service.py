@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -218,6 +219,68 @@ class FormalRecordRoutingService:
             model_id=unit.model_id,
         )
         return self._apply_existing(unit, question, manual_decision, audit_action="QA_ROUTE_MANUAL_APPLIED")
+
+    def rollback_qa_unit(self, qa_unit_id: str) -> dict:
+        unit = qa_repo.get(self.db, qa_unit_id)
+        assert_formal_record_mutable(self.db, unit.case_id)
+        if unit.status != "APPLIED":
+            raise DomainError("QA_UNIT_NOT_APPLIED", "只有已归档的问答才能回退", 409)
+        if not unit.target_question_id:
+            raise DomainError("QA_ROLLBACK_TARGET_MISSING", "该问答没有可回退的正式问题", 409)
+        question = question_repo.get_case(self.db, unit.case_id, unit.target_question_id)
+        round_row = round_repo.find_for_qa_unit(
+            self.db,
+            case_id=unit.case_id,
+            case_question_id=question.id,
+            question_fragment_ids=self._question_fragment_ids(unit),
+            answer_fragment_ids=self._answer_fragment_ids(unit),
+            answer_text=unit.raw_answer_text,
+        )
+        if round_row is None:
+            raise DomainError("QA_ROLLBACK_ROUND_NOT_FOUND", "没有找到该问答对应的正式笔录回答", 409)
+
+        round_row.status = "DETACHED"
+        round_row.ended_at = datetime.now(timezone.utc)
+        self.db.flush()
+        latest = round_repo.latest_for_question(self.db, unit.case_id, question.id)
+        question_repo.set_canonical_answer(
+            self.db,
+            question,
+            answer_text=latest.answer_text if latest is not None else "",
+            first_asked_at=None,
+        )
+        qa_repo.save_decision(
+            self.db,
+            unit,
+            classification=unit.classification or RouteClass.MATCH_EXISTING.value,
+            target_question_id=question.id,
+            formal_question_text=unit.formal_question_text,
+            formal_answer_text=unit.formal_answer_text,
+            confidence=unit.confidence,
+            model_id=unit.model_id,
+            reason_code="MANUAL_ROLLBACK",
+            status="ROLLED_BACK",
+            candidate_question_ids=[],
+        )
+        audit_repo.add(
+            self.db,
+            case_id=unit.case_id,
+            action="QA_ROUTE_ROLLED_BACK",
+            target_type="QA_UNIT",
+            target_id=unit.id,
+            detail={
+                "qa_unit_id": unit.id,
+                "round_id": round_row.id,
+                "target_question_id": question.id,
+                "answer_fragment_ids": self._answer_fragment_ids(unit),
+                "reason_code": "MANUAL_ROLLBACK",
+            },
+        )
+        return {
+            "status": "ROLLED_BACK",
+            "targetQuestionId": question.id,
+            "qaUnit": qa_unit_dict(unit),
+        }
 
     @staticmethod
     def _manual_text(request_value: str | None, suggested_value: str | None, raw_value: str | None) -> str:

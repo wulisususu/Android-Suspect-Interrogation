@@ -122,6 +122,14 @@ def resolve_qa_unit(case_id: str, qa_unit_id: str, body: QAUnitResolutionRequest
     return envelope(result, "待处理问答已人工确认")
 
 
+@router.post("/cases/{case_id}/qa-units/{qa_unit_id}/rollback")
+def rollback_qa_unit(case_id: str, qa_unit_id: str, db: Session = Depends(get_db)):
+    _qa_unit_for_case(db, case_id, qa_unit_id)
+    result = FormalRecordRoutingService(db).rollback_qa_unit(qa_unit_id)
+    db.commit()
+    return envelope(result, "本次匹配已回退")
+
+
 @router.post("/cases/{case_id}/pending-questions/{pending_id}/add")
 def add_pending_question(case_id: str, pending_id: str, body: PendingAddRequest | None = None, db: Session = Depends(get_db)):
     _pending_for_case(db, case_id, pending_id)

@@ -149,6 +149,7 @@ function updateFormalQuestion(questionId: string, input: CaseQuestionUpdateInput
 function reorderFormalQuestions(questionIds: string[]) { return runTemplateAction(() => templateStore.reorderCaseQuestions(questionIds)) }
 function resolvePendingQuestion(pendingId: string, resolution: PendingResolution) { return runTemplateAction(() => templateStore.resolvePendingQuestion(pendingId, resolution)) }
 function resolveQaUnit(qaUnitId: string, resolution: QAUnitResolution) { return runTemplateAction(() => templateStore.resolveQaUnit(qaUnitId, resolution)) }
+function rollbackQaUnit(qaUnitId: string) { return runTemplateAction(() => templateStore.rollbackQaUnit(qaUnitId)) }
 function reassociateFormalRound(roundId: string, input: RoundReassociateInput) { return runTemplateAction(() => templateStore.reassociateRound(roundId, input)) }
 function updateFormalAnswer(roundId: string, answerText: string) { return runTemplateAction(() => templateStore.updateRoundAnswer(roundId, answerText)) }
 function saveFormalQuestionToLibrary(questionId: string) { return runTemplateAction(() => templateStore.saveQuestionToLibrary(questionId)) }
@@ -312,6 +313,7 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
             @reorder-questions="reorderFormalQuestions"
             @resolve-pending="resolvePendingQuestion"
             @resolve-qa-unit="resolveQaUnit"
+            @rollback-qa-unit="rollbackQaUnit"
             @reassociate-round="reassociateFormalRound"
             @update-answer="updateFormalAnswer"
             @save-library="saveFormalQuestionToLibrary"
