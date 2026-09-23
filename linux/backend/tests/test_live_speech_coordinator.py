@@ -304,8 +304,9 @@ class CrashWindowRecoverySpeechWorker:
 
 
 class FailFirstConsumeRecoveryService:
-    def __init__(self, delegate) -> None:
+    def __init__(self, delegate, *, final_only: bool = False) -> None:
         self.delegate = delegate
+        self.final_only = final_only
         self.consume_failed = threading.Event()
         self._failed = False
 
@@ -317,7 +318,8 @@ class FailFirstConsumeRecoveryService:
         consume_events = runtime.consume_events
 
         def consume_once(events):
-            if not self._failed:
+            has_final = any(event.type is SpeechEventType.ASR_FINAL for event in events or [])
+            if not self._failed and (not self.final_only or has_final):
                 self._failed = True
                 self.consume_failed.set()
                 raise RuntimeError("simulated crash before ASR_FINAL commit")
@@ -325,6 +327,70 @@ class FailFirstConsumeRecoveryService:
 
         runtime.consume_events = consume_once
         return runtime
+
+
+class FinalizeRecoverySpeechWorker:
+    def __init__(self, *, emit_final_during_finalize: bool, audio_sample_count: int) -> None:
+        self.emit_final_during_finalize = emit_final_during_finalize
+        self.audio_sample_count = audio_sample_count
+        self.current_sample = 0
+        self.open_base_samples: list[int] = []
+        self.finalize_called = threading.Event()
+
+    def open_speech_session(self, session_id: str, **kwargs):
+        self.current_sample = int(kwargs.get("base_sample", 0))
+        self.open_base_samples.append(self.current_sample)
+        return {"session_id": session_id}
+
+    def push_speech_pcm(self, session_id: str, pcm: bytes):
+        self.current_sample += len(pcm) // 2
+        if self.emit_final_during_finalize or self.current_sample < self.audio_sample_count:
+            return []
+        return self._final_events(session_id)
+
+    def finalize_speech_session(self, session_id: str):
+        self.finalize_called.set()
+        if self.emit_final_during_finalize:
+            return self._final_events(session_id)
+        return []
+
+    def close_speech_session(self, session_id: str) -> None:
+        pass
+
+    @staticmethod
+    def _final_events(session_id: str) -> list[SpeechEvent]:
+        return [
+            SpeechEvent(
+                type=SpeechEventType.VAD_START,
+                session_id=session_id,
+                start_ms=7500,
+                details={
+                    "replay_start_sample": 100_800,
+                    "asr_start_sample": 120_000,
+                },
+            ),
+            SpeechEvent(
+                type=SpeechEventType.VAD_END,
+                session_id=session_id,
+                start_ms=7500,
+                end_ms=8000,
+            ),
+            SpeechEvent(
+                type=SpeechEventType.ASR_FINAL,
+                session_id=session_id,
+                start_ms=7500,
+                end_ms=8000,
+                text="最终录音片段",
+                confidence=0.95,
+                model_id="paraformer",
+                details={
+                    "stage_one_asr_only": True,
+                    "asr_start_sample": 120_000,
+                    "asr_end_sample": 128_000,
+                    "model_version": "test-v1",
+                },
+            ),
+        ]
 
 
 class EventCollector:
@@ -532,12 +598,13 @@ def test_restart_replays_unfinished_vad_when_complete_cursor_reached_audio_end(t
     try:
         assert crashed_worker.push_started.wait(timeout=1)
         assert crashed_worker.finalize_called.wait(timeout=1)
-        _wait_for(lambda: _asr_cursor(factory, capture_id) == 16_000)
+        first.asr_queue.join()
         with factory() as db:
             capture = db.get(ASRCaptureSession, capture_id)
             assert capture is not None
             assert capture.recording_status == "COMPLETE"
-            assert capture.asr_cursor_sample == capture.audio_sample_count == 16_000
+            assert capture.asr_cursor_sample == 0
+            assert capture.audio_sample_count == 16_000
             assert capture.asr_unfinished_start_sample == 0
     finally:
         first.shutdown()
@@ -555,6 +622,7 @@ def test_restart_replays_unfinished_vad_when_complete_cursor_reached_audio_end(t
         _wait_for(lambda: len(_fragments(factory, capture_id)) == 1)
         _wait_for(lambda: _unfinished_start(factory, capture_id) is None)
         assert replay_worker.finalize_called.wait(timeout=1)
+        replay.asr_queue.join()
         first_result = replay.process_asr_range(capture_id, 0, 16_000)
         second_result = replay.process_asr_range(capture_id, 0, 16_000)
         assert first_result.fragment_ids == second_result.fragment_ids
@@ -789,6 +857,97 @@ def test_replay_crash_keeps_batch_start_until_prior_final_commits(tmp_path: Path
         assert sum(fragment.raw_text == "崩溃时仍打开的片段" for fragment in fragments) == 1
     finally:
         tail_recovery.shutdown()
+
+
+def test_finalize_failure_replays_bounded_tail_when_no_vad_marker_exists(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    data_dir = tmp_path / "data"
+    archive = DurableAudioArchive(data_dir, factory)
+    audio_sample_count = 128_000
+    audio = b"\x0e\x00" * audio_sample_count
+    archive.open_capture(capture_id, case_id=case_id)
+    for offset in range(0, len(audio), 32_000):
+        archive.append(capture_id, audio[offset : offset + 32_000])
+    archive.finalize_capture(capture_id)
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, capture_id)
+        assert capture is not None
+        capture.asr_cursor_sample = audio_sample_count
+        db.commit()
+
+    failed_worker = FinalizeRecoverySpeechWorker(
+        emit_final_during_finalize=True,
+        audio_sample_count=audio_sample_count,
+    )
+    failed_service = FailFirstConsumeRecoveryService(
+        _source_service(factory, FakeDevice([]), failed_worker, EventCollector()),
+        final_only=True,
+    )
+    failed_recovery = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=failed_service,
+        ai_supervisor=failed_worker,
+    )
+    failed_recovery.start()
+    try:
+        # An empty completed backlog starts no ASR work. Opening and pushing the capture
+        # leaves the worker session active with no VAD marker or pending fragment.
+        for start_sample in range(0, audio_sample_count, 16_000):
+            pushed = failed_recovery.process_asr_range(
+                capture_id,
+                start_sample,
+                min(audio_sample_count, start_sample + 16_000),
+            )
+            assert pushed.fragment_ids == []
+        assert _asr_cursor(factory, capture_id) == audio_sample_count
+        assert _unfinished_start(factory, capture_id) is None
+
+        runtime = failed_recovery._runtimes[capture_id]
+        failed_recovery.finish_capture(runtime)
+        assert failed_worker.finalize_called.wait(timeout=1)
+        assert failed_service.consume_failed.wait(timeout=1)
+        failed_recovery.asr_queue.join()
+        # Eight seconds minus the five-second VAD cap and 1.2-second pre-roll.
+        assert _asr_cursor(factory, capture_id) == 28_800
+        assert _unfinished_start(factory, capture_id) is None
+        assert _fragments(factory, capture_id) == []
+    finally:
+        failed_recovery.shutdown()
+
+    replay_worker = FinalizeRecoverySpeechWorker(
+        emit_final_during_finalize=False,
+        audio_sample_count=audio_sample_count,
+    )
+    replay_service = _source_service(factory, FakeDevice([]), replay_worker, EventCollector())
+    replay = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=replay_service,
+        ai_supervisor=replay_worker,
+    )
+    replay.start()
+    try:
+        _wait_for(lambda: len(_fragments(factory, capture_id)) == 1)
+        _wait_for(lambda: _asr_cursor(factory, capture_id) == audio_sample_count)
+        assert replay_worker.open_base_samples == [28_800]
+        fragments = _fragments(factory, capture_id)
+        assert [(fragment.ordinal, fragment.raw_text) for fragment in fragments] == [
+            (0, "最终录音片段")
+        ]
+        assert fragments[0].speaker_source == "PENDING_ANALYSIS"
+    finally:
+        replay.shutdown()
 
 
 def _fragments(factory, capture_id: str):

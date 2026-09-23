@@ -18,6 +18,9 @@ from app.services.durable_audio_archive import DurableAudioArchive
 
 logger = logging.getLogger(__name__)
 _MAX_INFERENCE_SAMPLES = 16_000
+# The worker caps a VAD segment at 5 seconds and SpeechSession retains
+# 1.2 seconds of pre-roll, so a 6.2-second tail covers finalization output.
+_FINALIZE_REPLAY_WINDOW_MS = 6_200
 
 
 @dataclass(frozen=True)
@@ -218,8 +221,31 @@ class LiveSpeechCoordinator:
                 try:
                     if session_id in self._open_asr_sessions:
                         try:
+                            end_sample = self._capture_audio_sample_count(runtime.capture_session_id)
+                            unfinished_start = self._get_unfinished_asr_start(
+                                runtime.capture_session_id
+                            )
+                            if unfinished_start is None:
+                                checkpoint_samples = int(
+                                    round(_FINALIZE_REPLAY_WINDOW_MS * runtime.sample_rate / 1000)
+                                )
+                                checkpoint = max(0, end_sample - checkpoint_samples)
+                            else:
+                                checkpoint = unfinished_start
+                            self._rewind_asr_cursor(
+                                runtime.capture_session_id,
+                                checkpoint,
+                            )
                             events = self.ai_supervisor.finalize_speech_session(session_id)
-                            self._consume_event_batch(runtime, events, end_sample=None)
+                            self._consume_event_batch(
+                                runtime,
+                                events,
+                                end_sample=(
+                                    None
+                                    if runtime.capture_session_id in self._asr_blocked
+                                    else end_sample
+                                ),
+                            )
                         except Exception as exc:
                             runtime.inference_error_sink(exc)
                         finally:
@@ -350,6 +376,13 @@ class LiveSpeechCoordinator:
         with self.session_factory() as db:
             capture = db.get(ASRCaptureSession, capture_id)
             return None if capture is None else capture.asr_unfinished_start_sample
+
+    def _capture_audio_sample_count(self, capture_id: str) -> int:
+        with self.session_factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            if capture is None:
+                raise ValueError(f"unknown capture session: {capture_id}")
+            return max(0, int(capture.audio_sample_count or 0))
 
     def _rewind_asr_cursor(self, capture_id: str, start_sample: int) -> None:
         with self.session_factory() as db:
