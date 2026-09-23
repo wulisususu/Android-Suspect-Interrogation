@@ -27,6 +27,7 @@ class ALSARecorder(AudioRecorder):
         *,
         chunk_frames: int = 1024,
         queue_chunks: int = 64,
+        restart_limit: int = 5,
         which: Callable[[str], Optional[str]] = shutil.which,
         popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
         enumerate_runner: Callable[..., object] = subprocess.check_output,
@@ -38,11 +39,14 @@ class ALSARecorder(AudioRecorder):
         self.channels = int(channels)
         self.pcm_format = pcm_format
         self.chunk_frames = int(chunk_frames)
+        self.restart_limit = max(0, int(restart_limit))
         self._which = which
         self._popen_factory = popen_factory
         self._enumerate_runner = enumerate_runner
         self._state = DeviceState.CLOSED
         self._process = None
+        self._command: Optional[list] = None
+        self._restarts = 0
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._frames: "queue.Queue[bytes]" = queue.Queue(maxsize=queue_chunks)
@@ -129,6 +133,8 @@ class ALSARecorder(AudioRecorder):
             "-c", str(self.channels),
             "-t", "raw",
         ]
+        self._command = command
+        self._restarts = 0
         self._stop_event.clear()
         self.dropped_chunks = 0
         while not self._frames.empty():
@@ -161,10 +167,15 @@ class ALSARecorder(AudioRecorder):
             while not self._stop_event.is_set():
                 stdout = getattr(self._process, "stdout", None)
                 if stdout is None:
-                    raise RuntimeError("arecord stdout pipe is unavailable")
+                    if self._process is None and not self._stop_event.is_set():
+                        raise RuntimeError("arecord stdout pipe is unavailable")
+                    break
                 chunk = stdout.read(bytes_per_chunk)
                 if not chunk:
-                    break
+                    # arecord 进程已结束(正常停止或意外死亡)
+                    if not self._handle_process_exit():
+                        break
+                    continue
                 if self._wav is not None:
                     with self._wav_lock:
                         if self._wav is not None:
@@ -177,7 +188,61 @@ class ALSARecorder(AudioRecorder):
             self._last_error = str(exc)
             self._state = DeviceState.ERROR
 
+    def _handle_process_exit(self) -> bool:
+        """arecord 已结束。返回 True 表示已重启、继续读取;False 表示放弃。
+
+        之前版本在此处静默 break,导致队列排空后消费端永远读到空字节(界面冻结)。
+        现在:意外死亡时重启 arecord(有次数上限),并打印 stderr 到 journal 取证。
+        """
+        process = self._process
+        stderr_tail = ""
+        returncode: Optional[int] = None
+        if process is not None:
+            try:
+                returncode = process.poll()
+                if returncode is None:
+                    returncode = process.wait(timeout=1)
+            except Exception:
+                returncode = None
+            try:
+                if process.stderr is not None:
+                    raw = process.stderr.read() or b""
+                    stderr_tail = raw.decode(errors="replace").strip()[-400:]
+            except Exception:
+                stderr_tail = ""
+        self._process = None
+        if self._stop_event.is_set():
+            return False  # 正常停止路径
+        if self._restarts < self.restart_limit and self._command is not None:
+            self._restarts += 1
+            print(
+                f"[ALSARecorder] arecord exited unexpectedly (code={returncode}, "
+                f"stderr={stderr_tail!r}); restarting ({self._restarts}/{self.restart_limit})",
+                flush=True,
+            )
+            if self._stop_event.wait(timeout=0.2):
+                return False
+            try:
+                self._process = self._popen_factory(
+                    self._command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
+                )
+                return True
+            except OSError as exc:
+                self._last_error = f"arecord restart failed after exit code={returncode}: {exc}"
+                self._state = DeviceState.ERROR
+                self.running = False
+                return False
+        self._last_error = (
+            f"arecord exited (code={returncode}): {stderr_tail or 'no stderr output'}"
+        )
+        self._state = DeviceState.ERROR
+        self.running = False
+        print(f"[ALSARecorder] capture aborted: {self._last_error}", flush=True)
+        return False
+
     def read_frames(self, timeout: float = 0.5) -> bytes:
+        if self._last_error and self._frames.empty():
+            raise HardwareError("AUDIO_READ_FAILED", self._last_error)
         if not self.running and self._frames.empty():
             raise HardwareError("AUDIO_NOT_RUNNING", "audio recorder is not running")
         try:
@@ -185,6 +250,8 @@ class ALSARecorder(AudioRecorder):
         except queue.Empty:
             if self._last_error:
                 raise HardwareError("AUDIO_READ_FAILED", self._last_error)
+            if not self.running:
+                raise HardwareError("AUDIO_NOT_RUNNING", "audio recorder is not running")
             return b""
 
     def stop(self) -> None:

@@ -9,7 +9,7 @@ from app.domain.errors import DomainError
 
 
 _CAPTURE_SOURCES = {"ALSA", "BROWSER"}
-_COMPLETE_REASONS = {"USABLE_SPEECH_TARGET", "SAFETY_TIMEOUT"}
+_COMPLETE_REASONS = {"USABLE_SPEECH_TARGET", "SAFETY_TIMEOUT", "DEVICE_ERROR"}
 
 
 @dataclass
@@ -245,6 +245,10 @@ class AudioCaptureService:
                     break
         except Exception as exc:
             capture.error = exc
+            if capture.complete_reason is None:
+                # 设备故障(如 arecord 意外退出且重启用尽)必须让 status 立刻报告
+                # complete=true,否则前端会一直轮询冻结的进度条。
+                capture.complete_reason = "DEVICE_ERROR"
         finally:
             try:
                 self._finalize_vad(capture)
@@ -354,4 +358,5 @@ class AudioCaptureService:
             "targetDurationMs": target_ms,
             "complete": capture.complete_reason in _COMPLETE_REASONS,
             "completeReason": capture.complete_reason,
+            "error": str(capture.error) if capture.error is not None else None,
         }

@@ -1,5 +1,6 @@
 import io
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -42,6 +43,51 @@ class FakeProcess:
 
     def wait(self, timeout=None):
         self.returncode = 0
+        return 0
+
+
+class _BlockingFakeStdout:
+    """给完预定 chunk 后阻塞 read,直到进程被终止(模拟存活的 arecord)。"""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self._open = True
+        self._cond = threading.Condition()
+
+    def read(self, size):
+        with self._cond:
+            while self._open and not self._chunks:
+                self._cond.wait(timeout=0.05)
+            if not self._open and not self._chunks:
+                return b""
+            if not self._chunks:
+                return b""
+            return self._chunks.pop(0)
+
+    def close(self):
+        with self._cond:
+            self._open = False
+            self._cond.notify_all()
+
+
+class BlockingFakeProcess:
+    def __init__(self, chunks):
+        self.stdout = _BlockingFakeStdout(chunks)
+        self.stderr = io.BytesIO()
+        self.returncode = None
+        self.terminated = False
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+        self.returncode = 0
+        self.stdout.close()
+
+    def wait(self, timeout=None):
+        self.returncode = 0
+        self.stdout.close()
         return 0
 
     def kill(self):
@@ -107,7 +153,7 @@ class HardwareHALTests(unittest.TestCase):
         self.assertTrue(all("status" in item for item in report["devices"].values()))
 
     def test_alsa_recorder_reads_frames_without_blocking_caller(self):
-        process = FakeProcess((b"abcd", b""))
+        process = BlockingFakeProcess((b"abcd",))
         recorder = ALSARecorder(
             device="default",
             sample_rate=16000,
@@ -145,6 +191,62 @@ class HardwareHALTests(unittest.TestCase):
             recorder.stop()
             self.assertTrue(output.exists())
             self.assertGreater(output.stat().st_size, 44)
+
+    def test_alsa_recorder_restarts_after_unexpected_arecord_exit(self):
+        dying = FakeProcess((b"",))
+        dying.returncode = -6
+        dying.stderr = io.BytesIO(b"arecord: read error")
+        good = BlockingFakeProcess((b"\x05\x06",))
+        processes = [dying, good]
+        spawned = []
+
+        def popen(*args, **kwargs):
+            process = processes.pop(0)
+            spawned.append(process)
+            return process
+
+        recorder = ALSARecorder(
+            device="default",
+            sample_rate=16000,
+            channels=1,
+            pcm_format="S16_LE",
+            which=lambda _: "/usr/bin/arecord",
+            popen_factory=popen,
+            enumerate_runner=lambda *args, **kwargs: "default\n",
+        )
+        recorder.open()
+        recorder.start()
+        data = recorder.read_frames(timeout=2.0)
+        recorder.stop()
+        self.assertEqual(data, b"\x05\x06")
+        self.assertEqual(len(spawned), 2)
+        self.assertEqual(recorder._restarts, 1)
+
+    def test_alsa_recorder_surfaces_error_when_restart_budget_exhausted(self):
+        def dying_process():
+            process = FakeProcess((b"",))
+            process.returncode = -6
+            process.stderr = io.BytesIO(b"arecord: pcm_read:2103: read error")
+            return process
+
+        recorder = ALSARecorder(
+            device="default",
+            sample_rate=16000,
+            channels=1,
+            pcm_format="S16_LE",
+            restart_limit=2,
+            which=lambda _: "/usr/bin/arecord",
+            popen_factory=lambda *args, **kwargs: dying_process(),
+            enumerate_runner=lambda *args, **kwargs: "default\n",
+        )
+        recorder.open()
+        recorder.start()
+        with self.assertRaises(HardwareError) as ctx:
+            recorder.read_frames(timeout=3.0)
+        self.assertEqual(ctx.exception.code, "AUDIO_READ_FAILED")
+        self.assertIn("read error", str(ctx.exception))
+        self.assertFalse(recorder.running)
+        recorder.stop()
 
     def test_camera_missing_device_is_explicit(self):
         camera = V4L2Camera(device="/definitely/missing/video99", which=lambda _: "/usr/bin/v4l2-ctl")

@@ -143,6 +143,22 @@ def test_capture_read_failure_still_releases_recorder_and_surfaces_typed_error()
     assert service.status()["active"] is False
 
 
+def test_capture_read_failure_reports_device_error_in_status_before_stop():
+    """设备故障时 status 必须立刻 complete=true(reason=DEVICE_ERROR),
+    否则前端会一直轮询冻结的进度条(arecord 静默死亡事故)。"""
+    manager = FakeAudioManager(read_error=RuntimeError("device read failed"))
+    service = AudioCaptureService(manager, sample_rate=16000, max_seconds=30)
+    service.start("suspect", "CASE-1")
+    wait_until(lambda: manager.stopped == 1)
+
+    status = service.status()
+    assert status["complete"] is True
+    assert status["completeReason"] == "DEVICE_ERROR"
+    assert "device read failed" in (status["error"] or "")
+    with pytest.raises(DomainError):
+        service.stop("suspect", "CASE-1")
+
+
 def test_voiceprint_capture_auto_stops_when_streaming_vad_reaches_twenty_seconds():
     one_second = b"\x01\x00" * 16000
     manager = FakeAudioManager(frames=[one_second] * 40)
