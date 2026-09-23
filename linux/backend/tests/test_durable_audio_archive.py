@@ -24,6 +24,22 @@ def archive_env(tmp_path: Path):
     return archive, factory, tmp_path / "data", engine
 
 
+def _install_directory_alias(alias: Path, target: Path, monkeypatch) -> None:
+    try:
+        os.symlink(target, alias, target_is_directory=True)
+    except OSError:
+        original_resolve = Path.resolve
+
+        def resolve_alias(path: Path, *args, **kwargs):
+            try:
+                relative = path.relative_to(alias)
+            except ValueError:
+                return original_resolve(path, *args, **kwargs)
+            return original_resolve(target / relative, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", resolve_alias)
+
+
 def test_capture_finalizes_wav_with_durable_metadata(archive_env):
     archive, factory, data_dir, engine = archive_env
     pcm = b"\x01\x00" * 16_000
@@ -314,12 +330,87 @@ def test_recovery_rejects_symlinked_capture_directory_escape(archive_env, tmp_pa
     wav_before = wav_path.read_bytes()
 
     restarted = DurableAudioArchive(data_dir, factory)
-    with pytest.raises(ValueError, match="archive root"):
+    with pytest.raises(ValueError, match="archive root|canonical"):
         restarted.recover_incomplete()
 
     assert wav_path.read_bytes() == wav_before
     with factory() as db:
         assert db.get(ASRCaptureSession, "capture-1").recording_status == "INCOMPLETE"
+
+
+@pytest.mark.parametrize("operation", ["recovery", "read", "append", "open"])
+def test_in_root_cross_case_symlink_fails_closed_without_touching_target(
+    operation,
+    archive_env,
+    tmp_path,
+    monkeypatch,
+):
+    archive, factory, data_dir, _engine = archive_env
+    pcm = b"\x08\x00" * 100
+    archive.open_capture("capture-1", case_id="case-1")
+    archive.append("capture-1", pcm)
+
+    audio_dir = data_dir / "audio"
+    case_dir = audio_dir / "case-1"
+    target_case_dir = audio_dir / "case-2"
+    target_capture_dir = target_case_dir / "capture-1"
+    target_capture_dir.mkdir(parents=True)
+    target_wav = target_capture_dir / "segment-000000.wav"
+    target_contents = bytearray((case_dir / "capture-1" / "segment-000000.wav").read_bytes())
+    target_contents[0] ^= 0x01
+    target_wav.write_bytes(target_contents)
+    case_dir.rename(tmp_path / "saved-case-1")
+    _install_directory_alias(case_dir, target_case_dir, monkeypatch)
+    target_snapshot = {
+        path.relative_to(target_case_dir).as_posix(): path.read_bytes()
+        for path in target_case_dir.rglob("*")
+        if path.is_file()
+    }
+
+    if operation == "recovery":
+        restarted = DurableAudioArchive(data_dir, factory)
+        with pytest.raises(ValueError, match="canonical|archive root"):
+            restarted.recover_incomplete()
+    elif operation == "read":
+        with pytest.raises(ValueError, match="integrity|canonical|archive root"):
+            archive.read_samples("capture-1", 0, 100)
+    elif operation == "append":
+        with pytest.raises(ValueError, match="canonical|archive root"):
+            archive.append("capture-1", b"\x09\x00")
+    else:
+        with pytest.raises(ValueError, match="canonical|archive root"):
+            archive.open_capture("capture-1", case_id="case-1")
+
+    assert {
+        path.relative_to(target_case_dir).as_posix(): path.read_bytes()
+        for path in target_case_dir.rglob("*")
+        if path.is_file()
+    } == target_snapshot
+
+
+def test_open_capture_rejects_in_root_audio_directory_alias(archive_env, tmp_path, monkeypatch):
+    archive, _factory, data_dir, _engine = archive_env
+    archive.open_capture("capture-1", case_id="case-1")
+    audio_dir = data_dir / "audio"
+    target_dir = data_dir / "audio-alias"
+    audio_dir.rename(target_dir)
+    _install_directory_alias(audio_dir, target_dir, monkeypatch)
+
+    with pytest.raises(ValueError, match="canonical|archive root"):
+        archive.open_capture("capture-1", case_id="case-1")
+
+
+def test_open_capture_rejects_in_root_capture_directory_alias(archive_env, tmp_path, monkeypatch):
+    archive, _factory, data_dir, _engine = archive_env
+    archive.open_capture("capture-1", case_id="case-1")
+    archive.open_capture("capture-2", case_id="case-1")
+    capture_dir = data_dir / "audio" / "case-1" / "capture-1"
+    target_dir = data_dir / "audio" / "case-1" / "capture-2"
+    capture_dir.rename(tmp_path / "saved-capture-1")
+    _install_directory_alias(capture_dir, target_dir, monkeypatch)
+
+    with pytest.raises(ValueError, match="canonical|archive root"):
+        archive.open_capture("capture-1", case_id="case-1")
 
 
 def test_rejects_incomplete_pcm_frames_and_traversal_ids(archive_env):

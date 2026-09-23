@@ -754,12 +754,22 @@ class DurableAudioArchive:
         )
         if relative != expected_relative:
             raise ValueError("audio segment path does not match its validated identifiers")
-        path = (self.data_dir / Path(*relative.parts)).resolve()
         data_root = self.data_dir.resolve()
         archive_root = self.audio_dir.resolve()
+        if archive_root != self.audio_dir:
+            raise ValueError("audio archive root does not match its canonical path")
         if not archive_root.is_relative_to(data_root):
             raise ValueError("audio archive root escapes data_dir")
-        capture_dir = self._capture_dir(case_id, capture_id).resolve()
+        case_dir = self.audio_dir / case_id
+        if case_dir.resolve() != case_dir:
+            raise ValueError("case directory does not match its canonical archive path")
+        capture_dir = self._capture_dir(case_id, capture_id)
+        if capture_dir.resolve() != capture_dir:
+            raise ValueError("capture directory does not match its canonical archive path")
+        expected_path = data_root / Path(*relative.parts)
+        path = expected_path.resolve()
+        if path != expected_path:
+            raise ValueError("audio segment file does not match its canonical archive path")
         if not capture_dir.is_relative_to(archive_root):
             raise ValueError("capture directory escapes the audio archive root")
         if not path.is_relative_to(archive_root) or not path.is_relative_to(capture_dir):
@@ -774,27 +784,42 @@ class DurableAudioArchive:
         self._validate_id(capture_id, "capture_id")
         root = self.data_dir.resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
+        if self.audio_dir.resolve() != self.audio_dir:
+            raise ValueError("audio archive root does not match its canonical path")
         audio_exists = self.audio_dir.exists()
         self.audio_dir.mkdir(mode=0o750, exist_ok=True)
-        if not self.audio_dir.resolve().is_relative_to(root):
+        resolved_audio_dir = self.audio_dir.resolve()
+        if resolved_audio_dir != self.audio_dir:
+            raise ValueError("audio archive root does not match its canonical path")
+        if not resolved_audio_dir.is_relative_to(root):
             raise ValueError("audio archive directory escapes data_dir")
         self._chmod_directory(self.audio_dir)
         if not audio_exists:
             self._fsync_directory(self.data_dir)
         self._fsync_directory(self.audio_dir)
         case_dir = self.audio_dir / case_id
+        if case_dir.resolve() != case_dir:
+            raise ValueError("case directory does not match its canonical archive path")
         case_exists = case_dir.exists()
         case_dir.mkdir(mode=0o750, exist_ok=True)
-        if not case_dir.resolve().is_relative_to(self.audio_dir.resolve()):
+        resolved_case_dir = case_dir.resolve()
+        if resolved_case_dir != case_dir:
+            raise ValueError("case directory does not match its canonical archive path")
+        if not resolved_case_dir.is_relative_to(resolved_audio_dir):
             raise ValueError("case archive directory escapes audio directory")
         self._chmod_directory(case_dir)
         if not case_exists:
             self._fsync_directory(self.audio_dir)
         self._fsync_directory(case_dir)
         capture_dir = case_dir / capture_id
+        if capture_dir.resolve() != capture_dir:
+            raise ValueError("capture directory does not match its canonical archive path")
         capture_exists = capture_dir.exists()
         capture_dir.mkdir(mode=0o750, exist_ok=True)
-        if not capture_dir.resolve().is_relative_to(case_dir.resolve()):
+        resolved_capture_dir = capture_dir.resolve()
+        if resolved_capture_dir != capture_dir:
+            raise ValueError("capture directory does not match its canonical archive path")
+        if not resolved_capture_dir.is_relative_to(resolved_case_dir):
             raise ValueError("capture archive directory escapes case directory")
         self._chmod_directory(capture_dir)
         if not capture_exists:
