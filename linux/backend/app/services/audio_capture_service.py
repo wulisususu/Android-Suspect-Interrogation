@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import traceback
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -154,6 +155,10 @@ class AudioCaptureService:
             if self._capture is capture:
                 self._capture = None
         if capture.error is not None:
+            print(
+                f"[AudioCapture] stop raises AUDIO_CAPTURE_FAILED for {capture.capture_id}: {capture.error!r}",
+                flush=True,
+            )
             raise DomainError("AUDIO_CAPTURE_FAILED", f"录音采集失败：{capture.error}", 500) from capture.error
         return bytes(capture.buffer)
 
@@ -249,6 +254,8 @@ class AudioCaptureService:
                 # 设备故障(如 arecord 意外退出且重启用尽)必须让 status 立刻报告
                 # complete=true,否则前端会一直轮询冻结的进度条。
                 capture.complete_reason = "DEVICE_ERROR"
+            traceback.print_exc()
+            print(f"[AudioCapture] capture {capture.capture_id} failed: {exc!r}", flush=True)
         finally:
             try:
                 self._finalize_vad(capture)
