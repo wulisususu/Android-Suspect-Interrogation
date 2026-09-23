@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database.models import ASRCaptureSession
@@ -63,6 +64,18 @@ class LiveSpeechCoordinator:
             if self._started:
                 return
             recovered = self.archive.recover_incomplete()
+            with self.session_factory() as db:
+                completed_with_backlog = list(
+                    db.scalars(
+                        select(ASRCaptureSession.id)
+                        .where(
+                            ASRCaptureSession.recording_status == "COMPLETE",
+                            ASRCaptureSession.asr_cursor_sample < ASRCaptureSession.audio_sample_count,
+                        )
+                        .order_by(ASRCaptureSession.started_at, ASRCaptureSession.id)
+                    )
+                )
+            recovered = list(dict.fromkeys([*recovered, *completed_with_backlog]))
             recovery_jobs: list[_AudioRange | _FinishCapture] = []
             for capture_id in recovered:
                 finalization_error: Exception | None = None

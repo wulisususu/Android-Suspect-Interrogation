@@ -63,6 +63,13 @@ class BlockingSpeechWorker:
         pass
 
 
+class FailingSpeechWorker(BlockingSpeechWorker):
+    def push_speech_pcm(self, session_id: str, pcm: bytes):
+        self.pushed.append(bytes(pcm))
+        self.push_started.set()
+        raise RuntimeError("simulated ASR failure")
+
+
 class EventCollector:
     def __init__(self) -> None:
         self.events: list[tuple[str, str, dict]] = []
@@ -100,6 +107,12 @@ def _wait_for(predicate, timeout: float = 2.0) -> None:
             return
         time.sleep(0.005)
     raise AssertionError("condition was not met before timeout")
+
+
+def _asr_cursor(factory, capture_id: str) -> int:
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, capture_id)
+        return -1 if capture is None else int(capture.asr_cursor_sample)
 
 
 def test_capture_persists_audio_while_asr_worker_is_blocked(tmp_path: Path):
@@ -181,6 +194,86 @@ def test_startup_recovers_and_queues_unfinished_audio_before_speaker_work(tmp_pa
             assert capture.asr_cursor_sample == 160
     finally:
         speech.release_push.set()
+        coordinator.shutdown()
+
+
+def test_startup_replays_only_unprocessed_audio_for_completed_capture(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    data_dir = tmp_path / "data"
+    archive = DurableAudioArchive(data_dir, factory)
+    archive.open_capture(capture_id, case_id=case_id)
+    audio = b"\x06\x00" * 480
+    archive.append(capture_id, audio)
+    archive.finalize_capture(capture_id)
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, capture_id)
+        assert capture is not None
+        capture.asr_cursor_sample = 160
+        db.commit()
+
+    speech = BlockingSpeechWorker()
+    speech.release_push.set()
+    capture_service = _source_service(factory, FakeDevice([]), speech, EventCollector())
+    coordinator = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=capture_service,
+        ai_supervisor=speech,
+    )
+    coordinator.start()
+    try:
+        assert speech.push_started.wait(timeout=1)
+        _wait_for(lambda: _asr_cursor(factory, capture_id) == 480)
+        assert speech.pushed == [audio[160 * 2 :]]
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            assert capture.recording_status == "COMPLETE"
+            assert capture.asr_cursor_sample == capture.audio_sample_count == 480
+    finally:
+        coordinator.shutdown()
+
+
+def test_coordinator_inference_failure_does_not_stop_durable_capture(tmp_path: Path):
+    factory, case_id, _session_id = _seed_database(tmp_path)
+    frames = [b"\x07\x00" * 160, b"\x08\x00" * 160, b"\x09\x00" * 160]
+    device = FakeDevice(frames)
+    speech = FailingSpeechWorker()
+    events = EventCollector()
+    capture_service = _source_service(factory, device, speech, events)
+    coordinator = LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=capture_service,
+        ai_supervisor=speech,
+    )
+    coordinator.start()
+    try:
+        started = capture_service.start(case_id)
+        assert speech.push_started.wait(timeout=1)
+        _wait_for(lambda: device.read_count >= 4)
+        status = capture_service.status(case_id)
+        assert status["active"] is True
+        assert status["lastError"] == "simulated ASR failure"
+        expected_audio = b"".join(frames)
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, started["captureSessionId"])
+            assert capture is not None
+            assert capture.audio_sample_count == 480
+        assert coordinator.archive.read_samples(started["captureSessionId"], 0, 480) == expected_audio
+        assert capture_service.stop(case_id)["active"] is False
+    finally:
+        capture_service.shutdown()
         coordinator.shutdown()
 
 
