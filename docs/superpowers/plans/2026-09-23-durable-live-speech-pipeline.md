@@ -67,7 +67,8 @@ def test_live_speech_tables_are_registered(tmp_path):
     } <= names
 ```
 
-Run from `linux/backend`: `python -m pytest tests/test_database.py::test_live_speech_tables_are_registered -q`  
+Run from `linux/backend`: `python -m pytest tests/test_database.py::test_live_speech_tables_are_registered -q`
+
 Expected: FAIL because the four tables do not exist.
 
 - [ ] **Step 2: Add the persistence models and Alembic migration**
@@ -98,7 +99,8 @@ Update the production redeploy workflow's post-deploy Alembic assertion from `00
 
 - [ ] **Step 3: Verify new-schema and upgrade paths**
 
-Run: `python -m pytest tests/test_database.py tests/test_migrations.py tests/test_dual_speaker_voiceprint_migration.py tests/test_moss_transcription_models.py tests/test_speaker_calibration_migration_contract.py -q`  
+Run: `python -m pytest tests/test_database.py tests/test_migrations.py tests/test_dual_speaker_voiceprint_migration.py tests/test_moss_transcription_models.py tests/test_speaker_calibration_migration_contract.py -q`
+
 Expected: PASS for fresh `create_all`, the `0015` to `0016` migration, existing database compatibility, and all current migration-head contracts.
 
 Run from `linux/backend` against a temporary database so the project database is never touched:
@@ -142,7 +144,8 @@ def test_archive_reopens_only_durable_pcm_and_finalizes_hash(tmp_path, session_f
 
 Add sibling cases for restart recovery of an active segment, incomplete PCM16 frames, path traversal attempts, and a simulated disk-full exception. Each must report an explicit gap/incomplete state rather than returning a complete archive.
 
-Run: `python -m pytest tests/test_durable_audio_archive.py -q`  
+Run: `python -m pytest tests/test_durable_audio_archive.py -q`
+
 Expected: FAIL because `DurableAudioArchive` does not exist.
 
 - [ ] **Step 2: Implement the archive interface**
@@ -163,7 +166,8 @@ Write 16 kHz mono PCM16 to one-minute WAV segments under `data_dir/audio/<case_i
 
 - [ ] **Step 3: Verify file bytes, manifest, and failure behavior**
 
-Run: `python -m pytest tests/test_durable_audio_archive.py -q`  
+Run: `python -m pytest tests/test_durable_audio_archive.py -q`
+
 Expected: PASS; the 16,000-sample fixture reads back as exactly 32,000 PCM payload bytes and the stored hash matches the finalized file.
 
 - [ ] **Step 4: Commit the archive unit**
@@ -186,7 +190,8 @@ git commit -m "feat: persist live audio archive segments"
 
 Use a fake device that yields three known PCM frames and a fake speech worker blocked on an event. Assert that the archive contains all three frames and the reader continues until stopped while the worker remains blocked. Also assert that a configured disk failure marks the capture `INCOMPLETE` and publishes a storage error.
 
-Run: `python -m pytest tests/test_live_speech_coordinator.py::test_capture_persists_audio_while_asr_worker_is_blocked -q`  
+Run: `python -m pytest tests/test_live_speech_coordinator.py::test_capture_persists_audio_while_asr_worker_is_blocked -q`
+
 Expected: FAIL because capture currently invokes the speech worker in the read loop.
 
 - [ ] **Step 2: Add the lifecycle-owned coordinator**
@@ -201,7 +206,8 @@ Keep existing `start`, `stop`, and `status` response keys in `AsrCaptureService`
 
 - [ ] **Step 4: Verify capture independence and compatibility**
 
-Run: `python -m pytest tests/test_live_speech_coordinator.py tests/test_asr_capture_service.py tests/test_asr_capture_fail_safe.py tests/test_asr_audio_source_routing.py -q`  
+Run: `python -m pytest tests/test_live_speech_coordinator.py tests/test_asr_capture_service.py tests/test_asr_capture_fail_safe.py tests/test_asr_audio_source_routing.py -q`
+
 Expected: PASS; blocked/failed inference does not stop durable capture, and existing capture/status routes remain compatible.
 
 - [ ] **Step 5: Commit the capture boundary**
@@ -252,7 +258,8 @@ Store the last committed ASR sample boundary and the start of any unfinished VAD
 
 - [ ] **Step 4: Verify model-independent text persistence**
 
-Run: `python -m pytest tests/test_speech_worker_server.py tests/test_live_speech_coordinator.py tests/test_asr_capture_service.py -q`  
+Run: `python -m pytest tests/test_speech_worker_server.py tests/test_live_speech_coordinator.py tests/test_asr_capture_service.py -q`
+
 Expected: PASS; Stage 1 still persists text when the speaker backend is unavailable, and a simulated worker restart replays the unfinished range exactly once.
 
 - [ ] **Step 5: Commit the ASR recovery unit**
@@ -283,7 +290,8 @@ assert coordinator.speaker_jobs_ready(capture_id, voiced_ms=10_000, final_count=
 
 Also assert that stop schedules a final batch below the threshold; a two-turn VAD range creates two child fragments only after both re-transcriptions succeed; the parent raw text stays in lineage; a manual/confirmed parent is never replaced; and ambiguous/short segments remain `UNKNOWN`.
 
-Run: `python -m pytest tests/test_live_speaker_analysis.py -q`  
+Run: `python -m pytest tests/test_live_speaker_analysis.py -q`
+
 Expected: FAIL because there is no persistent speaker queue or deferred splitter.
 
 - [ ] **Step 2: Schedule low-priority speaker jobs**
@@ -300,7 +308,8 @@ When a pending Stage 1 fragment contains multiple stable turns, run ASR against 
 
 - [ ] **Step 5: Verify asynchronous role completion**
 
-Run: `python -m pytest tests/test_live_speaker_analysis.py tests/test_asr_capture_service.py tests/test_asr_recognition_evidence.py -q`  
+Run: `python -m pytest tests/test_live_speaker_analysis.py tests/test_asr_capture_service.py tests/test_asr_recognition_evidence.py -q`
+
 Expected: PASS; transcript rows exist before the threshold, analysis backfills them after the threshold, and speaker-worker failure leaves the transcript unchanged.
 
 - [ ] **Step 6: Commit the speaker workflow**
@@ -323,7 +332,8 @@ git commit -m "feat: add deferred speaker analysis and transcript lineage"
 
 Assert that an UNKNOWN final fragment remains available in the transcript but is not projected into a police/suspect question/answer; when its role becomes known, it is projected once; repeating the same role-resolution event does not append a duplicate answer or question; and a manually assigned role is not overwritten by an automatic result.
 
-Run: `python -m pytest tests/test_interrogation_projection_service.py tests/test_asr_api.py -q`  
+Run: `python -m pytest tests/test_interrogation_projection_service.py tests/test_asr_api.py -q`
+
 Expected: FAIL because current processing records UNKNOWN as `RAW_ONLY` and returns that result on every retry.
 
 - [ ] **Step 2: Defer projection until identity is known**
@@ -336,7 +346,8 @@ Exclude `SUPERSEDED` parents from normal fragment listing and confirmation. Keep
 
 - [ ] **Step 4: Verify no duplicate formal projection**
 
-Run: `python -m pytest tests/test_interrogation_projection_service.py tests/test_interrogation_projection_freeze.py tests/test_qa_routing_coordinator.py tests/test_asr_api.py -q`  
+Run: `python -m pytest tests/test_interrogation_projection_service.py tests/test_interrogation_projection_freeze.py tests/test_qa_routing_coordinator.py tests/test_asr_api.py -q`
+
 Expected: PASS; UNKNOWN text remains visible, resolved children route once, and confirmed/manual records are unchanged.
 
 - [ ] **Step 5: Commit the projection boundary**
@@ -360,7 +371,8 @@ git commit -m "feat: project fragments after speaker resolution"
 
 Use the formal capture socket to send sequence `1` twice and assert one durable sample range plus the same acknowledgement both times, including after backend restart. Assert the server sends no acknowledgement before durable append and reports a missing sequence as a discontinuity. Keep question-preparation transport on its current path.
 
-Run: `python -m pytest tests/test_browser_audio_input.py tests/test_browser_asr_transport.py -q`  
+Run: `python -m pytest tests/test_browser_audio_input.py tests/test_browser_asr_transport.py -q`
+
 Expected: FAIL because the current socket accepts unsequenced binary PCM and closes on queue full.
 
 - [ ] **Step 2: Define and implement the formal frame envelope**
@@ -373,10 +385,12 @@ Persist only unacknowledged formal frames in IndexedDB. Delete a frame after its
 
 - [ ] **Step 4: Verify frame delivery and secure URL behavior**
 
-Run: `python -m pytest tests/test_browser_audio_input.py tests/test_browser_asr_transport.py -q`  
+Run: `python -m pytest tests/test_browser_audio_input.py tests/test_browser_asr_transport.py -q`
+
 Expected: PASS; duplicate frames are idempotent and sequence gaps are explicit.
 
-Run from repository root: `npm --prefix webapp test -- src/audio/browserAsrCapture.test.ts`  
+Run from repository root: `npm --prefix webapp test -- src/audio/browserAsrCapture.test.ts`
+
 Expected: PASS; reconnect resends only unacknowledged sequences and HTTPS origins still produce WSS URLs.
 
 - [ ] **Step 5: Commit the browser transport**
@@ -420,7 +434,8 @@ it('keeps final text visible before speaker resolution and replaces superseded p
 })
 ```
 
-Run: `npm --prefix webapp test -- src/stores/interrogation.test.ts`  
+Run: `npm --prefix webapp test -- src/stores/interrogation.test.ts`
+
 Expected: FAIL because the store has no speaker-resolution/lineage reducer.
 
 - [ ] **Step 2: Add typed API and store reducers**
@@ -433,10 +448,12 @@ In the two transcript panels, display finalized UNKNOWN text immediately with â€
 
 - [ ] **Step 4: Verify frontend behavior**
 
-Run: `npm --prefix webapp test -- src/stores/interrogation.test.ts src/audio/browserAsrCapture.test.ts`  
+Run: `npm --prefix webapp test -- src/stores/interrogation.test.ts src/audio/browserAsrCapture.test.ts`
+
 Expected: PASS.
 
-Run: `npm --prefix webapp run typecheck`  
+Run: `npm --prefix webapp run typecheck`
+
 Expected: exit code `0`.
 
 - [ ] **Step 5: Commit the live transcript UI**
@@ -458,7 +475,8 @@ git commit -m "feat: show transcript before speaker analysis"
 
 Create a temporary data directory with SQLite, one audio file, and one unrelated mutable file. Assert a rolling archive contains the database and unrelated file but not `audio/`; after restore, assert the same audio file remains and its SHA-256 matches the database manifest. Assert a missing or mismatched audio hash is reported as incomplete. Retain existing traversal/symlink rejection assertions.
 
-Run: `python -m pytest tests/release/test_backup_restore.py tests/release/test_restore_security.py -q`  
+Run: `python -m pytest tests/release/test_backup_restore.py tests/release/test_restore_security.py -q`
+
 Expected: FAIL because backup currently archives all non-database mutable files and restore deletes `audio/`.
 
 - [ ] **Step 2: Exclude only the evidence bytes from rolling snapshots**
@@ -471,7 +489,8 @@ Update `restore.sh` to preserve `/var/lib/suspect-interrogation/audio` alongside
 
 - [ ] **Step 4: Verify backup/restore security and evidence preservation**
 
-Run: `python -m pytest tests/release/test_backup_restore.py tests/release/test_restore_security.py -q`  
+Run: `python -m pytest tests/release/test_backup_restore.py tests/release/test_restore_security.py -q`
+
 Expected: PASS; snapshots do not duplicate audio bytes, and same-device restore preserves validated audio.
 
 - [ ] **Step 5: Commit backup behavior**
@@ -493,7 +512,8 @@ Document `/var/lib/suspect-interrogation/audio/<case-id>/<capture-id>/`, `0750` 
 
 - [ ] **Step 2: Verify documentation matches scripts and code**
 
-Run: `rg -n "audio/<case-id>/<capture-id>|115 MB|10 GB|off-device|checkpoint" docs/release/DEPLOYMENT.md docs/security/LINUX-HARDENING.md`  
+Run: `rg -n "audio/<case-id>/<capture-id>|115 MB|10 GB|off-device|checkpoint" docs/release/DEPLOYMENT.md docs/security/LINUX-HARDENING.md`
+
 Expected: each operational value appears in both the deployment instructions and security storage policy, with no conflicting backup retention statement.
 
 - [ ] **Step 3: Commit operations documentation**
