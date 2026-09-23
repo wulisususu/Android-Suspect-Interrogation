@@ -132,7 +132,7 @@ git commit -m "feat: add durable live speech job schema"
 - Create: `linux/backend/app/services/durable_audio_archive.py`
 - Create: `linux/backend/tests/test_durable_audio_archive.py`
 
-- [ ] **Step 1: Add archive lifecycle and crash-recovery tests**
+- [x] **Step 1: Add archive lifecycle and crash-recovery tests**
 
 ```python
 def test_archive_reopens_only_durable_pcm_and_finalizes_hash(tmp_path, session_factory):
@@ -153,7 +153,7 @@ Run: `python -m pytest tests/test_durable_audio_archive.py -q`
 
 Expected: FAIL because `DurableAudioArchive` does not exist.
 
-- [ ] **Step 2: Implement the archive interface**
+- [x] **Step 2: Implement the archive interface**
 
 Implement this public surface in `durable_audio_archive.py`:
 
@@ -169,13 +169,13 @@ class DurableAudioArchive:
 
 Write 16 kHz mono PCM16 to one-minute WAV segments under `data_dir/audio/<case_id>/<capture_id>/`; checkpoint and `fsync` the active segment at least once per second. Persist committed sample counts and segment hashes through `audio_archive.py`. For a browser `source_sequence`, atomically persist its sample range, payload hash, and durable end sample in `asr_audio_frames` with the append; an identical replay returns that stored receipt, while a conflicting replay fails the capture. On recovery, truncate uncommitted tail bytes, repair the partial WAV header, and accept only complete PCM frames through the last durable checkpoint. Finalized files are immutable and mode `0640`; directories are mode `0750`.
 
-- [ ] **Step 3: Verify file bytes, manifest, and failure behavior**
+- [x] **Step 3: Verify file bytes, manifest, and failure behavior**
 
 Run: `python -m pytest tests/test_durable_audio_archive.py -q`
 
 Expected: PASS; the 16,000-sample fixture reads back as exactly 32,000 PCM payload bytes and the stored hash matches the finalized file.
 
-- [ ] **Step 4: Commit the archive unit**
+- [x] **Step 4: Commit the archive unit**
 
 ```text
 git add linux/backend/app/repositories/audio_archive.py linux/backend/app/services/durable_audio_archive.py linux/backend/tests/test_durable_audio_archive.py
