@@ -36,7 +36,7 @@ def upgrade() -> None:
     op.execute(
         "CREATE TRIGGER tr_asr_fragments_superseded_unconfirmed_update "
         "BEFORE UPDATE OF state, confirmed_message_id ON asr_fragments "
-        "WHEN NEW.state = 'SUPERSEDED' AND NEW.confirmed_message_id IS NOT NULL "
+        "WHEN NEW.state = 'SUPERSEDED' AND (OLD.state = 'CONFIRMED' OR NEW.confirmed_message_id IS NOT NULL) "
         "BEGIN SELECT RAISE(ABORT, 'confirmed fragments cannot be superseded'); END"
     )
 

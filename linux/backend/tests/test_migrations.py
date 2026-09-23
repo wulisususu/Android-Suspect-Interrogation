@@ -268,6 +268,10 @@ def test_0016_preserves_existing_fragments_and_speaker_roles(tmp_path):
                 "INSERT INTO asr_fragments (id, capture_session_id, case_id, ordinal, started_at_ms, ended_at_ms, raw_text, edited_text, asr_confidence, speaker, speaker_id, speaker_name, speaker_score, second_best_score, speaker_threshold, speaker_margin, speaker_source, voiceprint_verified, low_confidence, state, model_id, model_version, confirmed_message_id, created_at, updated_at) "
                 "VALUES ('FRAGMENT-DURABLE', 'CAPTURE-DURABLE', 'CASE-DURABLE', 1, 100, 800, '原始文本', '原始文本', 0.91, 'SUSPECT', 'speaker-1', '嫌疑人', 0.91, 0.08, 0.7, 0.1, 'VOICEPRINT', 1, 0, 'PENDING', 'paraformer', 'v1', NULL, :now, :now)"
             ), {"now": now})
+            connection.execute(text(
+                "INSERT INTO asr_fragments (id, capture_session_id, case_id, ordinal, started_at_ms, ended_at_ms, raw_text, edited_text, asr_confidence, speaker, speaker_id, speaker_name, speaker_score, second_best_score, speaker_threshold, speaker_margin, speaker_source, voiceprint_verified, low_confidence, state, model_id, model_version, confirmed_message_id, created_at, updated_at) "
+                "VALUES ('FRAGMENT-CONFIRMED', 'CAPTURE-DURABLE', 'CASE-DURABLE', 2, 800, 1500, '已确认文本', '已确认文本', 0.89, 'SUSPECT', 'speaker-1', '嫌疑人', 0.89, 0.08, 0.7, 0.1, 'VOICEPRINT', 1, 0, 'CONFIRMED', 'paraformer', 'v1', NULL, :now, :now)"
+            ), {"now": now})
     finally:
         engine.dispose()
 
@@ -286,8 +290,7 @@ def test_0016_preserves_existing_fragments_and_speaker_roles(tmp_path):
         with pytest.raises(IntegrityError, match="confirmed fragments cannot be superseded"):
             with engine.begin() as connection:
                 connection.execute(text(
-                    "UPDATE asr_fragments SET state='SUPERSEDED', confirmed_message_id='MESSAGE-DURABLE' "
-                    "WHERE id='FRAGMENT-DURABLE'"
+                    "UPDATE asr_fragments SET state='SUPERSEDED' WHERE id='FRAGMENT-CONFIRMED'"
                 ))
         with engine.connect() as connection:
             fragment = connection.execute(text(
@@ -298,6 +301,9 @@ def test_0016_preserves_existing_fragments_and_speaker_roles(tmp_path):
                 "SELECT audio_sample_count, asr_cursor_sample, voiced_ms, recording_status, asr_status, speaker_status "
                 "FROM asr_capture_sessions WHERE id='CAPTURE-DURABLE'"
             )).mappings().one()
+            confirmed_fragment = connection.execute(text(
+                "SELECT state, confirmed_message_id FROM asr_fragments WHERE id='FRAGMENT-CONFIRMED'"
+            )).mappings().one()
         assert fragment["speaker"] == "SUSPECT"
         assert fragment["speaker_id"] == "speaker-1"
         assert fragment["state"] == "PENDING"
@@ -306,6 +312,17 @@ def test_0016_preserves_existing_fragments_and_speaker_roles(tmp_path):
         assert capture["audio_sample_count"] == 0
         assert capture["asr_cursor_sample"] == 0
         assert capture["voiced_ms"] == 0
+        assert confirmed_fragment["state"] == "CONFIRMED"
+        assert confirmed_fragment["confirmed_message_id"] is None
+
+        with engine.begin() as connection:
+            connection.execute(text(
+                "UPDATE asr_fragments SET state='SUPERSEDED' WHERE id='FRAGMENT-DURABLE'"
+            ))
+        with engine.connect() as connection:
+            assert connection.execute(text(
+                "SELECT state FROM asr_fragments WHERE id='FRAGMENT-DURABLE'"
+            )).scalar_one() == "SUPERSEDED"
     finally:
         engine.dispose()
 

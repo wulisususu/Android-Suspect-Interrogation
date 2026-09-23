@@ -1,6 +1,19 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    DDL,
+    Float,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    event,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin, utc_now
@@ -305,6 +318,28 @@ class ASRFragment(TimestampMixin, Base):
     confirmed_message_id: Mapped[str | None] = mapped_column(
         ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, index=True
     )
+
+
+event.listen(
+    ASRFragment.__table__,
+    "after_create",
+    DDL(
+        "CREATE TRIGGER tr_asr_fragments_superseded_unconfirmed_insert "
+        "BEFORE INSERT ON asr_fragments "
+        "WHEN NEW.state = 'SUPERSEDED' AND NEW.confirmed_message_id IS NOT NULL "
+        "BEGIN SELECT RAISE(ABORT, 'confirmed fragments cannot be superseded'); END"
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    ASRFragment.__table__,
+    "after_create",
+    DDL(
+        "CREATE TRIGGER tr_asr_fragments_superseded_unconfirmed_update "
+        "BEFORE UPDATE OF state, confirmed_message_id ON asr_fragments "
+        "WHEN NEW.state = 'SUPERSEDED' AND (OLD.state = 'CONFIRMED' OR NEW.confirmed_message_id IS NOT NULL) "
+        "BEGIN SELECT RAISE(ABORT, 'confirmed fragments cannot be superseded'); END"
+    ).execute_if(dialect="sqlite"),
+)
 
 
 class ASRAudioSegment(TimestampMixin, Base):

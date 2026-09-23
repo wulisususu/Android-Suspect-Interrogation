@@ -2,10 +2,12 @@ from pathlib import Path
 import threading
 import time
 
+import pytest
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.database.models import Case
+from app.database.models import ASRCaptureSession, ASRFragment, Case
 from app.database.session import begin_sqlite_immediate, init_database, make_engine
 
 
@@ -43,6 +45,50 @@ def test_schema_has_durable_live_speech_tables(tmp_path: Path):
         "live_speech_jobs",
         "asr_fragment_lineage",
     } <= tables
+
+
+def test_fresh_schema_only_allows_unconfirmed_fragments_to_be_superseded(tmp_path: Path):
+    engine = make_engine(f"sqlite:///{tmp_path / 'superseded-fragments.sqlite3'}")
+    init_database(engine)
+    with Session(engine) as db:
+        case = Case(id="CASE-SUPERSEDED")
+        capture = ASRCaptureSession(
+            id="CAPTURE-SUPERSEDED", case_id=case.id, status="COMPLETE", sample_rate=16000,
+        )
+        confirmed = ASRFragment(
+            id="FRAGMENT-CONFIRMED", capture_session_id=capture.id, case_id=case.id,
+            ordinal=1, started_at_ms=0, ended_at_ms=1000, raw_text="confirmed", edited_text="confirmed",
+            speaker="UNKNOWN", speaker_source="ASR", state="CONFIRMED", model_id="model-v1",
+            confirmed_message_id=None,
+        )
+        pending = ASRFragment(
+            id="FRAGMENT-PENDING", capture_session_id=capture.id, case_id=case.id,
+            ordinal=2, started_at_ms=1000, ended_at_ms=2000, raw_text="pending", edited_text="pending",
+            speaker="UNKNOWN", speaker_source="ASR", state="PENDING", model_id="model-v1",
+            confirmed_message_id=None,
+        )
+        db.add(case)
+        db.flush()
+        db.add(capture)
+        db.flush()
+        db.add_all([confirmed, pending])
+        db.commit()
+
+    with pytest.raises(IntegrityError, match="confirmed fragments cannot be superseded"):
+        with engine.begin() as connection:
+            connection.execute(text(
+                "UPDATE asr_fragments SET state='SUPERSEDED' WHERE id='FRAGMENT-CONFIRMED'"
+            ))
+    with engine.begin() as connection:
+        connection.execute(text(
+            "UPDATE asr_fragments SET state='SUPERSEDED' WHERE id='FRAGMENT-PENDING'"
+        ))
+    with engine.connect() as connection:
+        rows = connection.execute(text(
+            "SELECT id, state FROM asr_fragments WHERE id IN ('FRAGMENT-CONFIRMED', 'FRAGMENT-PENDING')"
+        )).all()
+        states = dict(rows)
+    assert states == {"FRAGMENT-CONFIRMED": "CONFIRMED", "FRAGMENT-PENDING": "SUPERSEDED"}
 
 
 def test_sqlite_immediate_write_lock_waits_for_the_current_writer(tmp_path: Path):
