@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
+
 from app.ai.errors import BackendUnavailableError, ModelNotInstalledError, WorkerCrashedError
 from speech_worker.speaker.base import SpeakerBackendKey, SpeakerEmbeddingBackend
 from speech_worker.speaker.eres2net_large import ERes2NetLargeBackend, ModelFactory as ERes2NetModelFactory
@@ -14,6 +16,19 @@ _CRITICAL_MODEL_NAMES = ("paraformer", "fsmn-vad")
 _FORMAL_MAX_SINGLE_SEGMENT_MS = 5_000
 _MODEL_NAMES = _CRITICAL_MODEL_NAMES
 ModelFactory = Callable[..., Any]
+
+
+def pcm16_bytes_to_float32(pcm: bytes) -> "np.ndarray":
+    """PCM16 bytes -> float32 waveform in [-1, 1].
+
+    FunASR's bytes input path sniffs the payload as a *container* (WAV/MP3/...)
+    before falling back to raw PCM. Capture buffers sometimes start with bytes
+    that look like an MP3 frame sync (0xFF 0xFx from loud negative samples),
+    which makes libsndfile/mpg123 attempt a doomed decode and fail with
+    "Failed to decode container-formatted audio bytes". Converting to a float32
+    ndarray here bypasses the sniffing entirely and is deterministic.
+    """
+    return np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
 
 
 class FunASRSpeechRuntime:
@@ -182,7 +197,7 @@ class FunASRSpeechRuntime:
 
     def vad(self, pcm: bytes, sample_rate: int) -> list[list[int]]:
         model = self._require_model(self.vad_model, "fsmn-vad")
-        result = self._generate(model, "fsmn-vad", input=pcm, fs=int(sample_rate))
+        result = self._generate(model, "fsmn-vad", input=pcm16_bytes_to_float32(pcm), fs=int(sample_rate))
         return self._normalize_vad(result)
 
     def vad_stream(
@@ -198,7 +213,7 @@ class FunASRSpeechRuntime:
         result = self._generate(
             model,
             "fsmn-vad",
-            input=pcm,
+            input=pcm16_bytes_to_float32(pcm),
             fs=int(sample_rate),
             cache=cache,
             is_final=bool(is_final),
@@ -213,7 +228,7 @@ class FunASRSpeechRuntime:
 
     def transcribe(self, pcm: bytes, sample_rate: int) -> dict[str, Any]:
         model = self._require_model(self.asr_model, "paraformer")
-        result = self._generate(model, "paraformer", input=pcm, fs=int(sample_rate))
+        result = self._generate(model, "paraformer", input=pcm16_bytes_to_float32(pcm), fs=int(sample_rate))
         record = _first_record(result)
         if not record:
             return {"text": "", "confidence": None}

@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from app.ai.errors import BackendUnavailableError, ModelNotInstalledError, WorkerCrashedError
 from app.ai.speech.fingerprint import fingerprint_model_directory
+from speech_worker.funasr_runtime import pcm16_bytes_to_float32
 from speech_worker.speaker.base import SpeakerBackendKey, SpeakerEmbeddingResult
 
 
@@ -152,7 +153,7 @@ class XVectorBackend:
         started = time.perf_counter()
         try:
             result = self.model.generate(
-                input=pcm,
+                input=pcm16_bytes_to_float32(pcm),
                 fs=int(sample_rate),
                 embedding=True,
             )

@@ -107,8 +107,36 @@ def test_vad_and_asr_outputs_are_normalized_without_fabricated_partials(tmp_path
 
     vad_call = runtime.vad_model.generate_calls[-1]
     asr_call = runtime.asr_model.generate_calls[-1]
-    assert vad_call["input"] == pcm and vad_call["fs"] == 16000
-    assert asr_call["input"] == pcm and asr_call["fs"] == 16000
+    import numpy as np
+
+    expected = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+    assert isinstance(vad_call["input"], np.ndarray) and vad_call["input"].dtype == np.float32
+    assert np.array_equal(vad_call["input"], expected)
+    assert vad_call["fs"] == 16000
+    assert isinstance(asr_call["input"], np.ndarray) and np.array_equal(asr_call["input"], expected)
+    assert asr_call["fs"] == 16000
+
+
+def test_pcm_starting_with_mp3_sync_bytes_is_converted_not_container_decoded(tmp_path: Path):
+    """MP3 帧同步字节(0xFF 0xFx, 响亮负样本常见)不得触发 FunASR 的容器解码分支。"""
+    import numpy as np
+
+    runtime = _loaded_runtime(tmp_path)
+    pcm = b"\xff\xfb\x90\x44" + b"\x00\x00" * 1596
+
+    assert runtime.vad(pcm, 16000) == [[120, 820], [1000, 1450]]
+    result = runtime.transcribe(pcm, 16000)
+    assert result["text"] == "测试文本"
+
+    vad_call = runtime.vad_model.generate_calls[-1]
+    asr_call = runtime.asr_model.generate_calls[-1]
+    for call in (vad_call, asr_call):
+        assert not isinstance(call["input"], bytes)
+        assert isinstance(call["input"], np.ndarray) and call["input"].dtype == np.float32
+
+    runtime.vad_stream(pcm, 16000, cache={}, is_final=False)
+    stream_call = runtime.vad_model.generate_calls[-1]
+    assert not isinstance(stream_call["input"], bytes)
 
 
 def test_streaming_vad_passes_only_new_pcm_and_session_cache(tmp_path: Path):
@@ -120,7 +148,10 @@ def test_streaming_vad_passes_only_new_pcm_and_session_cache(tmp_path: Path):
     events = runtime.vad_stream(chunk, 16000, cache=cache, is_final=False, chunk_size_ms=200)
     assert events == [[25, -1]]
     call = runtime.vad_model.generate_calls[-1]
-    assert call["input"] == chunk
+    import numpy as np
+
+    expected = np.frombuffer(chunk, dtype="<i2").astype(np.float32) / 32768.0
+    assert np.array_equal(call["input"], expected)
     assert call["cache"] is cache
     assert call["max_single_segment_time"] == 5000
     assert call["is_final"] is False
