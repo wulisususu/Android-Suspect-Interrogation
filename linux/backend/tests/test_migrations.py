@@ -4,7 +4,9 @@ import subprocess
 import sys
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 
 CORE_TABLES = {
@@ -34,12 +36,15 @@ MOSS_TRANSCRIPTION_TABLES = {
     "moss_transcriptions", "moss_transcription_revisions", "moss_speaker_mappings",
 }
 CASE_DRAFT_TABLES = {"case_voice_role_drafts"}
+DURABLE_LIVE_SPEECH_TABLES = {
+    "asr_audio_segments", "asr_audio_frames", "live_speech_jobs", "asr_fragment_lineage",
+}
 REQUIRED_TABLES = (
     CORE_TABLES | VOICEPRINT_TABLES | TEMPLATE_TABLES | OFFICER_LIBRARY_TABLES |
     CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES | QWEN_ROUTING_TABLES |
-    MOSS_TRANSCRIPTION_TABLES | CASE_DRAFT_TABLES
+    MOSS_TRANSCRIPTION_TABLES | CASE_DRAFT_TABLES | DURABLE_LIVE_SPEECH_TABLES
 )
-ALEMBIC_HEAD = "0015_case_voice_role_draft"
+ALEMBIC_HEAD = "0016_durable_live_speech"
 
 
 def _run_alembic(tmp_path, target: str):
@@ -168,6 +173,139 @@ def test_alembic_upgrade_head_builds_required_schema(tmp_path):
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
         assert revision == ALEMBIC_HEAD
+
+        capture_columns = {item["name"] for item in inspector.get_columns("asr_capture_sessions")}
+        assert {
+            "audio_sample_count", "asr_cursor_sample", "voiced_ms",
+            "recording_status", "asr_status", "speaker_status",
+        } <= capture_columns
+        fragment_columns = {item["name"] for item in inspector.get_columns("asr_fragments")}
+        assert "asr_idempotency_key" in fragment_columns
+        segment_columns = {item["name"] for item in inspector.get_columns("asr_audio_segments")}
+        assert {
+            "capture_session_id", "sequence", "relative_path", "start_sample",
+            "committed_samples", "finalized_samples", "sha256", "status",
+        } <= segment_columns
+        frame_columns = {item["name"] for item in inspector.get_columns("asr_audio_frames")}
+        assert {
+            "capture_session_id", "source_sequence", "start_sample", "end_sample",
+            "payload_sha256", "durable_sample_end",
+        } <= frame_columns
+        job_columns = {item["name"] for item in inspector.get_columns("live_speech_jobs")}
+        assert {
+            "idempotency_key", "kind", "capture_session_id", "fragment_id",
+            "start_sample", "end_sample", "state", "attempts", "model_version", "last_error_code",
+        } <= job_columns
+        lineage_columns = {item["name"] for item in inspector.get_columns("asr_fragment_lineage")}
+        assert {
+            "analysis_job_id", "parent_fragment_id", "child_fragment_id", "relation",
+        } <= lineage_columns
+        for table in DURABLE_LIVE_SPEECH_TABLES:
+            column_names = {item["name"].lower() for item in inspector.get_columns(table)}
+            assert not any("pcm" in name or name == "audio" for name in column_names)
+
+        segment_uniques = {
+            tuple(item["column_names"])
+            for item in inspector.get_unique_constraints("asr_audio_segments")
+        }
+        frame_uniques = {
+            tuple(item["column_names"])
+            for item in inspector.get_unique_constraints("asr_audio_frames")
+        }
+        job_uniques = {
+            tuple(item["column_names"])
+            for item in inspector.get_unique_constraints("live_speech_jobs")
+        }
+        lineage_uniques = {
+            tuple(item["column_names"])
+            for item in inspector.get_unique_constraints("asr_fragment_lineage")
+        }
+        assert ("capture_session_id", "sequence") in segment_uniques
+        assert ("capture_session_id", "source_sequence") in frame_uniques
+        assert ("idempotency_key",) in job_uniques
+        assert ("parent_fragment_id", "child_fragment_id") in lineage_uniques
+        fragment_unique_indexes = {
+            tuple(item["column_names"])
+            for item in inspector.get_indexes("asr_fragments")
+            if item["unique"]
+        }
+        assert ("asr_idempotency_key",) in fragment_unique_indexes
+
+        foreign_keys = {
+            table: {
+                (tuple(item["constrained_columns"]), item["referred_table"])
+                for item in inspector.get_foreign_keys(table)
+            }
+            for table in DURABLE_LIVE_SPEECH_TABLES
+        }
+        assert (("capture_session_id",), "asr_capture_sessions") in foreign_keys["asr_audio_segments"]
+        assert (("capture_session_id",), "asr_capture_sessions") in foreign_keys["asr_audio_frames"]
+        assert (("capture_session_id",), "asr_capture_sessions") in foreign_keys["live_speech_jobs"]
+        assert (("fragment_id",), "asr_fragments") in foreign_keys["live_speech_jobs"]
+        assert (("analysis_job_id",), "live_speech_jobs") in foreign_keys["asr_fragment_lineage"]
+        assert (("parent_fragment_id",), "asr_fragments") in foreign_keys["asr_fragment_lineage"]
+        assert (("child_fragment_id",), "asr_fragments") in foreign_keys["asr_fragment_lineage"]
+    finally:
+        engine.dispose()
+
+
+def test_0016_preserves_existing_fragments_and_speaker_roles(tmp_path):
+    db_file, env, result = _run_alembic(tmp_path, "0015_case_voice_role_draft")
+    assert result.returncode == 0, result.stdout + result.stderr
+    engine = create_engine(f"sqlite:///{db_file}")
+    try:
+        now = "2026-09-01 00:00:00"
+        with engine.begin() as connection:
+            connection.execute(text(
+                "INSERT INTO cases (id, operator_id, case_type, suspect_name, gender, age, officer_name, workflow_state, stage, document_status, report_status, created_at, updated_at) "
+                "VALUES ('CASE-DURABLE', NULL, 'suspect_interrogation', '嫌疑人', NULL, NULL, '测试警官', 'QUESTIONING', 'QUESTIONS', 'DRAFT', 'PENDING', :now, :now)"
+            ), {"now": now})
+            connection.execute(text(
+                "INSERT INTO asr_capture_sessions (id, case_id, interrogation_session_id, status, sample_rate, started_at, ended_at, created_at) "
+                "VALUES ('CAPTURE-DURABLE', 'CASE-DURABLE', NULL, 'COMPLETE', 16000, :now, :now, :now)"
+            ), {"now": now})
+            connection.execute(text(
+                "INSERT INTO asr_fragments (id, capture_session_id, case_id, ordinal, started_at_ms, ended_at_ms, raw_text, edited_text, asr_confidence, speaker, speaker_id, speaker_name, speaker_score, second_best_score, speaker_threshold, speaker_margin, speaker_source, voiceprint_verified, low_confidence, state, model_id, model_version, confirmed_message_id, created_at, updated_at) "
+                "VALUES ('FRAGMENT-DURABLE', 'CAPTURE-DURABLE', 'CASE-DURABLE', 1, 100, 800, '原始文本', '原始文本', 0.91, 'SUSPECT', 'speaker-1', '嫌疑人', 0.91, 0.08, 0.7, 0.1, 'VOICEPRINT', 1, 0, 'PENDING', 'paraformer', 'v1', NULL, :now, :now)"
+            ), {"now": now})
+    finally:
+        engine.dispose()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    engine = create_engine(f"sqlite:///{db_file}")
+    try:
+        with pytest.raises(IntegrityError, match="confirmed fragments cannot be superseded"):
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "UPDATE asr_fragments SET state='SUPERSEDED', confirmed_message_id='MESSAGE-DURABLE' "
+                    "WHERE id='FRAGMENT-DURABLE'"
+                ))
+        with engine.connect() as connection:
+            fragment = connection.execute(text(
+                "SELECT id, speaker, speaker_id, state, raw_text, asr_idempotency_key "
+                "FROM asr_fragments WHERE id='FRAGMENT-DURABLE'"
+            )).mappings().one()
+            capture = connection.execute(text(
+                "SELECT audio_sample_count, asr_cursor_sample, voiced_ms, recording_status, asr_status, speaker_status "
+                "FROM asr_capture_sessions WHERE id='CAPTURE-DURABLE'"
+            )).mappings().one()
+        assert fragment["speaker"] == "SUSPECT"
+        assert fragment["speaker_id"] == "speaker-1"
+        assert fragment["state"] == "PENDING"
+        assert fragment["raw_text"] == "原始文本"
+        assert fragment["asr_idempotency_key"] is None
+        assert capture["audio_sample_count"] == 0
+        assert capture["asr_cursor_sample"] == 0
+        assert capture["voiced_ms"] == 0
     finally:
         engine.dispose()
 

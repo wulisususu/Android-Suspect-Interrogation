@@ -33,6 +33,18 @@ def test_schema_has_required_tables_and_foreign_keys(tmp_path: Path):
         assert conn.execute(text("PRAGMA busy_timeout")).scalar_one() == 5000
 
 
+def test_schema_has_durable_live_speech_tables(tmp_path: Path):
+    engine = make_engine(f"sqlite:///{tmp_path / 'durable-live-speech.sqlite3'}")
+    init_database(engine)
+    tables = set(inspect(engine).get_table_names())
+    assert {
+        "asr_audio_segments",
+        "asr_audio_frames",
+        "live_speech_jobs",
+        "asr_fragment_lineage",
+    } <= tables
+
+
 def test_sqlite_immediate_write_lock_waits_for_the_current_writer(tmp_path: Path):
     engine = make_engine(f"sqlite:///{tmp_path / 'lock.sqlite3'}")
     init_database(engine)

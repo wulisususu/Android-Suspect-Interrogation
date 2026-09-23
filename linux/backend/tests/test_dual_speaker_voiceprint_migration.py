@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy import create_engine, inspect, text
 
 
-EXPECTED_HEAD = "0015_case_voice_role_draft"
+EXPECTED_HEAD = "0016_durable_live_speech"
 XVECTOR = "xvector"
 
 

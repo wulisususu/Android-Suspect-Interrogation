@@ -275,7 +275,7 @@ jobs:
           grep -q "base.protocol === 'https:' ? 'wss:' : 'ws:'" /opt/suspect-interrogation/current/webapp/src/audio/browserVoiceprintCapture.ts
 
           sudo -n bash -c 'set -a; source /etc/suspect-interrogation/runtime.env; set +a; cd /opt/suspect-interrogation/current/linux/backend; PYTHONPATH=/opt/suspect-interrogation/current/linux/backend /opt/suspect-interrogation/current/.venv/bin/python -m alembic -c alembic.ini current' | tee /tmp/suspect-alembic-current.txt
-          grep -q '0015_case_voice_role_draft (head)' /tmp/suspect-alembic-current.txt
+          grep -q '0016_durable_live_speech (head)' /tmp/suspect-alembic-current.txt
 
           sudo -n -u suspect-interrogation env \
             PYTHONPATH=/opt/suspect-interrogation/current/linux/backend \

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin, utc_now
@@ -258,6 +258,12 @@ class ASRCaptureSession(Base):
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     sample_rate: Mapped[int] = mapped_column(Integer, nullable=False)
+    audio_sample_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    asr_cursor_sample: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    voiced_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    recording_status: Mapped[str] = mapped_column(String(32), default="PENDING", server_default="PENDING", nullable=False)
+    asr_status: Mapped[str] = mapped_column(String(32), default="PENDING", server_default="PENDING", nullable=False)
+    speaker_status: Mapped[str] = mapped_column(String(32), default="PENDING", server_default="PENDING", nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
@@ -265,7 +271,11 @@ class ASRCaptureSession(Base):
 
 class ASRFragment(TimestampMixin, Base):
     __tablename__ = "asr_fragments"
-    __table_args__ = (UniqueConstraint("capture_session_id", "ordinal", name="uq_asr_fragments_capture_ordinal"),)
+    __table_args__ = (
+        UniqueConstraint("capture_session_id", "ordinal", name="uq_asr_fragments_capture_ordinal"),
+        UniqueConstraint("asr_idempotency_key", name="uq_asr_fragments_asr_idempotency_key"),
+        CheckConstraint("state != 'SUPERSEDED' OR confirmed_message_id IS NULL", name="ck_asr_fragments_superseded_unconfirmed"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     capture_session_id: Mapped[str] = mapped_column(
@@ -291,9 +301,88 @@ class ASRFragment(TimestampMixin, Base):
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     model_id: Mapped[str] = mapped_column(String(128), nullable=False)
     model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    asr_idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     confirmed_message_id: Mapped[str | None] = mapped_column(
         ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, index=True
     )
+
+
+class ASRAudioSegment(TimestampMixin, Base):
+    __tablename__ = "asr_audio_segments"
+    __table_args__ = (UniqueConstraint("capture_session_id", "sequence", name="uq_asr_audio_segments_capture_sequence"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    capture_session_id: Mapped[str] = mapped_column(
+        ForeignKey("asr_capture_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    relative_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    start_sample: Mapped[int] = mapped_column(Integer, nullable=False)
+    committed_samples: Mapped[int] = mapped_column(Integer, nullable=False)
+    finalized_samples: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+
+
+class ASRAudioFrame(Base):
+    __tablename__ = "asr_audio_frames"
+    __table_args__ = (UniqueConstraint("capture_session_id", "source_sequence", name="uq_asr_audio_frames_capture_source_sequence"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    capture_session_id: Mapped[str] = mapped_column(
+        ForeignKey("asr_capture_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_sample: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_sample: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    durable_sample_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class LiveSpeechJob(TimestampMixin, Base):
+    __tablename__ = "live_speech_jobs"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_live_speech_jobs_idempotency_key"),
+        CheckConstraint("kind IN ('ASR', 'SPEAKER')", name="ck_live_speech_jobs_kind"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    capture_session_id: Mapped[str] = mapped_column(
+        ForeignKey("asr_capture_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    fragment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("asr_fragments.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    start_sample: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_sample: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class ASRFragmentLineage(Base):
+    __tablename__ = "asr_fragment_lineage"
+    __table_args__ = (
+        UniqueConstraint("parent_fragment_id", "child_fragment_id", name="uq_asr_fragment_lineage_parent_child"),
+        CheckConstraint("relation = 'SUPERSEDES'", name="ck_asr_fragment_lineage_relation"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    analysis_job_id: Mapped[str] = mapped_column(
+        ForeignKey("live_speech_jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    parent_fragment_id: Mapped[str] = mapped_column(
+        ForeignKey("asr_fragments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    child_fragment_id: Mapped[str] = mapped_column(
+        ForeignKey("asr_fragments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    relation: Mapped[str] = mapped_column(String(32), default="SUPERSEDES", server_default="SUPERSEDES", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
 class StandardQuestion(TimestampMixin, Base):
