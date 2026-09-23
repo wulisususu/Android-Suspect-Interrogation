@@ -797,7 +797,7 @@ class LiveSpeechCoordinator:
             spans = SpeechSession.split_speaker_turns(
                 pcm,
                 sample_rate,
-                lambda chunk: self._extract_embedding(chunk, sample_rate)["embedding"],
+                lambda chunk: self._extract_embedding_with_priority(chunk, sample_rate)["embedding"],
                 splitter=SpeakerTurnSplitter(),
             )
             if not self._valid_turn_spans(spans, total_ms):
@@ -810,11 +810,11 @@ class LiveSpeechCoordinator:
                     self._persist_ambiguous_speaker_result(
                         job_id,
                         runtime,
-                        self._extract_embedding(pcm, sample_rate),
+                        self._extract_embedding_with_priority(pcm, sample_rate),
                         duration_ms=total_ms,
                     )
                     return
-                embedding = self._extract_embedding(pcm, sample_rate)
+                embedding = self._extract_embedding_with_priority(pcm, sample_rate)
                 decision = self._decide_deferred_speaker(
                     runtime,
                     embedding=embedding["embedding"],
@@ -838,12 +838,10 @@ class LiveSpeechCoordinator:
                     self._persist_ambiguous_speaker_result(
                         job_id,
                         runtime,
-                        self._extract_embedding(pcm, sample_rate),
+                        self._extract_embedding_with_priority(pcm, sample_rate),
                         duration_ms=total_ms,
                     )
                     return
-                if index:
-                    self._wait_for_asr_priority()
                 child_start = start_sample + int(round(span.start_ms * sample_rate / 1000))
                 child_end = start_sample + int(round(span.end_ms * sample_rate / 1000))
                 relative_start = child_start - start_sample
@@ -852,7 +850,7 @@ class LiveSpeechCoordinator:
                 if not child_pcm or child_end <= child_start:
                     self._set_speaker_job_state(job_id, "NEEDS_REVIEW", "AMBIGUOUS_BOUNDARY")
                     return
-                embedding = self._extract_embedding(child_pcm, sample_rate)
+                embedding = self._extract_embedding_with_priority(child_pcm, sample_rate)
                 duration_ms = int(round((child_end - child_start) * 1000 / sample_rate))
                 decision = self._decide_deferred_speaker(
                     runtime,
@@ -862,6 +860,7 @@ class LiveSpeechCoordinator:
                     duration_ms=duration_ms,
                     overlap=False,
                 )
+                self._wait_for_asr_priority()
                 transcript = self._transcribe_child(child_pcm, job_id, index)
                 child_results.append(
                     {
@@ -930,6 +929,10 @@ class LiveSpeechCoordinator:
                 else getattr(result, "model_fingerprint", None)
             ),
         }
+
+    def _extract_embedding_with_priority(self, pcm: bytes, sample_rate: int) -> dict[str, Any]:
+        self._wait_for_asr_priority()
+        return self._extract_embedding(pcm, sample_rate)
 
     def _capture_service_owner(self):
         return getattr(self.capture_service, "_default_service", self.capture_service)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -259,6 +261,61 @@ def test_fragment_update_is_manual_and_preserves_raw_text_then_confirm_creates_o
         assert message.session_id == session_id
         assert message.text == "人工修订文本"
         assert message.speaker == "民警"
+    engine.dispose()
+
+
+def test_fragment_list_keeps_delayed_split_children_in_audio_order(tmp_path):
+    app, engine, factory, _ = _app(tmp_path)
+    case_id, _, capture_id, parent_id, later_id = _seed_fragment(factory)
+    now = datetime.now(timezone.utc)
+    with factory() as db:
+        parent = db.get(ASRFragment, parent_id)
+        later = db.get(ASRFragment, later_id)
+        assert parent is not None and later is not None
+        parent.state = "SUPERSEDED"
+        parent.created_at = now - timedelta(days=2)
+        later.created_at = now - timedelta(days=1)
+        first_child = asr_repo.create_fragment(
+            db,
+            capture_session_id=capture_id,
+            case_id=case_id,
+            ordinal=2,
+            started_at_ms=0,
+            ended_at_ms=600,
+            raw_text="拆分前半段",
+            asr_confidence=0.9,
+            speaker="SUSPECT",
+            speaker_source="X_VECTOR",
+            voiceprint_verified=True,
+            low_confidence=False,
+            model_id="test-paraformer",
+            model_version="v1",
+        )
+        second_child = asr_repo.create_fragment(
+            db,
+            capture_session_id=capture_id,
+            case_id=case_id,
+            ordinal=3,
+            started_at_ms=600,
+            ended_at_ms=1300,
+            raw_text="拆分后半段",
+            asr_confidence=0.9,
+            speaker="SUSPECT",
+            speaker_source="X_VECTOR",
+            voiceprint_verified=True,
+            low_confidence=False,
+            model_id="test-paraformer",
+            model_version="v1",
+        )
+        first_child_id = first_child.id
+        second_child_id = second_child.id
+        db.commit()
+
+    with TestClient(app) as client:
+        rows = client.get(f"/api/v1/cases/{case_id}/asr/fragments").json()
+    listed_ids = [row["fragmentId"] for row in rows]
+    assert listed_ids.index(first_child_id) < listed_ids.index(later_id)
+    assert listed_ids.index(second_child_id) < listed_ids.index(later_id)
     engine.dispose()
 
 

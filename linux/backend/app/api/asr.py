@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.database.session import begin_sqlite_immediate
-from app.database.models import ASRFragment
+from app.database.models import ASRCaptureSession, ASRFragment
 from app.domain.errors import DomainError
 from app.repositories import asr_fragments as asr_repo
 from app.services.serializers import iso_utc
@@ -184,10 +184,21 @@ def question_preparation_stop(case_id: str, request: Request):
 @router.get("/cases/{case_id}/asr/fragments")
 def list_fragments(case_id: str, include_confirmed: bool = Query(False), db: Session = Depends(get_db)):
     case_repo.get(db, case_id)
-    stmt = select(ASRFragment).where(ASRFragment.case_id == case_id, ASRFragment.state != "DISCARDED")
+    stmt = (
+        select(ASRFragment)
+        .join(ASRCaptureSession, ASRCaptureSession.id == ASRFragment.capture_session_id)
+        .where(ASRFragment.case_id == case_id, ASRFragment.state != "DISCARDED")
+    )
     if not include_confirmed:
         stmt = stmt.where(ASRFragment.state != "CONFIRMED")
-    stmt = stmt.order_by(ASRFragment.created_at.asc(), ASRFragment.ordinal.asc())
+    stmt = stmt.order_by(
+        ASRCaptureSession.started_at.asc(),
+        ASRCaptureSession.id.asc(),
+        ASRFragment.started_at_ms.asc(),
+        ASRFragment.ended_at_ms.asc(),
+        ASRFragment.ordinal.asc(),
+        ASRFragment.id.asc(),
+    )
     return [_fragment_payload(row, db) for row in db.scalars(stmt)]
 
 

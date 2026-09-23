@@ -277,13 +277,17 @@ git commit -m "feat: replay durable audio into ASR"
 ## Task 5: Add the Delayed Speaker Workflow and Turn Re-Transcription
 
 **Files:**
+- Create: `linux/backend/alembic/versions/0019_deferred_speaker_analysis.py`
+- Modify: `linux/backend/app/database/recognition_models.py`
+- Modify: `linux/backend/app/api/asr.py` (order fragments by their capture timeline)
 - Modify: `linux/backend/app/services/live_speech_coordinator.py`
 - Modify: `linux/backend/app/services/asr_capture_service.py`
 - Modify: `linux/backend/app/repositories/asr_fragments.py`
 - Modify: `linux/backend/speech_worker/session.py`
 - Create: `linux/backend/tests/test_live_speaker_analysis.py`
+- Modify: `linux/backend/tests/test_asr_api.py`
 
-- [ ] **Step 1: Add threshold, backfill, split, and preservation tests**
+- [x] **Step 1: Add threshold, backfill, split, and preservation tests**
 
 Cover these cases with a fake archive and fake speaker embeddings:
 
@@ -299,28 +303,30 @@ Run: `python -m pytest tests/test_live_speaker_analysis.py -q`
 
 Expected: FAIL because there is no persistent speaker queue or deferred splitter.
 
-- [ ] **Step 2: Schedule low-priority speaker jobs**
+- [x] **Step 2: Schedule low-priority speaker jobs**
 
-Queue speaker analysis only after `voiced_ms >= 10_000` and `final_fragment_count >= 3`. At capture stop, schedule the remaining available ranges regardless of the threshold. On first activation, enqueue every unresolved range from the start of the session; subsequently enqueue each new final fragment. The coordinator processes ASR backlog before speaker jobs and processes one speaker turn per job so new ASR can regain priority between jobs.
+Queue speaker analysis only after `voiced_ms >= 10_000` and `final_fragment_count >= 3`. At capture stop, schedule the remaining available ranges regardless of the threshold. On first activation, enqueue every unresolved range from the start of the session; subsequently enqueue each new final fragment. The coordinator processes ASR backlog before speaker jobs and yields before each speaker embedding or child transcription so new ASR can regain priority between inference calls. Persist jobs and requeue pending/interrupted jobs after restart.
 
-- [ ] **Step 3: Split turns and map voiceprints**
+- [x] **Step 3: Split turns and map voiceprints**
 
 For each speaker job, run the existing `SpeakerTurnSplitter` against the archived PCM, then compare stable turn embeddings to voiceprints enabled for the active interrogation session using `decide_speaker` and the existing calibration snapshot. Persist scores, threshold/margin, model version/fingerprint, overlap, and decision source. Do not move the calibrated turn-splitter thresholds in this feature.
 
-- [ ] **Step 4: Re-transcribe and preserve mixed-turn fragments**
+- [x] **Step 4: Re-transcribe and preserve mixed-turn fragments**
 
 When a pending Stage 1 fragment contains multiple stable turns, run ASR against each exact turn range. In one transaction, write the child text fragments, lineage rows, speaker results, and a parent `SUPERSEDED` state only after all child ASR calls succeed. After commit, publish `ASR_FRAGMENT_REPLACED` with `{ parentFragmentId, fragments, jobId }`. If any child ASR fails or a boundary is ambiguous, retain the parent as active `UNKNOWN` and mark the job `NEEDS_REVIEW`. Never replace a manually edited or confirmed parent.
 
-- [ ] **Step 5: Verify asynchronous role completion**
+- [x] **Step 5: Verify asynchronous role completion**
 
-Run: `python -m pytest tests/test_live_speaker_analysis.py tests/test_asr_capture_service.py tests/test_asr_recognition_evidence.py -q`
+Run: `python -m pytest tests/test_live_speaker_analysis.py tests/test_asr_capture_service.py tests/test_asr_recognition_evidence.py tests/test_asr_api.py -q`
 
-Expected: PASS; transcript rows exist before the threshold, analysis backfills them after the threshold, and speaker-worker failure leaves the transcript unchanged.
+Run from the repository root: `python -m pytest tests/release/test_lan_https_tls.py::test_production_workflow_uses_https_and_verifies_certificate_identity -q`
 
-- [ ] **Step 6: Commit the speaker workflow**
+Expected: PASS; transcript rows exist before the threshold, analysis backfills them after the threshold, speaker-worker failure leaves the transcript unchanged, delayed replacements stay in audio order, and the production workflow checks migration head `0019_deferred_speaker_analysis`.
+
+- [x] **Step 6: Commit the speaker workflow**
 
 ```text
-git add linux/backend/app/services/live_speech_coordinator.py linux/backend/app/services/asr_capture_service.py linux/backend/app/repositories/asr_fragments.py linux/backend/speech_worker/session.py linux/backend/tests/test_live_speaker_analysis.py
+git add .github/workflows/rk3588-production-redeploy.yml docs/superpowers/plans/2026-09-23-durable-live-speech-pipeline.md linux/backend/alembic/versions/0019_deferred_speaker_analysis.py linux/backend/app/api/asr.py linux/backend/app/database/recognition_models.py linux/backend/app/repositories/asr_fragments.py linux/backend/app/services/asr_capture_service.py linux/backend/app/services/live_speech_coordinator.py linux/backend/speech_worker/session.py linux/backend/tests/test_asr_api.py linux/backend/tests/test_live_speaker_analysis.py linux/backend/tests/test_dual_speaker_voiceprint_migration.py linux/backend/tests/test_migrations.py linux/backend/tests/test_moss_transcription_models.py linux/backend/tests/test_speaker_calibration_migration_contract.py tests/release/test_lan_https_tls.py
 git commit -m "feat: add deferred speaker analysis and transcript lineage"
 ```
 
@@ -336,6 +342,7 @@ git commit -m "feat: add deferred speaker analysis and transcript lineage"
 - [ ] **Step 1: Add projection ordering tests**
 
 Assert that an UNKNOWN final fragment remains available in the transcript but is not projected into a police/suspect question/answer; when its role becomes known, it is projected once; repeating the same role-resolution event does not append a duplicate answer or question; and a manually assigned role is not overwritten by an automatic result.
+When a delayed replacement arrives after later speech, active transcript rows remain ordered by capture start and audio time, not by result creation time or arrival order.
 
 Run: `python -m pytest tests/test_interrogation_projection_service.py tests/test_asr_api.py -q`
 
@@ -563,7 +570,7 @@ Expected: the deployed release marker on `.109` equals the pushed commit SHA.
 
 - [ ] **Step 4: Verify `.109` without touching port 8000**
 
-With the project LAN CA trusted, verify `https://192.168.2.109:18080/health/live` and `/health/ready` without disabling certificate verification. Verify browser audio uses WSS, release frontend/backend share one SHA, SQLite is at `0018_asr_finalize_checkpoint`, and TCP/8000 is unchanged before/after deployment.
+With the project LAN CA trusted, verify `https://192.168.2.109:18080/health/live` and `/health/ready` without disabling certificate verification. Verify browser audio uses WSS, release frontend/backend share one SHA, SQLite is at `0019_deferred_speaker_analysis`, and TCP/8000 is unchanged before/after deployment.
 
 Expected: live/ready return HTTP 200, migration head matches, WSS is selected, and the existing port-8000 FunASR process remains untouched.
 

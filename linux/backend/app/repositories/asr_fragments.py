@@ -59,7 +59,16 @@ def get_fragment(db: Session, fragment_id: str) -> ASRFragment:
 
 
 def list_fragments(db: Session, *, capture_session_id: str) -> list[ASRFragment]:
-    stmt = select(ASRFragment).where(ASRFragment.capture_session_id == capture_session_id).order_by(ASRFragment.ordinal.asc())
+    stmt = (
+        select(ASRFragment)
+        .where(ASRFragment.capture_session_id == capture_session_id)
+        .order_by(
+            ASRFragment.started_at_ms.asc(),
+            ASRFragment.ended_at_ms.asc(),
+            ASRFragment.ordinal.asc(),
+            ASRFragment.id.asc(),
+        )
+    )
     return list(db.scalars(stmt))
 
 

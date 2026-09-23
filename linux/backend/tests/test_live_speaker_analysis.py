@@ -290,6 +290,8 @@ def test_two_turn_retranscription_atomically_replaces_parent_and_keeps_lineage(t
     monkeypatch.setattr(live_speech_coordinator, "SpeakerTurnSplitter", lambda: _TwoTurnSplitter())
     engine, factory, capture_id, parent_id, coordinator, speech, events = _build(tmp_path)
     job_id = _job_for(factory, coordinator, capture_id)
+    priority_yields: list[bool] = []
+    monkeypatch.setattr(coordinator, "_wait_for_asr_priority", lambda: priority_yields.append(True))
 
     coordinator.process_speaker_job(job_id)
     coordinator.process_speaker_job(job_id)
@@ -327,6 +329,7 @@ def test_two_turn_retranscription_atomically_replaces_parent_and_keeps_lineage(t
         capture = db.get(ASRCaptureSession, capture_id)
         assert capture is not None and capture.speaker_status == "COMPLETE"
     assert speech.transcriptions == [b"\x11\x00" * 16_000, b"\x22\x00" * 16_000]
+    assert len(priority_yields) >= 6
     replacements = [event for event in events.events if event[1] == "ASR_FRAGMENT_REPLACED"]
     assert len(replacements) == 1
     assert replacements[0][2]["parentFragmentId"] == parent_id
