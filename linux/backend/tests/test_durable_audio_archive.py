@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,25 @@ def test_capture_finalizes_wav_with_durable_metadata(archive_env):
         assert capture is not None
         assert capture.recording_status == "COMPLETE"
     engine.dispose()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not meaningful on Windows")
+def test_active_archive_files_and_directories_have_restrictive_modes(archive_env):
+    archive, _factory, data_dir, _engine = archive_env
+    previous_umask = os.umask(0o077)
+    try:
+        archive.open_capture("capture-1", case_id="case-1")
+        archive.append("capture-1", b"\x01\x00")
+    finally:
+        os.umask(previous_umask)
+
+    archive_root = data_dir / "audio"
+    case_dir = archive_root / "case-1"
+    capture_dir = case_dir / "capture-1"
+    wav_path = capture_dir / "segment-000000.wav"
+    for path in (data_dir, archive_root, case_dir, capture_dir):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o750
+    assert stat.S_IMODE(wav_path.stat().st_mode) == 0o640
 
 
 def test_finalize_rejects_changed_active_audio_without_exposing_it(archive_env):
@@ -158,6 +178,48 @@ def test_read_samples_quarantines_corrupted_finalized_segment_and_preserves_pref
     assert archive.read_samples("capture-1", 0, 60 * 16_000) == prefix * 60
     with pytest.raises(ValueError):
         archive.read_samples("capture-1", 60 * 16_000, 60 * 16_000 + 1)
+
+
+def test_read_samples_rejects_overlapping_segment_manifest_and_quarantines_suffix(archive_env):
+    archive, factory, _data_dir, _engine = archive_env
+    prefix = b"\x0b\x00" * 16_000
+    tail = b"\x0c\x00" * 100
+    segment_boundary = 60 * 16_000
+    archive.open_capture("capture-1", case_id="case-1")
+    for _ in range(60):
+        archive.append("capture-1", prefix)
+    archive.append("capture-1", tail)
+    archive.finalize_capture("capture-1")
+    with factory() as db:
+        segment = db.scalar(
+            select(ASRAudioSegment).where(
+                ASRAudioSegment.capture_session_id == "capture-1",
+                ASRAudioSegment.sequence == 1,
+            )
+        )
+        segment.start_sample = segment_boundary - 10
+        db.commit()
+
+    start = segment_boundary - 20
+    end = segment_boundary + 20
+    with pytest.raises(ValueError):
+        archive.read_samples("capture-1", start, end)
+
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, "capture-1")
+        segments = list(
+            db.scalars(
+                select(ASRAudioSegment)
+                .where(ASRAudioSegment.capture_session_id == "capture-1")
+                .order_by(ASRAudioSegment.sequence)
+            )
+        )
+        assert capture.recording_status == "INCOMPLETE"
+        assert capture.audio_sample_count == segment_boundary
+        assert [(item.status, item.committed_samples) for item in segments] == [
+            ("FINALIZED", segment_boundary),
+            ("GAP", 0),
+        ]
 
 
 def test_finalize_again_quarantines_corrupted_complete_capture(archive_env):
@@ -437,14 +499,14 @@ def test_rejects_incomplete_pcm_frames_and_traversal_ids(archive_env):
 def test_append_io_failure_marks_capture_incomplete_and_not_complete(archive_env, monkeypatch):
     archive, factory, _data_dir, _engine = archive_env
     archive.open_capture("capture-1", case_id="case-1")
-    original_open = Path.open
+    original_open = os.open
 
-    def fail_wav_write(path: Path, mode="r", *args, **kwargs):
-        if path.suffix == ".wav" and mode in {"r+b", "wb+"}:
+    def fail_wav_create(path: Path, flags, *args, **kwargs):
+        if path.suffix == ".wav" and flags & os.O_CREAT:
             raise OSError("simulated disk full")
-        return original_open(path, mode, *args, **kwargs)
+        return original_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", fail_wav_write)
+    monkeypatch.setattr(os, "open", fail_wav_create)
     with pytest.raises(OSError, match="disk full"):
         archive.append("capture-1", b"\x01\x00" * 64)
 

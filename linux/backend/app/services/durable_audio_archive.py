@@ -251,7 +251,7 @@ class DurableAudioArchive:
             overlap_end = min(end, segment_end)
             if overlap_start >= overlap_end:
                 continue
-            if segment.status == "GAP" or segment_start > cursor or overlap_start > cursor:
+            if segment.status == "GAP" or segment_start > cursor or overlap_start != cursor:
                 raise ValueError("sample range crosses a missing audio gap")
             path = self._segment_path(case_id, capture_id, segment)
             contents = path.read_bytes()
@@ -266,6 +266,8 @@ class DurableAudioArchive:
             cursor = overlap_end
         if cursor != end:
             raise ValueError("sample range crosses a missing audio gap")
+        if len(output) != (end - start) * _SAMPLE_BYTES:
+            raise ValueError("audio byte count does not match the requested sample range")
         return bytes(output)
 
     def list_segments(self, capture_id: str) -> list[ASRAudioSegment]:
@@ -580,7 +582,7 @@ class DurableAudioArchive:
             overlap_end = min(end, segment_end)
             if overlap_start >= overlap_end:
                 continue
-            if segment_start > cursor or overlap_start > cursor or not self._segment_matches_metadata(
+            if segment_start > cursor or overlap_start != cursor or not self._segment_matches_metadata(
                 case_id,
                 capture_id,
                 segment,
@@ -670,8 +672,21 @@ class DurableAudioArchive:
         exists = path.exists()
         if not exists and old_samples:
             raise OSError("durable audio segment is missing")
-        mode = "r+b" if exists else "wb+"
-        with path.open(mode) as stream:
+        if exists:
+            stream_context = path.open("r+b")
+        else:
+            flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+            fd = os.open(path, flags, 0o640)
+            try:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(fd, 0o640)
+                else:
+                    os.chmod(path, 0o640)
+                stream_context = os.fdopen(fd, "r+b")
+            except BaseException:
+                os.close(fd)
+                raise
+        with stream_context as stream:
             committed_length = _WAV_HEADER_BYTES + old_samples * _SAMPLE_BYTES
             if exists and stream.seek(0, os.SEEK_END) < committed_length:
                 raise OSError("audio segment is shorter than its durable metadata")
@@ -784,6 +799,7 @@ class DurableAudioArchive:
         self._validate_id(capture_id, "capture_id")
         root = self.data_dir.resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
+        self._chmod_directory(self.data_dir)
         if self.audio_dir.resolve() != self.audio_dir:
             raise ValueError("audio archive root does not match its canonical path")
         audio_exists = self.audio_dir.exists()
