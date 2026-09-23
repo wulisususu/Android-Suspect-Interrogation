@@ -675,17 +675,7 @@ class DurableAudioArchive:
         if exists:
             stream_context = path.open("r+b")
         else:
-            flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-            fd = os.open(path, flags, 0o640)
-            try:
-                if hasattr(os, "fchmod"):
-                    os.fchmod(fd, 0o640)
-                else:
-                    os.chmod(path, 0o640)
-                stream_context = os.fdopen(fd, "r+b")
-            except BaseException:
-                os.close(fd)
-                raise
+            stream_context = self._open_new_audio_file(path)
         with stream_context as stream:
             committed_length = _WAV_HEADER_BYTES + old_samples * _SAMPLE_BYTES
             if exists and stream.seek(0, os.SEEK_END) < committed_length:
@@ -722,8 +712,8 @@ class DurableAudioArchive:
         exists = path.exists()
         if not exists and not allow_create:
             raise OSError("durable audio segment is missing")
-        mode = "r+b" if exists else "wb+"
-        with path.open(mode) as stream:
+        stream_context = path.open("r+b") if exists else self._open_new_audio_file(path)
+        with stream_context as stream:
             target_length = _WAV_HEADER_BYTES + sample_count * _SAMPLE_BYTES
             if exists and stream.seek(0, os.SEEK_END) < target_length:
                 raise OSError("audio segment is shorter than its recovery checkpoint")
@@ -733,6 +723,20 @@ class DurableAudioArchive:
                 raise OSError("short write while repairing WAV header")
             stream.flush()
             os.fsync(stream.fileno())
+
+    @staticmethod
+    def _open_new_audio_file(path: Path) -> Any:
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        fd = os.open(path, flags, 0o640)
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o640)
+            else:
+                os.chmod(path, 0o640)
+            return os.fdopen(fd, "r+b")
+        except BaseException:
+            os.close(fd)
+            raise
 
     @staticmethod
     def _wav_header(sample_count: int) -> bytes:
