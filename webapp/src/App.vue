@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import MaintenanceGate from './components/MaintenanceGate.vue'
+import OnScreenKeyboard from './components/OnScreenKeyboard.vue'
 import CaseListView from './views/CaseListView.vue'
 import InterrogationWorkspace from './views/InterrogationWorkspace.vue'
 import SystemSettingsView from './views/SystemSettingsView.vue'
@@ -54,6 +55,7 @@ function openSettings() {
       <CaseListView @open="openCase" />
     </div>
   </MaintenanceGate>
+  <OnScreenKeyboard />
 </template>
 
 <style scoped>
