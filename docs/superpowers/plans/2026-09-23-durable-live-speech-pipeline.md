@@ -38,7 +38,7 @@
 - `docs/release/DEPLOYMENT.md` and `docs/security/LINUX-HARDENING.md` — document archive layout, capacity, permissions, recovery, backup, and the 10 GB free-space reserve.
 - Backend tests: `linux/backend/tests/test_database.py`, `test_migrations.py`, `test_dual_speaker_voiceprint_migration.py`, `test_moss_transcription_models.py`, `test_speaker_calibration_migration_contract.py`, `test_durable_audio_archive.py`, `test_live_speech_coordinator.py`, `test_asr_capture_service.py`, `test_speech_worker_server.py`, `test_asr_api.py`, `test_interrogation_projection_service.py`, `test_browser_audio_input.py`, and `test_browser_asr_transport.py`.
 - Frontend tests: `webapp/src/audio/browserAsrCapture.test.ts` and new `webapp/src/stores/interrogation.test.ts`.
-- Release tests: `tests/release/test_backup_restore.py` and `tests/release/test_restore_security.py`.
+- Release tests: `tests/release/test_lan_https_tls.py`, `tests/release/test_backup_restore.py`, and `tests/release/test_restore_security.py`.
 
 ## Task 1: Add Durable Audio and Job Schema
 
@@ -50,9 +50,10 @@
 - Modify: `linux/backend/tests/test_dual_speaker_voiceprint_migration.py`
 - Modify: `linux/backend/tests/test_moss_transcription_models.py`
 - Modify: `linux/backend/tests/test_speaker_calibration_migration_contract.py`
+- Modify: `tests/release/test_lan_https_tls.py`
 - Modify: `.github/workflows/rk3588-production-redeploy.yml`
 
-- [ ] **Step 1: Add a failing schema test**
+- [x] **Step 1: Add a failing schema test**
 
 ```python
 def test_live_speech_tables_are_registered(tmp_path):
@@ -71,7 +72,7 @@ Run from `linux/backend`: `python -m pytest tests/test_database.py::test_live_sp
 
 Expected: FAIL because the four tables do not exist.
 
-- [ ] **Step 2: Add the persistence models and Alembic migration**
+- [x] **Step 2: Add the persistence models and Alembic migration**
 
 Add these persisted facts, with foreign keys and indexes:
 
@@ -93,15 +94,19 @@ ASRFragmentLineage: analysis_job_id, parent_fragment_id, child_fragment_id,
                     relation(SUPERSEDES); unique(parent_fragment_id, child_fragment_id)
 ```
 
-Keep audio bytes out of SQLite. Add `SUPERSEDED` as a fragment state and enforce that only unconfirmed parents can be superseded. The migration must chain from `0015_case_voice_role_draft`, preserve every existing row, and add no data backfill that changes old speaker roles. Advance existing latest-head expectations in the migration contract tests from `0015_case_voice_role_draft` to `0016_durable_live_speech`.
+Keep audio bytes out of SQLite. Add `SUPERSEDED` as a fragment state and enforce that only never-confirmed parents can be superseded, including a previously `CONFIRMED` fragment whose message reference was deleted. Apply the guard in both migrated and fresh SQLite schemas. The migration must chain from `0015_case_voice_role_draft`, preserve every existing row, and add no data backfill that changes old speaker roles. Advance existing latest-head expectations in the migration contract tests from `0015_case_voice_role_draft` to `0016_durable_live_speech`.
 
 Update the production redeploy workflow's post-deploy Alembic assertion from `0015_case_voice_role_draft (head)` to `0016_durable_live_speech (head)`. This keeps the required `.109` production deployment gate aligned with the schema migration.
 
-- [ ] **Step 3: Verify new-schema and upgrade paths**
+- [x] **Step 3: Verify new-schema and upgrade paths**
 
 Run: `python -m pytest tests/test_database.py tests/test_migrations.py tests/test_dual_speaker_voiceprint_migration.py tests/test_moss_transcription_models.py tests/test_speaker_calibration_migration_contract.py -q`
 
 Expected: PASS for fresh `create_all`, the `0015` to `0016` migration, existing database compatibility, and all current migration-head contracts.
+
+Run from repository root: `python -m pytest tests/release/test_lan_https_tls.py::test_production_workflow_uses_https_and_verifies_certificate_identity -q`
+
+Expected: PASS with the production workflow and TLS contract both expecting migration head `0016_durable_live_speech`. The two Git Bash path-helper cases in the full file require Linux CI; the Windows host cannot resolve this workspace's `D:\` path inside Git Bash.
 
 Run from `linux/backend` against a temporary database so the project database is never touched:
 
@@ -113,10 +118,10 @@ alembic upgrade head
 
 Expected: database revision is `0016_durable_live_speech` and all four new tables are present. Remove the temporary database and clear `SUSPECT_DB_PATH` after the check.
 
-- [ ] **Step 4: Commit the schema boundary**
+- [x] **Step 4: Commit the schema boundary**
 
 ```text
-git add linux/backend/app/database/models.py linux/backend/alembic/versions/0016_durable_live_speech.py linux/backend/tests/test_database.py linux/backend/tests/test_migrations.py linux/backend/tests/test_dual_speaker_voiceprint_migration.py linux/backend/tests/test_moss_transcription_models.py linux/backend/tests/test_speaker_calibration_migration_contract.py .github/workflows/rk3588-production-redeploy.yml
+git add linux/backend/app/database/models.py linux/backend/alembic/versions/0016_durable_live_speech.py linux/backend/tests/test_database.py linux/backend/tests/test_migrations.py linux/backend/tests/test_dual_speaker_voiceprint_migration.py linux/backend/tests/test_moss_transcription_models.py linux/backend/tests/test_speaker_calibration_migration_contract.py tests/release/test_lan_https_tls.py .github/workflows/rk3588-production-redeploy.yml
 git commit -m "feat: add durable live speech job schema"
 ```
 
