@@ -60,17 +60,24 @@ class DurableAudioArchive:
                 capture.status = "CAPTURING"
 
     def append(self, capture_id: str, pcm: bytes, *, source_sequence: int | None = None) -> int:
+        """Durably append up to one second of PCM; callers must split larger input."""
         self._validate_id(capture_id, "capture_id")
-        if not isinstance(pcm, bytes) or len(pcm) % _SAMPLE_BYTES:
+        if not isinstance(pcm, bytes):
+            raise ValueError("PCM16 audio must contain complete 16-bit samples")
+        if len(pcm) % _SAMPLE_BYTES:
+            self._mark_incomplete(capture_id)
             raise ValueError("PCM16 audio must contain complete 16-bit samples")
         if not pcm:
             raise ValueError("PCM16 audio frame cannot be empty")
+        sample_count = len(pcm) // _SAMPLE_BYTES
+        if sample_count > _SAMPLE_RATE:
+            self._mark_incomplete(capture_id)
+            raise ValueError("audio append cannot exceed one second")
         if source_sequence is not None and (
             not isinstance(source_sequence, int) or isinstance(source_sequence, bool) or source_sequence < 0
         ):
             raise ValueError("source_sequence must be a non-negative integer")
 
-        sample_count = len(pcm) // _SAMPLE_BYTES
         payload_hash = hashlib.sha256(pcm).hexdigest()
         conflict = False
         durable_end: int | None = None
@@ -214,7 +221,6 @@ class DurableAudioArchive:
 
     def finalize_capture(self, capture_id: str) -> list[ASRAudioSegment]:
         self._validate_id(capture_id, "capture_id")
-        io_started = False
         try:
             with archive_repo.archive_transaction(self.session_factory) as db:
                 capture = archive_repo.get_capture(db, capture_id)
@@ -233,7 +239,6 @@ class DurableAudioArchive:
                     if segment.committed_samples > _SEGMENT_SAMPLES:
                         raise RuntimeError("audio segment exceeds its one-minute limit")
                     if segment.status != "FINALIZED":
-                        io_started = True
                         path = self._segment_path(capture.case_id, capture.id, segment)
                         self._repair_wav(path, segment.committed_samples, allow_create=segment.committed_samples == 0)
                         self._finalize_segment_file(segment, path)
@@ -245,8 +250,7 @@ class DurableAudioArchive:
                 archive_repo.complete_capture(capture)
                 result = list(segments)
         except Exception:
-            if io_started:
-                self._mark_incomplete(capture_id)
+            self._mark_incomplete(capture_id)
             raise
         return result
 
@@ -321,7 +325,6 @@ class DurableAudioArchive:
             remaining = remaining[take_bytes:]
 
     def _recover_capture(self, capture_id: str) -> None:
-        io_started = False
         try:
             with archive_repo.archive_transaction(self.session_factory) as db:
                 capture = archive_repo.get_capture(db, capture_id)
@@ -332,13 +335,18 @@ class DurableAudioArchive:
                 gap_found = False
                 for segment in segments:
                     if gap_found or segment.start_sample != expected_start:
-                        archive_repo.update_segment(segment, status="GAP", finalized_samples=0)
+                        archive_repo.update_segment(
+                            segment,
+                            committed_samples=0,
+                            finalized_samples=0,
+                            sha256=hashlib.sha256(b"").hexdigest(),
+                            status="GAP",
+                        )
                         gap_found = True
                         self._segment_hashers.pop(str(self._segment_path(capture.case_id, capture.id, segment)), None)
                         continue
 
                     path = self._segment_path(capture.case_id, capture.id, segment)
-                    io_started = True
                     if segment.status == "FINALIZED":
                         expected_file_size = _WAV_HEADER_BYTES + segment.committed_samples * _SAMPLE_BYTES
                         valid_finalized = False
@@ -349,50 +357,54 @@ class DurableAudioArchive:
                         if valid_finalized and segment.finalized_samples == segment.committed_samples:
                             expected_start += segment.committed_samples
                         else:
-                            archive_repo.update_segment(segment, status="GAP", finalized_samples=0)
+                            self._mark_segment_gap(segment)
                             gap_found = True
                         continue
 
-                    if segment.status not in {"ACTIVE", "GAP"}:
-                        archive_repo.update_segment(segment, status="GAP", finalized_samples=0)
+                    if segment.status != "ACTIVE":
+                        self._mark_segment_gap(segment)
                         gap_found = True
                         continue
                     if not path.exists():
-                        if segment.committed_samples == 0 and segment.status == "ACTIVE":
+                        if segment.committed_samples == 0:
                             path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
                             self._repair_wav(path, 0, allow_create=True)
                         else:
-                            archive_repo.update_segment(segment, status="GAP", finalized_samples=0)
+                            self._mark_segment_gap(segment)
                             gap_found = True
                             continue
 
                     file_size = path.stat().st_size
                     if file_size < _WAV_HEADER_BYTES and segment.committed_samples > 0:
-                        archive_repo.update_segment(segment, status="GAP", finalized_samples=0)
+                        self._mark_segment_gap(segment)
                         gap_found = True
                         continue
                     available_samples = max(0, (file_size - _WAV_HEADER_BYTES) // _SAMPLE_BYTES)
                     durable_samples = segment.committed_samples
-                    retained_samples = min(durable_samples, available_samples)
-                    missing = retained_samples < durable_samples
-                    self._repair_wav(path, retained_samples, allow_create=retained_samples == 0)
-                    digest = self._hash_pcm(path, retained_samples)
-                    self._segment_hashers[str(path)] = self._new_hasher(path, retained_samples)
-                    keep_gap = segment.status == "GAP" or missing
-                    if retained_samples == _SEGMENT_SAMPLES and not keep_gap:
+                    if available_samples < durable_samples:
+                        self._mark_segment_gap(segment)
+                        gap_found = True
+                        continue
+                    if self._hash_pcm(path, durable_samples) != segment.sha256:
+                        self._mark_segment_gap(segment)
+                        self._segment_hashers.pop(str(path), None)
+                        gap_found = True
+                        continue
+                    self._repair_wav(path, durable_samples, allow_create=durable_samples == 0)
+                    digest = self._hash_pcm(path, durable_samples)
+                    self._segment_hashers[str(path)] = self._new_hasher(path, durable_samples)
+                    if durable_samples == _SEGMENT_SAMPLES:
                         digest = self._hash_file(path)
                         os.chmod(path, 0o640)
                         self._segment_hashers.pop(str(path), None)
                     archive_repo.update_segment(
                         segment,
-                        committed_samples=retained_samples,
-                        finalized_samples=retained_samples if retained_samples == _SEGMENT_SAMPLES and not keep_gap else 0,
+                        committed_samples=durable_samples,
+                        finalized_samples=durable_samples if durable_samples == _SEGMENT_SAMPLES else 0,
                         sha256=digest,
-                        status="GAP" if keep_gap else ("FINALIZED" if retained_samples == _SEGMENT_SAMPLES else "ACTIVE"),
+                        status="FINALIZED" if durable_samples == _SEGMENT_SAMPLES else "ACTIVE",
                     )
-                    expected_start += retained_samples
-                    if keep_gap:
-                        gap_found = True
+                    expected_start += durable_samples
 
                 if not segments and capture.audio_sample_count:
                     gap_found = True
@@ -402,9 +414,18 @@ class DurableAudioArchive:
                     archive_repo.mark_capture_incomplete(db, capture_id)
                     archive_repo.update_capture_count(capture, expected_start)
         except Exception:
-            if io_started:
-                self._mark_incomplete(capture_id)
+            self._mark_incomplete(capture_id)
             raise
+
+    @staticmethod
+    def _mark_segment_gap(segment: ASRAudioSegment) -> None:
+        archive_repo.update_segment(
+            segment,
+            committed_samples=0,
+            finalized_samples=0,
+            sha256=hashlib.sha256(b"").hexdigest(),
+            status="GAP",
+        )
 
     def _hasher_for(self, path: Path, segment: ASRAudioSegment) -> Any:
         key = str(path)
@@ -522,8 +543,14 @@ class DurableAudioArchive:
         if relative != expected_relative:
             raise ValueError("audio segment path does not match its validated identifiers")
         path = (self.data_dir / Path(*relative.parts)).resolve()
+        data_root = self.data_dir.resolve()
+        archive_root = self.audio_dir.resolve()
+        if not archive_root.is_relative_to(data_root):
+            raise ValueError("audio archive root escapes data_dir")
         capture_dir = self._capture_dir(case_id, capture_id).resolve()
-        if not path.is_relative_to(capture_dir):
+        if not capture_dir.is_relative_to(archive_root):
+            raise ValueError("capture directory escapes the audio archive root")
+        if not path.is_relative_to(archive_root) or not path.is_relative_to(capture_dir):
             raise ValueError("audio segment path escapes its capture directory")
         return path
 

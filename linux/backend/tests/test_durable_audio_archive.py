@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -51,7 +52,9 @@ def test_archive_splits_audio_at_one_minute_boundaries_and_keeps_final_segment_i
     pcm = b"\x01\x00" * (60 * 16_000 + 1)
     archive.open_capture("capture-1", case_id="case-1")
 
-    assert archive.append("capture-1", pcm) == 60 * 16_000 + 1
+    for offset in range(0, len(pcm), 2 * 16_000):
+        durable_end = archive.append("capture-1", pcm[offset : offset + 2 * 16_000])
+    assert durable_end == 60 * 16_000 + 1
     segments = archive.list_segments("capture-1")
 
     assert [(item.start_sample, item.committed_samples, item.status) for item in segments] == [
@@ -70,6 +73,19 @@ def test_archive_splits_audio_at_one_minute_boundaries_and_keeps_final_segment_i
 
     assert first_wav.read_bytes() == first_wav_bytes
     assert active_wav.stat().st_size == 44 + 2
+
+
+def test_append_rejects_more_than_one_second_and_marks_capture_incomplete(archive_env):
+    archive, factory, _data_dir, _engine = archive_env
+    archive.open_capture("capture-1", case_id="case-1")
+
+    with pytest.raises(ValueError, match="one second"):
+        archive.append("capture-1", b"\x01\x00" * 16_001)
+
+    with factory() as db:
+        assert db.get(ASRCaptureSession, "capture-1").recording_status == "INCOMPLETE"
+    with pytest.raises(RuntimeError):
+        archive.finalize_capture("capture-1")
 
 
 def test_recovery_truncates_uncommitted_tail_and_repairs_wav_header(archive_env):
@@ -108,16 +124,82 @@ def test_recovery_reports_missing_durable_audio_as_incomplete_gap(archive_env):
     with factory() as db:
         capture = db.get(ASRCaptureSession, "capture-1")
         assert capture.recording_status == "INCOMPLETE"
+        assert capture.audio_sample_count == 0
         segment = db.scalar(select(ASRAudioSegment).where(ASRAudioSegment.capture_session_id == "capture-1"))
         assert segment.status == "GAP"
-        assert segment.committed_samples == 799
-    assert restarted.read_samples("capture-1", 0, 799) == pcm[:-2]
+        assert segment.committed_samples == 0
     with pytest.raises(ValueError):
-        restarted.read_samples("capture-1", 0, 800)
+        restarted.read_samples("capture-1", 0, 1)
+
+
+def test_recovery_rejects_same_size_corruption_in_committed_audio(archive_env):
+    archive, factory, data_dir, _engine = archive_env
+    pcm = b"\x06\x00" * 800
+    archive.open_capture("capture-1", case_id="case-1")
+    archive.append("capture-1", pcm)
+    active_path = data_dir / "audio" / "case-1" / "capture-1" / "segment-000000.wav"
+    corrupted = bytearray(active_path.read_bytes())
+    corrupted[44 + 100] ^= 0xFF
+    active_path.write_bytes(corrupted)
+
+    restarted = DurableAudioArchive(data_dir, factory)
+    assert restarted.recover_incomplete() == ["capture-1"]
+
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, "capture-1")
+        segment = db.scalar(select(ASRAudioSegment).where(ASRAudioSegment.capture_session_id == "capture-1"))
+        assert capture.recording_status == "INCOMPLETE"
+        assert capture.audio_sample_count == 0
+        assert segment.status == "GAP"
+        assert segment.committed_samples == 0
+    with pytest.raises(ValueError):
+        restarted.read_samples("capture-1", 0, 1)
+    with pytest.raises(RuntimeError):
+        restarted.finalize_capture("capture-1")
+
+
+def test_recovery_rejects_symlinked_capture_directory_escape(archive_env, tmp_path, monkeypatch):
+    archive, factory, data_dir, _engine = archive_env
+    archive.open_capture("capture-1", case_id="case-1")
+    archive.append("capture-1", b"\x07\x00" * 100)
+    capture_dir = data_dir / "audio" / "case-1" / "capture-1"
+    external_dir = tmp_path / "outside-capture"
+    capture_dir.rename(external_dir)
+    try:
+        os.symlink(external_dir, capture_dir, target_is_directory=True)
+    except OSError as error:
+        if os.name != "nt":
+            external_dir.rename(capture_dir)
+            pytest.skip(f"directory symlinks are unavailable: {error}")
+        # Windows may block symlink creation without Developer Mode. Simulate
+        # the resolved paths produced by that symlink so the containment check
+        # remains exercised on this host.
+        original_resolve = Path.resolve
+        external_wav = external_dir / "segment-000000.wav"
+        expected_wav = capture_dir / "segment-000000.wav"
+
+        def resolve_symlink_path(path: Path, *args, **kwargs):
+            if path == capture_dir:
+                return external_dir
+            if path == expected_wav:
+                return external_wav
+            return original_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", resolve_symlink_path)
+    wav_path = external_dir / "segment-000000.wav"
+    wav_before = wav_path.read_bytes()
+
+    restarted = DurableAudioArchive(data_dir, factory)
+    with pytest.raises(ValueError, match="archive root"):
+        restarted.recover_incomplete()
+
+    assert wav_path.read_bytes() == wav_before
+    with factory() as db:
+        assert db.get(ASRCaptureSession, "capture-1").recording_status == "INCOMPLETE"
 
 
 def test_rejects_incomplete_pcm_frames_and_traversal_ids(archive_env):
-    archive, _factory, data_dir, _engine = archive_env
+    archive, factory, data_dir, _engine = archive_env
     archive.open_capture("capture-1", case_id="case-1")
 
     with pytest.raises(ValueError):
@@ -126,6 +208,11 @@ def test_rejects_incomplete_pcm_frames_and_traversal_ids(archive_env):
         archive.open_capture("../escape", case_id="case-1")
     with pytest.raises(ValueError):
         archive.open_capture("capture-2", case_id="../../outside")
+
+    with factory() as db:
+        assert db.get(ASRCaptureSession, "capture-1").recording_status == "INCOMPLETE"
+    with pytest.raises(RuntimeError):
+        archive.finalize_capture("capture-1")
 
     assert not (data_dir / "escape").exists()
     assert not (data_dir.parent / "outside").exists()
