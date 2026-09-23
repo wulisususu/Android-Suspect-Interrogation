@@ -7,9 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.ai.speech.types import SpeechEventType
 from app.database.models import ASRCaptureSession
 from app.repositories import audio_archive as archive_repo
 from app.services.durable_audio_archive import DurableAudioArchive
@@ -29,6 +30,11 @@ class _AudioRange:
 @dataclass(frozen=True)
 class _FinishCapture:
     runtime: Any
+
+
+@dataclass(frozen=True)
+class _ProcessedAudioRange:
+    fragment_ids: list[str]
 
 
 class LiveSpeechCoordinator:
@@ -56,6 +62,9 @@ class LiveSpeechCoordinator:
         self._durable_cursors: dict[str, int] = {}
         self._asr_cursors: dict[str, int] = {}
         self._asr_blocked: set[str] = set()
+        self._runtimes: dict[str, Any] = {}
+        self._open_asr_sessions: set[str] = set()
+        self._process_lock = threading.RLock()
         self._asr_busy = threading.Event()
         self.capture_service.set_live_speech_coordinator(self)
 
@@ -70,7 +79,10 @@ class LiveSpeechCoordinator:
                         select(ASRCaptureSession.id)
                         .where(
                             ASRCaptureSession.recording_status == "COMPLETE",
-                            ASRCaptureSession.asr_cursor_sample < ASRCaptureSession.audio_sample_count,
+                            or_(
+                                ASRCaptureSession.asr_cursor_sample < ASRCaptureSession.audio_sample_count,
+                                ASRCaptureSession.asr_unfinished_start_sample.is_not(None),
+                            ),
                         )
                         .order_by(ASRCaptureSession.started_at, ASRCaptureSession.id)
                     )
@@ -94,12 +106,21 @@ class LiveSpeechCoordinator:
                     if capture is None or capture.interrogation_session_id is None:
                         continue
                     runtime = self.capture_service.build_recovery_runtime(capture)
-                    cursor = max(0, int(capture.asr_cursor_sample or 0))
+                    unfinished_start = capture.asr_unfinished_start_sample
+                    cursor = max(
+                        0,
+                        int(
+                            capture.asr_cursor_sample
+                            if unfinished_start is None
+                            else unfinished_start
+                        ),
+                    )
                     end = max(cursor, int(capture.audio_sample_count or 0))
-                    self._asr_cursors[capture_id] = cursor
-                    self._durable_cursors[capture_id] = int(capture.audio_sample_count or 0)
                 if runtime is None:
                     continue
+                self._runtimes[capture_id] = runtime
+                self._asr_cursors[capture_id] = cursor
+                self._durable_cursors[capture_id] = int(capture.audio_sample_count or 0)
                 if finalization_error is not None:
                     self._mark_storage_error(runtime, finalization_error)
                 while cursor < end:
@@ -134,6 +155,7 @@ class LiveSpeechCoordinator:
         with self._lock:
             self._durable_cursors[runtime.capture_session_id] = 0
             self._asr_cursors[runtime.capture_session_id] = 0
+            self._runtimes[runtime.capture_session_id] = runtime
 
     def append_audio(self, runtime: Any, pcm: bytes) -> int:
         """Commit audio first, then queue only its durable sample range."""
@@ -188,7 +210,6 @@ class LiveSpeechCoordinator:
             logger.exception("failed to publish audio storage error for capture %s", runtime.capture_session_id)
 
     def _asr_loop(self) -> None:
-        opened: set[str] = set()
         while True:
             task = self.asr_queue.get()
             if task is None:
@@ -200,14 +221,15 @@ class LiveSpeechCoordinator:
                 self._asr_busy.set()
             else:
                 try:
-                    if session_id in opened:
+                    if session_id in self._open_asr_sessions:
                         try:
-                            runtime.consume_events(self.ai_supervisor.finalize_speech_session(session_id))
+                            events = self.ai_supervisor.finalize_speech_session(session_id)
+                            self._consume_event_batch(runtime, events, end_sample=None)
                         except Exception as exc:
                             runtime.inference_error_sink(exc)
                         finally:
                             self.ai_supervisor.close_speech_session(session_id)
-                            opened.discard(session_id)
+                            self._open_asr_sessions.discard(session_id)
                 except Exception as exc:
                     runtime.inference_error_sink(exc)
                 finally:
@@ -226,21 +248,11 @@ class LiveSpeechCoordinator:
                 )
                 if expected_start != task.start_sample:
                     raise RuntimeError("ASR queue received a non-contiguous durable audio range")
-                if session_id not in opened:
-                    self.ai_supervisor.open_speech_session(
-                        session_id,
-                        sample_rate=runtime.sample_rate,
-                        speaker_backend=runtime.speaker_backend,
-                    )
-                    opened.add(session_id)
-                pcm = self.archive.read_samples(
+                self.process_asr_range(
                     runtime.capture_session_id,
                     task.start_sample,
                     task.end_sample,
                 )
-                events = self.ai_supervisor.push_speech_pcm(session_id, pcm)
-                runtime.consume_events(events)
-                self._advance_asr_cursor(runtime.capture_session_id, task.end_sample)
             except Exception as exc:
                 if isinstance(task, _AudioRange):
                     self._asr_blocked.add(runtime.capture_session_id)
@@ -252,11 +264,117 @@ class LiveSpeechCoordinator:
                 self._asr_busy.clear()
                 self.asr_queue.task_done()
 
-    def _advance_asr_cursor(self, capture_id: str, end_sample: int) -> None:
+    def process_asr_range(
+        self,
+        capture_id: str,
+        start_sample: int,
+        end_sample: int,
+    ) -> _ProcessedAudioRange:
+        """Replay a durable capture range and return committed ASR fragment ids."""
+        start = int(start_sample)
+        end = int(end_sample)
+        if start < 0 or end <= start:
+            raise ValueError("ASR sample range must be non-empty and non-negative")
+        with self._process_lock:
+            runtime = self._runtimes.get(capture_id)
+            if runtime is None:
+                with self.session_factory() as db:
+                    capture = db.get(ASRCaptureSession, capture_id)
+                    if capture is None:
+                        raise ValueError(f"unknown capture session: {capture_id}")
+                    runtime = self.capture_service.build_recovery_runtime(capture)
+                if runtime is None:
+                    raise ValueError(f"capture session cannot be recovered: {capture_id}")
+                self._runtimes[capture_id] = runtime
+
+            session_id = runtime.speech_session_id
+            if session_id not in self._open_asr_sessions:
+                open_options = {
+                    "sample_rate": runtime.sample_rate,
+                    "speaker_backend": runtime.speaker_backend,
+                }
+                if start:
+                    open_options["base_sample"] = start
+                self.ai_supervisor.open_speech_session(
+                    session_id,
+                    **open_options,
+                )
+                self._open_asr_sessions.add(session_id)
+            pcm = self.archive.read_samples(capture_id, start, end)
+            events = self.ai_supervisor.push_speech_pcm(session_id, pcm)
+            fragment_ids = self._consume_event_batch(runtime, events, end_sample=end)
+            return _ProcessedAudioRange(fragment_ids)
+
+    def _consume_event_batch(
+        self,
+        runtime: Any,
+        events: list[Any] | None,
+        *,
+        end_sample: int | None,
+    ) -> list[str]:
+        events = list(events or [])
+        replay_start: int | None = None
+        for event in events:
+            if getattr(event, "type", None) is not SpeechEventType.VAD_START:
+                continue
+            details = getattr(event, "details", {}) or {}
+            if details.get("replay_start_sample") is not None:
+                candidate_start = int(details["replay_start_sample"])
+            elif event.start_ms is not None:
+                boundary = int(round(int(event.start_ms) * runtime.sample_rate / 1000))
+                candidate_start = max(0, boundary - int(round(1200 * runtime.sample_rate / 1000)))
+            else:
+                continue
+            replay_start = (
+                candidate_start
+                if replay_start is None
+                else min(replay_start, candidate_start)
+            )
+        if replay_start is not None:
+            self._set_unfinished_asr_start(runtime.capture_session_id, replay_start)
+
+        fragment_ids = runtime.consume_events(events) or []
+        finished_vad = any(
+            getattr(event, "type", None) is SpeechEventType.VAD_END
+            for event in events
+        )
+        if end_sample is not None:
+            self._advance_asr_cursor(
+                runtime.capture_session_id,
+                end_sample,
+                clear_unfinished=finished_vad,
+            )
+        elif finished_vad:
+            self._clear_unfinished_asr_start(runtime.capture_session_id)
+        return list(fragment_ids)
+
+    def _set_unfinished_asr_start(self, capture_id: str, start_sample: int) -> None:
+        with self.session_factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            if capture is not None:
+                capture.asr_unfinished_start_sample = max(0, int(start_sample))
+                db.commit()
+
+    def _clear_unfinished_asr_start(self, capture_id: str) -> None:
+        with self.session_factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            if capture is not None and capture.asr_unfinished_start_sample is not None:
+                capture.asr_unfinished_start_sample = None
+                db.commit()
+
+    def _advance_asr_cursor(
+        self,
+        capture_id: str,
+        end_sample: int,
+        *,
+        clear_unfinished: bool = False,
+    ) -> None:
         with self.session_factory() as db:
             capture = db.get(ASRCaptureSession, capture_id)
             if capture is not None:
                 capture.asr_cursor_sample = max(int(capture.asr_cursor_sample or 0), int(end_sample))
+                if clear_unfinished:
+                    capture.asr_unfinished_start_sample = None
                 db.commit()
         with self._lock:
             self._asr_cursors[capture_id] = max(self._asr_cursors.get(capture_id, 0), int(end_sample))

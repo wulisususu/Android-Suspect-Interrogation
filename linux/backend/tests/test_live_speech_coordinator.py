@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from app.database.models import ASRCaptureSession
+from app.ai.speech.types import SpeechEvent, SpeechEventType
 from app.database.session import init_database, make_engine, make_session_factory
 from app.repositories import asr_fragments as asr_repo
 from app.repositories import cases as case_repo
@@ -68,6 +69,71 @@ class FailingSpeechWorker(BlockingSpeechWorker):
         self.pushed.append(bytes(pcm))
         self.push_started.set()
         raise RuntimeError("simulated ASR failure")
+
+
+class ReplaySpeechWorker:
+    def __init__(self, *, emit_final: bool, crash_before_finalize: bool = False) -> None:
+        self.emit_final = emit_final
+        self.crash_before_finalize = crash_before_finalize
+        self.push_started = threading.Event()
+        self.finalize_called = threading.Event()
+        self.open_base_samples: list[int] = []
+        self.pushed: list[bytes] = []
+
+    def open_speech_session(self, session_id: str, **kwargs):
+        self.open_base_samples.append(int(kwargs.get("base_sample", 0)))
+        return {"session_id": session_id}
+
+    def push_speech_pcm(self, session_id: str, pcm: bytes):
+        self.pushed.append(bytes(pcm))
+        self.push_started.set()
+        if not self.emit_final:
+            return [
+                SpeechEvent(
+                    type=SpeechEventType.VAD_START,
+                    session_id=session_id,
+                    start_ms=0,
+                    details={"replay_start_sample": 0},
+                )
+            ]
+        return [
+            SpeechEvent(
+                type=SpeechEventType.VAD_START,
+                session_id=session_id,
+                start_ms=0,
+                details={"replay_start_sample": 0},
+            ),
+            SpeechEvent(
+                type=SpeechEventType.VAD_END,
+                session_id=session_id,
+                start_ms=0,
+                end_ms=1000,
+            ),
+            SpeechEvent(
+                type=SpeechEventType.ASR_FINAL,
+                session_id=session_id,
+                start_ms=0,
+                end_ms=1000,
+                text="完整记录",
+                confidence=0.95,
+                model_id="paraformer",
+                details={
+                    "stage_one_asr_only": True,
+                    "asr_start_sample": 0,
+                    "asr_end_sample": 16_000,
+                    "model_version": "test-v1",
+                },
+            ),
+        ]
+
+    def finalize_speech_session(self, session_id: str):
+        self.finalize_called.set()
+        if self.crash_before_finalize:
+            raise RuntimeError("simulated crash before VAD finalization")
+        return []
+
+    def close_speech_session(self, session_id: str) -> None:
+        pass
 
 
 class EventCollector:
@@ -242,6 +308,86 @@ def test_startup_replays_only_unprocessed_audio_for_completed_capture(tmp_path: 
             assert capture.asr_cursor_sample == capture.audio_sample_count == 480
     finally:
         coordinator.shutdown()
+
+
+def test_restart_replays_unfinished_vad_when_complete_cursor_reached_audio_end(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    data_dir = tmp_path / "data"
+    archive = DurableAudioArchive(data_dir, factory)
+    audio = b"\x0a\x00" * 16_000
+    archive.open_capture(capture_id, case_id=case_id)
+    archive.append(capture_id, audio)
+    archive.finalize_capture(capture_id)
+
+    crashed_worker = ReplaySpeechWorker(emit_final=False, crash_before_finalize=True)
+    first_service = _source_service(factory, FakeDevice([]), crashed_worker, EventCollector())
+    first = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=first_service,
+        ai_supervisor=crashed_worker,
+    )
+    first.start()
+    try:
+        assert crashed_worker.push_started.wait(timeout=1)
+        assert crashed_worker.finalize_called.wait(timeout=1)
+        _wait_for(lambda: _asr_cursor(factory, capture_id) == 16_000)
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            assert capture.recording_status == "COMPLETE"
+            assert capture.asr_cursor_sample == capture.audio_sample_count == 16_000
+            assert capture.asr_unfinished_start_sample == 0
+    finally:
+        first.shutdown()
+
+    replay_worker = ReplaySpeechWorker(emit_final=True)
+    replay_service = _source_service(factory, FakeDevice([]), replay_worker, EventCollector())
+    replay = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=replay_service,
+        ai_supervisor=replay_worker,
+    )
+    replay.start()
+    try:
+        _wait_for(lambda: len(_fragments(factory, capture_id)) == 1)
+        _wait_for(lambda: _unfinished_start(factory, capture_id) is None)
+        assert replay_worker.finalize_called.wait(timeout=1)
+        first_result = replay.process_asr_range(capture_id, 0, 16_000)
+        second_result = replay.process_asr_range(capture_id, 0, 16_000)
+        assert first_result.fragment_ids == second_result.fragment_ids
+        assert replay_worker.open_base_samples == [0, 0]
+        fragments = _fragments(factory, capture_id)
+        assert len(fragments) == 1
+        assert fragments[0].ordinal == 0
+        assert fragments[0].raw_text == "完整记录"
+        assert fragments[0].speaker == "UNKNOWN"
+        assert fragments[0].speaker_source == "PENDING_ANALYSIS"
+        assert fragments[0].asr_idempotency_key
+    finally:
+        replay.shutdown()
+
+
+def _fragments(factory, capture_id: str):
+    with factory() as db:
+        return asr_repo.list_for_capture(db, capture_id)
+
+
+def _unfinished_start(factory, capture_id: str) -> int | None:
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, capture_id)
+        return None if capture is None else capture.asr_unfinished_start_sample
 
 
 def test_coordinator_inference_failure_does_not_stop_durable_capture(tmp_path: Path):

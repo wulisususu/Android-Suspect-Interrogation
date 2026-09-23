@@ -39,9 +39,11 @@ class _InProcessSpeechClient:
         sample_rate: int = 16000,
         speaker_backend: str = "eres2net_large",
         authoritative_backend: str | None = None,
+        base_sample: int = 0,
     ) -> dict[str, Any]:
         session_id = str(session_id).strip()
         sample_rate = int(sample_rate)
+        base_sample = int(base_sample)
         speaker_backend = str(speaker_backend or "eres2net_large").strip().lower()
         authority_key = (
             None
@@ -52,6 +54,8 @@ class _InProcessSpeechClient:
             raise AIError("session_id is required")
         if sample_rate <= 0:
             raise AIError("sample_rate must be positive")
+        if base_sample < 0:
+            raise AIError("base_sample cannot be negative")
         if speaker_backend != "eres2net_large":
             raise AIError("speaker backend must be eres2net_large", details={"speaker_backend": speaker_backend})
         if authority_key is not None and authority_key != speaker_backend:
@@ -60,6 +64,7 @@ class _InProcessSpeechClient:
             self._sessions[session_id] = {
                 "sample_rate": sample_rate,
                 "bytes_received": 0,
+                "base_sample": base_sample,
                 "speaker_backend": speaker_backend,
                 "authoritative_backend": speaker_backend,
             }
@@ -79,11 +84,12 @@ class _InProcessSpeechClient:
                 raise AIError("speech session is not open", details={"session_id": session_id})
             session["bytes_received"] += len(pcm)
             received = session["bytes_received"]
+            start_ms = int(round(session["base_sample"] * 1000 / session["sample_rate"]))
         return [
             SpeechEvent(
                 type=SpeechEventType.VAD_START,
                 session_id=session_id,
-                start_ms=0,
+                start_ms=start_ms,
                 model_id="mock-fsmn-vad",
                 details={"mock": True},
             ),
@@ -99,35 +105,37 @@ class _InProcessSpeechClient:
 
     def finalize_session(self, session_id: str) -> list[SpeechEvent]:
         with self._lock:
-            if session_id not in self._sessions:
+            session = self._sessions.get(session_id)
+            if session is None:
                 raise AIError("speech session is not open", details={"session_id": session_id})
+            start_sample = session["base_sample"]
+            end_sample = start_sample + session["bytes_received"] // 2
+            sample_rate = session["sample_rate"]
+            start_ms = int(round(start_sample * 1000 / sample_rate))
+            end_ms = int(round(end_sample * 1000 / sample_rate))
         return [
             SpeechEvent(
                 type=SpeechEventType.VAD_END,
                 session_id=session_id,
-                start_ms=0,
-                end_ms=1000,
+                start_ms=start_ms,
+                end_ms=end_ms,
                 model_id="mock-fsmn-vad",
                 details={"mock": True},
             ),
             SpeechEvent(
                 type=SpeechEventType.ASR_FINAL,
                 session_id=session_id,
-                start_ms=0,
-                end_ms=1000,
+                start_ms=start_ms,
+                end_ms=end_ms,
                 text="mock final",
                 confidence=1.0,
                 model_id="mock-paraformer",
-                details={"mock": True},
-            ),
-            SpeechEvent(
-                type=SpeechEventType.SPEAKER_RESULT,
-                session_id=session_id,
-                start_ms=0,
-                end_ms=1000,
-                embedding=[1.0, 0.0, 0.0],
-                model_id="mock-xvector",
-                details={"mock": True},
+                details={
+                    "mock": True,
+                    "stage_one_asr_only": True,
+                    "asr_start_sample": start_sample,
+                    "asr_end_sample": end_sample,
+                },
             ),
         ]
 
@@ -338,23 +346,22 @@ class AISupervisor:
         sample_rate: int = 16000,
         speaker_backend: str | None = None,
         authoritative_backend: str | None = None,
+        base_sample: int = 0,
     ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "sample_rate": sample_rate,
+            "base_sample": base_sample,
+        }
         explicit_backend = speaker_backend is not None
         if explicit_backend:
-            kwargs: dict[str, Any] = {
-                "sample_rate": sample_rate,
-                "speaker_backend": speaker_backend,
-            }
+            kwargs["speaker_backend"] = speaker_backend
             if authoritative_backend is not None:
                 kwargs["authoritative_backend"] = authoritative_backend
             result = self._speech_client.open_session(session_id, **kwargs)
         else:
             if authoritative_backend is not None:
                 raise ValueError("authoritative_backend requires an explicit speaker_backend")
-            result = self._speech_client.open_session(
-                session_id,
-                sample_rate=sample_rate,
-            )
+            result = self._speech_client.open_session(session_id, **kwargs)
             # In-process mock historically returned no backend discriminator.
             # Normalize the omitted-backend call even if an internal client adds it.
             result = dict(result)

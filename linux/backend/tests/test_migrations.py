@@ -44,7 +44,7 @@ REQUIRED_TABLES = (
     CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES | QWEN_ROUTING_TABLES |
     MOSS_TRANSCRIPTION_TABLES | CASE_DRAFT_TABLES | DURABLE_LIVE_SPEECH_TABLES
 )
-ALEMBIC_HEAD = "0016_durable_live_speech"
+ALEMBIC_HEAD = "0017_asr_unfinished_vad_replay"
 
 
 def _run_alembic(tmp_path, target: str):
@@ -187,8 +187,13 @@ def test_alembic_upgrade_head_builds_required_schema(tmp_path):
         capture_columns = {item["name"] for item in inspector.get_columns("asr_capture_sessions")}
         assert {
             "audio_sample_count", "asr_cursor_sample", "voiced_ms",
-            "recording_status", "asr_status", "speaker_status",
+            "recording_status", "asr_status", "speaker_status", "asr_unfinished_start_sample",
         } <= capture_columns
+        unfinished_start = next(
+            item for item in inspector.get_columns("asr_capture_sessions")
+            if item["name"] == "asr_unfinished_start_sample"
+        )
+        assert unfinished_start["nullable"] is True
         fragment_columns = {item["name"] for item in inspector.get_columns("asr_fragments")}
         assert "asr_idempotency_key" in fragment_columns
         segment_columns = {item["name"] for item in inspector.get_columns("asr_audio_segments")}
@@ -323,7 +328,7 @@ def test_0016_preserves_existing_fragments_and_speaker_roles(tmp_path):
                 "FROM asr_fragments WHERE id='FRAGMENT-DURABLE'"
             )).mappings().one()
             capture = connection.execute(text(
-                "SELECT audio_sample_count, asr_cursor_sample, voiced_ms, recording_status, asr_status, speaker_status "
+                "SELECT audio_sample_count, asr_cursor_sample, asr_unfinished_start_sample, voiced_ms, recording_status, asr_status, speaker_status "
                 "FROM asr_capture_sessions WHERE id='CAPTURE-DURABLE'"
             )).mappings().one()
             confirmed_fragment = connection.execute(text(
@@ -336,6 +341,7 @@ def test_0016_preserves_existing_fragments_and_speaker_roles(tmp_path):
         assert fragment["asr_idempotency_key"] is None
         assert capture["audio_sample_count"] == 0
         assert capture["asr_cursor_sample"] == 0
+        assert capture["asr_unfinished_start_sample"] is None
         assert capture["voiced_ms"] == 0
         assert confirmed_fragment["state"] == "CONFIRMED"
         assert confirmed_fragment["confirmed_message_id"] is None

@@ -618,12 +618,13 @@ class AsrCaptureService:
                 runtime.seen_utterances.add(key)
             runtime.text_parts.append(text)
 
-    def _consume_events(self, runtime: _CaptureRuntime, events: list[SpeechEvent] | None) -> None:
+    def _consume_events(self, runtime: _CaptureRuntime, events: list[SpeechEvent] | None) -> list[str]:
         if not events:
-            return
+            return []
         asr_by_range: dict[tuple[int, int], SpeechEvent] = {}
         speaker_by_range: dict[tuple[int, int], SpeechEvent] = {}
         compare_by_range: dict[tuple[int, int], SpeechEvent] = {}
+        asr_only_events: list[SpeechEvent] = []
         for event in events:
             if event.type is SpeechEventType.ASR_PARTIAL:
                 text = str(event.text or "").strip()
@@ -644,11 +645,22 @@ class AsrCaptureService:
                 continue
             key = (int(event.start_ms), int(event.end_ms))
             if event.type is SpeechEventType.ASR_FINAL:
-                asr_by_range[key] = event
+                if (event.details or {}).get("stage_one_asr_only"):
+                    asr_only_events.append(event)
+                else:
+                    asr_by_range[key] = event
             elif event.type is SpeechEventType.SPEAKER_RESULT:
                 speaker_by_range[key] = event
             elif event.type is SpeechEventType.SPEAKER_COMPARE_RESULT:
                 compare_by_range[key] = event
+
+        fragment_ids: list[str] = []
+        for asr_event in asr_only_events:
+            if not str(asr_event.text or "").strip():
+                continue
+            fragment_ids.append(self._persist_asr_only_fragment(runtime, asr_event))
+            if asr_event.start_ms is not None and asr_event.end_ms is not None:
+                runtime.seen_utterances.add((int(asr_event.start_ms), int(asr_event.end_ms)))
 
         for key, asr_event in asr_by_range.items():
             if key in runtime.seen_utterances:
@@ -661,6 +673,67 @@ class AsrCaptureService:
                 compare_by_range.get(key),
             )
             runtime.seen_utterances.add(key)
+        return fragment_ids
+
+    def _persist_asr_only_fragment(self, runtime: _CaptureRuntime, asr_event: SpeechEvent) -> str:
+        start_ms = int(asr_event.start_ms or 0)
+        end_ms = int(asr_event.end_ms or start_ms)
+        details = asr_event.details or {}
+        start_sample = int(
+            details.get("asr_start_sample", round(start_ms * runtime.sample_rate / 1000))
+        )
+        end_sample = int(
+            details.get("asr_end_sample", round(end_ms * runtime.sample_rate / 1000))
+        )
+        if start_sample < 0 or end_sample <= start_sample:
+            raise ValueError("ASR final sample range is invalid")
+        model_version = self._optional_text(details.get("model_version"))
+        model_id = str(asr_event.model_id or "paraformer")
+        idempotency_key = asr_repo.asr_final_idempotency_key(
+            runtime.capture_session_id,
+            start_sample,
+            end_sample,
+            model_version,
+        )
+        with self.session_factory() as db:
+            fragment, _created = asr_repo.create_or_update_asr_only_fragment(
+                db,
+                capture_session_id=runtime.capture_session_id,
+                case_id=runtime.case_id,
+                started_at_ms=start_ms,
+                ended_at_ms=end_ms,
+                raw_text=str(asr_event.text or "").strip(),
+                asr_confidence=asr_event.confidence,
+                model_id=model_id,
+                model_version=model_version,
+                idempotency_key=idempotency_key,
+            )
+            db.commit()
+            fragment_id = fragment.id
+            payload = self._fragment_payload(fragment)
+
+        runtime.ordinal = max(runtime.ordinal, int(fragment.ordinal) + 1)
+        payload["thresholdSource"] = "PENDING_ANALYSIS"
+        payload["calibrationId"] = runtime.calibration_id
+        payload["calibrationStatus"] = runtime.calibration_status
+        payload.update(self.speaker_mode_capability(runtime))
+        self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)
+        if self.fragment_sink is not None:
+            try:
+                self.fragment_sink(runtime.case_id, fragment_id)
+            except Exception:
+                logger.exception("qa fragment sink failed for fragment %s", fragment_id)
+        else:
+            try:
+                with self.session_factory() as projection_db:
+                    InterrogationProjectionService(projection_db).process_fragment(
+                        runtime.case_id,
+                        fragment_id,
+                    )
+                    projection_db.commit()
+            except Exception:
+                logger.exception("formal interrogation projection failed for fragment %s", fragment_id)
+        return fragment_id
 
     def _persist_fragment(
         self,

@@ -52,6 +52,7 @@ class SpeechWorkerClient:
         *,
         speaker_backend: str | None = None,
         authoritative_backend: str | None = None,
+        base_sample: int = 0,
     ) -> dict[str, Any]:
         backend_key = str(speaker_backend or "eres2net_large").strip().lower()
         if backend_key != "eres2net_large":
@@ -63,11 +64,14 @@ class SpeechWorkerClient:
         )
         if authority_key is not None and authority_key != backend_key:
             raise ValueError("authoritative_backend must match the single speaker backend")
+        if int(base_sample) < 0:
+            raise ValueError("base_sample cannot be negative")
 
         payload: dict[str, Any] = {
             "session_id": session_id,
             "sample_rate": int(sample_rate),
             "speaker_backend": backend_key,
+            "base_sample": int(base_sample),
         }
         return self._require_dict(self._request("open_session", **payload))
 

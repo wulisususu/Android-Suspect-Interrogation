@@ -156,6 +156,7 @@ class SpeechWorkerServer:
         if op == "open_session":
             session_id = self._required_session_id(request)
             sample_rate = int(request.get("sample_rate") or 16000)
+            base_sample = int(request.get("base_sample") or 0)
             speaker_backend = str(request.get("speaker_backend") or "eres2net_large").strip().lower()
             if speaker_backend != "eres2net_large":
                 raise AIError("speaker_backend must be eres2net_large")
@@ -169,6 +170,7 @@ class SpeechWorkerServer:
                         self.runtime,
                         speaker_backend_key=speaker_backend,
                         authoritative_speaker_backend_key="eres2net_large",
+                        base_sample=base_sample,
                     ),
                     threading.RLock(),
                 )

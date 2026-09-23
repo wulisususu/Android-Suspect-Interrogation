@@ -209,7 +209,7 @@ def _start_worker(path: Path, runtime: BackendAwareRuntime):
     return server, thread
 
 
-def test_speech_session_routes_selected_backend_to_runtime(tmp_path: Path):
+def test_speech_session_does_not_run_selected_speaker_backend_in_stage_one(tmp_path: Path):
     socket_path = tmp_path / "speech.sock"
     runtime = BackendAwareRuntime()
     server, thread = _start_worker(socket_path, runtime)
@@ -219,9 +219,12 @@ def test_speech_session_routes_selected_backend_to_runtime(tmp_path: Path):
         assert opened["speaker_backend"] == ERES2NET
         client.push_pcm("CASE-1", b"\x01\x00" * 3200)
         events = client.finalize_session("CASE-1")
-        speaker = next(event for event in events if event.type is SpeechEventType.SPEAKER_RESULT)
-        assert runtime.backends == [ERES2NET]
-        assert speaker.details["backend_key"] == ERES2NET
+        assert any(event.type is SpeechEventType.ASR_FINAL for event in events)
+        assert not any(
+            event.type in {SpeechEventType.SPEAKER_RESULT, SpeechEventType.SPEAKER_COMPARE_RESULT}
+            for event in events
+        )
+        assert runtime.backends == []
     finally:
         server.stop()
         thread.join(timeout=2.0)

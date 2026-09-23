@@ -13,11 +13,13 @@ from app.ai.errors import ResourceBusyError
 from app.ai.speech.client import SpeechWorkerClient
 from app.ai.speech.types import SpeechEventType
 from speech_worker.main import SpeechWorkerServer
+from speech_worker.session import SpeechSession
 
 
 @dataclass
 class FakeRuntime:
     vad_calls: int = 0
+    embedding_calls: int = 0
 
     def health(self) -> dict:
         return {"status": "ready", "model_root": "/fake", "models": {"asr": True, "vad": True, "speaker": True}}
@@ -32,6 +34,7 @@ class FakeRuntime:
         return {"text": "测试口供", "confidence": 0.95, "model_id": "paraformer"}
 
     def speaker_embedding(self, pcm: bytes, sample_rate: int, *, backend_key: str | None = None) -> dict:
+        self.embedding_calls += 1
         return {"embedding": [0.6, 0.8], "backend_key": "eres2net_large", "model_id": "eres2net"}
 
 
@@ -77,16 +80,24 @@ def test_server_round_trip_uses_unix_socket_and_session_lifecycle(tmp_path: Path
         assert [event.type for event in final_events] == [
             SpeechEventType.VAD_END,
             SpeechEventType.ASR_FINAL,
-            SpeechEventType.SPEAKER_RESULT,
         ]
         assert final_events[1].text == "测试口供"
-        assert final_events[2].embedding == [0.6, 0.8]
+        assert runtime.embedding_calls == 0
 
         embedding = client.extract_embedding(_pcm(200), sample_rate=16000)
         assert embedding == {"embedding": [0.6, 0.8], "backend_key": "eres2net_large", "model_id": "eres2net"}
 
         client.close_session("case-1")
         assert client.health()["sessions"] == 0
+
+        client.open_session("capture-resume", sample_rate=16000, base_sample=16000)
+        client.push_pcm("capture-resume", _pcm(200))
+        resumed_events = client.finalize_session("capture-resume")
+        resumed_final = next(
+            event for event in resumed_events if event.type is SpeechEventType.ASR_FINAL
+        )
+        assert (resumed_final.start_ms, resumed_final.end_ms) == (1000, 1200)
+        client.close_session("capture-resume")
     finally:
         _stop_server(server, thread)
 
@@ -144,9 +155,31 @@ def test_duplicate_session_open_is_rejected_without_resetting_existing_state(tmp
             client.open_session("case-dup", sample_rate=16000)
 
         final_events = client.finalize_session("case-dup")
-        assert [event.type for event in final_events][-2:] == [
-            SpeechEventType.ASR_FINAL,
-            SpeechEventType.SPEAKER_RESULT,
-        ]
+        assert [event.type for event in final_events][-1:] == [SpeechEventType.ASR_FINAL]
     finally:
         _stop_server(server, thread)
+
+
+def test_stage_one_emits_final_text_without_speaker_inference():
+    runtime = FakeRuntime()
+    speech_session = SpeechSession("capture-1", 16000, runtime)
+
+    events = speech_session.push_pcm(_pcm(200)) + speech_session.finalize()
+
+    assert any(event.type is SpeechEventType.ASR_FINAL for event in events)
+    assert not any(
+        event.type in {SpeechEventType.SPEAKER_RESULT, SpeechEventType.SPEAKER_COMPARE_RESULT}
+        for event in events
+    )
+    assert runtime.embedding_calls == 0
+
+
+def test_reopened_speech_session_reports_capture_global_vad_bounds():
+    runtime = FakeRuntime()
+    speech_session = SpeechSession("capture-resume", 16000, runtime, base_sample=16000)
+
+    events = speech_session.push_pcm(_pcm(200)) + speech_session.finalize()
+    final = next(event for event in events if event.type is SpeechEventType.ASR_FINAL)
+
+    assert final.start_ms == 1000
+    assert final.end_ms == 1200

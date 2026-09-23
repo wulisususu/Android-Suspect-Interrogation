@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from app.ai.errors import WorkerCrashedError
 from app.ai.speech.types import SpeechEventType
 from speech_worker.session import SpeechSession
 
@@ -94,19 +93,18 @@ def test_start_then_end_decodes_utterance_once_with_shared_bounds():
     assert [event.type for event in final_events] == [
         SpeechEventType.VAD_END,
         SpeechEventType.ASR_FINAL,
-        SpeechEventType.SPEAKER_RESULT,
     ]
-    assert [(event.start_ms, event.end_ms) for event in final_events] == [(0, 300)] * 3
+    assert [(event.start_ms, event.end_ms) for event in final_events] == [(0, 300)] * 2
     assert final_events[1].text == "测试口供"
     assert final_events[1].confidence == 0.93
-    assert final_events[2].embedding == [0.6, 0.8]
-    assert final_events[2].model_id == "eres2net"
-    assert final_events[2].details["backend_key"] == "eres2net_large"
+    assert final_events[1].details["stage_one_asr_only"] is True
+    assert final_events[1].details["asr_start_sample"] == 0
+    assert final_events[1].details["asr_end_sample"] == 4800
     assert all(event.type is not SpeechEventType.ASR_PARTIAL for event in final_events)
 
     expected_utterance = first + _pcm(100, value=2)
     assert runtime.transcribe_calls == [(expected_utterance, 16000)]
-    assert runtime.speaker_calls == [(expected_utterance, 16000)]
+    assert runtime.speaker_calls == []
 
 
 def test_active_utterance_emits_a_preview_without_waiting_for_vad_end():
@@ -124,12 +122,15 @@ def test_active_utterance_emits_a_preview_without_waiting_for_vad_end():
     assert runtime.speaker_calls == []
 
 
-def test_speaker_result_requires_runtime_model_metadata():
+def test_stage_one_does_not_require_a_speaker_runtime():
     runtime = MissingSpeakerMetadataRuntime(vad_outputs=[[[0, 100]]])
     session = SpeechSession("session-no-model", 16000, runtime, chunk_size_ms=200)
 
-    with pytest.raises(WorkerCrashedError, match="model metadata"):
-        session.push_pcm(_pcm(200, value=3))
+    events = session.push_pcm(_pcm(200, value=3))
+
+    assert any(event.type is SpeechEventType.ASR_FINAL for event in events)
+    assert not any(event.type is SpeechEventType.SPEAKER_RESULT for event in events)
+    assert runtime.speaker_calls == []
 
 
 def test_delayed_start_recovers_audio_from_preroll_using_absolute_vad_time():
@@ -152,11 +153,12 @@ def test_delayed_start_recovers_audio_from_preroll_using_absolute_vad_time():
     assert start_events[0].start_ms == 100
 
     final_events = session.push_pcm(third)
-    assert [(event.start_ms, event.end_ms) for event in final_events] == [(100, 500)] * 3
+    finals = [event for event in final_events if event.type is SpeechEventType.ASR_FINAL]
+    assert [(event.start_ms, event.end_ms) for event in finals] == [(100, 500)]
 
     expected = _pcm(100, value=1) + second + _pcm(100, value=3)
     assert runtime.transcribe_calls == [(expected, 16000)]
-    assert runtime.speaker_calls == [(expected, 16000)]
+    assert runtime.speaker_calls == []
 
 
 def test_complete_segment_in_one_vad_result_is_decoded_once():
@@ -170,12 +172,11 @@ def test_complete_segment_in_one_vad_result_is_decoded_once():
         SpeechEventType.VAD_START,
         SpeechEventType.VAD_END,
         SpeechEventType.ASR_FINAL,
-        SpeechEventType.SPEAKER_RESULT,
     ]
     assert events[0].start_ms == 50
-    assert [(event.start_ms, event.end_ms) for event in events[1:]] == [(50, 150)] * 3
+    assert [(event.start_ms, event.end_ms) for event in events[1:]] == [(50, 150)] * 2
     assert runtime.transcribe_calls == [(_pcm(100, value=7), 16000)]
-    assert runtime.speaker_calls == [(_pcm(100, value=7), 16000)]
+    assert runtime.speaker_calls == []
 
 
 def test_finalize_flushes_vad_and_closes_active_utterance_without_duplicate_decode():
@@ -191,19 +192,18 @@ def test_finalize_flushes_vad_and_closes_active_utterance_without_duplicate_deco
     assert [event.type for event in events] == [
         SpeechEventType.VAD_END,
         SpeechEventType.ASR_FINAL,
-        SpeechEventType.SPEAKER_RESULT,
     ]
-    assert [(event.start_ms, event.end_ms) for event in events] == [(100, 200)] * 3
+    assert [(event.start_ms, event.end_ms) for event in events] == [(100, 200)] * 2
     expected = _pcm(100, value=9)
     assert runtime.transcribe_calls == [(expected, 16000)]
-    assert runtime.speaker_calls == [(expected, 16000)]
+    assert runtime.speaker_calls == []
 
     assert session.finalize() == []
     assert len(runtime.transcribe_calls) == 1
-    assert len(runtime.speaker_calls) == 1
+    assert runtime.speaker_calls == []
 
 
-# --------------------------------------------------------------------------- speaker turns
+# --------------------------------------------------------------------------- Stage 1 ASR
 class SpeakerChangeRuntime(FakeRuntime):
     """Speaker embeddings that flip half way through the utterance.
 
@@ -224,8 +224,8 @@ def _two_tone_pcm(first_ms: int, second_ms: int, sample_rate: int = 16000) -> by
     return _pcm(first_ms, sample_rate, value=1) + _pcm(second_ms, sample_rate, value=200)
 
 
-def test_long_utterance_with_a_speaker_change_is_split_into_turns():
-    """The production failure: one 6 s VAD utterance holding an officer turn then a suspect turn."""
+def test_long_utterance_stays_one_asr_range_without_speaker_inference():
+    """Stage 1 retains full text for later speaker analysis."""
     runtime = SpeakerChangeRuntime(vad_outputs=[[[0, -1]], [[-1, 6000]]])
     session = SpeechSession("session-split", 16000, runtime, chunk_size_ms=200)
     session.push_pcm(_pcm(3000, value=1))
@@ -233,19 +233,14 @@ def test_long_utterance_with_a_speaker_change_is_split_into_turns():
     events = session.push_pcm(_pcm(3000, value=200))
 
     finals = [event for event in events if event.type is SpeechEventType.ASR_FINAL]
-    bounds = [(event.start_ms, event.end_ms) for event in finals]
-    assert len(bounds) == 2, "one turn per speaker"
-    assert bounds[0][0] == 0
-    assert bounds[0][1] == bounds[1][0], "turns are contiguous"
-    split_at = bounds[0][1]
-    assert abs(split_at - bounds[1][1] / 2) <= 750, "the change point sits near the middle"
-    assert len(runtime.transcribe_calls) == 2
-    assert all(event.details.get("overlap") is None for event in finals)
-    assert len([e for e in events if e.type is SpeechEventType.SPEAKER_RESULT]) == 2
+    assert [(event.start_ms, event.end_ms) for event in finals] == [(0, 6000)]
+    assert len(runtime.transcribe_calls) == 1
+    assert runtime.speaker_calls == []
+    assert not any(event.type is SpeechEventType.SPEAKER_RESULT for event in events)
 
 
-def test_long_utterance_without_a_detectable_change_stays_one_turn():
-    """A constant embedding has no turn boundary and remains eligible for verification."""
+def test_long_utterance_is_retained_as_one_asr_result():
+    """Long utterances stay whole for the later speaker-analysis stage."""
     runtime = FakeRuntime(vad_outputs=[[[0, -1]], [[-1, 6000]]])
     session = SpeechSession("session-flat", 16000, runtime, chunk_size_ms=200)
     session.push_pcm(_pcm(3000, value=1))
@@ -255,23 +250,19 @@ def test_long_utterance_without_a_detectable_change_stays_one_turn():
     finals = [event for event in events if event.type is SpeechEventType.ASR_FINAL]
     assert len(finals) == 1
     assert finals[0].start_ms == 0
-    assert finals[0].details.get("overlap") is None
+    assert finals[0].details["stage_one_asr_only"] is True
     assert len(runtime.transcribe_calls) == 1
+    assert runtime.speaker_calls == []
 
 
-def test_short_utterance_never_pays_for_segmentation():
-    class ExplodingSplitter:
-        def split(self, *args, **kwargs):  # pragma: no cover - must not be called
-            raise AssertionError("the splitter must not run for a short utterance")
-
+def test_short_utterance_is_transcribed_without_speaker_inference():
     runtime = FakeRuntime(vad_outputs=[[[0, -1]], [[-1, 1200]]])
-    session = SpeechSession(
-        "session-short", 16000, runtime, chunk_size_ms=200, turn_splitter=ExplodingSplitter()
-    )
+    session = SpeechSession("session-short", 16000, runtime, chunk_size_ms=200)
     session.push_pcm(_pcm(1000, value=1))
 
     events = session.push_pcm(_pcm(200, value=1))
 
     finals = [event for event in events if event.type is SpeechEventType.ASR_FINAL]
     assert [(event.start_ms, event.end_ms) for event in finals] == [(0, 1200)]
-    assert finals[0].details.get("overlap") is None
+    assert finals[0].details["stage_one_asr_only"] is True
+    assert runtime.speaker_calls == []

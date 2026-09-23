@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database.models import ASRCaptureSession, ASRFragment, Message, ProcessedSpeechFragment, QAUnitFragment
@@ -51,6 +52,120 @@ def get_fragment(db: Session, fragment_id: str) -> ASRFragment:
 def list_fragments(db: Session, *, capture_session_id: str) -> list[ASRFragment]:
     stmt = select(ASRFragment).where(ASRFragment.capture_session_id == capture_session_id).order_by(ASRFragment.ordinal.asc())
     return list(db.scalars(stmt))
+
+
+def list_for_capture(db: Session, capture_id: str) -> list[ASRFragment]:
+    return list_fragments(db, capture_session_id=capture_id)
+
+
+def asr_final_idempotency_key(
+    capture_session_id: str,
+    start_sample: int,
+    end_sample: int,
+    model_version: str | None,
+) -> str:
+    key = "\0".join(
+        (
+            str(capture_session_id),
+            str(int(start_sample)),
+            str(int(end_sample)),
+            "" if model_version is None else str(model_version),
+        )
+    )
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def create_or_update_asr_only_fragment(
+    db: Session,
+    *,
+    capture_session_id: str,
+    case_id: str,
+    started_at_ms: int,
+    ended_at_ms: int,
+    raw_text: str,
+    asr_confidence: float | None,
+    model_id: str,
+    model_version: str | None,
+    idempotency_key: str,
+) -> tuple[ASRFragment, bool]:
+    existing = db.scalar(
+        select(ASRFragment).where(ASRFragment.asr_idempotency_key == idempotency_key)
+    )
+    text = str(raw_text or "")
+    if existing is not None:
+        if existing.state == "PENDING" and existing.speaker_source == "PENDING_ANALYSIS":
+            if existing.edited_text == existing.raw_text:
+                existing.edited_text = text
+            existing.raw_text = text
+            existing.asr_confidence = asr_confidence
+            existing.started_at_ms = started_at_ms
+            existing.ended_at_ms = ended_at_ms
+            existing.model_id = model_id
+            existing.model_version = model_version
+            db.flush()
+        return existing, False
+
+    max_ordinal = db.scalar(
+        select(func.max(ASRFragment.ordinal)).where(
+            ASRFragment.capture_session_id == capture_session_id
+        )
+    )
+    ordinal = int(max_ordinal) + 1 if max_ordinal is not None else 0
+    item = ASRFragment(
+        id=str(uuid4()),
+        capture_session_id=capture_session_id,
+        case_id=case_id,
+        ordinal=ordinal,
+        started_at_ms=started_at_ms,
+        ended_at_ms=ended_at_ms,
+        raw_text=text,
+        edited_text=text,
+        asr_confidence=asr_confidence,
+        speaker="UNKNOWN",
+        speaker_id=None,
+        speaker_name=None,
+        speaker_score=None,
+        second_best_score=None,
+        speaker_threshold=None,
+        speaker_margin=None,
+        speaker_source="PENDING_ANALYSIS",
+        voiceprint_verified=False,
+        low_confidence=False,
+        state="PENDING",
+        model_id=model_id,
+        model_version=model_version,
+        asr_idempotency_key=idempotency_key,
+        confirmed_message_id=None,
+    )
+    db.add(item)
+    db.flush()
+
+    evidence_repo.create_evidence(
+        db,
+        fragment_id=item.id,
+        capture_session_id=capture_session_id,
+        case_id=case_id,
+        ai_speaker="UNKNOWN",
+        speaker_id=None,
+        speaker_name=None,
+        speaker_source="PENDING_ANALYSIS",
+        score=None,
+        second_best_score=None,
+        threshold=None,
+        margin=None,
+        threshold_source=None,
+        voiceprint_verified=False,
+        low_confidence=False,
+        asr_model_id=model_id,
+        asr_model_version=model_version,
+        speaker_model_id=None,
+        speaker_model_version=None,
+        speaker_model_fingerprint=None,
+        microphone_fingerprint=None,
+        calibration_id=None,
+        calibration_status=None,
+    )
+    return item, True
 
 
 def get_processed(db: Session, fragment_id: str) -> ProcessedSpeechFragment | None:
