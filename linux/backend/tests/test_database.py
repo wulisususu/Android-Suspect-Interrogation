@@ -7,7 +7,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.database.models import ASRCaptureSession, ASRFragment, Case
+from app.database.models import ASRCaptureSession, ASRFragment, Case, Message
 from app.database.session import begin_sqlite_immediate, init_database, make_engine
 
 
@@ -52,6 +52,9 @@ def test_fresh_schema_only_allows_unconfirmed_fragments_to_be_superseded(tmp_pat
     init_database(engine)
     with Session(engine) as db:
         case = Case(id="CASE-SUPERSEDED")
+        message = Message(
+            id="MESSAGE-CONFIRMED", case_id=case.id, seq=1, speaker="UNKNOWN", text="confirmed",
+        )
         capture = ASRCaptureSession(
             id="CAPTURE-SUPERSEDED", case_id=case.id, status="COMPLETE", sample_rate=16000,
         )
@@ -59,7 +62,7 @@ def test_fresh_schema_only_allows_unconfirmed_fragments_to_be_superseded(tmp_pat
             id="FRAGMENT-CONFIRMED", capture_session_id=capture.id, case_id=case.id,
             ordinal=1, started_at_ms=0, ended_at_ms=1000, raw_text="confirmed", edited_text="confirmed",
             speaker="UNKNOWN", speaker_source="ASR", state="CONFIRMED", model_id="model-v1",
-            confirmed_message_id=None,
+            confirmed_message_id=message.id,
         )
         pending = ASRFragment(
             id="FRAGMENT-PENDING", capture_session_id=capture.id, case_id=case.id,
@@ -69,10 +72,32 @@ def test_fresh_schema_only_allows_unconfirmed_fragments_to_be_superseded(tmp_pat
         )
         db.add(case)
         db.flush()
+        db.add(message)
+        db.flush()
         db.add(capture)
         db.flush()
         db.add_all([confirmed, pending])
         db.commit()
+
+    with pytest.raises(IntegrityError, match="confirmed fragments cannot be superseded"):
+        with engine.begin() as connection:
+            connection.execute(text(
+                "UPDATE asr_fragments SET state='SUPERSEDED' WHERE id='FRAGMENT-CONFIRMED'"
+            ))
+    with engine.connect() as connection:
+        linked_fragment = connection.execute(text(
+            "SELECT state, confirmed_message_id FROM asr_fragments WHERE id='FRAGMENT-CONFIRMED'"
+        )).mappings().one()
+        assert linked_fragment["state"] == "CONFIRMED"
+        assert linked_fragment["confirmed_message_id"] == "MESSAGE-CONFIRMED"
+
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM messages WHERE id='MESSAGE-CONFIRMED'"))
+        unlinked_fragment = connection.execute(text(
+            "SELECT state, confirmed_message_id FROM asr_fragments WHERE id='FRAGMENT-CONFIRMED'"
+        )).mappings().one()
+    assert unlinked_fragment["state"] == "CONFIRMED"
+    assert unlinked_fragment["confirmed_message_id"] is None
 
     with pytest.raises(IntegrityError, match="confirmed fragments cannot be superseded"):
         with engine.begin() as connection:

@@ -5,7 +5,7 @@ import sys
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.exc import IntegrityError
 
 
@@ -60,6 +60,16 @@ def _run_alembic(tmp_path, target: str):
         check=False,
     )
     return db_file, env, result
+
+
+def _sqlite_engine_with_foreign_keys(db_file):
+    engine = create_engine(f"sqlite:///{db_file}")
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(dbapi_connection, _connection_record):
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    return engine
 
 
 def test_alembic_honors_runtime_suspect_db_path(tmp_path):
@@ -252,7 +262,7 @@ def test_alembic_upgrade_head_builds_required_schema(tmp_path):
 def test_0016_preserves_existing_fragments_and_speaker_roles(tmp_path):
     db_file, env, result = _run_alembic(tmp_path, "0015_case_voice_role_draft")
     assert result.returncode == 0, result.stdout + result.stderr
-    engine = create_engine(f"sqlite:///{db_file}")
+    engine = _sqlite_engine_with_foreign_keys(db_file)
     try:
         now = "2026-09-01 00:00:00"
         with engine.begin() as connection:
@@ -265,12 +275,16 @@ def test_0016_preserves_existing_fragments_and_speaker_roles(tmp_path):
                 "VALUES ('CAPTURE-DURABLE', 'CASE-DURABLE', NULL, 'COMPLETE', 16000, :now, :now, :now)"
             ), {"now": now})
             connection.execute(text(
+                "INSERT INTO messages (id, case_id, session_id, seq, speaker, text, mark, confirmed, current_version, created_at, updated_at) "
+                "VALUES ('MESSAGE-DURABLE', 'CASE-DURABLE', NULL, 1, 'SUSPECT', '已确认文本', '', 1, 1, :now, :now)"
+            ), {"now": now})
+            connection.execute(text(
                 "INSERT INTO asr_fragments (id, capture_session_id, case_id, ordinal, started_at_ms, ended_at_ms, raw_text, edited_text, asr_confidence, speaker, speaker_id, speaker_name, speaker_score, second_best_score, speaker_threshold, speaker_margin, speaker_source, voiceprint_verified, low_confidence, state, model_id, model_version, confirmed_message_id, created_at, updated_at) "
                 "VALUES ('FRAGMENT-DURABLE', 'CAPTURE-DURABLE', 'CASE-DURABLE', 1, 100, 800, '原始文本', '原始文本', 0.91, 'SUSPECT', 'speaker-1', '嫌疑人', 0.91, 0.08, 0.7, 0.1, 'VOICEPRINT', 1, 0, 'PENDING', 'paraformer', 'v1', NULL, :now, :now)"
             ), {"now": now})
             connection.execute(text(
                 "INSERT INTO asr_fragments (id, capture_session_id, case_id, ordinal, started_at_ms, ended_at_ms, raw_text, edited_text, asr_confidence, speaker, speaker_id, speaker_name, speaker_score, second_best_score, speaker_threshold, speaker_margin, speaker_source, voiceprint_verified, low_confidence, state, model_id, model_version, confirmed_message_id, created_at, updated_at) "
-                "VALUES ('FRAGMENT-CONFIRMED', 'CAPTURE-DURABLE', 'CASE-DURABLE', 2, 800, 1500, '已确认文本', '已确认文本', 0.89, 'SUSPECT', 'speaker-1', '嫌疑人', 0.89, 0.08, 0.7, 0.1, 'VOICEPRINT', 1, 0, 'CONFIRMED', 'paraformer', 'v1', NULL, :now, :now)"
+                "VALUES ('FRAGMENT-CONFIRMED', 'CAPTURE-DURABLE', 'CASE-DURABLE', 2, 800, 1500, '已确认文本', '已确认文本', 0.89, 'SUSPECT', 'speaker-1', '嫌疑人', 0.89, 0.08, 0.7, 0.1, 'VOICEPRINT', 1, 0, 'CONFIRMED', 'paraformer', 'v1', 'MESSAGE-DURABLE', :now, :now)"
             ), {"now": now})
     finally:
         engine.dispose()
@@ -285,13 +299,24 @@ def test_0016_preserves_existing_fragments_and_speaker_roles(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
-    engine = create_engine(f"sqlite:///{db_file}")
+    engine = _sqlite_engine_with_foreign_keys(db_file)
     try:
+        with engine.connect() as connection:
+            assert connection.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
         with pytest.raises(IntegrityError, match="confirmed fragments cannot be superseded"):
             with engine.begin() as connection:
                 connection.execute(text(
                     "UPDATE asr_fragments SET state='SUPERSEDED' WHERE id='FRAGMENT-CONFIRMED'"
                 ))
+        with engine.connect() as connection:
+            linked_fragment = connection.execute(text(
+                "SELECT state, confirmed_message_id FROM asr_fragments WHERE id='FRAGMENT-CONFIRMED'"
+            )).mappings().one()
+        assert linked_fragment["state"] == "CONFIRMED"
+        assert linked_fragment["confirmed_message_id"] == "MESSAGE-DURABLE"
+
+        with engine.begin() as connection:
+            connection.execute(text("DELETE FROM messages WHERE id='MESSAGE-DURABLE'"))
         with engine.connect() as connection:
             fragment = connection.execute(text(
                 "SELECT id, speaker, speaker_id, state, raw_text, asr_idempotency_key "
@@ -314,6 +339,12 @@ def test_0016_preserves_existing_fragments_and_speaker_roles(tmp_path):
         assert capture["voiced_ms"] == 0
         assert confirmed_fragment["state"] == "CONFIRMED"
         assert confirmed_fragment["confirmed_message_id"] is None
+
+        with pytest.raises(IntegrityError, match="confirmed fragments cannot be superseded"):
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "UPDATE asr_fragments SET state='SUPERSEDED' WHERE id='FRAGMENT-CONFIRMED'"
+                ))
 
         with engine.begin() as connection:
             connection.execute(text(
