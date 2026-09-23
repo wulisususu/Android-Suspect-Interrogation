@@ -314,10 +314,12 @@ async function loadNormalizedFragments(caseId: string, includeConfirmed = false)
 async function normalizeCaptureStatus(caseId: string, value: unknown): Promise<AsrCaptureStatus> {
   const raw = asRecord(value)
   const normalizedCaseId = String(raw.caseId ?? caseId)
+  const sourceValue = String(raw.source ?? '').toUpperCase()
   const fragments = Array.isArray(raw.fragments) ? raw.fragments.map(normalizeTemporaryAsrFragment) : await loadNormalizedFragments(normalizedCaseId)
   return {
     caseId: normalizedCaseId,
     captureSessionId: raw.captureSessionId == null ? null : String(raw.captureSessionId),
+    source: sourceValue === 'BROWSER' || sourceValue === 'ALSA' ? sourceValue : null,
     running: Boolean(raw.running ?? raw.active),
     startedAt: toTimestamp(raw.startedAt) ?? null,
     endedAt: toTimestamp(raw.endedAt) ?? null,

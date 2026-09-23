@@ -90,6 +90,55 @@ class SourceAwareAsrCaptureService:
     def build_recovery_runtime(self, capture):
         return self._default_service.build_recovery_runtime(capture)
 
+    def build_browser_recovery_runtime(self, capture):
+        browser_service = self._services.get("BROWSER")
+        return None if browser_service is None else browser_service.build_recovery_runtime(capture)
+
+    def resume_browser_capture(self, runtime) -> None:
+        browser_service = self._services.get("BROWSER")
+        if browser_service is None:
+            raise DomainError("BROWSER_AUDIO_UNAVAILABLE", "浏览器音频输入未配置", 503)
+        browser_service.resume_browser_capture(runtime)
+        with self._lock:
+            self._capture_sources[runtime.case_id] = "BROWSER"
+
+    def ingest_browser_frame(
+        self,
+        case_id: str,
+        capture_id: str,
+        source_sequence: int,
+        start_sample: int,
+        pcm: bytes,
+    ) -> dict[str, int]:
+        case_id = str(case_id).strip()
+        with self._lock:
+            source = self._capture_sources.get(case_id)
+        if source == "BROWSER":
+            return self._services[source].ingest_browser_frame(
+                case_id, capture_id, source_sequence, start_sample, pcm
+            )
+        if source is not None:
+            raise RuntimeError("active capture does not use browser audio")
+        if self._live_speech_coordinator is None:
+            raise RuntimeError("durable browser audio ingress is unavailable")
+        return self._live_speech_coordinator.replay_browser_frame(
+            case_id=case_id,
+            capture_id=capture_id,
+            source_sequence=source_sequence,
+            start_sample=start_sample,
+            pcm=pcm,
+        )
+
+    def mark_browser_capture_incomplete(self, case_id: str, capture_id: str, reason: str) -> bool:
+        case_id = str(case_id).strip()
+        with self._lock:
+            source = self._capture_sources.get(case_id)
+        if source == "BROWSER":
+            return self._services[source].mark_browser_capture_incomplete(case_id, capture_id, reason)
+        if self._live_speech_coordinator is None:
+            raise RuntimeError("durable browser audio ingress is unavailable")
+        return self._live_speech_coordinator.mark_browser_capture_incomplete(case_id, capture_id, reason)
+
     def _build_service(
         self,
         source: str,
@@ -157,6 +206,14 @@ class SourceAwareAsrCaptureService:
             if self._preparation_source is not None:
                 raise DomainError("ASR_AUDIO_RESOURCE_BUSY", "准备阶段语音输入正在占用麦克风", 409)
             result = self._services[selected].start(case_id)
+            if selected == "BROWSER" and self._live_speech_coordinator is not None:
+                try:
+                    self._live_speech_coordinator.register_browser_capture(
+                        str(result.get("captureSessionId") or "")
+                    )
+                except Exception:
+                    self._services[selected].stop(case_id)
+                    raise
             self._capture_sources[str(case_id)] = selected
         payload = dict(result)
         payload["source"] = selected
@@ -183,7 +240,16 @@ class SourceAwareAsrCaptureService:
         with self._lock:
             source = self._capture_sources.get(case_id)
         if source is None:
-            return self._default_service.status(case_id)
+            result = dict(self._default_service.status(case_id))
+            coordinator = self._live_speech_coordinator
+            capture_id = result.get("captureSessionId")
+            if (
+                coordinator is not None
+                and capture_id
+                and coordinator.has_browser_frame_receipt(case_id, str(capture_id))
+            ):
+                result["source"] = "BROWSER"
+            return result
         result = dict(self._services[source].status(case_id))
         result["source"] = source
         if not result.get("active"):

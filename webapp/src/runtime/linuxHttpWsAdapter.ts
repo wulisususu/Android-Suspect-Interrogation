@@ -1,6 +1,11 @@
 import type { AxiosRequestConfig } from 'axios'
 import { http } from '../api/http'
-import { startBrowserAsrCapture, stopBrowserAsrCapture } from '../audio/browserAsrCapture'
+import {
+  BrowserFormalCaptureLeaseError,
+  confirmBrowserAsrCaptureFinalized,
+  startBrowserAsrCapture,
+  stopBrowserAsrCapture,
+} from '../audio/browserAsrCapture'
 import { audioInputMode } from '../config/audioInput'
 import { runtimeConfig } from '../config/runtime'
 import { normalizeRuntimeError, RuntimeAdapterError } from './errors'
@@ -232,11 +237,13 @@ export class LinuxHttpWsAdapter implements RuntimeAdapter {
     let browserBackendStarted = false
     try {
       const stoppingBrowserCapture = audioInputMode === 'BROWSER' && (operation === 'asr.capture.stop' || operation === 'document.finalize')
-      if (stoppingBrowserCapture) await stopBrowserAsrCapture().catch(() => undefined)
+      if (stoppingBrowserCapture) await stopBrowserAsrCapture()
       const config = endpoint(operation, payload)
       if (options.timeoutMs) config.timeout = options.timeoutMs
       const response = await this.request<T>(config)
       const result = unwrap<T>(response.data)
+
+      if (stoppingBrowserCapture) await confirmBrowserAsrCaptureFinalized()
 
       if (audioInputMode === 'BROWSER' && operation === 'asr.capture.start' && typeof window !== 'undefined') {
         browserBackendStarted = true
@@ -248,11 +255,26 @@ export class LinuxHttpWsAdapter implements RuntimeAdapter {
 
       return result
     } catch (error) {
-      if (audioInputMode === 'BROWSER' && operation === 'asr.capture.start') {
+      if (
+        audioInputMode === 'BROWSER'
+        && operation === 'asr.capture.start'
+        && error instanceof BrowserFormalCaptureLeaseError
+        && error.reason === 'CONFLICT'
+      ) {
+        // This tab does not own the capture lease. Keep the backend capture
+        // alive for the tab that does own its microphone and durable outbox.
+      } else if (audioInputMode === 'BROWSER' && operation === 'asr.capture.start') {
         if (browserBackendStarted) {
-          try { await this.request(endpoint('asr.capture.stop', payload)) } catch { /* preserve original failure */ }
+          // The browser outbox must drain or receive an explicit incomplete
+          // acknowledgement before the backend is allowed to finalize.
+          await stopBrowserAsrCapture()
+          try {
+            await this.request(endpoint('asr.capture.stop', payload))
+            await confirmBrowserAsrCaptureFinalized()
+          } catch { /* preserve original failure and lease if cleanup failed */ }
+        } else {
+          await stopBrowserAsrCapture().catch(() => undefined)
         }
-        await stopBrowserAsrCapture().catch(() => undefined)
       } else if (audioInputMode === 'BROWSER' && (operation === 'asr.capture.stop' || operation === 'document.finalize')) {
         await stopBrowserAsrCapture().catch(() => undefined)
       }

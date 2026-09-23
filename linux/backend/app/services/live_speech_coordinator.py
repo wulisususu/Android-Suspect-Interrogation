@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import queue
 import threading
 from dataclasses import dataclass
@@ -12,10 +13,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.ai.speech.types import SpeechEvent, SpeechEventType
-from app.database.models import ASRCaptureSession, ASRFragment, Case, LiveSpeechJob
+from app.database.models import ASRAudioFrame, ASRCaptureSession, ASRFragment, Case, LiveSpeechJob
 from app.repositories import audio_archive as archive_repo
 from app.repositories import asr_fragments as asr_repo
-from app.services.durable_audio_archive import DurableAudioArchive
+from app.services.durable_audio_archive import BrowserAudioDiscontinuityError, DurableAudioArchive
 from speech_worker.session import SpeechSession
 from speech_worker.speaker_turn_splitter import SpeakerTurnSplitter
 
@@ -74,6 +75,7 @@ class LiveSpeechCoordinator:
         self._asr_thread: threading.Thread | None = None
         self._speaker_thread: threading.Thread | None = None
         self._durable_cursors: dict[str, int] = {}
+        self._append_locks: dict[str, threading.Lock] = {}
         self._asr_cursors: dict[str, int] = {}
         self._asr_blocked: set[str] = set()
         self._runtimes: dict[str, Any] = {}
@@ -89,11 +91,15 @@ class LiveSpeechCoordinator:
                 return
             recovered = self.archive.recover_incomplete()
             with self.session_factory() as db:
+                browser_capture_ids = set(
+                    db.scalars(select(ASRAudioFrame.capture_session_id).distinct())
+                )
+            with self.session_factory() as db:
                 completed_with_backlog = list(
                     db.scalars(
                         select(ASRCaptureSession.id)
                         .where(
-                            ASRCaptureSession.recording_status == "COMPLETE",
+                            ASRCaptureSession.recording_status.in_(("COMPLETE", "INCOMPLETE")),
                             ASRCaptureSession.interrogation_session_id.is_not(None),
                             or_(
                                 ASRCaptureSession.asr_status.in_(("PENDING", "FINALIZING")),
@@ -107,19 +113,26 @@ class LiveSpeechCoordinator:
                 )
             recovered = list(dict.fromkeys([*recovered, *completed_with_backlog]))
             recovery_jobs: list[_AudioRange | _FinishCapture] = []
+            resumable_browser_runtimes: list[Any] = []
             for capture_id in recovered:
                 finalization_error: Exception | None = None
                 with self.session_factory() as db:
                     capture = db.get(ASRCaptureSession, capture_id)
                     if capture is None:
                         continue
-                    should_finalize = capture.recording_status == "CAPTURING"
+                    resumable_browser = (
+                        capture.recording_status == "CAPTURING"
+                        and capture_id in browser_capture_ids
+                        and capture.interrogation_session_id is not None
+                    )
+                    should_finalize = capture.recording_status == "CAPTURING" and not resumable_browser
                     has_interrogation_session = capture.interrogation_session_id is not None
                     sample_rate = int(capture.sample_rate)
                     needs_asr = (
                         has_interrogation_session
                         and (
-                            should_finalize
+                            resumable_browser
+                            or should_finalize
                             or capture.asr_status in ("PENDING", "FINALIZING")
                             or int(capture.asr_cursor_sample or 0)
                             < int(capture.audio_sample_count or 0)
@@ -140,7 +153,8 @@ class LiveSpeechCoordinator:
                 if not needs_asr:
                     continue
                 try:
-                    self._begin_asr_finalization(capture_id, sample_rate)
+                    if not resumable_browser:
+                        self._begin_asr_finalization(capture_id, sample_rate)
                 except Exception as exc:
                     finalization_error = exc
                 if should_finalize:
@@ -149,11 +163,40 @@ class LiveSpeechCoordinator:
                             self.archive.finalize_capture(capture_id)
                         except Exception as exc:
                             finalization_error = exc
+
+                browser_runtime = None
+                if resumable_browser:
+                    with self.session_factory() as db:
+                        capture = db.get(ASRCaptureSession, capture_id)
+                        runtime_builder = getattr(
+                            self.capture_service,
+                            "build_browser_recovery_runtime",
+                            None,
+                        )
+                        if capture is not None and callable(runtime_builder):
+                            try:
+                                browser_runtime = runtime_builder(capture)
+                            except Exception:
+                                logger.exception(
+                                    "failed to rebuild browser capture runtime %s",
+                                    capture_id,
+                                )
+                    if browser_runtime is None:
+                        with archive_repo.archive_transaction(self.session_factory) as db:
+                            capture = db.get(ASRCaptureSession, capture_id)
+                            if capture is not None and capture.recording_status == "CAPTURING":
+                                archive_repo.mark_capture_incomplete(db, capture_id)
+                        resumable_browser = False
+                        try:
+                            self._begin_asr_finalization(capture_id, sample_rate)
+                        except Exception as exc:
+                            finalization_error = exc
+
                 with self.session_factory() as db:
                     capture = db.get(ASRCaptureSession, capture_id)
                     if capture is None or capture.interrogation_session_id is None:
                         continue
-                    runtime = self.capture_service.build_recovery_runtime(capture)
+                    runtime = browser_runtime if resumable_browser else self.capture_service.build_recovery_runtime(capture)
                     unfinished_start = capture.asr_unfinished_start_sample
                     cursor = max(0, int(capture.asr_cursor_sample or 0))
                     checkpoint = capture.asr_finalize_checkpoint_sample
@@ -174,7 +217,46 @@ class LiveSpeechCoordinator:
                     next_cursor = min(end, cursor + _MAX_INFERENCE_SAMPLES)
                     recovery_jobs.append(_AudioRange(runtime, cursor, next_cursor))
                     cursor = next_cursor
-                recovery_jobs.append(_FinishCapture(runtime))
+                if resumable_browser:
+                    resumable_browser_runtimes.append(runtime)
+                else:
+                    recovery_jobs.append(_FinishCapture(runtime))
+
+            for job in recovery_jobs:
+                self.asr_queue.put(job)
+            resume_browser_capture = getattr(self.capture_service, "resume_browser_capture", None)
+            for runtime in resumable_browser_runtimes:
+                try:
+                    if not callable(resume_browser_capture):
+                        raise RuntimeError("capture service cannot resume browser audio")
+                    resume_browser_capture(runtime)
+                except Exception as exc:
+                    logger.exception(
+                        "failed to resume browser capture %s; preserving archived audio for ASR",
+                        runtime.capture_session_id,
+                    )
+                    try:
+                        self.mark_browser_capture_incomplete(
+                            runtime.case_id,
+                            runtime.capture_session_id,
+                            str(exc),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "failed to mark browser capture %s incomplete after resume failure",
+                            runtime.capture_session_id,
+                        )
+                    try:
+                        self._begin_asr_finalization(
+                            runtime.capture_session_id,
+                            runtime.sample_rate,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "failed to begin ASR finalization for browser capture %s",
+                            runtime.capture_session_id,
+                        )
+                    self.asr_queue.put(_FinishCapture(runtime))
 
             self._asr_thread = threading.Thread(
                 target=self._asr_loop,
@@ -182,8 +264,6 @@ class LiveSpeechCoordinator:
                 name="live-speech-asr",
             )
             self._asr_thread.start()
-            for job in recovery_jobs:
-                self.asr_queue.put(job)
 
             with self.session_factory() as db:
                 speaker_candidates = list(
@@ -223,24 +303,118 @@ class LiveSpeechCoordinator:
             self._asr_cursors[runtime.capture_session_id] = 0
             self._runtimes[runtime.capture_session_id] = runtime
 
-    def append_audio(self, runtime: Any, pcm: bytes) -> int:
+    def register_browser_capture(self, capture_id: str) -> None:
+        """Persist a source marker so a just-started browser capture can resume."""
+        with archive_repo.archive_transaction(self.session_factory) as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            if capture is None or capture.recording_status != "CAPTURING":
+                raise RuntimeError("browser capture is not accepting audio")
+            marker = archive_repo.get_frame(db, capture_id, 0)
+            if marker is None:
+                digest = hashlib.sha256(b"").hexdigest()
+                archive_repo.record_frame(
+                    db,
+                    capture_id=capture_id,
+                    source_sequence=0,
+                    start_sample=0,
+                    end_sample=0,
+                    payload_sha256=digest,
+                    durable_sample_end=0,
+                )
+
+    def append_audio(
+        self,
+        runtime: Any,
+        pcm: bytes,
+        *,
+        source_sequence: int | None = None,
+        expected_start_sample: int | None = None,
+    ) -> int:
         """Commit audio first, then queue only its durable sample range."""
+        capture_id = str(runtime.capture_session_id)
         with self._lock:
-            start_sample = self._durable_cursors.get(runtime.capture_session_id, 0)
-        try:
-            end_sample = self.archive.append(runtime.capture_session_id, pcm)
-        except Exception as exc:
-            self._mark_storage_error(runtime, exc)
-            raise
-        if end_sample != start_sample + len(pcm) // 2:
-            exc = RuntimeError("audio archive returned a non-contiguous durable cursor")
-            self._mark_storage_error(runtime, exc)
-            raise exc
-        with self._lock:
-            self._durable_cursors[runtime.capture_session_id] = end_sample
-            runtime.durable_sample_cursor = end_sample
-        self.asr_queue.put(_AudioRange(runtime, start_sample, end_sample))
-        return end_sample
+            append_lock = self._append_locks.setdefault(capture_id, threading.Lock())
+        with append_lock:
+            with self._lock:
+                durable_cursor = self._durable_cursors.get(capture_id, 0)
+            start_sample = durable_cursor if expected_start_sample is None else expected_start_sample
+            try:
+                end_sample = self.archive.append(
+                    capture_id,
+                    pcm,
+                    source_sequence=source_sequence,
+                    expected_start_sample=expected_start_sample,
+                )
+            except BrowserAudioDiscontinuityError:
+                raise
+            except Exception as exc:
+                self._mark_storage_error(runtime, exc)
+                raise
+            if source_sequence is not None and end_sample <= durable_cursor:
+                return end_sample
+            if end_sample != start_sample + len(pcm) // 2:
+                exc = RuntimeError("audio archive returned a non-contiguous durable cursor")
+                self._mark_storage_error(runtime, exc)
+                raise exc
+            with self._lock:
+                self._durable_cursors[capture_id] = max(durable_cursor, end_sample)
+                runtime.durable_sample_cursor = max(
+                    int(getattr(runtime, "durable_sample_cursor", 0) or 0),
+                    end_sample,
+                )
+            self.asr_queue.put(_AudioRange(runtime, start_sample, end_sample))
+            return end_sample
+
+    def replay_browser_frame(
+        self,
+        *,
+        case_id: str,
+        capture_id: str,
+        source_sequence: int,
+        start_sample: int,
+        pcm: bytes,
+    ) -> dict[str, int]:
+        """Return a durable receipt for an exact replay after process restart."""
+        with archive_repo.archive_transaction(self.session_factory, immediate=False) as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            if capture is None or capture.case_id != str(case_id):
+                raise ValueError("browser frame does not match a stored capture")
+        durable_end = self.archive.append(
+            capture_id,
+            bytes(pcm),
+            source_sequence=source_sequence,
+            expected_start_sample=start_sample,
+        )
+        return {"ackSequence": source_sequence, "durableSampleEnd": durable_end}
+
+    def has_browser_frame_receipt(self, case_id: str, capture_id: str) -> bool:
+        with self.session_factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            if (
+                capture is None
+                or capture.case_id != str(case_id)
+                or capture.recording_status not in {"CAPTURING", "INCOMPLETE"}
+            ):
+                return False
+            return db.scalar(
+                select(ASRAudioFrame.id)
+                .where(ASRAudioFrame.capture_session_id == capture_id)
+                .where(ASRAudioFrame.source_sequence == 0)
+                .limit(1)
+            ) is not None
+
+    def mark_browser_capture_incomplete(self, case_id: str, capture_id: str, reason: str) -> bool:
+        del reason
+        with archive_repo.archive_transaction(self.session_factory) as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            if capture is None or capture.case_id != str(case_id):
+                raise ValueError("browser audio capture does not match the requested case")
+            if capture.recording_status == "COMPLETE":
+                return False
+            if capture.recording_status != "INCOMPLETE":
+                archive_repo.mark_capture_incomplete(db, capture_id)
+        return True
+
 
     def speaker_jobs_ready(
         self,
@@ -379,7 +553,11 @@ class LiveSpeechCoordinator:
                     runtime.capture_session_id,
                     runtime.sample_rate,
                 )
-                self.archive.finalize_capture(runtime.capture_session_id)
+                with self.session_factory() as db:
+                    capture = db.get(ASRCaptureSession, runtime.capture_session_id)
+                    recording_status = None if capture is None else capture.recording_status
+                if recording_status == "CAPTURING":
+                    self.archive.finalize_capture(runtime.capture_session_id)
             except Exception as exc:
                 self._mark_storage_error(runtime, exc)
                 self._asr_blocked.add(runtime.capture_session_id)

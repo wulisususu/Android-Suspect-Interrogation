@@ -380,14 +380,27 @@ git commit -m "fix: harden deferred fragment routing recovery"
 ## Task 7: Make Browser Audio Frames Replayable
 
 **Files:**
-- Modify: `linux/backend/app/services/browser_audio_input.py`
+- Modify: `linux/backend/app/repositories/audio_archive.py`
+- Modify: `linux/backend/app/services/asr_capture_service.py`
+- Modify: `linux/backend/app/services/durable_audio_archive.py`
+- Modify: `linux/backend/app/services/live_speech_coordinator.py`
+- Modify: `linux/backend/app/services/source_aware_asr_capture_service.py`
 - Modify: `linux/backend/app/websocket/browser_asr.py`
-- Modify: `linux/backend/tests/test_browser_audio_input.py`
+- Modify: `linux/backend/tests/test_durable_audio_archive.py`
 - Modify: `linux/backend/tests/test_browser_asr_transport.py`
+- Modify: `linux/backend/tests/test_live_speech_coordinator.py`
+- Modify: `webapp/src/api/interrogation.ts`
 - Modify: `webapp/src/audio/browserAsrCapture.ts`
 - Modify: `webapp/src/audio/browserAsrCapture.test.ts`
+- Create: `webapp/src/audio/browserCaptureResumeGate.ts`
+- Create: `webapp/src/audio/browserCaptureResumeGate.test.ts`
+- Modify: `webapp/src/runtime/linuxHttpWsAdapter.ts`
+- Modify: `webapp/src/runtime/__tests__/apiFacade.test.ts`
+- Modify: `webapp/src/runtime/__tests__/linuxBrowserStop.test.ts`
+- Modify: `webapp/src/stores/interrogation.ts`
+- Modify: `webapp/src/types/interrogation.ts`
 
-- [ ] **Step 1: Add transport sequence/ack tests**
+- [x] **Step 1: Add transport sequence/ack tests**
 
 Use the formal capture socket to send sequence `1` twice and assert one durable sample range plus the same acknowledgement both times, including after backend restart. Assert the server sends no acknowledgement before durable append and reports a missing sequence as a discontinuity. Keep question-preparation transport on its current path.
 
@@ -395,15 +408,15 @@ Run: `python -m pytest tests/test_browser_audio_input.py tests/test_browser_asr_
 
 Expected: FAIL because the current socket accepts unsequenced binary PCM and closes on queue full.
 
-- [ ] **Step 2: Define and implement the formal frame envelope**
+- [x] **Step 2: Define and implement the formal frame envelope**
 
 Formal binary frames begin with a fixed 12-byte little-endian header: `uint32 sequence`, `uint64 start_sample`, followed by aligned PCM16. The WebSocket server validates monotonic sequence/sample ranges, passes the frame to the durable ingress, and replies with JSON `{ "ackSequence": n, "durableSampleEnd": end }` only after archive checkpoint/manifest commit. An identical retransmission returns the prior acknowledgement; a conflicting retransmission or sequence gap marks a discontinuity.
 
-- [ ] **Step 3: Add bounded browser outbox/reconnect**
+- [x] **Step 3: Add bounded browser outbox/reconnect**
 
 Persist only unacknowledged formal frames in IndexedDB. Delete a frame after its durable acknowledgement. Reconnect the existing capture socket, replay unacknowledged frames in sequence order, and continue reading the same microphone stream. If the bounded outbox or browser storage quota is exhausted, pause/stop microphone capture and show an explicit incomplete-capture state; never drop unacknowledged frames silently. A confirmed stop clears the remaining outbox only after the server confirms finalization. `QUESTION_PREP` stays on its existing protocol.
 
-- [ ] **Step 4: Verify frame delivery and secure URL behavior**
+- [x] **Step 4: Verify frame delivery and secure URL behavior**
 
 Run: `python -m pytest tests/test_browser_audio_input.py tests/test_browser_asr_transport.py -q`
 
@@ -416,11 +429,13 @@ Expected: PASS; reconnect resends only unacknowledged sequences and HTTPS origin
 - [ ] **Step 5: Commit the browser transport**
 
 ```text
-git add linux/backend/app/services/browser_audio_input.py linux/backend/app/websocket/browser_asr.py linux/backend/tests/test_browser_audio_input.py linux/backend/tests/test_browser_asr_transport.py webapp/src/audio/browserAsrCapture.ts webapp/src/audio/browserAsrCapture.test.ts
+git add docs/superpowers/plans/2026-09-23-durable-live-speech-pipeline.md linux/backend/app/repositories/audio_archive.py linux/backend/app/services/asr_capture_service.py linux/backend/app/services/durable_audio_archive.py linux/backend/app/services/live_speech_coordinator.py linux/backend/app/services/source_aware_asr_capture_service.py linux/backend/app/websocket/browser_asr.py linux/backend/tests/test_durable_audio_archive.py linux/backend/tests/test_browser_asr_transport.py linux/backend/tests/test_live_speech_coordinator.py webapp/src/api/interrogation.ts webapp/src/audio/browserAsrCapture.ts webapp/src/audio/browserAsrCapture.test.ts webapp/src/audio/browserCaptureResumeGate.ts webapp/src/audio/browserCaptureResumeGate.test.ts webapp/src/runtime/linuxHttpWsAdapter.ts webapp/src/runtime/__tests__/apiFacade.test.ts webapp/src/runtime/__tests__/linuxBrowserStop.test.ts webapp/src/stores/interrogation.ts webapp/src/types/interrogation.ts
 git commit -m "feat: acknowledge and replay browser ASR audio"
 ```
 
 ## Task 8: Expose Workflow State and Lineage in the UI
+
+Task 8 must also provide a user-accessible way to inspect and recover retained browser outbox frames after an incomplete capture is stopped. The frames remain in IndexedDB, but there is currently no UI to list or export them; they must not be deleted silently.
 
 **Files:**
 - Modify: `webapp/src/types/interrogation.ts`

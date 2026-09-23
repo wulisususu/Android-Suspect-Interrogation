@@ -141,7 +141,7 @@ def update_capture_count(capture: ASRCaptureSession, sample_count: int) -> None:
 
 def mark_capture_incomplete(db: Session, capture_id: str) -> None:
     capture = db.get(ASRCaptureSession, capture_id)
-    if capture is not None:
+    if capture is not None and capture.recording_status != "COMPLETE":
         capture.recording_status = "INCOMPLETE"
         capture.status = "FAILED"
         capture.ended_at = datetime.now(timezone.utc)

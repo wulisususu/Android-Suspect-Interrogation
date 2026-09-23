@@ -257,6 +257,7 @@ export interface TemporaryAsrFragment {
 export interface AsrCaptureStatus {
   caseId: string
   captureSessionId?: string | null
+  source?: 'BROWSER' | 'ALSA' | null
   running: boolean
   startedAt?: number | null
   endedAt?: number | null

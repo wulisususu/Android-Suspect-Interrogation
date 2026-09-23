@@ -7,9 +7,10 @@ import struct
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.database.models import ASRAudioSegment, ASRCaptureSession
+from app.database.models import ASRAudioFrame, ASRAudioSegment, ASRCaptureSession
 from app.repositories import audio_archive as archive_repo
 
 
@@ -18,6 +19,10 @@ _SAMPLE_RATE = 16_000
 _SAMPLE_BYTES = 2
 _SEGMENT_SAMPLES = 60 * _SAMPLE_RATE
 _WAV_HEADER_BYTES = 44
+
+
+class BrowserAudioDiscontinuityError(RuntimeError):
+    """A browser frame conflicts with the durable sequence/sample history."""
 
 
 class DurableAudioArchive:
@@ -59,7 +64,14 @@ class DurableAudioArchive:
                 capture.recording_status = "CAPTURING"
                 capture.status = "CAPTURING"
 
-    def append(self, capture_id: str, pcm: bytes, *, source_sequence: int | None = None) -> int:
+    def append(
+        self,
+        capture_id: str,
+        pcm: bytes,
+        *,
+        source_sequence: int | None = None,
+        expected_start_sample: int | None = None,
+    ) -> int:
         """Durably append up to one second of PCM; callers must split larger input."""
         self._validate_id(capture_id, "capture_id")
         if not isinstance(pcm, bytes):
@@ -77,9 +89,18 @@ class DurableAudioArchive:
             not isinstance(source_sequence, int) or isinstance(source_sequence, bool) or source_sequence < 0
         ):
             raise ValueError("source_sequence must be a non-negative integer")
+        if expected_start_sample is not None and (
+            not isinstance(expected_start_sample, int)
+            or isinstance(expected_start_sample, bool)
+            or expected_start_sample < 0
+            or source_sequence is None
+            or source_sequence < 1
+        ):
+            raise ValueError("formal browser frame sequence and start sample are invalid")
 
         payload_hash = hashlib.sha256(pcm).hexdigest()
         conflict = False
+        discontinuity = False
         integrity_failure = False
         durable_end: int | None = None
         io_started = False
@@ -138,13 +159,37 @@ class DurableAudioArchive:
                             if bad_index is not None:
                                 self._quarantine_unverified_segment_range(db, capture, segments, bad_index)
                                 integrity_failure = True
-                            elif stored_pcm == pcm and payload_hash == prior.payload_sha256:
+                            elif (
+                                stored_pcm == pcm
+                                and payload_hash == prior.payload_sha256
+                                and (
+                                    expected_start_sample is None
+                                    or (
+                                        prior.start_sample == expected_start_sample
+                                        and prior.end_sample == expected_start_sample + sample_count
+                                    )
+                                )
+                            ):
                                 durable_end = prior.durable_sample_end
                             else:
                                 archive_repo.mark_capture_incomplete(db, capture_id)
                                 conflict = True
                     else:
                         durable_end = None
+                        if expected_start_sample is not None:
+                            last_sequence = db.scalar(
+                                select(func.max(ASRAudioFrame.source_sequence)).where(
+                                    ASRAudioFrame.capture_session_id == capture_id
+                                )
+                            )
+                            next_sequence = 1 if last_sequence is None else int(last_sequence) + 1
+                            if (
+                                source_sequence != next_sequence
+                                or expected_start_sample != capture.audio_sample_count
+                            ):
+                                archive_repo.mark_capture_incomplete(db, capture_id)
+                                conflict = True
+                                discontinuity = True
 
                 if durable_end is None and not conflict and not integrity_failure:
                     if capture.recording_status != "CAPTURING":
@@ -174,7 +219,13 @@ class DurableAudioArchive:
             raise RuntimeError("source_sequence receipt does not match durable audio bytes")
         if conflict:
             self._forget_hashers(capture_id)
-            raise RuntimeError("source_sequence was replayed with conflicting audio or range")
+            if discontinuity:
+                raise BrowserAudioDiscontinuityError(
+                    "formal browser frame sequence or sample range has a discontinuity"
+                )
+            raise BrowserAudioDiscontinuityError(
+                "source_sequence was replayed with conflicting audio or range"
+            )
         if durable_end is None:
             raise RuntimeError("audio append did not reach a durable checkpoint")
         return durable_end

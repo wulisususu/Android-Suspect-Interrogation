@@ -171,6 +171,53 @@ class AsrCaptureService:
     def set_live_speech_coordinator(self, coordinator: Any) -> None:
         self._live_speech_coordinator = coordinator
 
+    def ingest_browser_frame(
+        self,
+        case_id: str,
+        capture_id: str,
+        source_sequence: int,
+        start_sample: int,
+        pcm: bytes,
+    ) -> dict[str, int]:
+        with self._lock:
+            runtime = self._active.get(str(case_id).strip())
+        if runtime is None or runtime.capture_session_id != str(capture_id):
+            raise RuntimeError("browser audio capture is not active")
+        if self._live_speech_coordinator is None:
+            raise RuntimeError("durable browser audio ingress is unavailable")
+        durable_end = self._live_speech_coordinator.append_audio(
+            runtime,
+            bytes(pcm),
+            source_sequence=source_sequence,
+            expected_start_sample=start_sample,
+        )
+        return {"ackSequence": source_sequence, "durableSampleEnd": durable_end}
+
+    def mark_browser_capture_incomplete(self, case_id: str, capture_id: str, reason: str) -> bool:
+        if self._live_speech_coordinator is None:
+            raise RuntimeError("durable browser audio ingress is unavailable")
+        return self._live_speech_coordinator.mark_browser_capture_incomplete(case_id, capture_id, reason)
+
+    def resume_browser_capture(self, runtime: _CaptureRuntime) -> None:
+        """Rebind an interrupted browser capture after archive recovery."""
+        if not callable(getattr(self.device_manager, "start_record", None)):
+            raise RuntimeError("browser audio input is unavailable")
+        with self._lock:
+            if self._any_capture_active_locked() or self._any_preparation_active_locked():
+                raise DomainError("ASR_AUDIO_RESOURCE_BUSY", "已有录音正在占用麦克风", 409)
+            self.device_manager.start_record()
+            thread = threading.Thread(
+                target=self._capture_loop,
+                args=(runtime,),
+                daemon=True,
+                name=f"asr-capture-{runtime.capture_session_id[:8]}",
+            )
+            runtime.thread = thread
+            runtime.stop_event.clear()
+            self._last_error[runtime.case_id] = None
+            self._active[runtime.case_id] = runtime
+            thread.start()
+
     def start(self, case_id: str) -> dict[str, Any]:
         case_id = str(case_id).strip()
         if not case_id:

@@ -598,6 +598,40 @@ def test_browser_frame_duplicate_returns_original_durable_receipt(archive_env):
         assert frames[0].payload_sha256 == hashlib.sha256(first).hexdigest()
 
 
+def test_formal_browser_frame_replay_survives_archive_restart_and_continues_in_order(archive_env):
+    archive, factory, data_dir, _engine = archive_env
+    first = b"\x10\x00" * 100
+    second = b"\x11\x00" * 25
+    archive.open_capture("capture-1", case_id="case-1")
+    assert archive.append(
+        "capture-1", first, source_sequence=1, expected_start_sample=0
+    ) == 100
+
+    restarted = DurableAudioArchive(data_dir, factory)
+    assert restarted.recover_incomplete() == ["capture-1"]
+    assert restarted.append(
+        "capture-1", first, source_sequence=1, expected_start_sample=0
+    ) == 100
+    assert restarted.append(
+        "capture-1", second, source_sequence=2, expected_start_sample=100
+    ) == 125
+
+    assert restarted.read_samples("capture-1", 0, 125) == first + second
+
+
+def test_formal_browser_frame_sequence_gap_marks_capture_incomplete(archive_env):
+    archive, factory, _data_dir, _engine = archive_env
+    pcm = b"\x10\x00" * 100
+    archive.open_capture("capture-1", case_id="case-1")
+    archive.append("capture-1", pcm, source_sequence=1, expected_start_sample=0)
+
+    with pytest.raises(RuntimeError, match="discontinuity"):
+        archive.append("capture-1", pcm, source_sequence=3, expected_start_sample=100)
+
+    with factory() as db:
+        assert db.get(ASRCaptureSession, "capture-1").recording_status == "INCOMPLETE"
+
+
 def test_browser_frame_replay_conflict_fails_closed(archive_env):
     archive, factory, _data_dir, _engine = archive_env
     pcm = b"\x10\x00" * 100

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import struct
 from collections.abc import Callable
 
 from fastapi import APIRouter, WebSocket
@@ -28,11 +31,16 @@ def _is_active_browser_capture(websocket: WebSocket, case_id: str, capture_id: s
     if service is None:
         return False
     status = service.status(case_id)
-    return (
+    active_binding = (
         bool(status.get("active"))
         and status.get("captureSessionId") == capture_id
         and status.get("source") == "BROWSER"
     )
+    coordinator = getattr(websocket.app.state, "live_speech_coordinator", None)
+    has_receipt = getattr(coordinator, "has_browser_frame_receipt", None)
+    if callable(has_receipt):
+        return bool(has_receipt(case_id, capture_id))
+    return active_binding
 
 
 async def _stream_browser_pcm(
@@ -40,12 +48,14 @@ async def _stream_browser_pcm(
     *,
     capture_id: str = "-",
     accepts_pcm: Callable[[], bool] | None = None,
+    frame_ingress: Callable[[int, int, bytes], dict[str, int]] | None = None,
+    incomplete_sink: Callable[[str], bool] | None = None,
 ) -> None:
     browser_input = _browser_input(websocket)
     if browser_input is None:
         await _close(websocket, capture_id, 4403, "browser audio input unavailable")
         return
-    if not browser_input.active:
+    if not browser_input.active and frame_ingress is None:
         await _close(websocket, capture_id, 4409, "capture is not active")
         return
     if accepts_pcm is not None and not accepts_pcm():
@@ -60,19 +70,96 @@ async def _stream_browser_pcm(
             if message.get("type") == "websocket.disconnect":
                 logger.info("browser asr ws %s client disconnected", capture_id)
                 break
-            pcm = message.get("bytes")
-            if pcm is None:
+            text = message.get("text")
+            if text is not None:
+                if frame_ingress is None or incomplete_sink is None:
+                    await _close(websocket, capture_id, 1003, "non-binary frame")
+                    return
+                try:
+                    control = json.loads(text)
+                except (TypeError, ValueError):
+                    await _close(websocket, capture_id, 1003, "invalid formal audio control message")
+                    return
+                if not isinstance(control, dict) or control.get("type") != "capture_incomplete":
+                    await _close(websocket, capture_id, 1003, "unknown formal audio control message")
+                    return
+                if accepts_pcm is not None and not accepts_pcm():
+                    await _close(websocket, capture_id, 4409, "capture session is no longer active")
+                    return
+                reason = str(control.get("reason") or "browser audio outbox exhausted")[:512]
+                try:
+                    marked_incomplete = await asyncio.to_thread(incomplete_sink, reason)
+                except Exception as exc:
+                    await _close(websocket, capture_id, 4410, f"unable to mark browser capture incomplete: {exc}")
+                    return
+                if marked_incomplete is not True:
+                    await _close(websocket, capture_id, 4410, "capture is already complete")
+                    return
+                await websocket.send_json({"type": "capture_incomplete_ack", "captureId": capture_id})
+                await _close(websocket, capture_id, 4410, "browser reported incomplete audio capture")
+                return
+            payload = message.get("bytes")
+            if payload is None:
                 await _close(websocket, capture_id, 1003, "non-binary frame")
                 return
+            if frame_ingress is not None:
+                if len(payload) < 14:
+                    await _close(websocket, capture_id, 1008, "formal audio frame header or PCM16 payload is missing")
+                    return
+                source_sequence, start_sample = struct.unpack_from("<IQ", payload)
+                pcm = payload[12:]
+                if source_sequence == 0:
+                    await _close(websocket, capture_id, 1008, "formal audio sequence must start at one")
+                    return
+            else:
+                source_sequence = 0
+                start_sample = 0
+                pcm = payload
             if not pcm or len(pcm) % 2:
                 await _close(websocket, capture_id, 1008, "pcm16 alignment violation")
                 return
-            if len(pcm) > _MAX_FRAME_BYTES:
+            if len(pcm) > _MAX_FRAME_BYTES or len(payload) > _MAX_FRAME_BYTES + 12:
                 await _close(websocket, capture_id, 1009, "frame too large")
                 return
             if accepts_pcm is not None and not accepts_pcm():
                 await _close(websocket, capture_id, 4409, "capture session stopped being the active browser capture")
                 return
+            if frame_ingress is not None:
+                try:
+                    receipt = await asyncio.to_thread(frame_ingress, source_sequence, start_sample, bytes(pcm))
+                except Exception as exc:
+                    marked_incomplete = False
+                    if incomplete_sink is not None:
+                        try:
+                            marked_incomplete = await asyncio.to_thread(incomplete_sink, str(exc))
+                            marked_incomplete = marked_incomplete is True
+                        except Exception:
+                            logger.exception("failed to mark browser capture %s incomplete", capture_id)
+                    if marked_incomplete:
+                        await websocket.send_json({"type": "capture_incomplete_ack", "captureId": capture_id})
+                    await _close(websocket, capture_id, 4410, f"formal audio discontinuity or durable append failure: {exc}")
+                    return
+                durable_end = start_sample + len(pcm) // 2
+                if (
+                    receipt.get("ackSequence") != source_sequence
+                    or receipt.get("durableSampleEnd") != durable_end
+                ):
+                    marked_incomplete = False
+                    if incomplete_sink is not None:
+                        try:
+                            marked_incomplete = await asyncio.to_thread(
+                                incomplete_sink,
+                                "durable audio receipt did not match the submitted frame",
+                            )
+                            marked_incomplete = marked_incomplete is True
+                        except Exception:
+                            logger.exception("failed to mark browser capture %s incomplete", capture_id)
+                    if marked_incomplete:
+                        await websocket.send_json({"type": "capture_incomplete_ack", "captureId": capture_id})
+                    await _close(websocket, capture_id, 4410, "durable audio receipt did not match the submitted frame")
+                    return
+                await websocket.send_json(receipt)
+                continue
             try:
                 browser_input.push_pcm(pcm)
             except (RuntimeError, ValueError) as exc:
@@ -88,10 +175,20 @@ async def browser_asr_capture_socket(
     case_id: str,
     capture_id: str,
 ):
+    service = getattr(websocket.app.state, "asr_capture_service", None)
+    ingest = getattr(service, "ingest_browser_frame", None)
+    mark_incomplete = getattr(service, "mark_browser_capture_incomplete", None)
+    if not callable(ingest) or not callable(mark_incomplete):
+        await _close(websocket, capture_id, 4403, "durable browser audio ingress unavailable")
+        return
     await _stream_browser_pcm(
         websocket,
         capture_id=capture_id,
         accepts_pcm=lambda: _is_active_browser_capture(websocket, case_id, capture_id),
+        frame_ingress=lambda sequence, start_sample, pcm: ingest(
+            case_id, capture_id, sequence, start_sample, pcm
+        ),
+        incomplete_sink=lambda reason: mark_incomplete(case_id, capture_id, reason),
     )
 
 

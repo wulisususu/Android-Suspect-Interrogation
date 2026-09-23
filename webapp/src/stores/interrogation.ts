@@ -37,7 +37,15 @@ import {
   updateVoiceprintAssignments,
   updateVoiceprintRoleDraft,
 } from '../api/interrogation'
-import { setBrowserAsrUnexpectedCloseListener } from '../audio/browserAsrCapture'
+import {
+  clearBrowserAsrCaptureLeaseRefusal,
+  BrowserFormalCaptureLeaseError,
+  setBrowserAsrIncompleteCaptureListener,
+  setBrowserAsrUnexpectedCloseListener,
+  startBrowserAsrCapture,
+} from '../audio/browserAsrCapture'
+import { BrowserCaptureResumeGate } from '../audio/browserCaptureResumeGate'
+import { audioInputMode } from '../config/audioInput'
 import {
   removeReplacedAsrFragmentSelection,
   replaceAsrFragmentGroup,
@@ -173,6 +181,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   let captureTimer: ReturnType<typeof setInterval> | undefined
   let captureStatusSyncTimer: ReturnType<typeof setInterval> | undefined
   let captureStatusSyncInFlight = false
+  const browserResumeGate = new BrowserCaptureResumeGate()
   let voiceprintProgressTimer: ReturnType<typeof setInterval> | undefined
   let sessionConnection: RuntimeSessionConnection | undefined
 
@@ -262,6 +271,28 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   function applyCaptureStatus(status: AsrCaptureStatus, scope = currentScope()) {
     if (!isCurrentScope(scope) || status.caseId !== scope.caseId) return
     capture.value = status
+    if (!status.running) {
+      browserResumeGate.reset()
+      clearBrowserAsrCaptureLeaseRefusal(status.caseId, status.captureSessionId)
+    } else if (
+      audioInputMode === 'BROWSER'
+      && status.source === 'BROWSER'
+      && status.captureSessionId
+    ) {
+      const captureKey = `${status.caseId}:${status.captureSessionId}`
+      if (browserResumeGate.shouldAttempt(captureKey)) {
+        browserResumeGate.markAttempted(captureKey)
+        void startBrowserAsrCapture(status.caseId, status.captureSessionId).catch((err) => {
+          if (err instanceof BrowserFormalCaptureLeaseError && err.reason === 'CONFLICT') {
+            if (browserResumeGate.leaseConflict(captureKey)) {
+              feedbackIfCurrent(scope, '此录音正在另一个标签页中采集；将等待该标签页释放录音后自动恢复', true)
+            }
+            return
+          }
+          feedbackIfCurrent(scope, `恢复浏览器录音失败：${backendErrorMessage(err)}`, true)
+        })
+      }
+    }
     const visibleIds = new Set(status.fragments.map((fragment) => fragment.id))
     selectedFragmentIds.value = selectedFragmentIds.value.filter((id) => visibleIds.has(id))
     if (status.running && !captureTimer) {
@@ -497,6 +528,17 @@ export const useInterrogationStore = defineStore('interrogation', () => {
         feedbackIfCurrent(currentScope(), `自动重启录音失败：${backendErrorMessage(err)}`, true)
       }
     })()
+  })
+
+  setBrowserAsrIncompleteCaptureListener((message) => {
+    const scope = currentScope()
+    feedbackIfCurrent(scope, `本次录音不完整：${message}`, true)
+    if (!captureBusy.value && capture.value.running) {
+      void (async () => {
+        await stopCapture(undefined, false)
+        if (isCurrentScope(scope)) capture.value.error = message
+      })()
+    }
   })
 
   async function updatePendingFragment(fragmentId: string, editedText: string, speaker: TemporaryAsrSpeaker) {

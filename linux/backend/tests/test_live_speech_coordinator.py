@@ -3,6 +3,9 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from app.database.models import ASRCaptureSession
 from app.ai.speech.types import SpeechEvent, SpeechEventType
@@ -468,7 +471,492 @@ def _wait_for(predicate, timeout: float = 2.0) -> None:
 def _asr_cursor(factory, capture_id: str) -> int:
     with factory() as db:
         capture = db.get(ASRCaptureSession, capture_id)
-        return -1 if capture is None else int(capture.asr_cursor_sample)
+    return -1 if capture is None else int(capture.asr_cursor_sample)
+
+
+def test_browser_frame_appends_are_serialized_and_exact_replay_is_queued_once(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    class CaptureServiceStub:
+        def set_live_speech_coordinator(self, _coordinator):
+            pass
+
+    coordinator = LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=CaptureServiceStub(),
+        ai_supervisor=object(),
+    )
+    runtime = SimpleNamespace(case_id=case_id, capture_session_id=capture_id, durable_sample_cursor=0)
+    coordinator.open_capture(runtime)
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    archive_sequences = []
+    original_append = coordinator.archive.append
+
+    def block_first_append(append_capture_id, pcm, **kwargs):
+        sequence = kwargs.get("source_sequence")
+        archive_sequences.append(sequence)
+        if sequence == 1:
+            first_entered.set()
+            assert release_first.wait(timeout=2)
+        return original_append(append_capture_id, pcm, **kwargs)
+
+    coordinator.archive.append = block_first_append
+    failures = []
+
+    def append(sequence: int, start_sample: int, pcm: bytes):
+        try:
+            coordinator.append_audio(
+                runtime,
+                pcm,
+                source_sequence=sequence,
+                expected_start_sample=start_sample,
+            )
+        except Exception as exc:  # surfaced in the main test thread
+            failures.append(exc)
+
+    original = threading.Thread(target=append, args=(1, 0, b"\x01\x00" * 100))
+    duplicate = threading.Thread(target=append, args=(1, 0, b"\x01\x00" * 100))
+    following = threading.Thread(target=append, args=(2, 100, b"\x02\x00" * 50))
+    original.start()
+    assert first_entered.wait(timeout=1)
+    duplicate.start()
+    following.start()
+    time.sleep(0.03)
+    assert archive_sequences == [1]
+    release_first.set()
+    for thread in (original, duplicate, following):
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+    assert failures == []
+    ranges = []
+    while not coordinator.asr_queue.empty():
+        item = coordinator.asr_queue.get_nowait()
+        ranges.append((item.start_sample, item.end_sample))
+    assert ranges == [(0, 100), (100, 150)]
+    assert coordinator._durable_cursors[capture_id] == 150
+    assert runtime.durable_sample_cursor == 150
+
+
+def test_browser_capture_marker_reconnect_is_limited_to_capturing_or_incomplete(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    with factory() as db:
+        capturing = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        incomplete = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        incomplete_with_audio = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        complete = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_ids = (capturing.id, incomplete.id, incomplete_with_audio.id, complete.id)
+        db.commit()
+
+    class CaptureServiceStub:
+        def set_live_speech_coordinator(self, _coordinator):
+            pass
+
+    coordinator = LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=CaptureServiceStub(),
+        ai_supervisor=object(),
+    )
+    capturing_id, incomplete_id, incomplete_with_audio_id, complete_id = capture_ids
+    for capture_id in capture_ids:
+        coordinator.archive.open_capture(capture_id, case_id=case_id)
+        coordinator.register_browser_capture(capture_id)
+    coordinator.mark_browser_capture_incomplete(case_id, incomplete_id, "first frame failed")
+    incomplete_frame = b"\x02\x00" * 10
+    coordinator.archive.append(
+        incomplete_with_audio_id,
+        incomplete_frame,
+        source_sequence=1,
+        expected_start_sample=0,
+    )
+    coordinator.mark_browser_capture_incomplete(case_id, incomplete_with_audio_id, "later frame failed")
+    with factory() as db:
+        incomplete_capture = db.get(ASRCaptureSession, incomplete_with_audio_id)
+        assert incomplete_capture is not None
+        incomplete_ended_at = incomplete_capture.ended_at
+    coordinator.mark_browser_capture_incomplete(case_id, incomplete_with_audio_id, "retry after lost ack")
+    with factory() as db:
+        incomplete_capture = db.get(ASRCaptureSession, incomplete_with_audio_id)
+        assert incomplete_capture is not None
+        assert incomplete_capture.ended_at == incomplete_ended_at
+    coordinator.archive.append(
+        complete_id,
+        b"\x01\x00" * 10,
+        source_sequence=1,
+        expected_start_sample=0,
+    )
+    coordinator.archive.finalize_capture(complete_id)
+
+    restarted = LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=CaptureServiceStub(),
+        ai_supervisor=object(),
+    )
+
+    assert restarted.has_browser_frame_receipt(case_id, capturing_id) is True
+    assert restarted.has_browser_frame_receipt(case_id, incomplete_id) is True
+    assert restarted.has_browser_frame_receipt(case_id, incomplete_with_audio_id) is True
+    assert restarted.has_browser_frame_receipt(case_id, complete_id) is False
+
+    restarted.mark_browser_capture_incomplete(case_id, complete_id, "stale socket")
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, complete_id)
+        assert capture is not None
+        assert capture.recording_status == "COMPLETE"
+
+    with pytest.raises(RuntimeError, match="not accepting audio"):
+        restarted.archive.append(
+            incomplete_id,
+            b"\x03\x00" * 10,
+            source_sequence=1,
+            expected_start_sample=0,
+        )
+    assert restarted.archive.append(
+        incomplete_with_audio_id,
+        incomplete_frame,
+        source_sequence=1,
+        expected_start_sample=0,
+    ) == 10
+    with pytest.raises(RuntimeError, match="not accepting audio"):
+        restarted.archive.append(
+            incomplete_with_audio_id,
+            b"\x04\x00" * 5,
+            source_sequence=2,
+            expected_start_sample=10,
+        )
+
+
+def test_browser_capture_without_interrogation_session_is_finalized_as_orphan(tmp_path: Path):
+    factory, case_id, _session_id = _seed_database(tmp_path)
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=None,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    class CaptureServiceStub:
+        def set_live_speech_coordinator(self, _coordinator):
+            pass
+
+    coordinator = LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=CaptureServiceStub(),
+        ai_supervisor=object(),
+    )
+    coordinator.archive.open_capture(capture_id, case_id=case_id)
+    coordinator.register_browser_capture(capture_id)
+    coordinator.start()
+    try:
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            assert capture.recording_status == "COMPLETE"
+    finally:
+        coordinator.shutdown()
+
+
+def test_browser_recovery_without_browser_runtime_marks_incomplete_and_replays_durable_audio(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    audio = b"\x07\x00" * 160
+    speech = ReplaySpeechWorker(emit_final=False)
+    capture_service = _source_service(factory, FakeDevice([]), speech, EventCollector())
+    coordinator = LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=capture_service,
+        ai_supervisor=speech,
+    )
+    coordinator.archive.open_capture(capture_id, case_id=case_id)
+    coordinator.register_browser_capture(capture_id)
+    coordinator.archive.append(
+        capture_id,
+        audio,
+        source_sequence=1,
+        expected_start_sample=0,
+    )
+
+    coordinator.start()
+    try:
+        coordinator.asr_queue.join()
+        assert speech.pushed == [audio]
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            assert capture.recording_status == "INCOMPLETE"
+        status = capture_service.status(case_id)
+        assert status["source"] == "BROWSER"
+        assert status["status"] == "FAILED"
+        with pytest.raises(RuntimeError, match="not accepting audio"):
+            capture_service.ingest_browser_frame(case_id, capture_id, 2, len(audio) // 2, audio)
+    finally:
+        coordinator.shutdown()
+
+
+def test_browser_runtime_resume_failure_marks_incomplete_and_finishes_durable_asr(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+
+    class FailingBrowserInput:
+        def start_record(self):
+            raise RuntimeError("browser input could not resume")
+
+        def stop_record(self):
+            pass
+
+    audio = b"\x0c\x00" * 160
+    speech = ReplaySpeechWorker(emit_final=False)
+    capture_service = SourceAwareAsrCaptureService(
+        session_factory=factory,
+        device_manager=FakeDevice([]),
+        browser_audio_input=FailingBrowserInput(),
+        ai_supervisor=speech,
+        publish_event=EventCollector(),
+        read_timeout=0.01,
+    )
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    coordinator = LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=capture_service,
+        ai_supervisor=speech,
+    )
+    coordinator.archive.open_capture(capture_id, case_id=case_id)
+    coordinator.register_browser_capture(capture_id)
+    coordinator.archive.append(
+        capture_id,
+        audio,
+        source_sequence=1,
+        expected_start_sample=0,
+    )
+
+    coordinator.start()
+    try:
+        coordinator.asr_queue.join()
+        assert speech.pushed == [audio]
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            assert capture.recording_status == "INCOMPLETE"
+        assert capture_service.status(case_id)["source"] == "BROWSER"
+        assert capture_id not in coordinator._asr_blocked
+    finally:
+        coordinator.shutdown()
+
+
+def test_marking_browser_capture_incomplete_does_not_block_durable_asr_ranges(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    speech = ReplaySpeechWorker(emit_final=False)
+    capture_service = _source_service(factory, FakeDevice([]), speech, EventCollector())
+    coordinator = LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=capture_service,
+        ai_supervisor=speech,
+    )
+    coordinator.start()
+    try:
+        with factory() as db:
+            capture = asr_repo.create_capture_session(
+                db,
+                case_id=case_id,
+                interrogation_session_id=session_id,
+                sample_rate=16_000,
+            )
+            capture_id = capture.id
+            db.commit()
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            runtime = capture_service.build_recovery_runtime(capture)
+        assert runtime is not None
+        coordinator.open_capture(runtime)
+        coordinator.register_browser_capture(capture_id)
+        audio = b"\x08\x00" * 160
+        coordinator.append_audio(
+            runtime,
+            audio,
+            source_sequence=1,
+            expected_start_sample=0,
+        )
+
+        assert coordinator.mark_browser_capture_incomplete(case_id, capture_id, "outbox full") is True
+        coordinator.asr_queue.join()
+
+        assert speech.pushed == [audio]
+        assert runtime.storage_error is None
+        assert capture_id not in coordinator._asr_blocked
+    finally:
+        coordinator.shutdown()
+
+
+def test_stopping_incomplete_browser_capture_keeps_queued_durable_audio_processable(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    speech = BlockingSpeechWorker()
+    capture_service = _source_service(factory, FakeDevice([]), speech, EventCollector())
+    coordinator = LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=capture_service,
+        ai_supervisor=speech,
+    )
+    coordinator.start()
+    try:
+        with factory() as db:
+            capture = asr_repo.create_capture_session(
+                db,
+                case_id=case_id,
+                interrogation_session_id=session_id,
+                sample_rate=16_000,
+            )
+            capture_id = capture.id
+            db.commit()
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            runtime = capture_service.build_recovery_runtime(capture)
+        assert runtime is not None
+        coordinator.open_capture(runtime)
+        coordinator.register_browser_capture(capture_id)
+        audio = b"\x09\x00" * 160
+        coordinator.append_audio(
+            runtime,
+            audio,
+            source_sequence=1,
+            expected_start_sample=0,
+        )
+        assert speech.push_started.wait(timeout=1)
+
+        coordinator.mark_browser_capture_incomplete(case_id, capture_id, "outbox full")
+        coordinator.finish_capture(runtime)
+        speech.release_push.set()
+        coordinator.asr_queue.join()
+
+        assert speech.pushed == [audio]
+        assert runtime.storage_error is None
+        assert capture_id not in coordinator._asr_blocked
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            assert capture.recording_status == "INCOMPLETE"
+    finally:
+        speech.release_push.set()
+        coordinator.shutdown()
+
+
+def test_browser_sequence_gap_after_durable_frame_keeps_committed_asr_range_processable(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    speech = BlockingSpeechWorker()
+    capture_service = _source_service(factory, FakeDevice([]), speech, EventCollector())
+    coordinator = LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=capture_service,
+        ai_supervisor=speech,
+    )
+    coordinator.start()
+    try:
+        with factory() as db:
+            capture = asr_repo.create_capture_session(
+                db,
+                case_id=case_id,
+                interrogation_session_id=session_id,
+                sample_rate=16_000,
+            )
+            capture_id = capture.id
+            db.commit()
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            runtime = capture_service.build_recovery_runtime(capture)
+        assert runtime is not None
+        coordinator.open_capture(runtime)
+        coordinator.register_browser_capture(capture_id)
+        audio = b"\x0a\x00" * 160
+        coordinator.append_audio(
+            runtime,
+            audio,
+            source_sequence=1,
+            expected_start_sample=0,
+        )
+        assert speech.push_started.wait(timeout=1)
+
+        with pytest.raises(RuntimeError, match="discontinuity"):
+            coordinator.append_audio(
+                runtime,
+                b"\x0b\x00" * 80,
+                source_sequence=3,
+                expected_start_sample=160,
+            )
+        coordinator.finish_capture(runtime)
+        speech.release_push.set()
+        coordinator.asr_queue.join()
+
+        assert speech.pushed == [audio]
+        assert runtime.storage_error is None
+        assert capture_id not in coordinator._asr_blocked
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            assert capture.recording_status == "INCOMPLETE"
+    finally:
+        speech.release_push.set()
+        coordinator.shutdown()
 
 
 def test_capture_persists_audio_while_asr_worker_is_blocked(tmp_path: Path):
