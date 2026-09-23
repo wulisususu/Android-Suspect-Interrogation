@@ -83,6 +83,7 @@ class LiveSpeechCoordinator:
                         .where(
                             ASRCaptureSession.recording_status == "COMPLETE",
                             or_(
+                                ASRCaptureSession.asr_status == "FINALIZING",
                                 ASRCaptureSession.asr_cursor_sample < ASRCaptureSession.audio_sample_count,
                                 ASRCaptureSession.asr_unfinished_start_sample.is_not(None),
                             ),
@@ -99,11 +100,17 @@ class LiveSpeechCoordinator:
                     if capture is None:
                         continue
                     should_finalize = capture.recording_status == "CAPTURING"
+                    sample_rate = int(capture.sample_rate)
+                try:
+                    self._begin_asr_finalization(capture_id, sample_rate)
+                except Exception as exc:
+                    finalization_error = exc
                 if should_finalize:
-                    try:
-                        self.archive.finalize_capture(capture_id)
-                    except Exception as exc:
-                        finalization_error = exc
+                    if finalization_error is None:
+                        try:
+                            self.archive.finalize_capture(capture_id)
+                        except Exception as exc:
+                            finalization_error = exc
                 with self.session_factory() as db:
                     capture = db.get(ASRCaptureSession, capture_id)
                     if capture is None or capture.interrogation_session_id is None:
@@ -121,6 +128,7 @@ class LiveSpeechCoordinator:
                 self._durable_cursors[capture_id] = int(capture.audio_sample_count or 0)
                 if finalization_error is not None:
                     self._mark_storage_error(runtime, finalization_error)
+                    self._asr_blocked.add(capture_id)
                 while cursor < end:
                     next_cursor = min(end, cursor + _MAX_INFERENCE_SAMPLES)
                     recovery_jobs.append(_AudioRange(runtime, cursor, next_cursor))
@@ -177,9 +185,17 @@ class LiveSpeechCoordinator:
     def finish_capture(self, runtime: Any) -> None:
         if runtime.storage_error is None:
             try:
+                self._begin_asr_finalization(
+                    runtime.capture_session_id,
+                    runtime.sample_rate,
+                    replay_tail=True,
+                )
                 self.archive.finalize_capture(runtime.capture_session_id)
             except Exception as exc:
                 self._mark_storage_error(runtime, exc)
+                self._asr_blocked.add(runtime.capture_session_id)
+        else:
+            self._asr_blocked.add(runtime.capture_session_id)
         self.asr_queue.put(_FinishCapture(runtime))
 
     def _mark_storage_error(self, runtime: Any, exc: Exception) -> None:
@@ -219,41 +235,41 @@ class LiveSpeechCoordinator:
                 self._asr_busy.set()
             else:
                 try:
-                    if session_id in self._open_asr_sessions:
-                        try:
-                            end_sample = self._capture_audio_sample_count(runtime.capture_session_id)
-                            unfinished_start = self._get_unfinished_asr_start(
-                                runtime.capture_session_id
-                            )
-                            if unfinished_start is None:
-                                checkpoint_samples = int(
-                                    round(_FINALIZE_REPLAY_WINDOW_MS * runtime.sample_rate / 1000)
+                    if runtime.storage_error is None and runtime.capture_session_id not in self._asr_blocked:
+                        if session_id not in self._open_asr_sessions:
+                            with self.session_factory() as db:
+                                capture = db.get(ASRCaptureSession, runtime.capture_session_id)
+                                base_sample = 0 if capture is None else max(
+                                    0,
+                                    int(capture.asr_cursor_sample or 0),
                                 )
-                                checkpoint = max(0, end_sample - checkpoint_samples)
-                            else:
-                                checkpoint = unfinished_start
-                            self._rewind_asr_cursor(
-                                runtime.capture_session_id,
-                                checkpoint,
-                            )
-                            events = self.ai_supervisor.finalize_speech_session(session_id)
-                            self._consume_event_batch(
-                                runtime,
-                                events,
-                                end_sample=(
-                                    None
-                                    if runtime.capture_session_id in self._asr_blocked
-                                    else end_sample
-                                ),
-                            )
-                        except Exception as exc:
-                            runtime.inference_error_sink(exc)
-                        finally:
-                            self.ai_supervisor.close_speech_session(session_id)
-                            self._open_asr_sessions.discard(session_id)
+                                if capture is not None and capture.asr_unfinished_start_sample is not None:
+                                    base_sample = min(
+                                        base_sample,
+                                        max(0, int(capture.asr_unfinished_start_sample)),
+                                    )
+                            open_options = {
+                                "sample_rate": runtime.sample_rate,
+                                "speaker_backend": runtime.speaker_backend,
+                            }
+                            if base_sample:
+                                open_options["base_sample"] = base_sample
+                            self.ai_supervisor.open_speech_session(session_id, **open_options)
+                            self._open_asr_sessions.add(session_id)
+                        end_sample = self._capture_audio_sample_count(runtime.capture_session_id)
+                        events = self.ai_supervisor.finalize_speech_session(session_id)
+                        self._consume_event_batch(
+                            runtime,
+                            events,
+                            end_sample=end_sample,
+                            complete_asr=True,
+                        )
                 except Exception as exc:
                     runtime.inference_error_sink(exc)
                 finally:
+                    if session_id in self._open_asr_sessions:
+                        self.ai_supervisor.close_speech_session(session_id)
+                        self._open_asr_sessions.discard(session_id)
                     try:
                         runtime.capture_finished_sink()
                     except Exception:
@@ -333,6 +349,7 @@ class LiveSpeechCoordinator:
         events: list[Any] | None,
         *,
         end_sample: int | None,
+        complete_asr: bool = False,
     ) -> list[str]:
         events = list(events or [])
         replay_start = self._get_unfinished_asr_start(runtime.capture_session_id)
@@ -364,6 +381,7 @@ class LiveSpeechCoordinator:
                 runtime.capture_session_id,
                 end_sample,
                 unfinished_start=replay_start if vad_open else None,
+                complete_asr=complete_asr,
             )
         else:
             self._replace_unfinished_asr_start(
@@ -383,6 +401,32 @@ class LiveSpeechCoordinator:
             if capture is None:
                 raise ValueError(f"unknown capture session: {capture_id}")
             return max(0, int(capture.audio_sample_count or 0))
+
+    def _begin_asr_finalization(
+        self,
+        capture_id: str,
+        sample_rate: int,
+        *,
+        replay_tail: bool = False,
+    ) -> None:
+        with archive_repo.archive_transaction(self.session_factory) as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            if capture is None:
+                raise ValueError(f"unknown capture session: {capture_id}")
+            end_sample = max(0, int(capture.audio_sample_count or 0))
+            checkpoint = capture.asr_unfinished_start_sample
+            if checkpoint is None:
+                current_cursor = max(0, int(capture.asr_cursor_sample or 0))
+                if replay_tail or current_cursor >= end_sample:
+                    checkpoint_samples = int(round(_FINALIZE_REPLAY_WINDOW_MS * sample_rate / 1000))
+                    checkpoint = max(0, end_sample - checkpoint_samples)
+                else:
+                    checkpoint = current_cursor
+            capture.asr_cursor_sample = min(
+                max(0, int(capture.asr_cursor_sample or 0)),
+                max(0, int(checkpoint)),
+            )
+            capture.asr_status = "FINALIZING"
 
     def _rewind_asr_cursor(self, capture_id: str, start_sample: int) -> None:
         with self.session_factory() as db:
@@ -415,11 +459,19 @@ class LiveSpeechCoordinator:
         end_sample: int,
         *,
         unfinished_start: int | None,
+        complete_asr: bool = False,
     ) -> None:
         with self.session_factory() as db:
             capture = db.get(ASRCaptureSession, capture_id)
             if capture is not None:
-                capture.asr_cursor_sample = max(int(capture.asr_cursor_sample or 0), int(end_sample))
+                if complete_asr:
+                    capture.asr_cursor_sample = int(end_sample)
+                    capture.asr_status = "COMPLETE"
+                elif capture.asr_status != "FINALIZING":
+                    capture.asr_cursor_sample = max(
+                        int(capture.asr_cursor_sample or 0),
+                        int(end_sample),
+                    )
                 capture.asr_unfinished_start_sample = (
                     None if unfinished_start is None else max(0, int(unfinished_start))
                 )
