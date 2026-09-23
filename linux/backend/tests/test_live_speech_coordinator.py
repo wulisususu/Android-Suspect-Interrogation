@@ -218,6 +218,115 @@ class VADTransitionReplaySpeechWorker:
         pass
 
 
+class CrashWindowRecoverySpeechWorker:
+    def __init__(self, *, emit_completed_then_open: bool) -> None:
+        self.emit_completed_then_open = emit_completed_then_open
+        self.push_count = 0
+        self.open_base_samples: list[int] = []
+        self.push_started = threading.Event()
+
+    def open_speech_session(self, session_id: str, **kwargs):
+        self.open_base_samples.append(int(kwargs.get("base_sample", 0)))
+        return {"session_id": session_id}
+
+    def push_speech_pcm(self, session_id: str, pcm: bytes):
+        del pcm
+        self.push_count += 1
+        self.push_started.set()
+        if self.emit_completed_then_open:
+            if self.push_count != 1:
+                return []
+            return [
+                SpeechEvent(
+                    type=SpeechEventType.VAD_END,
+                    session_id=session_id,
+                    start_ms=2000,
+                    end_ms=2500,
+                ),
+                SpeechEvent(
+                    type=SpeechEventType.ASR_FINAL,
+                    session_id=session_id,
+                    start_ms=2000,
+                    end_ms=2500,
+                    text="崩溃前已结束的片段",
+                    confidence=0.95,
+                    model_id="paraformer",
+                    details={
+                        "stage_one_asr_only": True,
+                        "asr_start_sample": 32_000,
+                        "asr_end_sample": 40_000,
+                        "model_version": "test-v1",
+                    },
+                ),
+                SpeechEvent(
+                    type=SpeechEventType.VAD_START,
+                    session_id=session_id,
+                    start_ms=3750,
+                    details={"replay_start_sample": 40_000},
+                ),
+            ]
+        return [
+            SpeechEvent(
+                type=SpeechEventType.VAD_START,
+                session_id=session_id,
+                start_ms=3750,
+                details={"replay_start_sample": 40_000},
+            ),
+            SpeechEvent(
+                type=SpeechEventType.VAD_END,
+                session_id=session_id,
+                start_ms=3750,
+                end_ms=4000,
+            ),
+            SpeechEvent(
+                type=SpeechEventType.ASR_FINAL,
+                session_id=session_id,
+                start_ms=3750,
+                end_ms=4000,
+                text="崩溃时仍打开的片段",
+                confidence=0.95,
+                model_id="paraformer",
+                details={
+                    "stage_one_asr_only": True,
+                    "asr_start_sample": 60_000,
+                    "asr_end_sample": 64_000,
+                    "model_version": "test-v1",
+                },
+            ),
+        ]
+
+    def finalize_speech_session(self, session_id: str):
+        del session_id
+        return []
+
+    def close_speech_session(self, session_id: str) -> None:
+        pass
+
+
+class FailFirstConsumeRecoveryService:
+    def __init__(self, delegate) -> None:
+        self.delegate = delegate
+        self.consume_failed = threading.Event()
+        self._failed = False
+
+    def __getattr__(self, name):
+        return getattr(self.delegate, name)
+
+    def build_recovery_runtime(self, capture):
+        runtime = self.delegate.build_recovery_runtime(capture)
+        consume_events = runtime.consume_events
+
+        def consume_once(events):
+            if not self._failed:
+                self._failed = True
+                self.consume_failed.set()
+                raise RuntimeError("simulated crash before ASR_FINAL commit")
+            return consume_events(events)
+
+        runtime.consume_events = consume_once
+        return runtime
+
+
 class EventCollector:
     def __init__(self) -> None:
         self.events: list[tuple[str, str, dict]] = []
@@ -519,6 +628,167 @@ def test_restart_keeps_later_vad_start_after_end_in_same_batch(tmp_path: Path):
         assert sum(fragment.raw_text == "后一段" for fragment in fragments) == 1
     finally:
         replay.shutdown()
+
+
+def test_restart_replays_from_old_cursor_before_later_open_vad_marker(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    data_dir = tmp_path / "data"
+    archive = DurableAudioArchive(data_dir, factory)
+    audio = b"\x0c\x00" * 64_000
+    archive.open_capture(capture_id, case_id=case_id)
+    for offset in range(0, len(audio), 32_000):
+        archive.append(capture_id, audio[offset : offset + 32_000])
+    archive.finalize_capture(capture_id)
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, capture_id)
+        assert capture is not None
+        capture.asr_cursor_sample = 16_000
+        capture.asr_unfinished_start_sample = 32_000
+        db.commit()
+
+    completed_worker = CrashWindowRecoverySpeechWorker(emit_completed_then_open=True)
+    completed_service = _source_service(factory, FakeDevice([]), completed_worker, EventCollector())
+    completed_recovery = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=completed_service,
+        ai_supervisor=completed_worker,
+    )
+    completed_recovery.start()
+    try:
+        assert completed_worker.push_started.wait(timeout=1)
+        _wait_for(lambda: _asr_cursor(factory, capture_id) == 64_000)
+        assert completed_worker.open_base_samples == [16_000]
+        assert _unfinished_start(factory, capture_id) == 40_000
+        assert [fragment.raw_text for fragment in _fragments(factory, capture_id)] == [
+            "崩溃前已结束的片段"
+        ]
+    finally:
+        completed_recovery.shutdown()
+
+    tail_worker = CrashWindowRecoverySpeechWorker(emit_completed_then_open=False)
+    tail_service = _source_service(factory, FakeDevice([]), tail_worker, EventCollector())
+    tail_recovery = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=tail_service,
+        ai_supervisor=tail_worker,
+    )
+    tail_recovery.start()
+    try:
+        _wait_for(lambda: len(_fragments(factory, capture_id)) == 2)
+        _wait_for(lambda: _unfinished_start(factory, capture_id) is None)
+        assert tail_worker.push_started.wait(timeout=1)
+        assert tail_worker.open_base_samples == [40_000]
+        fragments = _fragments(factory, capture_id)
+        assert [(fragment.ordinal, fragment.raw_text) for fragment in fragments] == [
+            (0, "崩溃前已结束的片段"),
+            (1, "崩溃时仍打开的片段"),
+        ]
+        assert sum(fragment.raw_text == "崩溃前已结束的片段" for fragment in fragments) == 1
+        assert sum(fragment.raw_text == "崩溃时仍打开的片段" for fragment in fragments) == 1
+    finally:
+        tail_recovery.shutdown()
+
+
+def test_replay_crash_keeps_batch_start_until_prior_final_commits(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    data_dir = tmp_path / "data"
+    archive = DurableAudioArchive(data_dir, factory)
+    audio = b"\x0d\x00" * 64_000
+    archive.open_capture(capture_id, case_id=case_id)
+    for offset in range(0, len(audio), 32_000):
+        archive.append(capture_id, audio[offset : offset + 32_000])
+    archive.finalize_capture(capture_id)
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, capture_id)
+        assert capture is not None
+        capture.asr_cursor_sample = 64_000
+        capture.asr_unfinished_start_sample = 32_000
+        db.commit()
+
+    failed_worker = CrashWindowRecoverySpeechWorker(emit_completed_then_open=True)
+    failed_service = FailFirstConsumeRecoveryService(
+        _source_service(factory, FakeDevice([]), failed_worker, EventCollector())
+    )
+    failed_recovery = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=failed_service,
+        ai_supervisor=failed_worker,
+    )
+    failed_recovery.start()
+    try:
+        assert failed_service.consume_failed.wait(timeout=1)
+        failed_recovery.asr_queue.join()
+        assert failed_worker.open_base_samples == [32_000]
+        assert _asr_cursor(factory, capture_id) == 32_000
+        assert _unfinished_start(factory, capture_id) == 32_000
+        assert _fragments(factory, capture_id) == []
+    finally:
+        failed_recovery.shutdown()
+
+    replay_worker = CrashWindowRecoverySpeechWorker(emit_completed_then_open=True)
+    replay_service = _source_service(factory, FakeDevice([]), replay_worker, EventCollector())
+    replay = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=replay_service,
+        ai_supervisor=replay_worker,
+    )
+    replay.start()
+    try:
+        _wait_for(lambda: _asr_cursor(factory, capture_id) == 64_000)
+        _wait_for(lambda: _unfinished_start(factory, capture_id) == 40_000)
+        assert replay_worker.open_base_samples == [32_000]
+        assert [fragment.raw_text for fragment in _fragments(factory, capture_id)] == [
+            "崩溃前已结束的片段"
+        ]
+    finally:
+        replay.shutdown()
+
+    tail_worker = CrashWindowRecoverySpeechWorker(emit_completed_then_open=False)
+    tail_service = _source_service(factory, FakeDevice([]), tail_worker, EventCollector())
+    tail_recovery = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=tail_service,
+        ai_supervisor=tail_worker,
+    )
+    tail_recovery.start()
+    try:
+        _wait_for(lambda: len(_fragments(factory, capture_id)) == 2)
+        _wait_for(lambda: _unfinished_start(factory, capture_id) is None)
+        assert tail_worker.open_base_samples == [40_000]
+        fragments = _fragments(factory, capture_id)
+        assert [(fragment.ordinal, fragment.raw_text) for fragment in fragments] == [
+            (0, "崩溃前已结束的片段"),
+            (1, "崩溃时仍打开的片段"),
+        ]
+        assert sum(fragment.raw_text == "崩溃前已结束的片段" for fragment in fragments) == 1
+        assert sum(fragment.raw_text == "崩溃时仍打开的片段" for fragment in fragments) == 1
+    finally:
+        tail_recovery.shutdown()
 
 
 def _fragments(factory, capture_id: str):

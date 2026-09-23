@@ -107,14 +107,9 @@ class LiveSpeechCoordinator:
                         continue
                     runtime = self.capture_service.build_recovery_runtime(capture)
                     unfinished_start = capture.asr_unfinished_start_sample
-                    cursor = max(
-                        0,
-                        int(
-                            capture.asr_cursor_sample
-                            if unfinished_start is None
-                            else unfinished_start
-                        ),
-                    )
+                    cursor = max(0, int(capture.asr_cursor_sample or 0))
+                    if unfinished_start is not None:
+                        cursor = min(cursor, max(0, int(unfinished_start)))
                     end = max(cursor, int(capture.audio_sample_count or 0))
                 if runtime is None:
                     continue
@@ -301,6 +296,7 @@ class LiveSpeechCoordinator:
                 )
                 self._open_asr_sessions.add(session_id)
             pcm = self.archive.read_samples(capture_id, start, end)
+            self._rewind_asr_cursor(capture_id, start)
             events = self.ai_supervisor.push_speech_pcm(session_id, pcm)
             fragment_ids = self._consume_event_batch(runtime, events, end_sample=end)
             return _ProcessedAudioRange(fragment_ids)
@@ -335,17 +331,19 @@ class LiveSpeechCoordinator:
         if vad_open:
             if replay_start is None:
                 replay_start = 0
-            self._set_unfinished_asr_start(runtime.capture_session_id, replay_start)
 
         fragment_ids = runtime.consume_events(events) or []
         if end_sample is not None:
             self._advance_asr_cursor(
                 runtime.capture_session_id,
                 end_sample,
-                clear_unfinished=not vad_open,
+                unfinished_start=replay_start if vad_open else None,
             )
-        elif not vad_open:
-            self._clear_unfinished_asr_start(runtime.capture_session_id)
+        else:
+            self._replace_unfinished_asr_start(
+                runtime.capture_session_id,
+                replay_start if vad_open else None,
+            )
         return list(fragment_ids)
 
     def _get_unfinished_asr_start(self, capture_id: str) -> int | None:
@@ -353,18 +351,29 @@ class LiveSpeechCoordinator:
             capture = db.get(ASRCaptureSession, capture_id)
             return None if capture is None else capture.asr_unfinished_start_sample
 
-    def _set_unfinished_asr_start(self, capture_id: str, start_sample: int) -> None:
+    def _rewind_asr_cursor(self, capture_id: str, start_sample: int) -> None:
         with self.session_factory() as db:
             capture = db.get(ASRCaptureSession, capture_id)
             if capture is not None:
-                capture.asr_unfinished_start_sample = max(0, int(start_sample))
+                capture.asr_cursor_sample = min(
+                    max(0, int(capture.asr_cursor_sample or 0)),
+                    max(0, int(start_sample)),
+                )
                 db.commit()
+        with self._lock:
+            if capture_id in self._asr_cursors:
+                self._asr_cursors[capture_id] = min(
+                    self._asr_cursors[capture_id],
+                    max(0, int(start_sample)),
+                )
 
-    def _clear_unfinished_asr_start(self, capture_id: str) -> None:
+    def _replace_unfinished_asr_start(self, capture_id: str, start_sample: int | None) -> None:
         with self.session_factory() as db:
             capture = db.get(ASRCaptureSession, capture_id)
-            if capture is not None and capture.asr_unfinished_start_sample is not None:
-                capture.asr_unfinished_start_sample = None
+            if capture is not None:
+                capture.asr_unfinished_start_sample = (
+                    None if start_sample is None else max(0, int(start_sample))
+                )
                 db.commit()
 
     def _advance_asr_cursor(
@@ -372,14 +381,15 @@ class LiveSpeechCoordinator:
         capture_id: str,
         end_sample: int,
         *,
-        clear_unfinished: bool = False,
+        unfinished_start: int | None,
     ) -> None:
         with self.session_factory() as db:
             capture = db.get(ASRCaptureSession, capture_id)
             if capture is not None:
                 capture.asr_cursor_sample = max(int(capture.asr_cursor_sample or 0), int(end_sample))
-                if clear_unfinished:
-                    capture.asr_unfinished_start_sample = None
+                capture.asr_unfinished_start_sample = (
+                    None if unfinished_start is None else max(0, int(unfinished_start))
+                )
                 db.commit()
         with self._lock:
             self._asr_cursors[capture_id] = max(self._asr_cursors.get(capture_id, 0), int(end_sample))
