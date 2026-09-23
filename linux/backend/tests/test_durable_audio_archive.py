@@ -329,6 +329,7 @@ def test_browser_frame_replay_conflict_fails_closed(archive_env):
         capture = db.get(ASRCaptureSession, "capture-1")
         assert capture.recording_status == "INCOMPLETE"
         assert db.scalar(select(ASRAudioFrame).where(ASRAudioFrame.source_sequence == 7)).payload_sha256 == hashlib.sha256(pcm).hexdigest()
+    assert archive.read_samples("capture-1", 0, 100) == pcm
 
 
 def test_browser_frame_replay_detects_conflicting_persisted_range(archive_env):
@@ -360,6 +361,42 @@ def test_browser_frame_replay_fails_if_durable_wav_data_is_missing(archive_env):
 
     with factory() as db:
         assert db.get(ASRCaptureSession, "capture-1").recording_status == "INCOMPLETE"
+
+
+def test_browser_frame_replay_quarantines_corrupted_wav_and_preserves_verified_prefix(archive_env):
+    archive, factory, data_dir, _engine = archive_env
+    prefix = b"\x20\x00" * 16_000
+    frame = b"\x21\x00" * 100
+    archive.open_capture("capture-1", case_id="case-1")
+    for _ in range(60):
+        archive.append("capture-1", prefix)
+    archive.append("capture-1", frame, source_sequence=7)
+    wav_path = data_dir / "audio" / "case-1" / "capture-1" / "segment-000001.wav"
+    corrupted = bytearray(wav_path.read_bytes())
+    corrupted[44 + 20] ^= 0x80
+    wav_path.write_bytes(corrupted)
+
+    with pytest.raises(RuntimeError):
+        archive.append("capture-1", frame, source_sequence=7)
+
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, "capture-1")
+        segments = list(
+            db.scalars(
+                select(ASRAudioSegment)
+                .where(ASRAudioSegment.capture_session_id == "capture-1")
+                .order_by(ASRAudioSegment.sequence)
+            )
+        )
+        assert capture.recording_status == "INCOMPLETE"
+        assert capture.audio_sample_count == 60 * 16_000
+        assert [(item.status, item.committed_samples) for item in segments] == [
+            ("FINALIZED", 60 * 16_000),
+            ("GAP", 0),
+        ]
+    assert archive.read_samples("capture-1", 0, 60 * 16_000) == prefix * 60
+    with pytest.raises(ValueError):
+        archive.read_samples("capture-1", 60 * 16_000, 60 * 16_000 + 100)
 
 
 def test_conflicting_replay_after_finalize_downgrades_capture_state(archive_env):

@@ -80,6 +80,7 @@ class DurableAudioArchive:
 
         payload_hash = hashlib.sha256(pcm).hexdigest()
         conflict = False
+        integrity_failure = False
         durable_end: int | None = None
         io_started = False
         try:
@@ -91,40 +92,62 @@ class DurableAudioArchive:
                 if source_sequence is not None:
                     prior = archive_repo.get_frame(db, capture_id, source_sequence)
                     if prior is not None:
-                        receipt_matches = (
-                            prior.payload_sha256 == payload_hash
-                            and prior.end_sample - prior.start_sample == sample_count
+                        receipt_valid = (
+                            prior.start_sample >= 0
+                            and prior.end_sample > prior.start_sample
                             and prior.durable_sample_end == prior.end_sample
-                            and prior.start_sample >= 0
                             and prior.durable_sample_end <= capture.audio_sample_count
                         )
-                        identical = False
-                        if receipt_matches:
-                            segments = archive_repo.list_capture_segments(db, capture_id)
-                            try:
-                                stored_pcm = self._read_sample_range(
-                                    capture.case_id,
-                                    capture.id,
-                                    segments,
-                                    prior.start_sample,
-                                    prior.end_sample,
-                                    reject_gap=True,
-                                )
-                                identical = (
-                                    stored_pcm == pcm
-                                    and hashlib.sha256(stored_pcm).hexdigest() == prior.payload_sha256
-                                )
-                            except (OSError, ValueError):
-                                identical = False
-                        if identical:
-                            durable_end = prior.durable_sample_end
-                        else:
+                        if not receipt_valid:
                             archive_repo.mark_capture_incomplete(db, capture_id)
                             conflict = True
+                        else:
+                            segments = archive_repo.list_capture_segments(db, capture_id)
+                            bad_index = self._first_invalid_segment_in_range(
+                                capture.case_id,
+                                capture.id,
+                                segments,
+                                prior.start_sample,
+                                prior.end_sample,
+                            )
+                            stored_pcm: bytes | None = None
+                            if bad_index is None:
+                                try:
+                                    stored_pcm = self._read_sample_range(
+                                        capture.case_id,
+                                        capture.id,
+                                        segments,
+                                        prior.start_sample,
+                                        prior.end_sample,
+                                        reject_gap=True,
+                                    )
+                                except (OSError, ValueError):
+                                    bad_index = self._first_segment_for_range(
+                                        segments,
+                                        prior.start_sample,
+                                        prior.end_sample,
+                                    )
+
+                            if bad_index is None and stored_pcm is not None:
+                                if hashlib.sha256(stored_pcm).hexdigest() != prior.payload_sha256:
+                                    bad_index = self._first_segment_for_range(
+                                        segments,
+                                        prior.start_sample,
+                                        prior.end_sample,
+                                    )
+
+                            if bad_index is not None:
+                                self._quarantine_unverified_segment_range(db, capture, segments, bad_index)
+                                integrity_failure = True
+                            elif stored_pcm == pcm and payload_hash == prior.payload_sha256:
+                                durable_end = prior.durable_sample_end
+                            else:
+                                archive_repo.mark_capture_incomplete(db, capture_id)
+                                conflict = True
                     else:
                         durable_end = None
 
-                if durable_end is None and not conflict:
+                if durable_end is None and not conflict and not integrity_failure:
                     if capture.recording_status != "CAPTURING":
                         raise RuntimeError("capture is not accepting audio")
                     io_started = True
@@ -147,6 +170,9 @@ class DurableAudioArchive:
                 self._forget_hashers(capture_id)
             raise
 
+        if integrity_failure:
+            self._forget_hashers(capture_id)
+            raise RuntimeError("source_sequence receipt does not match durable audio bytes")
         if conflict:
             self._forget_hashers(capture_id)
             raise RuntimeError("source_sequence was replayed with conflicting audio or range")
@@ -452,9 +478,88 @@ class DurableAudioArchive:
     ) -> None:
         for segment in segments[index:]:
             self._mark_segment_gap(segment)
-            self._segment_hashers.pop(str(self._segment_path(capture.case_id, capture.id, segment)), None)
+        self._forget_hashers(capture.id)
         archive_repo.update_capture_count(capture, verified_samples)
         archive_repo.mark_capture_incomplete(db, capture.id)
+
+    def _quarantine_unverified_segment_range(
+        self,
+        db: Session,
+        capture: ASRCaptureSession,
+        segments: list[ASRAudioSegment],
+        index: int,
+    ) -> None:
+        verified_samples = 0
+        first_bad_index = index
+        for prefix_index, segment in enumerate(segments[:index]):
+            if (
+                segment.start_sample != verified_samples
+                or not self._segment_matches_metadata(
+                    capture.case_id,
+                    capture.id,
+                    segment,
+                )
+            ):
+                first_bad_index = prefix_index
+                break
+            verified_samples += segment.committed_samples
+        self._mark_finalize_gap(db, capture, segments, first_bad_index, verified_samples)
+
+    @staticmethod
+    def _first_segment_for_range(
+        segments: list[ASRAudioSegment],
+        start: int,
+        end: int,
+    ) -> int | None:
+        for index, segment in enumerate(segments):
+            segment_end = segment.start_sample + segment.committed_samples
+            if max(start, segment.start_sample) < min(end, segment_end):
+                return index
+        return None
+
+    def _first_invalid_segment_in_range(
+        self,
+        case_id: str,
+        capture_id: str,
+        segments: list[ASRAudioSegment],
+        start: int,
+        end: int,
+    ) -> int | None:
+        cursor = start
+        first_overlap = self._first_segment_for_range(segments, start, end)
+        for index, segment in enumerate(segments):
+            segment_start = segment.start_sample
+            segment_end = segment_start + segment.committed_samples
+            overlap_start = max(start, segment_start)
+            overlap_end = min(end, segment_end)
+            if overlap_start >= overlap_end:
+                continue
+            if segment_start > cursor or overlap_start > cursor or not self._segment_matches_metadata(
+                case_id,
+                capture_id,
+                segment,
+            ):
+                return index
+            cursor = overlap_end
+        if cursor != end:
+            return first_overlap
+        return None
+
+    def _segment_matches_metadata(
+        self,
+        case_id: str,
+        capture_id: str,
+        segment: ASRAudioSegment,
+    ) -> bool:
+        try:
+            path = self._segment_path(case_id, capture_id, segment)
+        except ValueError:
+            return False
+        if segment.status == "ACTIVE":
+            return self._active_segment_matches_metadata(segment, path)
+        if segment.status == "FINALIZED":
+            return self._finalized_segment_matches_metadata(segment, path)
+        return False
 
     def _active_segment_matches_metadata(self, segment: ASRAudioSegment, path: Path) -> bool:
         if segment.committed_samples < 0 or segment.committed_samples > _SEGMENT_SAMPLES:
