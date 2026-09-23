@@ -85,9 +85,12 @@ def _microphone_provider(request: Request):
 
     def provide() -> CurrentMicrophoneIdentity:
         manager = getattr(request.app.state, "hardware_manager", None)
-        audio = getattr(manager, "audio", None) if manager is not None else None
+        audio = getattr(manager, "audio_recorder", None) if manager is not None else None
         info_fn = getattr(audio, "device_info", None)
-        info = info_fn() if callable(info_fn) else None
+        try:
+            info = info_fn() if callable(info_fn) else None
+        except Exception:
+            info = None
         if not isinstance(info, DeviceInfo):
             device = str(getattr(audio, "device", None) or "default")
             info = DeviceInfo("audio", f"alsa:{device}", f"ALSA {device}", source="real", path=device, metadata={})

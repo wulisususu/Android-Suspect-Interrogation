@@ -139,7 +139,7 @@ def _capture_device_metadata(request: Request, source: str) -> tuple[str, str, s
         return identity.device_id, identity.device_name, identity.fingerprint, identity.certainty
 
     manager = getattr(request.app.state, "hardware_manager", None)
-    audio = getattr(manager, "audio", None) if manager is not None else None
+    audio = getattr(manager, "audio_recorder", None) if manager is not None else None
     info_fn = getattr(audio, "device_info", None)
     if callable(info_fn):
         try:

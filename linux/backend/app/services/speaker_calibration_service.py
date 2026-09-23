@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import struct
 from dataclasses import dataclass
 from enum import Enum
@@ -18,8 +19,24 @@ from app.services.speaker_calibration_math import CalibrationSample, build_trial
 
 
 ALGORITHM_VERSION = "speaker-calibration-v1"
-MIN_OFFICERS = 3
-MIN_SAMPLES_PER_OFFICER = 3
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    """环境变量覆盖的正整数下限；缺失或非法时回落到默认值。"""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+# 默认保持官方保守下限；人手不足时可经环境变量下调。
+# 依据：底层 build_trials 只要求 >=2 个身份 x 每身份 >=2 个样本。
+MIN_OFFICERS = _positive_int_env("SUSPECT_CALIBRATION_MIN_OFFICERS", 3)
+MIN_SAMPLES_PER_OFFICER = _positive_int_env("SUSPECT_CALIBRATION_MIN_SAMPLES_PER_OFFICER", 3)
 
 
 class CalibrationStatus(str, Enum):

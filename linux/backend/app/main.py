@@ -176,7 +176,7 @@ def create_app(
             fp = fingerprint_microphone(info)
             return CurrentMicrophoneIdentity("BROWSER", fp.device_id, fp.device_name, fp.fingerprint, fp.certainty)
 
-        audio = getattr(manager, "audio", None) if manager is not None else None
+        audio = getattr(manager, "audio_recorder", None) if manager is not None else None
         info_fn = getattr(audio, "device_info", None)
         try:
             info = info_fn() if callable(info_fn) else None
