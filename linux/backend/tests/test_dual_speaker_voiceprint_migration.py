@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy import create_engine, inspect, text
 
 
-EXPECTED_HEAD = "0017_asr_unfinished_vad_replay"
+EXPECTED_HEAD = "0018_asr_finalize_checkpoint"
 XVECTOR = "xvector"
 
 

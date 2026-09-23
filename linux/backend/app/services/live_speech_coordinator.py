@@ -115,20 +115,6 @@ class LiveSpeechCoordinator:
                             or capture.asr_finalize_checkpoint_sample is not None
                         )
                     )
-                    should_checkpoint_finalization = (
-                        should_finalize
-                        or (
-                            capture.asr_status == "FINALIZING"
-                            and capture.asr_finalize_checkpoint_sample is None
-                        )
-                        or (
-                            capture.asr_status == "PENDING"
-                            and int(capture.asr_cursor_sample or 0)
-                            >= int(capture.audio_sample_count or 0)
-                            and capture.asr_unfinished_start_sample is None
-                            and capture.asr_finalize_checkpoint_sample is None
-                        )
-                    )
                 if not has_interrogation_session:
                     if should_finalize:
                         try:
@@ -141,11 +127,10 @@ class LiveSpeechCoordinator:
                     continue
                 if not needs_asr:
                     continue
-                if should_checkpoint_finalization:
-                    try:
-                        self._begin_asr_finalization(capture_id, sample_rate)
-                    except Exception as exc:
-                        finalization_error = exc
+                try:
+                    self._begin_asr_finalization(capture_id, sample_rate)
+                except Exception as exc:
+                    finalization_error = exc
                 if should_finalize:
                     if finalization_error is None:
                         try:
@@ -279,6 +264,22 @@ class LiveSpeechCoordinator:
             else:
                 try:
                     if runtime.storage_error is None and runtime.capture_session_id not in self._asr_blocked:
+                        with self.session_factory() as db:
+                            capture = db.get(ASRCaptureSession, runtime.capture_session_id)
+                            should_finalize = (
+                                capture is not None
+                                and capture.interrogation_session_id is not None
+                                and capture.asr_status != "FINALIZING"
+                            )
+                        if should_finalize:
+                            try:
+                                self._begin_asr_finalization(
+                                    runtime.capture_session_id,
+                                    runtime.sample_rate,
+                                )
+                            except Exception:
+                                self._asr_blocked.add(runtime.capture_session_id)
+                                raise
                         if session_id not in self._open_asr_sessions:
                             with self.session_factory() as db:
                                 capture = db.get(ASRCaptureSession, runtime.capture_session_id)

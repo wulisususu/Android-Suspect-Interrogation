@@ -112,7 +112,7 @@ def test_production_workflow_uses_https_and_verifies_certificate_identity():
     assert "openssl x509" in workflow
     assert "subjectAltName" in workflow or "Subject Alternative Name" in workflow
     assert "TCP/8000 preserved" in workflow
-    assert "0016_durable_live_speech (head)" in workflow
+    assert "0018_asr_finalize_checkpoint (head)" in workflow
 
 
 def test_production_workflow_targets_the_selected_board_and_runner():

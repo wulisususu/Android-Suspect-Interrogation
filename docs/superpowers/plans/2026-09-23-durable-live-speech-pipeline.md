@@ -563,7 +563,7 @@ Expected: the deployed release marker on `.109` equals the pushed commit SHA.
 
 - [ ] **Step 4: Verify `.109` without touching port 8000**
 
-With the project LAN CA trusted, verify `https://192.168.2.109:18080/health/live` and `/health/ready` without disabling certificate verification. Verify browser audio uses WSS, release frontend/backend share one SHA, SQLite is at `0016_durable_live_speech`, and TCP/8000 is unchanged before/after deployment.
+With the project LAN CA trusted, verify `https://192.168.2.109:18080/health/live` and `/health/ready` without disabling certificate verification. Verify browser audio uses WSS, release frontend/backend share one SHA, SQLite is at `0018_asr_finalize_checkpoint`, and TCP/8000 is unchanged before/after deployment.
 
 Expected: live/ready return HTTP 200, migration head matches, WSS is selected, and the existing port-8000 FunASR process remains untouched.
 

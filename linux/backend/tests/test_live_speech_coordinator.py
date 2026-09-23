@@ -553,7 +553,7 @@ def test_startup_recovers_and_queues_unfinished_audio_before_speaker_work(tmp_pa
         coordinator.shutdown()
 
 
-def test_startup_replays_only_unprocessed_audio_for_completed_capture(tmp_path: Path):
+def test_startup_replays_completed_pending_audio_from_finalize_checkpoint(tmp_path: Path):
     factory, case_id, session_id = _seed_database(tmp_path)
     with factory() as db:
         capture = asr_repo.create_capture_session(
@@ -590,7 +590,8 @@ def test_startup_replays_only_unprocessed_audio_for_completed_capture(tmp_path: 
     try:
         assert speech.push_started.wait(timeout=1)
         _wait_for(lambda: _asr_cursor(factory, capture_id) == 480)
-        assert speech.pushed == [audio[160 * 2 :]]
+        _wait_for(lambda: _asr_status(factory, capture_id) == "COMPLETE")
+        assert speech.pushed == [audio]
         with factory() as db:
             capture = db.get(ASRCaptureSession, capture_id)
             assert capture is not None
@@ -1155,6 +1156,89 @@ def test_finalization_checkpoint_preserves_progress_before_recovery(tmp_path: Pa
         assert _finalize_checkpoint(factory, capture_id) is None
     finally:
         replay.shutdown()
+
+
+def test_pending_completed_backlog_is_checkpointed_before_replay_and_finalize(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    data_dir = tmp_path / "data"
+    audio_sample_count = 128_000
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    archive = DurableAudioArchive(data_dir, factory)
+    archive.open_capture(capture_id, case_id=case_id)
+    audio = b"\x0e\x00" * audio_sample_count
+    for offset in range(0, len(audio), 32_000):
+        archive.append(capture_id, audio[offset : offset + 32_000])
+    archive.finalize_capture(capture_id)
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, capture_id)
+        assert capture is not None
+        capture.asr_cursor_sample = 96_000
+        capture.asr_status = "PENDING"
+        db.commit()
+
+    worker = FinalizeRecoverySpeechWorker(
+        emit_final_during_finalize=True,
+        audio_sample_count=audio_sample_count,
+    )
+    coordinator = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=_source_service(factory, FakeDevice([]), worker, EventCollector()),
+        ai_supervisor=worker,
+    )
+    before_first_queue: list[tuple[str, int | None, int]] = []
+    before_finalize: list[tuple[str, int | None, int]] = []
+    original_put = coordinator.asr_queue.put
+    original_finalize = worker.finalize_speech_session
+
+    def observe_queue(item, *args, **kwargs):
+        if item is not None and not before_first_queue:
+            with factory() as db:
+                capture = db.get(ASRCaptureSession, capture_id)
+                assert capture is not None
+                before_first_queue.append(
+                    (
+                        capture.asr_status,
+                        capture.asr_finalize_checkpoint_sample,
+                        capture.asr_cursor_sample,
+                    )
+                )
+        return original_put(item, *args, **kwargs)
+
+    def observe_finalize(session_id: str):
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            before_finalize.append(
+                (
+                    capture.asr_status,
+                    capture.asr_finalize_checkpoint_sample,
+                    capture.asr_cursor_sample,
+                )
+            )
+        return original_finalize(session_id)
+
+    coordinator.asr_queue.put = observe_queue
+    worker.finalize_speech_session = observe_finalize
+    coordinator.start()
+    try:
+        _wait_for(lambda: len(_fragments(factory, capture_id)) == 1)
+        _wait_for(lambda: _asr_status(factory, capture_id) == "COMPLETE")
+        assert before_first_queue == [("FINALIZING", 28_800, 96_000)]
+        assert before_finalize == [("FINALIZING", 28_800, audio_sample_count)]
+        assert _finalize_checkpoint(factory, capture_id) is None
+        assert _fragments(factory, capture_id)[0].speaker_source == "PENDING_ANALYSIS"
+    finally:
+        coordinator.shutdown()
 
 
 def test_finalize_checkpoint_failure_keeps_capture_incomplete(tmp_path: Path):
