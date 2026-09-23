@@ -4,6 +4,8 @@ export interface PinyinDict {
   syllables: string[]
   chars: Record<string, [string, number][]>
   words: Record<string, [string, number][]>
+  /** 简拼(声母缩写)索引: "nh" -> 你好;词典 v2 起提供 */
+  abbr?: Record<string, [string, number][]>
 }
 
 export interface PinyinCandidates {
@@ -70,6 +72,10 @@ export function lookupCandidates(dict: PinyinDict, input: string): PinyinCandida
   for (const key of [trimmed, complete.join('')]) {
     if (!key) continue
     for (const [word] of dict.words[key] ?? []) pushUnique(words, word)
+  }
+  // 简拼(声母缩写): 每个字母当作一个音节的声母,如 nh -> 你好/年后
+  if (dict.abbr && trimmed.length >= 2) {
+    for (const [word] of dict.abbr[trimmed] ?? []) pushUnique(words, word)
   }
 
   const chars: string[] = []

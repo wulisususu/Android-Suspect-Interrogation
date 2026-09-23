@@ -7,7 +7,7 @@ import {
 } from './pinyinIme'
 
 const dict: PinyinDict = {
-  v: 1,
+  v: 2,
   syllables: ['ni', 'hao', 'xian', 'shi', 'an'],
   chars: {
     ni: [['你', 9000], ['尼', 100]],
@@ -20,6 +20,10 @@ const dict: PinyinDict = {
     nihao: [['你好', 8000]],
     xian: [['西安', 700], ['先', 6000]],
     shian: [['方案', 1]],
+  },
+  abbr: {
+    nh: [['你好', 725], ['南海', 2087]],
+    bj: [['北京', 3000]],
   },
 }
 
@@ -60,6 +64,19 @@ describe('lookupCandidates', () => {
     expect(result.words).toEqual([])
     expect(result.chars.length).toBeGreaterThan(0)
     expect(result.chars).toContain('好')
+  })
+
+  it('resolves initial-abbreviated pinyin via the abbr index (nh -> 你好)', () => {
+    const result = lookupCandidates(dict, 'nh')
+    expect(result.words[0]).toBe('你好')
+    expect(result.words).toContain('南海')
+  })
+
+  it('keeps full-pinyin matches ahead of abbr matches', () => {
+    const result = lookupCandidates(dict, 'nihao')
+    expect(result.all[0]).toBe('你好')
+    const resultBj = lookupCandidates(dict, 'bj')
+    expect(resultBj.words).toEqual(['北京'])
   })
 
   it('returns empty candidates for empty input', () => {
