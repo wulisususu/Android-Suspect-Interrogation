@@ -53,7 +53,7 @@ def test_xvector_backend_preserves_automodel_loading_and_normalization(tmp_path:
         "disable_update": True,
         "disable_pbar": True,
     }
-    assert created[0].generate_calls[-1]["input"] == b"\x00\x00" * 1600
+    assert created[0].generate_calls[-1]["input"].tolist() == pytest.approx([0.0] * 1600)
     assert created[0].generate_calls[-1]["fs"] == 16000
     assert created[0].generate_calls[-1]["embedding"] is True
     assert result.backend_key is SpeakerBackendKey.XVECTOR

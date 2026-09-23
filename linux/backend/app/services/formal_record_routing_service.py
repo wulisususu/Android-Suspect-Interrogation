@@ -197,7 +197,13 @@ class FormalRecordRoutingService:
                 reason_code="MANUAL_CREATE_LIVE",
                 model_id=unit.model_id,
             )
-            return self._apply_existing(unit, question, manual_decision, audit_action="QA_ROUTE_MANUAL_APPLIED")
+            return self._apply_existing(
+                unit,
+                question,
+                manual_decision,
+                audit_action="QA_ROUTE_MANUAL_APPLIED",
+                canonical_answer=clean_answer,
+            )
 
         if not case_question_id:
             raise DomainError("CASE_QUESTION_REQUIRED", "必须选择目标正式问题", 400)
@@ -218,7 +224,13 @@ class FormalRecordRoutingService:
             reason_code="MANUAL_LINK_QA",
             model_id=unit.model_id,
         )
-        return self._apply_existing(unit, question, manual_decision, audit_action="QA_ROUTE_MANUAL_APPLIED")
+        return self._apply_existing(
+            unit,
+            question,
+            manual_decision,
+            audit_action="QA_ROUTE_MANUAL_APPLIED",
+            canonical_answer=clean_answer,
+        )
 
     def rollback_qa_unit(self, qa_unit_id: str) -> dict:
         unit = qa_repo.get(self.db, qa_unit_id)
@@ -297,7 +309,15 @@ class FormalRecordRoutingService:
         if unit.status != "NEEDS_REVIEW":
             raise DomainError("QA_UNIT_ALREADY_RESOLVED", "该问答单元已处理，不能重复处置", 409)
 
-    def _apply_existing(self, unit, question, decision: FormalRecordRouteDecision, *, audit_action: str) -> dict:
+    def _apply_existing(
+        self,
+        unit,
+        question,
+        decision: FormalRecordRouteDecision,
+        *,
+        audit_action: str,
+        canonical_answer: str | None = None,
+    ) -> dict:
         question_ids = self._question_fragment_ids(unit)
         answer_ids = self._answer_fragment_ids(unit)
         round_row = round_repo.create_round(
@@ -316,7 +336,11 @@ class FormalRecordRoutingService:
         question_repo.set_canonical_answer(
             self.db,
             question,
-            answer_text=str(unit.raw_answer_text or "").strip(),
+            answer_text=(
+                canonical_answer
+                if canonical_answer is not None
+                else str(unit.raw_answer_text or "").strip()
+            ),
             first_asked_at=unit.started_at,
         )
         TemplateWorkspaceService(self.db).apply_actual_body_order(unit.case_id)
