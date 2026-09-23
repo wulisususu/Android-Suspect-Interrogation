@@ -221,6 +221,7 @@ class DurableAudioArchive:
 
     def finalize_capture(self, capture_id: str) -> list[ASRAudioSegment]:
         self._validate_id(capture_id, "capture_id")
+        integrity_error: str | None = None
         try:
             with archive_repo.archive_transaction(self.session_factory) as db:
                 capture = archive_repo.get_capture(db, capture_id)
@@ -233,25 +234,39 @@ class DurableAudioArchive:
 
                 segments = archive_repo.list_capture_segments(db, capture_id)
                 cursor = 0
-                for segment in segments:
+                for index, segment in enumerate(segments):
                     if segment.status == "GAP" or segment.start_sample != cursor:
                         raise RuntimeError("capture contains an audio gap")
                     if segment.committed_samples > _SEGMENT_SAMPLES:
                         raise RuntimeError("audio segment exceeds its one-minute limit")
-                    if segment.status != "FINALIZED":
-                        path = self._segment_path(capture.case_id, capture.id, segment)
+                    path = self._segment_path(capture.case_id, capture.id, segment)
+                    if segment.status == "ACTIVE":
+                        if not self._active_segment_matches_metadata(segment, path):
+                            self._mark_finalize_gap(db, capture, segments, index, cursor)
+                            integrity_error = "active audio segment does not match its durable metadata"
+                            break
                         self._repair_wav(path, segment.committed_samples, allow_create=segment.committed_samples == 0)
                         self._finalize_segment_file(segment, path)
-                    elif segment.finalized_samples != segment.committed_samples:
-                        raise RuntimeError("finalized segment metadata is inconsistent")
+                    elif segment.status == "FINALIZED":
+                        if not self._finalized_segment_matches_metadata(segment, path):
+                            self._mark_finalize_gap(db, capture, segments, index, cursor)
+                            integrity_error = "finalized audio segment does not match its durable metadata"
+                            break
+                    else:
+                        raise RuntimeError("audio segment state is invalid")
                     cursor += segment.committed_samples
-                if cursor != capture.audio_sample_count:
+                if integrity_error is None and cursor != capture.audio_sample_count:
                     raise RuntimeError("capture sample count does not match its segments")
-                archive_repo.complete_capture(capture)
-                result = list(segments)
+                if integrity_error is None:
+                    archive_repo.complete_capture(capture)
+                    result = list(segments)
         except Exception:
             self._mark_incomplete(capture_id)
+            self._forget_hashers(capture_id)
             raise
+        if integrity_error is not None:
+            self._forget_hashers(capture_id)
+            raise RuntimeError(integrity_error)
         return result
 
     def recover_incomplete(self) -> list[str]:
@@ -426,6 +441,51 @@ class DurableAudioArchive:
             sha256=hashlib.sha256(b"").hexdigest(),
             status="GAP",
         )
+
+    def _mark_finalize_gap(
+        self,
+        db: Session,
+        capture: ASRCaptureSession,
+        segments: list[ASRAudioSegment],
+        index: int,
+        verified_samples: int,
+    ) -> None:
+        for segment in segments[index:]:
+            self._mark_segment_gap(segment)
+            self._segment_hashers.pop(str(self._segment_path(capture.case_id, capture.id, segment)), None)
+        archive_repo.update_capture_count(capture, verified_samples)
+        archive_repo.mark_capture_incomplete(db, capture.id)
+
+    def _active_segment_matches_metadata(self, segment: ASRAudioSegment, path: Path) -> bool:
+        if segment.committed_samples < 0 or segment.committed_samples > _SEGMENT_SAMPLES:
+            return False
+        expected_size = _WAV_HEADER_BYTES + segment.committed_samples * _SAMPLE_BYTES
+        try:
+            if not path.exists():
+                return segment.committed_samples == 0 and segment.sha256 == hashlib.sha256(b"").hexdigest()
+            if path.stat().st_size < expected_size:
+                return False
+            return self._hash_pcm(path, segment.committed_samples) == segment.sha256
+        except OSError:
+            return False
+
+    def _finalized_segment_matches_metadata(self, segment: ASRAudioSegment, path: Path) -> bool:
+        if (
+            segment.committed_samples < 0
+            or segment.committed_samples > _SEGMENT_SAMPLES
+            or segment.finalized_samples != segment.committed_samples
+        ):
+            return False
+        expected_size = _WAV_HEADER_BYTES + segment.committed_samples * _SAMPLE_BYTES
+        try:
+            if not path.is_file() or path.stat().st_size != expected_size:
+                return False
+            with path.open("rb") as stream:
+                if stream.read(_WAV_HEADER_BYTES) != self._wav_header(segment.committed_samples):
+                    return False
+            return self._hash_file(path) == segment.sha256
+        except OSError:
+            return False
 
     def _hasher_for(self, path: Path, segment: ASRAudioSegment) -> Any:
         key = str(path)

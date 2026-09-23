@@ -47,6 +47,64 @@ def test_capture_finalizes_wav_with_durable_metadata(archive_env):
     engine.dispose()
 
 
+def test_finalize_rejects_changed_active_audio_without_exposing_it(archive_env):
+    archive, factory, data_dir, _engine = archive_env
+    pcm = b"\x02\x00" * 800
+    archive.open_capture("capture-1", case_id="case-1")
+    archive.append("capture-1", pcm)
+    wav_path = data_dir / "audio" / "case-1" / "capture-1" / "segment-000000.wav"
+    corrupted = bytearray(wav_path.read_bytes())
+    corrupted[44 + 50] ^= 0x80
+    wav_path.write_bytes(corrupted)
+    corrupted_bytes = wav_path.read_bytes()
+
+    with pytest.raises(RuntimeError, match="durable metadata"):
+        archive.finalize_capture("capture-1")
+
+    assert wav_path.read_bytes() == corrupted_bytes
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, "capture-1")
+        segment = db.scalar(select(ASRAudioSegment).where(ASRAudioSegment.capture_session_id == "capture-1"))
+        assert capture.recording_status == "INCOMPLETE"
+        assert capture.audio_sample_count == 0
+        assert segment.status == "GAP"
+        assert segment.committed_samples == 0
+    with pytest.raises(ValueError):
+        archive.read_samples("capture-1", 0, 1)
+
+
+def test_finalize_rejects_changed_finalized_audio_without_rewriting_it(archive_env):
+    archive, factory, data_dir, _engine = archive_env
+    archive.open_capture("capture-1", case_id="case-1")
+    for _ in range(60):
+        archive.append("capture-1", b"\x03\x00" * 16_000)
+    archive.append("capture-1", b"\x04\x00")
+    wav_path = data_dir / "audio" / "case-1" / "capture-1" / "segment-000000.wav"
+    corrupted = bytearray(wav_path.read_bytes())
+    corrupted[44 + 100] ^= 0x80
+    wav_path.write_bytes(corrupted)
+    corrupted_bytes = wav_path.read_bytes()
+
+    with pytest.raises(RuntimeError, match="durable metadata"):
+        archive.finalize_capture("capture-1")
+
+    assert wav_path.read_bytes() == corrupted_bytes
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, "capture-1")
+        segments = list(
+            db.scalars(
+                select(ASRAudioSegment)
+                .where(ASRAudioSegment.capture_session_id == "capture-1")
+                .order_by(ASRAudioSegment.sequence)
+            )
+        )
+        assert capture.recording_status == "INCOMPLETE"
+        assert capture.audio_sample_count == 0
+        assert [(item.status, item.committed_samples) for item in segments] == [("GAP", 0), ("GAP", 0)]
+    with pytest.raises(ValueError):
+        archive.read_samples("capture-1", 0, 1)
+
+
 def test_archive_splits_audio_at_one_minute_boundaries_and_keeps_final_segment_immutable(archive_env):
     archive, factory, data_dir, _engine = archive_env
     pcm = b"\x01\x00" * (60 * 16_000 + 1)
