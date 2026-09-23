@@ -38,7 +38,11 @@ import {
   updateVoiceprintRoleDraft,
 } from '../api/interrogation'
 import { setBrowserAsrUnexpectedCloseListener } from '../audio/browserAsrCapture'
-import { replaceAsrFragmentGroup, upsertAsrFragmentByCaptureTime } from '../utils/asrFragments'
+import {
+  removeReplacedAsrFragmentSelection,
+  replaceAsrFragmentGroup,
+  upsertAsrFragmentByCaptureTime,
+} from '../utils/asrFragments'
 import type { RuntimeSessionConnection } from '../runtime'
 import type {
   AsrCaptureStatus,
@@ -338,6 +342,10 @@ export const useInterrogationStore = defineStore('interrogation', () => {
           capture.value.fragments,
           payload.parentFragmentId,
           children,
+        )
+        selectedFragmentIds.value = removeReplacedAsrFragmentSelection(
+          selectedFragmentIds.value,
+          payload.parentFragmentId,
         )
         if (!capture.value.captureSessionId && children[0]) {
           capture.value.captureSessionId = children[0].captureSessionId

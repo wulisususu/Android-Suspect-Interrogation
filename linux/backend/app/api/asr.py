@@ -240,6 +240,8 @@ def update_fragment(
     assert_formal_record_mutable(db, case_id)
     if fragment.state == "DISCARDED":
         raise DomainError("ASR_FRAGMENT_DISCARDED", "已丢弃的 ASR 片段不能修改", 409)
+    if fragment.state == "SUPERSEDED":
+        raise DomainError("ASR_FRAGMENT_SUPERSEDED", "已被替换的 ASR 片段不能修改", 409)
     try:
         role = SpeakerRole(str(body.speaker))
     except ValueError as exc:
@@ -364,6 +366,8 @@ def apply_fragments(case_id: str, body: FragmentBatchRequest, db: Session = Depe
 def discard_fragment(case_id: str, fragment_id: str, db: Session = Depends(get_db)):
     fragment = _fragment_for_case(db, case_id, fragment_id)
     assert_formal_record_mutable(db, case_id)
+    if fragment.state == "SUPERSEDED":
+        raise DomainError("ASR_FRAGMENT_SUPERSEDED", "已被替换的 ASR 片段不能丢弃", 409)
     if fragment.state == "CONFIRMED":
         raise DomainError("ASR_FRAGMENT_ALREADY_CONFIRMED", "已确认的 ASR 片段不能丢弃", 409)
     if fragment.state != "DISCARDED":

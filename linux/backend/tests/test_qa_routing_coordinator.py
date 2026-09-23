@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
-from app.database.models import Case, CaseQuestion, InterrogationSession
+from app.database.models import ASRCaptureSession, Case, CaseQuestion, InterrogationSession
 from app.database.session import init_database, make_engine, make_session_factory
 from app.repositories import asr_fragments as asr_repo
 from app.repositories import qa_units as qa_repo
@@ -169,6 +169,32 @@ def test_enqueue_is_non_blocking_while_qwen_routes_in_worker(tmp_path):
         engine.dispose()
 
 
+def test_fragment_notice_does_not_replay_legacy_projected_row(tmp_path):
+    engine, factory, case_id, _session_id, capture_id = seed(tmp_path)
+    q_id, _a_id = add_exchange(factory, case_id=case_id, capture_id=capture_id)
+    with factory() as db:
+        asr_repo.mark_processed(
+            db,
+            fragment_id=q_id,
+            case_id=case_id,
+            action="ROUND_OPEN",
+        )
+        db.commit()
+
+    coordinator = QARoutingCoordinator(
+        session_factory=factory,
+        ai_supervisor=FakeSupervisor(),
+        publish_event=EventCollector(factory),
+    )
+    try:
+        coordinator._consume_fragment(case_id, q_id)
+        with factory() as db:
+            assert qa_repo.list_for_case(db, case_id) == []
+    finally:
+        coordinator.shutdown()
+        engine.dispose()
+
+
 def test_drain_capture_waits_until_final_formal_record_is_committed(tmp_path):
     engine, factory, case_id, session_id, capture_id = seed(tmp_path)
     supervisor = FakeSupervisor(delay=0.15)
@@ -220,10 +246,50 @@ def test_model_timeout_becomes_needs_review_instead_of_killing_worker(tmp_path):
         engine.dispose()
 
 
-def test_startup_recovery_processes_persisted_unassigned_fragments(tmp_path):
-    engine, factory, case_id, _session_id, capture_id = seed(tmp_path)
+def test_pending_routing_scan_failure_does_not_stop_worker(tmp_path, monkeypatch):
+    engine, factory, case_id, session_id, capture_id = seed(tmp_path)
+    supervisor = FakeSupervisor()
+    events = EventCollector(factory)
+    original_list_pending = qa_repo.list_pending_routing
+    calls = 0
+
+    def fail_once(db):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient database failure")
+        return original_list_pending(db)
+
+    monkeypatch.setattr(qa_repo, "list_pending_routing", fail_once)
+    coordinator = QARoutingCoordinator(
+        session_factory=factory,
+        ai_supervisor=supervisor,
+        publish_event=events,
+        idle_close_seconds=60.0,
+        poll_interval=0.01,
+    )
+    coordinator.start()
+    try:
+        wait_until(lambda: calls >= 2)
+        q_id, a_id = add_exchange(factory, case_id=case_id, capture_id=capture_id)
+        coordinator.enqueue_fragment(case_id, q_id)
+        coordinator.enqueue_fragment(case_id, a_id)
+        coordinator.flush_capture(case_id, session_id)
+        wait_until(lambda: bool(qa_repo_status(factory, case_id, "APPLIED")))
+        assert coordinator.running
+    finally:
+        coordinator.shutdown()
+        engine.dispose()
+
+
+@pytest.mark.parametrize("capture_status", ["CAPTURING", "STOPPED"])
+def test_startup_recovery_processes_persisted_unassigned_fragments(tmp_path, capture_status):
+    engine, factory, case_id, session_id, capture_id = seed(tmp_path)
     FakeSupervisorInstance = FakeSupervisor()
     events = EventCollector(factory)
+    with factory() as db:
+        db.get(ASRCaptureSession, capture_id).status = capture_status
+        db.commit()
     add_exchange(factory, case_id=case_id, capture_id=capture_id)
     coordinator = QARoutingCoordinator(
         session_factory=factory,
@@ -236,6 +302,130 @@ def test_startup_recovery_processes_persisted_unassigned_fragments(tmp_path):
     try:
         wait_until(lambda: bool(qa_repo_status(factory, case_id, "APPLIED")))
         assert FakeSupervisorInstance.calls == 1
+    finally:
+        coordinator.shutdown()
+        engine.dispose()
+
+
+def test_queue_saturation_marker_recovers_stopped_capture_fragments(tmp_path):
+    engine, factory, case_id, session_id, capture_id = seed(tmp_path)
+    supervisor = FakeSupervisor()
+    events = EventCollector(factory)
+    with factory() as db:
+        db.get(ASRCaptureSession, capture_id).status = "STOPPED"
+        db.commit()
+    q_id, a_id = add_exchange(factory, case_id=case_id, capture_id=capture_id)
+
+    coordinator = QARoutingCoordinator(
+        session_factory=factory,
+        ai_supervisor=supervisor,
+        publish_event=events,
+        idle_close_seconds=60.0,
+        poll_interval=0.01,
+        queue_size=1,
+    )
+    try:
+        coordinator.enqueue_fragment(case_id, q_id)
+        coordinator.enqueue_fragment(case_id, a_id)
+        assert case_id in coordinator._recovery_markers
+        coordinator._write_recovery_markers()
+        with factory() as db:
+            unit = qa_repo.active_for_session(db, case_id, session_id)
+            assert unit is not None
+            assert {link.fragment_id for link in unit.fragments} == {q_id, a_id}
+        coordinator._flush_capture(case_id, session_id)
+        assert qa_repo_status(factory, case_id, "APPLIED")
+        assert supervisor.calls == 1
+    finally:
+        coordinator.shutdown()
+        engine.dispose()
+
+
+def test_stopped_capture_recovery_processes_more_than_one_batch(tmp_path):
+    engine, factory, case_id, session_id, capture_id = seed(tmp_path)
+    with factory() as db:
+        db.get(ASRCaptureSession, capture_id).status = "STOPPED"
+        for ordinal in range(257):
+            asr_repo.create_fragment(
+                db,
+                capture_session_id=capture_id,
+                case_id=case_id,
+                ordinal=ordinal,
+                started_at_ms=ordinal * 200,
+                ended_at_ms=ordinal * 200 + 100,
+                raw_text=f"民警内容 {ordinal}",
+                speaker="INTERROGATOR",
+                speaker_source="MANUAL",
+                voiceprint_verified=True,
+                low_confidence=False,
+                model_id="test-asr",
+            )
+        db.commit()
+
+    coordinator = QARoutingCoordinator(
+        session_factory=factory,
+        ai_supervisor=FakeSupervisor(),
+        publish_event=EventCollector(factory),
+        idle_close_seconds=60.0,
+        poll_interval=0.01,
+    )
+    try:
+        assert coordinator._recover_unassigned_sessions()
+        with factory() as db:
+            unit = qa_repo.active_for_session(db, case_id, session_id)
+            assert unit is not None
+            assert len(unit.fragments) == 257
+            assert asr_repo.list_unassigned_for_session(db, case_id, session_id) == []
+    finally:
+        coordinator.shutdown()
+        engine.dispose()
+
+
+def test_recovery_routes_closed_units_before_a_later_batch_fails(tmp_path, monkeypatch):
+    engine, factory, case_id, session_id, capture_id = seed(tmp_path)
+    with factory() as db:
+        db.get(ASRCaptureSession, capture_id).status = "STOPPED"
+        for ordinal in range(257):
+            speaker = "SUSPECT" if ordinal == 1 else "INTERROGATOR"
+            text = "八点左右。" if speaker == "SUSPECT" else "你几点到现场？"
+            asr_repo.create_fragment(
+                db,
+                capture_session_id=capture_id,
+                case_id=case_id,
+                ordinal=ordinal,
+                started_at_ms=ordinal * 200,
+                ended_at_ms=ordinal * 200 + 100,
+                raw_text=text,
+                speaker=speaker,
+                speaker_source="MANUAL",
+                voiceprint_verified=True,
+                low_confidence=False,
+                model_id="test-asr",
+            )
+        db.commit()
+
+    original_list_unassigned = asr_repo.list_unassigned_for_session
+    calls = 0
+
+    def fail_second_batch(db, case, session, *, limit=256):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("transient recovery query failure")
+        return original_list_unassigned(db, case, session, limit=limit)
+
+    monkeypatch.setattr(asr_repo, "list_unassigned_for_session", fail_second_batch)
+    supervisor = FakeSupervisor()
+    coordinator = QARoutingCoordinator(
+        session_factory=factory,
+        ai_supervisor=supervisor,
+        publish_event=EventCollector(factory),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="transient recovery query failure"):
+            coordinator._recover_session(case_id, session_id)
+        assert qa_repo_status(factory, case_id, "APPLIED")
+        assert supervisor.calls == 1
     finally:
         coordinator.shutdown()
         engine.dispose()

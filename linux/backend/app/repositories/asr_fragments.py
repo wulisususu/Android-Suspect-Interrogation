@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database.models import (
@@ -16,7 +16,11 @@ from app.database.models import (
     ProcessedSpeechFragment,
     QAUnitFragment,
 )
-from app.database.recognition_models import ASRSpeakerAnalysisResult
+from app.database.recognition_models import (
+    ASRRecognitionEvidence,
+    ASRRecognitionRevision,
+    ASRSpeakerAnalysisResult,
+)
 from app.domain.errors import DomainError
 from app.repositories import audit as audit_repo
 from app.repositories import recognition_evidence as evidence_repo
@@ -434,21 +438,86 @@ def list_unassigned_for_session(
     *,
     limit: int = 256,
 ) -> list[ASRFragment]:
-    assigned = select(QAUnitFragment.fragment_id).where(QAUnitFragment.fragment_id == ASRFragment.id)
     stmt = (
         select(ASRFragment)
         .join(ASRCaptureSession, ASRCaptureSession.id == ASRFragment.capture_session_id)
         .where(
             ASRFragment.case_id == case_id,
             ASRCaptureSession.interrogation_session_id == session_id,
-            ASRFragment.speaker.in_(("INTERROGATOR", "RECORDER", "OFFICER_FALLBACK", "SUSPECT")),
-            ~assigned.exists(),
+            *_qwen_route_eligibility_filters(),
         )
         .order_by(
             ASRCaptureSession.started_at.asc(),
+            ASRCaptureSession.id.asc(),
+            ASRFragment.started_at_ms.asc(),
+            ASRFragment.ended_at_ms.asc(),
             ASRFragment.ordinal.asc(),
             ASRFragment.id.asc(),
         )
         .limit(max(1, min(int(limit), 4096)))
     )
     return list(db.scalars(stmt))
+
+
+def list_unassigned_session_pairs(
+    db: Session,
+    *,
+    case_ids: list[str] | None = None,
+) -> list[tuple[str, str]]:
+    stmt = (
+        select(ASRCaptureSession.case_id, ASRCaptureSession.interrogation_session_id)
+        .join(ASRFragment, ASRFragment.capture_session_id == ASRCaptureSession.id)
+        .where(
+            ASRCaptureSession.interrogation_session_id.is_not(None),
+            *_qwen_route_eligibility_filters(),
+        )
+        .distinct()
+    )
+    if case_ids:
+        stmt = stmt.where(ASRCaptureSession.case_id.in_(case_ids))
+    return [
+        (str(case_id), str(session_id))
+        for case_id, session_id in db.execute(stmt)
+        if session_id is not None
+    ]
+
+
+def is_qwen_route_eligible(db: Session, case_id: str, fragment_id: str) -> bool:
+    return db.scalar(
+        select(ASRFragment.id)
+        .where(
+            ASRFragment.id == fragment_id,
+            ASRFragment.case_id == case_id,
+            *_qwen_route_eligibility_filters(),
+        )
+        .limit(1)
+    ) is not None
+
+
+def _qwen_route_eligibility_filters():
+    assigned = select(QAUnitFragment.fragment_id).where(QAUnitFragment.fragment_id == ASRFragment.id)
+    originally_unknown = or_(
+        select(ASRRecognitionEvidence.fragment_id).where(
+            ASRRecognitionEvidence.fragment_id == ASRFragment.id,
+            ASRRecognitionEvidence.ai_speaker == "UNKNOWN",
+        ).correlate(ASRFragment).exists(),
+        select(ASRRecognitionRevision.fragment_id).where(
+            ASRRecognitionRevision.fragment_id == ASRFragment.id,
+            ASRRecognitionRevision.before_speaker == "UNKNOWN",
+        ).correlate(ASRFragment).exists(),
+    )
+    previously_projected = select(ProcessedSpeechFragment.fragment_id).where(
+        ProcessedSpeechFragment.fragment_id == ASRFragment.id,
+        or_(
+            ProcessedSpeechFragment.action != "RAW_ONLY",
+            and_(ProcessedSpeechFragment.action == "RAW_ONLY", ~originally_unknown),
+        ),
+    )
+    usable_text = func.trim(func.coalesce(func.nullif(ASRFragment.edited_text, ""), ASRFragment.raw_text, ""))
+    return (
+        ASRFragment.speaker.in_(("INTERROGATOR", "RECORDER", "OFFICER_FALLBACK", "SUSPECT")),
+        ASRFragment.state.in_(("PENDING", "EDITED")),
+        usable_text != "",
+        ~assigned.exists(),
+        ~previously_projected.exists(),
+    )

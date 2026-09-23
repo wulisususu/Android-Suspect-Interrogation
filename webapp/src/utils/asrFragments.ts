@@ -39,3 +39,10 @@ export function replaceAsrFragmentGroup(
     ...children,
   ])
 }
+
+export function removeReplacedAsrFragmentSelection(
+  selectedFragmentIds: string[],
+  parentFragmentId: string,
+): string[] {
+  return selectedFragmentIds.filter((id) => id !== parentFragmentId)
+}

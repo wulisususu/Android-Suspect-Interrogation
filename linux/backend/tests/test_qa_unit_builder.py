@@ -224,6 +224,70 @@ def test_recovery_keeps_capture_timeline_when_ordinals_restart_after_resume(tmp_
         engine.dispose()
 
 
+def test_recovery_orders_split_children_by_audio_time_when_ordinals_are_late(tmp_path):
+    engine, db, case, _session, capture = make_context(tmp_path)
+    try:
+        question = add_fragment(
+            db, capture, ordinal=1, speaker="INTERROGATOR", text="你几点到的？", start_ms=0, end_ms=400
+        )
+        first_child = add_fragment(
+            db, capture, ordinal=100, speaker="SUSPECT", text="先到门口。", start_ms=500, end_ms=900
+        )
+        later_fragment = add_fragment(
+            db, capture, ordinal=2, speaker="INTERROGATOR", text="之后呢？", start_ms=1200, end_ms=1500
+        )
+
+        recovered = asr_repo.list_unassigned_for_session(db, case.id, "SESSION-QA")
+
+        assert [fragment.id for fragment in recovered] == [question.id, first_child.id, later_fragment.id]
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_recovery_skips_known_legacy_raw_only_but_keeps_unknown_role_retry(tmp_path):
+    engine, db, case, _session, capture = make_context(tmp_path)
+    try:
+        projected = add_fragment(
+            db, capture, ordinal=1, speaker="INTERROGATOR", text="你叫什么？", start_ms=0, end_ms=400
+        )
+        known_raw_only = add_fragment(
+            db, capture, ordinal=2, speaker="SUSPECT", text="张某。", start_ms=500, end_ms=900
+        )
+        unknown_role_retry = add_fragment(
+            db, capture, ordinal=3, speaker="UNKNOWN", text="我叫张某。", start_ms=1000, end_ms=1400
+        )
+        unknown_role_retry.speaker = "SUSPECT"
+        asr_repo.mark_processed(
+            db,
+            fragment_id=projected.id,
+            case_id=case.id,
+            action="ROUND_OPEN",
+        )
+        asr_repo.mark_processed(
+            db,
+            fragment_id=known_raw_only.id,
+            case_id=case.id,
+            action="RAW_ONLY",
+        )
+        asr_repo.mark_processed(
+            db,
+            fragment_id=unknown_role_retry.id,
+            case_id=case.id,
+            action="RAW_ONLY",
+        )
+        db.commit()
+
+        recovered = asr_repo.list_unassigned_for_session(db, case.id, "SESSION-QA")
+        sessions = asr_repo.list_unassigned_session_pairs(db)
+
+        assert [fragment.id for fragment in recovered] == [unknown_role_retry.id]
+        assert sessions == [(case.id, "SESSION-QA")]
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_orphan_suspect_answer_becomes_review_unit(tmp_path):
     engine, db, case, _session, capture = make_context(tmp_path)
     try:

@@ -373,6 +373,48 @@ def test_superseded_fragment_cannot_be_confirmed(tmp_path):
     engine.dispose()
 
 
+def test_superseded_fragment_cannot_be_edited_discarded_or_reprojected(tmp_path):
+    app, engine, factory, capture = _app(tmp_path)
+    case_id, _, _, fragment_id, _ = _seed_fragment(factory)
+    with factory() as db:
+        fragment = db.get(ASRFragment, fragment_id)
+        fragment.state = "SUPERSEDED"
+        fragment.speaker = "UNKNOWN"
+        fragment.speaker_source = "PENDING_ANALYSIS"
+        db.commit()
+
+    enqueued = []
+    capture.fragment_sink = lambda queued_case_id, queued_fragment_id: enqueued.append(
+        (queued_case_id, queued_fragment_id)
+    )
+    with TestClient(app) as client:
+        updated = client.put(
+            f"/api/v1/cases/{case_id}/asr/fragments/{fragment_id}",
+            json={"edited_text": "修改父片段", "speaker": "INTERROGATOR"},
+        )
+        discarded = client.post(f"/api/v1/cases/{case_id}/asr/fragments/{fragment_id}/discard")
+        confirmed = client.post(f"/api/v1/cases/{case_id}/asr/fragments/{fragment_id}/confirm")
+
+    assert updated.status_code == 409
+    assert updated.json()["code"] == "ASR_FRAGMENT_SUPERSEDED"
+    assert discarded.status_code == 409
+    assert discarded.json()["code"] == "ASR_FRAGMENT_SUPERSEDED"
+    assert confirmed.status_code == 409
+    assert confirmed.json()["code"] == "ASR_FRAGMENT_SUPERSEDED"
+    assert enqueued == []
+    with factory() as db:
+        fragment = db.get(ASRFragment, fragment_id)
+        assert fragment.state == "SUPERSEDED"
+        assert fragment.speaker == "UNKNOWN"
+        assert fragment.edited_text == fragment.raw_text
+    with TestClient(app) as client:
+        history = client.get(
+            f"/api/v1/cases/{case_id}/asr/fragments?include_superseded=true"
+        ).json()
+    assert any(row["fragmentId"] == fragment_id and row["state"] == "SUPERSEDED" for row in history)
+    engine.dispose()
+
+
 def test_manual_resolution_enqueues_fragment_after_commit_once(tmp_path):
     app, engine, factory, capture = _app(tmp_path)
     case_id, _, _, fragment_id, _ = _seed_fragment(factory)

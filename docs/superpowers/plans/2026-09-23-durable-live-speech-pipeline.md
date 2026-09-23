@@ -334,12 +334,19 @@ git commit -m "feat: add deferred speaker analysis and transcript lineage"
 
 **Files:**
 - Modify: `linux/backend/app/api/asr.py`
+- Modify: `linux/backend/app/repositories/asr_fragments.py`
+- Modify: `linux/backend/app/services/qa_routing_coordinator.py`
 - Modify: `linux/backend/app/services/interrogation_projection_service.py`
 - Modify: `linux/backend/app/services/live_speech_coordinator.py`
 - Modify: `linux/backend/tests/test_asr_api.py`
 - Modify: `linux/backend/tests/test_interrogation_projection_service.py`
+- Modify: `linux/backend/tests/test_qa_routing_coordinator.py`
+- Modify: `linux/backend/tests/test_qa_unit_builder.py`
+- Modify: `webapp/src/stores/interrogation.ts`
+- Modify: `webapp/src/utils/asrFragments.ts`
+- Modify: `webapp/src/utils/asrFragments.test.ts`
 
-- [ ] **Step 1: Add projection ordering tests**
+- [x] **Step 1: Add projection ordering tests**
 
 Assert that an UNKNOWN final fragment remains available in the transcript but is not projected into a police/suspect question/answer; when its role becomes known, it is projected once; repeating the same role-resolution event does not append a duplicate answer or question; and a manually assigned role is not overwritten by an automatic result.
 When a delayed replacement arrives after later speech, active transcript rows remain ordered by capture start and audio time, not by result creation time or arrival order.
@@ -348,25 +355,26 @@ Run: `python -m pytest tests/test_interrogation_projection_service.py tests/test
 
 Expected: FAIL because current processing records UNKNOWN as `RAW_ONLY` and returns that result on every retry.
 
-- [ ] **Step 2: Defer projection until identity is known**
+- [x] **Step 2: Defer projection until identity is known**
 
 Publish UNKNOWN fragments immediately to the live transcript but do not enqueue them into `QARoutingCoordinator` or `InterrogationProjectionService`. After automatic resolution, enqueue the resolved fragment. In `api/asr.py`, when a manual edit changes an UNKNOWN role to a known role, commit the edit then enqueue that fragment through the same sink.
 
-- [ ] **Step 3: Guard lineage and replay**
+- [x] **Step 3: Guard lineage and replay**
 
 Exclude `SUPERSEDED` parents from normal fragment listing and confirmation. Keep a history response/payload containing lineage. Process child fragments once. Add an explicit retry path for a previously persisted `RAW_ONLY` fragment only when its former role was UNKNOWN and the new role is resolved; never replay rows with a non-RAW_ONLY action.
 
-- [ ] **Step 4: Verify no duplicate formal projection**
+- [x] **Step 4: Verify no duplicate formal projection**
 
 Run: `python -m pytest tests/test_interrogation_projection_service.py tests/test_interrogation_projection_freeze.py tests/test_qa_routing_coordinator.py tests/test_asr_api.py -q`
 
 Expected: PASS; UNKNOWN text remains visible, resolved children route once, and confirmed/manual records are unchanged.
+Additional recovery checks cover stopped captures, queue saturation, legacy projection replay, capture-time order, and batches larger than 256 rows.
 
-- [ ] **Step 5: Commit the projection boundary**
+- [x] **Step 5: Commit the projection boundary**
 
 ```text
-git add linux/backend/app/api/asr.py linux/backend/app/services/interrogation_projection_service.py linux/backend/app/services/live_speech_coordinator.py linux/backend/tests/test_asr_api.py linux/backend/tests/test_interrogation_projection_service.py
-git commit -m "feat: project fragments after speaker resolution"
+git add docs/superpowers/plans/2026-09-23-durable-live-speech-pipeline.md linux/backend/app/api/asr.py linux/backend/app/repositories/asr_fragments.py linux/backend/app/services/qa_routing_coordinator.py linux/backend/tests/test_asr_api.py linux/backend/tests/test_qa_routing_coordinator.py linux/backend/tests/test_qa_unit_builder.py webapp/src/stores/interrogation.ts webapp/src/utils/asrFragments.ts webapp/src/utils/asrFragments.test.ts
+git commit -m "fix: harden deferred fragment routing recovery"
 ```
 
 ## Task 7: Make Browser Audio Frames Replayable

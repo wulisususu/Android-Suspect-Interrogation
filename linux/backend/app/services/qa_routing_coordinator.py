@@ -36,9 +36,8 @@ class QARoutingCoordinator:
     """Move semantic formal-record routing off the realtime ASR capture thread.
 
     Fragment notifications are best-effort wakeups only. Persisted ASR rows are
-    authoritative and are recovered while a capture is active and again when a
-    capture flushes, so queue saturation or process restart cannot silently lose
-    attributable speech.
+    authoritative and are recovered at startup, while a capture is active, when
+    the queue saturates, and again when a capture flushes.
     """
 
     def __init__(
@@ -137,9 +136,16 @@ class QARoutingCoordinator:
 
     def _run(self) -> None:
         try:
-            self._recover_pending_routing()
+            startup_routing_recovery_pending = True
+            startup_fragment_recovery_pending = True
             while not self._stop.is_set():
                 try:
+                    if startup_routing_recovery_pending:
+                        startup_routing_recovery_pending = not self._recover_pending_routing()
+                    if startup_fragment_recovery_pending:
+                        startup_fragment_recovery_pending = not self._recover_unassigned_sessions()
+                        if startup_fragment_recovery_pending:
+                            startup_routing_recovery_pending = True
                     self._write_recovery_markers()
                     self._recover_active_sessions()
                     self._apply_pending_flushes()
@@ -172,18 +178,27 @@ class QARoutingCoordinator:
             except Exception:
                 logger.exception("qa routing final flush failed")
 
-    def _recover_pending_routing(self) -> None:
+    def _recover_pending_routing(self) -> bool:
         """Resume units committed before a restart but not yet routed."""
-        with self.session_factory() as db:
-            unit_ids = [unit.id for unit in qa_repo.list_pending_routing(db)]
+        try:
+            with self.session_factory() as db:
+                unit_ids = [unit.id for unit in qa_repo.list_pending_routing(db)]
+        except Exception:
+            logger.exception("qa routing pending-unit recovery scan failed")
+            return False
+        succeeded = True
         for qa_unit_id in unit_ids:
             try:
                 self._route_unit(qa_unit_id)
             except Exception:
+                succeeded = False
                 logger.exception("qa routing startup recovery failed for qa unit %s", qa_unit_id)
+        return succeeded
 
     def _consume_fragment(self, case_id: str, fragment_id: str) -> None:
         with self.session_factory() as db:
+            if not asr_repo.is_qwen_route_eligible(db, case_id, fragment_id):
+                return
             builder = QAUnitBuilder(db, idle_close_seconds=self.idle_close_seconds)
             closed_ids = builder.consume_fragment(case_id, fragment_id)
             db.commit()
@@ -201,14 +216,39 @@ class QARoutingCoordinator:
         self.publish_event(session_id, "QA_UNIT_UPDATED", payload)
 
     def _recover_session(self, case_id: str, session_id: str) -> None:
-        closed_ids: list[str] = []
-        with self.session_factory() as db:
-            builder = QAUnitBuilder(db, idle_close_seconds=self.idle_close_seconds)
-            for fragment in asr_repo.list_unassigned_for_session(db, case_id, session_id):
-                closed_ids.extend(builder.consume_fragment(case_id, fragment.id))
-            db.commit()
-        for qa_unit_id in dict.fromkeys(closed_ids):
-            self._route_unit(qa_unit_id)
+        while True:
+            with self.session_factory() as db:
+                builder = QAUnitBuilder(db, idle_close_seconds=self.idle_close_seconds)
+                fragments = asr_repo.list_unassigned_for_session(
+                    db,
+                    case_id,
+                    session_id,
+                    limit=256,
+                )
+                closed_ids: list[str] = []
+                for fragment in fragments:
+                    closed_ids.extend(builder.consume_fragment(case_id, fragment.id))
+                db.commit()
+            for qa_unit_id in dict.fromkeys(closed_ids):
+                self._route_unit(qa_unit_id)
+            if len(fragments) < 256:
+                break
+
+    def _recover_unassigned_sessions(self, *, case_ids: list[str] | None = None) -> bool:
+        try:
+            with self.session_factory() as db:
+                pairs = asr_repo.list_unassigned_session_pairs(db, case_ids=case_ids)
+        except Exception:
+            logger.exception("qa routing persisted-fragment recovery scan failed")
+            return False
+        succeeded = True
+        for case_id, session_id in pairs:
+            try:
+                self._recover_session(case_id, session_id)
+            except Exception:
+                succeeded = False
+                logger.exception("qa routing fragment recovery failed for session %s", session_id)
+        return succeeded
 
     def _recover_active_sessions(self) -> None:
         with self.session_factory() as db:
@@ -305,17 +345,30 @@ class QARoutingCoordinator:
     def _write_recovery_markers(self) -> None:
         with self._state_lock:
             case_ids = list(self._recovery_markers)
-            self._recovery_markers.clear()
+            self._recovery_markers.difference_update(case_ids)
         if not case_ids:
             return
-        with self.session_factory() as db:
-            for case_id in case_ids:
-                audit_repo.add(
-                    db,
-                    case_id=case_id,
-                    action="QA_ROUTING_RECOVERY_REQUIRED",
-                    target_type="CASE",
-                    target_id=case_id,
-                    detail={"reason": "QUEUE_FULL", "recovery": "PERSISTED_FRAGMENT_SCAN"},
-                )
-            db.commit()
+        try:
+            if not self._recover_unassigned_sessions(case_ids=case_ids):
+                with self._state_lock:
+                    self._recovery_markers.update(case_ids)
+                return
+            if not self._recover_pending_routing():
+                with self._state_lock:
+                    self._recovery_markers.update(case_ids)
+                return
+            with self.session_factory() as db:
+                for case_id in case_ids:
+                    audit_repo.add(
+                        db,
+                        case_id=case_id,
+                        action="QA_ROUTING_RECOVERY_REQUIRED",
+                        target_type="CASE",
+                        target_id=case_id,
+                        detail={"reason": "QUEUE_FULL", "recovery": "PERSISTED_FRAGMENT_SCAN"},
+                    )
+                db.commit()
+        except Exception:
+            with self._state_lock:
+                self._recovery_markers.update(case_ids)
+            raise

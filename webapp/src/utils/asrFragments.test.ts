@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { TemporaryAsrFragment } from '../types/interrogation'
-import { replaceAsrFragmentGroup, upsertAsrFragmentByCaptureTime } from './asrFragments'
+import {
+  removeReplacedAsrFragmentSelection,
+  replaceAsrFragmentGroup,
+  upsertAsrFragmentByCaptureTime,
+} from './asrFragments'
 
 function fragment(id: string, startedAtMs: number, ordinal: number): TemporaryAsrFragment {
   return {
@@ -42,5 +46,10 @@ describe('live ASR fragment timeline', () => {
       'parent',
       [secondChild, firstChild],
     ).map((item) => item.id)).toEqual(['child-1', 'child-2', 'later'])
+  })
+
+  it('clears selection for a superseded parent while preserving other selections', () => {
+    expect(removeReplacedAsrFragmentSelection(['parent', 'later'], 'parent'))
+      .toEqual(['later'])
   })
 })
