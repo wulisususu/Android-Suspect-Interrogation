@@ -113,6 +113,39 @@ def test_recovery_creates_missing_empty_wav_with_restrictive_modes(archive_env):
     assert stat.S_IMODE(wav_path.stat().st_mode) == 0o640
 
 
+def test_recovery_recreates_archive_directories_with_restrictive_modes(archive_env):
+    archive, factory, data_dir, _engine = archive_env
+    archive.open_capture("capture-1", case_id="case-1")
+    with archive_repo.archive_transaction(factory) as db:
+        archive_repo.create_segment(
+            db,
+            capture_id="capture-1",
+            sequence=0,
+            relative_path="audio/case-1/capture-1/segment-000000.wav",
+            start_sample=0,
+            sha256=hashlib.sha256(b"").hexdigest(),
+        )
+    audio_dir = data_dir / "audio"
+    case_dir = audio_dir / "case-1"
+    capture_dir = case_dir / "capture-1"
+    capture_dir.rmdir()
+    case_dir.rmdir()
+    audio_dir.rmdir()
+
+    previous_umask = os.umask(0o077)
+    try:
+        assert archive.recover_incomplete() == ["capture-1"]
+    finally:
+        os.umask(previous_umask)
+
+    wav_path = capture_dir / "segment-000000.wav"
+    assert wav_path.is_file()
+    if os.name != "nt":
+        for path in (data_dir, audio_dir, case_dir, capture_dir):
+            assert stat.S_IMODE(path.stat().st_mode) == 0o750
+        assert stat.S_IMODE(wav_path.stat().st_mode) == 0o640
+
+
 def test_finalize_rejects_changed_active_audio_without_exposing_it(archive_env):
     archive, factory, data_dir, _engine = archive_env
     pcm = b"\x02\x00" * 800

@@ -456,7 +456,7 @@ class DurableAudioArchive:
                         continue
                     if not path.exists():
                         if segment.committed_samples == 0:
-                            path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+                            self._ensure_capture_dirs(capture.case_id, capture.id)
                             self._repair_wav(path, 0, allow_create=True)
                         else:
                             self._mark_segment_gap(segment)
