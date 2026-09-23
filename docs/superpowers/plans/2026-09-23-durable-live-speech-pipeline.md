@@ -191,7 +191,7 @@ git commit -m "feat: persist live audio archive segments"
 - Modify: `linux/backend/app/main.py`
 - Create: `linux/backend/tests/test_live_speech_coordinator.py`
 
-- [ ] **Step 1: Add an inference-stall capture test**
+- [x] **Step 1: Add an inference-stall capture test**
 
 Use a fake device that yields three known PCM frames and a fake speech worker blocked on an event. Assert that the archive contains all three frames and the reader continues until stopped while the worker remains blocked. Also assert that a configured disk failure marks the capture `INCOMPLETE` and publishes a storage error.
 
@@ -199,23 +199,23 @@ Run: `python -m pytest tests/test_live_speech_coordinator.py::test_capture_persi
 
 Expected: FAIL because capture currently invokes the speech worker in the read loop.
 
-- [ ] **Step 2: Add the lifecycle-owned coordinator**
+- [x] **Step 2: Add the lifecycle-owned coordinator**
 
 `LiveSpeechCoordinator` owns the archive writer, capture reader, ordered durable cursors, ASR queue, lower-priority speaker queue, and recovery loop. Device capture must perform `read -> durable append -> notify coordinator`; it must not invoke `push_speech_pcm`, `speaker_embedding`, or block on model calls. The ASR consumer reads only committed samples. The coordinator keeps independent states for recording, ASR backlog, and speaker analysis.
 
 In `main.py`, construct the coordinator from `runtime_settings.data_dir`, `session_factory`, `SourceAwareAsrCaptureService`, and `ai_supervisor`; call `start()` before serving and `shutdown()` in the existing lifespan `finally` block. Recovery on startup scans unfinished captures and queues their remaining audio before speaker work.
 
-- [ ] **Step 3: Keep the capture API compatible and remove the voiceprint start gate**
+- [x] **Step 3: Keep the capture API compatible and remove the voiceprint start gate**
 
 Keep existing `start`, `stop`, and `status` response keys in `AsrCaptureService`. Remove the `SUSPECT_VOICEPRINT_REQUIRED` / `SUSPECT_VOICEPRINT_BACKEND_REQUIRED` start rejection. Capture may start with no suspect/officer references; speaker state then remains pending/unknown. Preserve calibration snapshots when available and record an unavailable-calibration status when not.
 
-- [ ] **Step 4: Verify capture independence and compatibility**
+- [x] **Step 4: Verify capture independence and compatibility**
 
 Run: `python -m pytest tests/test_live_speech_coordinator.py tests/test_asr_capture_service.py tests/test_asr_capture_fail_safe.py tests/test_asr_audio_source_routing.py -q`
 
 Expected: PASS; blocked/failed inference does not stop durable capture, and existing capture/status routes remain compatible.
 
-- [ ] **Step 5: Commit the capture boundary**
+- [x] **Step 5: Commit the capture boundary**
 
 ```text
 git add linux/backend/app/services/live_speech_coordinator.py linux/backend/app/services/asr_capture_service.py linux/backend/app/services/source_aware_asr_capture_service.py linux/backend/app/main.py linux/backend/tests/test_live_speech_coordinator.py linux/backend/tests/test_asr_capture_service.py
@@ -232,7 +232,7 @@ git commit -m "feat: decouple audio capture from speech inference"
 - Modify: `linux/backend/tests/test_speech_worker_server.py`
 - Modify: `linux/backend/tests/test_live_speech_coordinator.py`
 
-- [ ] **Step 1: Specify ASR-only worker and idempotent replay tests**
+- [x] **Step 1: Specify ASR-only worker and idempotent replay tests**
 
 ```python
 def test_stage_one_emits_final_text_without_speaker_inference():
@@ -253,21 +253,21 @@ def test_replaying_committed_audio_range_does_not_duplicate_fragment(coordinator
 
 Run the two focused test names. Expected: FAIL because `SpeechSession` embeds/splits before ASR and the coordinator has no durable replay path.
 
-- [ ] **Step 2: Remove speaker work from Stage 1**
+- [x] **Step 2: Remove speaker work from Stage 1**
 
 In `SpeechSession._finish_utterance`, emit the VAD-bounded ASR result without `_split_turns`, `_embed_for_split`, `_extract_speaker`, `SPEAKER_RESULT`, or compare events. Keep `ASR_PARTIAL` as provisional preview. In the coordinator, persist every non-empty `ASR_FINAL` with `speaker="UNKNOWN"`, `speaker_source="PENDING_ANALYSIS"`, and the global capture-relative range before advancing the ASR cursor. Add `list_for_capture(capture_id)` to the fragment repository so replay tests can verify that only one database row exists for the idempotency key. Supply a `fragment_repository` fixture backed by the same test database used by the coordinator.
 
-- [ ] **Step 3: Recover uncommitted utterances after worker restart**
+- [x] **Step 3: Recover uncommitted utterances after worker restart**
 
 Store the last committed ASR sample boundary and the start of any unfinished VAD range. Re-open a speech session with a capture-global base offset and replay from the unfinished range start, including the existing VAD pre-roll. Use a unique `(capture_session_id, start_sample, end_sample, model_version)` replay key. Advance a range only after its final fragment transaction commits. A replayed final updates/reuses its existing fragment; it never creates a second ordinal for the same key.
 
-- [ ] **Step 4: Verify model-independent text persistence**
+- [x] **Step 4: Verify model-independent text persistence**
 
 Run: `python -m pytest tests/test_speech_worker_server.py tests/test_live_speech_coordinator.py tests/test_asr_capture_service.py -q`
 
 Expected: PASS; Stage 1 still persists text when the speaker backend is unavailable, and a simulated worker restart replays the unfinished range exactly once.
 
-- [ ] **Step 5: Commit the ASR recovery unit**
+- [x] **Step 5: Commit the ASR recovery unit**
 
 ```text
 git add linux/backend/speech_worker/session.py linux/backend/speech_worker/main.py linux/backend/app/services/live_speech_coordinator.py linux/backend/app/repositories/asr_fragments.py linux/backend/tests/test_speech_worker_server.py linux/backend/tests/test_live_speech_coordinator.py
