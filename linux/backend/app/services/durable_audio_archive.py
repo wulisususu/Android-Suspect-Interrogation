@@ -119,7 +119,6 @@ class DurableAudioArchive:
                                         segments,
                                         prior.start_sample,
                                         prior.end_sample,
-                                        reject_gap=True,
                                     )
                                 except (OSError, ValueError):
                                     bad_index = self._first_segment_for_range(
@@ -191,18 +190,49 @@ class DurableAudioArchive:
             or end < start
         ):
             raise ValueError("sample range is invalid")
-        with archive_repo.archive_transaction(self.session_factory, immediate=False) as db:
+        integrity_failure = False
+        samples = b""
+        with archive_repo.archive_transaction(self.session_factory) as db:
             capture = archive_repo.get_capture(db, capture_id)
             if capture is None:
                 raise ValueError(f"capture does not exist: {capture_id}")
             if end > capture.audio_sample_count:
                 raise ValueError("sample range extends beyond the durable archive")
             segments = archive_repo.list_capture_segments(db, capture_id)
-            case_id = capture.case_id
+            if start == end:
+                return b""
+            bad_index = self._first_invalid_segment_in_range(
+                capture.case_id,
+                capture.id,
+                segments,
+                start,
+                end,
+            )
+            if bad_index is None:
+                try:
+                    samples = self._read_sample_range(capture.case_id, capture_id, segments, start, end)
+                except (OSError, ValueError):
+                    bad_index = self._first_invalid_segment_in_range(
+                        capture.case_id,
+                        capture.id,
+                        segments,
+                        start,
+                        end,
+                    )
+                    if bad_index is None:
+                        bad_index = self._first_segment_for_range(segments, start, end)
+                    if bad_index is None:
+                        archive_repo.mark_capture_incomplete(db, capture_id)
+                    else:
+                        self._quarantine_unverified_segment_range(db, capture, segments, bad_index)
+                    integrity_failure = True
+            else:
+                self._quarantine_unverified_segment_range(db, capture, segments, bad_index)
+                integrity_failure = True
 
-        if start == end:
-            return b""
-        return self._read_sample_range(case_id, capture_id, segments, start, end)
+        if integrity_failure:
+            raise ValueError("audio archive integrity validation failed")
+        return samples
 
     def _read_sample_range(
         self,
@@ -211,8 +241,6 @@ class DurableAudioArchive:
         segments: list[ASRAudioSegment],
         start: int,
         end: int,
-        *,
-        reject_gap: bool = False,
     ) -> bytes:
         output = bytearray()
         cursor = start
@@ -223,13 +251,15 @@ class DurableAudioArchive:
             overlap_end = min(end, segment_end)
             if overlap_start >= overlap_end:
                 continue
-            if (reject_gap and segment.status == "GAP") or segment_start > cursor or overlap_start > cursor:
+            if segment.status == "GAP" or segment_start > cursor or overlap_start > cursor:
                 raise ValueError("sample range crosses a missing audio gap")
             path = self._segment_path(case_id, capture_id, segment)
-            with path.open("rb") as stream:
-                stream.seek(_WAV_HEADER_BYTES + (overlap_start - segment_start) * _SAMPLE_BYTES)
-                chunk = stream.read((overlap_end - overlap_start) * _SAMPLE_BYTES)
+            contents = path.read_bytes()
+            if not self._segment_bytes_match_metadata(segment, contents):
+                raise ValueError("audio segment integrity does not match its durable metadata")
+            chunk_start = _WAV_HEADER_BYTES + (overlap_start - segment_start) * _SAMPLE_BYTES
             expected = (overlap_end - overlap_start) * _SAMPLE_BYTES
+            chunk = contents[chunk_start : chunk_start + expected]
             if len(chunk) != expected:
                 raise ValueError("audio segment is shorter than its durable metadata")
             output.extend(chunk)
@@ -253,39 +283,55 @@ class DurableAudioArchive:
                 capture = archive_repo.get_capture(db, capture_id)
                 if capture is None:
                     raise ValueError(f"capture does not exist: {capture_id}")
-                if capture.recording_status == "COMPLETE":
-                    return archive_repo.list_capture_segments(db, capture_id)
-                if capture.recording_status != "CAPTURING":
-                    raise RuntimeError("incomplete capture cannot be finalized")
-
                 segments = archive_repo.list_capture_segments(db, capture_id)
-                cursor = 0
-                for index, segment in enumerate(segments):
-                    if segment.status == "GAP" or segment.start_sample != cursor:
-                        raise RuntimeError("capture contains an audio gap")
-                    if segment.committed_samples > _SEGMENT_SAMPLES:
-                        raise RuntimeError("audio segment exceeds its one-minute limit")
-                    path = self._segment_path(capture.case_id, capture.id, segment)
-                    if segment.status == "ACTIVE":
-                        if not self._active_segment_matches_metadata(segment, path):
-                            self._mark_finalize_gap(db, capture, segments, index, cursor)
-                            integrity_error = "active audio segment does not match its durable metadata"
-                            break
-                        self._repair_wav(path, segment.committed_samples, allow_create=segment.committed_samples == 0)
-                        self._finalize_segment_file(segment, path)
-                    elif segment.status == "FINALIZED":
-                        if not self._finalized_segment_matches_metadata(segment, path):
+                if capture.recording_status == "COMPLETE":
+                    cursor = 0
+                    for index, segment in enumerate(segments):
+                        path = self._segment_path(capture.case_id, capture.id, segment)
+                        if (
+                            segment.start_sample != cursor
+                            or segment.status != "FINALIZED"
+                            or not self._finalized_segment_matches_metadata(segment, path)
+                        ):
                             self._mark_finalize_gap(db, capture, segments, index, cursor)
                             integrity_error = "finalized audio segment does not match its durable metadata"
                             break
-                    else:
-                        raise RuntimeError("audio segment state is invalid")
-                    cursor += segment.committed_samples
-                if integrity_error is None and cursor != capture.audio_sample_count:
-                    raise RuntimeError("capture sample count does not match its segments")
-                if integrity_error is None:
-                    archive_repo.complete_capture(capture)
-                    result = list(segments)
+                        cursor += segment.committed_samples
+                    if integrity_error is None and cursor != capture.audio_sample_count:
+                        archive_repo.mark_capture_incomplete(db, capture_id)
+                        integrity_error = "capture sample count does not match its segments"
+                    if integrity_error is None:
+                        result = list(segments)
+                elif capture.recording_status != "CAPTURING":
+                    raise RuntimeError("incomplete capture cannot be finalized")
+                else:
+                    cursor = 0
+                    for index, segment in enumerate(segments):
+                        if segment.status == "GAP" or segment.start_sample != cursor:
+                            raise RuntimeError("capture contains an audio gap")
+                        if segment.committed_samples > _SEGMENT_SAMPLES:
+                            raise RuntimeError("audio segment exceeds its one-minute limit")
+                        path = self._segment_path(capture.case_id, capture.id, segment)
+                        if segment.status == "ACTIVE":
+                            if not self._active_segment_matches_metadata(segment, path):
+                                self._mark_finalize_gap(db, capture, segments, index, cursor)
+                                integrity_error = "active audio segment does not match its durable metadata"
+                                break
+                            self._repair_wav(path, segment.committed_samples, allow_create=segment.committed_samples == 0)
+                            self._finalize_segment_file(segment, path)
+                        elif segment.status == "FINALIZED":
+                            if not self._finalized_segment_matches_metadata(segment, path):
+                                self._mark_finalize_gap(db, capture, segments, index, cursor)
+                                integrity_error = "finalized audio segment does not match its durable metadata"
+                                break
+                        else:
+                            raise RuntimeError("audio segment state is invalid")
+                        cursor += segment.committed_samples
+                    if integrity_error is None and cursor != capture.audio_sample_count:
+                        raise RuntimeError("capture sample count does not match its segments")
+                    if integrity_error is None:
+                        archive_repo.complete_capture(capture)
+                        result = list(segments)
         except Exception:
             self._mark_incomplete(capture_id)
             self._forget_hashers(capture_id)
@@ -562,35 +608,36 @@ class DurableAudioArchive:
         return False
 
     def _active_segment_matches_metadata(self, segment: ASRAudioSegment, path: Path) -> bool:
-        if segment.committed_samples < 0 or segment.committed_samples > _SEGMENT_SAMPLES:
-            return False
-        expected_size = _WAV_HEADER_BYTES + segment.committed_samples * _SAMPLE_BYTES
         try:
-            if not path.exists():
-                return segment.committed_samples == 0 and segment.sha256 == hashlib.sha256(b"").hexdigest()
-            if path.stat().st_size < expected_size:
-                return False
-            return self._hash_pcm(path, segment.committed_samples) == segment.sha256
+            return self._segment_bytes_match_metadata(segment, path.read_bytes())
         except OSError:
             return False
 
     def _finalized_segment_matches_metadata(self, segment: ASRAudioSegment, path: Path) -> bool:
+        try:
+            return self._segment_bytes_match_metadata(segment, path.read_bytes())
+        except OSError:
+            return False
+
+    def _segment_bytes_match_metadata(self, segment: ASRAudioSegment, contents: bytes) -> bool:
         if (
             segment.committed_samples < 0
             or segment.committed_samples > _SEGMENT_SAMPLES
-            or segment.finalized_samples != segment.committed_samples
         ):
             return False
         expected_size = _WAV_HEADER_BYTES + segment.committed_samples * _SAMPLE_BYTES
-        try:
-            if not path.is_file() or path.stat().st_size != expected_size:
+        if segment.status == "ACTIVE":
+            if len(contents) < expected_size:
                 return False
-            with path.open("rb") as stream:
-                if stream.read(_WAV_HEADER_BYTES) != self._wav_header(segment.committed_samples):
-                    return False
-            return self._hash_file(path) == segment.sha256
-        except OSError:
-            return False
+            return hashlib.sha256(contents[_WAV_HEADER_BYTES:expected_size]).hexdigest() == segment.sha256
+        if segment.status == "FINALIZED":
+            return (
+                segment.finalized_samples == segment.committed_samples
+                and len(contents) == expected_size
+                and contents[:_WAV_HEADER_BYTES] == self._wav_header(segment.committed_samples)
+                and hashlib.sha256(contents).hexdigest() == segment.sha256
+            )
+        return False
 
     def _hasher_for(self, path: Path, segment: ASRAudioSegment) -> Any:
         key = str(path)
