@@ -82,10 +82,12 @@ class LiveSpeechCoordinator:
                         select(ASRCaptureSession.id)
                         .where(
                             ASRCaptureSession.recording_status == "COMPLETE",
+                            ASRCaptureSession.interrogation_session_id.is_not(None),
                             or_(
-                                ASRCaptureSession.asr_status == "FINALIZING",
+                                ASRCaptureSession.asr_status.in_(("PENDING", "FINALIZING")),
                                 ASRCaptureSession.asr_cursor_sample < ASRCaptureSession.audio_sample_count,
                                 ASRCaptureSession.asr_unfinished_start_sample.is_not(None),
+                                ASRCaptureSession.asr_finalize_checkpoint_sample.is_not(None),
                             ),
                         )
                         .order_by(ASRCaptureSession.started_at, ASRCaptureSession.id)
@@ -100,11 +102,50 @@ class LiveSpeechCoordinator:
                     if capture is None:
                         continue
                     should_finalize = capture.recording_status == "CAPTURING"
+                    has_interrogation_session = capture.interrogation_session_id is not None
                     sample_rate = int(capture.sample_rate)
-                try:
-                    self._begin_asr_finalization(capture_id, sample_rate)
-                except Exception as exc:
-                    finalization_error = exc
+                    needs_asr = (
+                        has_interrogation_session
+                        and (
+                            should_finalize
+                            or capture.asr_status in ("PENDING", "FINALIZING")
+                            or int(capture.asr_cursor_sample or 0)
+                            < int(capture.audio_sample_count or 0)
+                            or capture.asr_unfinished_start_sample is not None
+                            or capture.asr_finalize_checkpoint_sample is not None
+                        )
+                    )
+                    should_checkpoint_finalization = (
+                        should_finalize
+                        or (
+                            capture.asr_status == "FINALIZING"
+                            and capture.asr_finalize_checkpoint_sample is None
+                        )
+                        or (
+                            capture.asr_status == "PENDING"
+                            and int(capture.asr_cursor_sample or 0)
+                            >= int(capture.audio_sample_count or 0)
+                            and capture.asr_unfinished_start_sample is None
+                            and capture.asr_finalize_checkpoint_sample is None
+                        )
+                    )
+                if not has_interrogation_session:
+                    if should_finalize:
+                        try:
+                            self.archive.finalize_capture(capture_id)
+                        except Exception:
+                            logger.exception(
+                                "failed to finalize orphan audio capture %s",
+                                capture_id,
+                            )
+                    continue
+                if not needs_asr:
+                    continue
+                if should_checkpoint_finalization:
+                    try:
+                        self._begin_asr_finalization(capture_id, sample_rate)
+                    except Exception as exc:
+                        finalization_error = exc
                 if should_finalize:
                     if finalization_error is None:
                         try:
@@ -118,6 +159,9 @@ class LiveSpeechCoordinator:
                     runtime = self.capture_service.build_recovery_runtime(capture)
                     unfinished_start = capture.asr_unfinished_start_sample
                     cursor = max(0, int(capture.asr_cursor_sample or 0))
+                    checkpoint = capture.asr_finalize_checkpoint_sample
+                    if checkpoint is not None:
+                        cursor = min(cursor, max(0, int(checkpoint)))
                     if unfinished_start is not None:
                         cursor = min(cursor, max(0, int(unfinished_start)))
                     end = max(cursor, int(capture.audio_sample_count or 0))
@@ -188,7 +232,6 @@ class LiveSpeechCoordinator:
                 self._begin_asr_finalization(
                     runtime.capture_session_id,
                     runtime.sample_rate,
-                    replay_tail=True,
                 )
                 self.archive.finalize_capture(runtime.capture_session_id)
             except Exception as exc:
@@ -265,16 +308,41 @@ class LiveSpeechCoordinator:
                             complete_asr=True,
                         )
                 except Exception as exc:
-                    runtime.inference_error_sink(exc)
-                finally:
-                    if session_id in self._open_asr_sessions:
-                        self.ai_supervisor.close_speech_session(session_id)
-                        self._open_asr_sessions.discard(session_id)
                     try:
-                        runtime.capture_finished_sink()
+                        runtime.inference_error_sink(exc)
                     except Exception:
-                        logger.exception("capture finished callback failed for %s", runtime.capture_session_id)
-                    self.asr_queue.task_done()
+                        logger.exception(
+                            "failed to report ASR finalization failure for capture %s",
+                            runtime.capture_session_id,
+                        )
+                finally:
+                    try:
+                        if session_id in self._open_asr_sessions:
+                            try:
+                                self.ai_supervisor.close_speech_session(session_id)
+                            except Exception as exc:
+                                logger.exception(
+                                    "failed to close speech session %s",
+                                    session_id,
+                                )
+                                try:
+                                    runtime.inference_error_sink(exc)
+                                except Exception:
+                                    logger.exception(
+                                        "failed to report speech-session close failure for capture %s",
+                                        runtime.capture_session_id,
+                                    )
+                    finally:
+                        self._open_asr_sessions.discard(session_id)
+                        try:
+                            runtime.capture_finished_sink()
+                        except Exception:
+                            logger.exception(
+                                "capture finished callback failed for %s",
+                                runtime.capture_session_id,
+                            )
+                        finally:
+                            self.asr_queue.task_done()
                 continue
             try:
                 if runtime.capture_session_id in self._asr_blocked:
@@ -406,26 +474,23 @@ class LiveSpeechCoordinator:
         self,
         capture_id: str,
         sample_rate: int,
-        *,
-        replay_tail: bool = False,
     ) -> None:
         with archive_repo.archive_transaction(self.session_factory) as db:
             capture = db.get(ASRCaptureSession, capture_id)
             if capture is None:
                 raise ValueError(f"unknown capture session: {capture_id}")
             end_sample = max(0, int(capture.audio_sample_count or 0))
-            checkpoint = capture.asr_unfinished_start_sample
+            marker = capture.asr_unfinished_start_sample
+            checkpoint = marker
             if checkpoint is None:
-                current_cursor = max(0, int(capture.asr_cursor_sample or 0))
-                if replay_tail or current_cursor >= end_sample:
-                    checkpoint_samples = int(round(_FINALIZE_REPLAY_WINDOW_MS * sample_rate / 1000))
-                    checkpoint = max(0, end_sample - checkpoint_samples)
-                else:
-                    checkpoint = current_cursor
-            capture.asr_cursor_sample = min(
-                max(0, int(capture.asr_cursor_sample or 0)),
-                max(0, int(checkpoint)),
-            )
+                checkpoint_samples = int(round(_FINALIZE_REPLAY_WINDOW_MS * sample_rate / 1000))
+                checkpoint = max(0, end_sample - checkpoint_samples)
+            if capture.asr_finalize_checkpoint_sample is not None:
+                checkpoint = min(
+                    max(0, int(capture.asr_finalize_checkpoint_sample)),
+                    max(0, int(checkpoint)),
+                )
+            capture.asr_finalize_checkpoint_sample = max(0, int(checkpoint))
             capture.asr_status = "FINALIZING"
 
     def _rewind_asr_cursor(self, capture_id: str, start_sample: int) -> None:
@@ -467,7 +532,8 @@ class LiveSpeechCoordinator:
                 if complete_asr:
                     capture.asr_cursor_sample = int(end_sample)
                     capture.asr_status = "COMPLETE"
-                elif capture.asr_status != "FINALIZING":
+                    capture.asr_finalize_checkpoint_sample = None
+                else:
                     capture.asr_cursor_sample = max(
                         int(capture.asr_cursor_sample or 0),
                         int(end_sample),

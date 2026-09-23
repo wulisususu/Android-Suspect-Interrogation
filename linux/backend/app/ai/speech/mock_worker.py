@@ -186,15 +186,16 @@ class MockSpeechWorker:
                     "session_id": session_id,
                     "end_ms": 1,
                     "details": {"mock": True},
-                },
-                {
+                }
+            ]
+            if session["bytes_received"] // 2 > 0:
+                events.append({
                     "type": "ASR_FINAL",
                     "session_id": session_id,
                     "text": "mock final",
                     "model_id": "mock-paraformer",
                     "details": {"mock": True},
-                },
-            ]
+                })
             return self._ok_response(request_id, {"events": events})
         if op == "close_session":
             session_id = str(request.get("session_id") or "")

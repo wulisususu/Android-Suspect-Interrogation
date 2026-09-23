@@ -71,6 +71,39 @@ class FailingSpeechWorker(BlockingSpeechWorker):
         raise RuntimeError("simulated ASR failure")
 
 
+class FinalizeAndCloseFailSpeechWorker:
+    def __init__(self, failing_session_id: str) -> None:
+        self.failing_session_id = failing_session_id
+        self.finalize_failed = threading.Event()
+        self.close_failed = threading.Event()
+        self.first_push = threading.Event()
+        self.second_push = threading.Event()
+        self.pushed_sessions: list[str] = []
+
+    def open_speech_session(self, session_id: str, **kwargs):
+        return {"session_id": session_id}
+
+    def push_speech_pcm(self, session_id: str, pcm: bytes):
+        del pcm
+        self.pushed_sessions.append(session_id)
+        if session_id == self.failing_session_id:
+            self.first_push.set()
+        else:
+            self.second_push.set()
+        return []
+
+    def finalize_speech_session(self, session_id: str):
+        if session_id == self.failing_session_id:
+            self.finalize_failed.set()
+            raise RuntimeError("simulated finalize failure")
+        return []
+
+    def close_speech_session(self, session_id: str) -> None:
+        if session_id == self.failing_session_id:
+            self.close_failed.set()
+            raise RuntimeError("simulated close failure")
+
+
 class ReplaySpeechWorker:
     def __init__(self, *, emit_final: bool, crash_before_finalize: bool = False) -> None:
         self.emit_final = emit_final
@@ -603,7 +636,7 @@ def test_restart_replays_unfinished_vad_when_complete_cursor_reached_audio_end(t
             capture = db.get(ASRCaptureSession, capture_id)
             assert capture is not None
             assert capture.recording_status == "COMPLETE"
-            assert capture.asr_cursor_sample == 0
+            assert capture.asr_cursor_sample == 16_000
             assert capture.audio_sample_count == 16_000
             assert capture.asr_unfinished_start_sample == 0
     finally:
@@ -883,6 +916,7 @@ def test_finalize_failure_replays_bounded_tail_when_no_vad_marker_exists(tmp_pat
         capture = db.get(ASRCaptureSession, capture_id)
         assert capture is not None
         capture.asr_cursor_sample = audio_sample_count
+        capture.asr_status = "COMPLETE"
         db.commit()
 
     failed_worker = FinalizeRecoverySpeechWorker(
@@ -919,7 +953,8 @@ def test_finalize_failure_replays_bounded_tail_when_no_vad_marker_exists(tmp_pat
         assert failed_service.consume_failed.wait(timeout=1)
         failed_recovery.asr_queue.join()
         # Eight seconds minus the five-second VAD cap and 1.2-second pre-roll.
-        assert _asr_cursor(factory, capture_id) == 28_800
+        assert _asr_cursor(factory, capture_id) == audio_sample_count
+        assert _finalize_checkpoint(factory, capture_id) == 28_800
         assert _unfinished_start(factory, capture_id) is None
         assert _fragments(factory, capture_id) == []
     finally:
@@ -940,6 +975,7 @@ def test_finalize_failure_replays_bounded_tail_when_no_vad_marker_exists(tmp_pat
     try:
         _wait_for(lambda: len(_fragments(factory, capture_id)) == 1)
         _wait_for(lambda: _asr_cursor(factory, capture_id) == audio_sample_count)
+        _wait_for(lambda: _asr_status(factory, capture_id) == "COMPLETE")
         assert replay_worker.open_base_samples == [28_800]
         fragments = _fragments(factory, capture_id)
         assert [(fragment.ordinal, fragment.raw_text) for fragment in fragments] == [
@@ -1002,6 +1038,7 @@ def test_finish_capture_persists_replay_checkpoint_before_archive_completion(tmp
             observed_before_complete["cursor"] = capture.asr_cursor_sample
             observed_before_complete["marker"] = capture.asr_unfinished_start_sample
             observed_before_complete["asr_status"] = capture.asr_status
+            observed_before_complete["checkpoint"] = capture.asr_finalize_checkpoint_sample
         original_finalize(capture_session_id)
 
     coordinator.archive.finalize_capture = inspect_checkpoint_then_finalize
@@ -1009,22 +1046,25 @@ def test_finish_capture_persists_replay_checkpoint_before_archive_completion(tmp
         coordinator.finish_capture(runtime)
         assert observed_before_complete == {
             "status": "CAPTURING",
-            "cursor": 28_800,
+            "cursor": audio_sample_count,
             "marker": None,
             "asr_status": "FINALIZING",
+            "checkpoint": 28_800,
         }
         with factory() as db:
             capture = db.get(ASRCaptureSession, capture_id)
             assert capture is not None
             assert capture.recording_status == "COMPLETE"
-            assert capture.asr_cursor_sample == 28_800
+            assert capture.asr_cursor_sample == audio_sample_count
             assert capture.asr_status == "FINALIZING"
+            assert capture.asr_finalize_checkpoint_sample == 28_800
         assert coordinator.process_asr_range(
             capture_id,
             audio_sample_count - 16_000,
             audio_sample_count,
         ).fragment_ids == []
-        assert _asr_cursor(factory, capture_id) == 28_800
+        assert _asr_cursor(factory, capture_id) == audio_sample_count
+        assert _finalize_checkpoint(factory, capture_id) == 28_800
     finally:
         coordinator.shutdown()
 
@@ -1042,6 +1082,7 @@ def test_finish_capture_persists_replay_checkpoint_before_archive_completion(tmp
     try:
         _wait_for(lambda: len(_fragments(factory, capture_id)) == 1)
         _wait_for(lambda: _asr_cursor(factory, capture_id) == audio_sample_count)
+        _wait_for(lambda: _asr_status(factory, capture_id) == "COMPLETE")
         assert replay_worker.open_base_samples == [28_800]
         assert [fragment.raw_text for fragment in _fragments(factory, capture_id)] == [
             "最终录音片段"
@@ -1050,6 +1091,68 @@ def test_finish_capture_persists_replay_checkpoint_before_archive_completion(tmp
             capture = db.get(ASRCaptureSession, capture_id)
             assert capture is not None
             assert capture.asr_status == "COMPLETE"
+    finally:
+        replay.shutdown()
+
+
+def test_finalization_checkpoint_preserves_progress_before_recovery(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    data_dir = tmp_path / "data"
+    audio_sample_count = 128_000
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    archive = DurableAudioArchive(data_dir, factory)
+    archive.open_capture(capture_id, case_id=case_id)
+    audio = b"\x0e\x00" * audio_sample_count
+    for offset in range(0, len(audio), 32_000):
+        archive.append(capture_id, audio[offset : offset + 32_000])
+    archive.finalize_capture(capture_id)
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, capture_id)
+        assert capture is not None
+        capture.asr_cursor_sample = 0
+        capture.asr_status = "FINALIZING"
+        capture.asr_finalize_checkpoint_sample = 28_800
+        db.commit()
+
+    first_worker = FinalizeRecoverySpeechWorker(
+        emit_final_during_finalize=True,
+        audio_sample_count=audio_sample_count,
+    )
+    first = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=_source_service(factory, FakeDevice([]), first_worker, EventCollector()),
+        ai_supervisor=first_worker,
+    )
+    assert first.process_asr_range(capture_id, 0, 16_000).fragment_ids == []
+    assert _asr_cursor(factory, capture_id) == 16_000
+    assert _finalize_checkpoint(factory, capture_id) == 28_800
+
+    replay_worker = FinalizeRecoverySpeechWorker(
+        emit_final_during_finalize=True,
+        audio_sample_count=audio_sample_count,
+    )
+    replay = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=_source_service(factory, FakeDevice([]), replay_worker, EventCollector()),
+        ai_supervisor=replay_worker,
+    )
+    replay.start()
+    try:
+        _wait_for(lambda: bool(replay_worker.open_base_samples))
+        assert replay_worker.open_base_samples == [16_000]
+        _wait_for(lambda: _asr_status(factory, capture_id) == "COMPLETE")
+        assert _finalize_checkpoint(factory, capture_id) is None
     finally:
         replay.shutdown()
 
@@ -1143,6 +1246,184 @@ def test_startup_finalizes_zero_sample_capture_with_asr_status_finalizing(tmp_pa
         coordinator.shutdown()
 
 
+def test_finalize_and_close_failures_do_not_stop_asr_consumer(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    with factory() as db:
+        first_capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        first_id = first_capture.id
+        second_capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        second_id = second_capture.id
+        db.commit()
+
+    worker = FinalizeAndCloseFailSpeechWorker(first_id)
+    service = _source_service(factory, FakeDevice([]), worker, EventCollector())
+    coordinator = LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=service,
+        ai_supervisor=worker,
+    )
+    coordinator.start()
+    with factory() as db:
+        first_row = db.get(ASRCaptureSession, first_id)
+        second_row = db.get(ASRCaptureSession, second_id)
+        assert first_row is not None and second_row is not None
+        first_runtime = service.build_recovery_runtime(first_row)
+        second_runtime = service.build_recovery_runtime(second_row)
+    assert first_runtime is not None and second_runtime is not None
+    coordinator.open_capture(first_runtime)
+    coordinator.open_capture(second_runtime)
+
+    first_finished = threading.Event()
+    second_finished = threading.Event()
+    first_inference_errors: list[Exception] = []
+    first_original_finished = first_runtime.capture_finished_sink
+    second_original_finished = second_runtime.capture_finished_sink
+    first_original_error_sink = first_runtime.inference_error_sink
+
+    def mark_first_finished() -> None:
+        first_original_finished()
+        first_finished.set()
+
+    def mark_second_finished() -> None:
+        second_original_finished()
+        second_finished.set()
+
+    def collect_first_error(exc: Exception) -> None:
+        first_inference_errors.append(exc)
+        first_original_error_sink(exc)
+
+    first_runtime.capture_finished_sink = mark_first_finished
+    second_runtime.capture_finished_sink = mark_second_finished
+    first_runtime.inference_error_sink = collect_first_error
+
+    try:
+        coordinator.append_audio(first_runtime, b"\x03\x00" * 1600)
+        assert worker.first_push.wait(timeout=1)
+        coordinator.finish_capture(first_runtime)
+        assert worker.finalize_failed.wait(timeout=1)
+        assert worker.close_failed.wait(timeout=1)
+        first_callback_ran = first_finished.wait(timeout=0.5)
+
+        coordinator.append_audio(second_runtime, b"\x04\x00" * 1600)
+        second_range_ran = worker.second_push.wait(timeout=1)
+        coordinator.finish_capture(second_runtime)
+        second_callback_ran = second_finished.wait(timeout=1)
+        deadline = time.monotonic() + 1
+        while coordinator.asr_queue.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.005)
+        queue_drained = coordinator.asr_queue.unfinished_tasks == 0
+
+        assert first_callback_ran
+        assert second_range_ran
+        assert second_callback_ran
+        assert queue_drained
+        assert coordinator._asr_thread is not None and coordinator._asr_thread.is_alive()
+        assert any("close failure" in str(exc) for exc in first_inference_errors)
+    finally:
+        coordinator.shutdown()
+
+
+def test_startup_does_not_replay_completed_asr_for_incomplete_audio(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    data_dir = tmp_path / "data"
+    archive = DurableAudioArchive(data_dir, factory)
+    audio_sample_count = 16_000
+    archive.open_capture(capture_id, case_id=case_id)
+    archive.append(capture_id, b"\x05\x00" * audio_sample_count)
+    archive.finalize_capture(capture_id)
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, capture_id)
+        assert capture is not None
+        capture.recording_status = "INCOMPLETE"
+        capture.status = "FAILED"
+        capture.asr_status = "COMPLETE"
+        capture.asr_cursor_sample = audio_sample_count
+        db.commit()
+
+    worker = ReplaySpeechWorker(emit_final=False)
+    coordinator = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=_source_service(factory, FakeDevice([]), worker, EventCollector()),
+        ai_supervisor=worker,
+    )
+    coordinator.start()
+    try:
+        time.sleep(0.1)
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            assert capture.recording_status == "INCOMPLETE"
+            assert capture.asr_status == "COMPLETE"
+            assert capture.asr_cursor_sample == audio_sample_count
+            assert capture.asr_unfinished_start_sample is None
+        assert worker.open_base_samples == []
+        assert worker.pushed == []
+        assert _fragments(factory, capture_id) == []
+    finally:
+        coordinator.shutdown()
+
+
+def test_startup_does_not_finalize_capture_without_interrogation_session(tmp_path: Path):
+    factory, case_id, _session_id = _seed_database(tmp_path)
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=None,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    archive = DurableAudioArchive(tmp_path / "data", factory)
+    archive.open_capture(capture_id, case_id=case_id)
+    archive.append(capture_id, b"\x05\x00" * 16_000)
+
+    worker = ReplaySpeechWorker(emit_final=False)
+    coordinator = LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=_source_service(factory, FakeDevice([]), worker, EventCollector()),
+        ai_supervisor=worker,
+    )
+    coordinator.start()
+    try:
+        time.sleep(0.1)
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            assert capture.recording_status == "COMPLETE"
+            assert capture.asr_status == "PENDING"
+            assert capture.asr_cursor_sample == 0
+            assert capture.asr_finalize_checkpoint_sample is None
+        assert worker.open_base_samples == []
+        assert worker.pushed == []
+    finally:
+        coordinator.shutdown()
+
+
 def _fragments(factory, capture_id: str):
     with factory() as db:
         return asr_repo.list_for_capture(db, capture_id)
@@ -1158,6 +1439,12 @@ def _asr_status(factory, capture_id: str) -> str | None:
     with factory() as db:
         capture = db.get(ASRCaptureSession, capture_id)
         return None if capture is None else capture.asr_status
+
+
+def _finalize_checkpoint(factory, capture_id: str) -> int | None:
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, capture_id)
+        return None if capture is None else capture.asr_finalize_checkpoint_sample
 
 
 def test_coordinator_inference_failure_does_not_stop_durable_capture(tmp_path: Path):

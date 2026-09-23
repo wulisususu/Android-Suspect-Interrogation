@@ -113,7 +113,8 @@ class _InProcessSpeechClient:
             sample_rate = session["sample_rate"]
             start_ms = int(round(start_sample * 1000 / sample_rate))
             end_ms = int(round(end_sample * 1000 / sample_rate))
-        return [
+            has_audio_samples = session["bytes_received"] // 2 > 0
+        events = [
             SpeechEvent(
                 type=SpeechEventType.VAD_END,
                 session_id=session_id,
@@ -122,7 +123,9 @@ class _InProcessSpeechClient:
                 model_id="mock-fsmn-vad",
                 details={"mock": True},
             ),
-            SpeechEvent(
+        ]
+        if has_audio_samples:
+            events.append(SpeechEvent(
                 type=SpeechEventType.ASR_FINAL,
                 session_id=session_id,
                 start_ms=start_ms,
@@ -136,8 +139,8 @@ class _InProcessSpeechClient:
                     "asr_start_sample": start_sample,
                     "asr_end_sample": end_sample,
                 },
-            ),
-        ]
+            ))
+        return events
 
     def close_session(self, session_id: str) -> None:
         with self._lock:

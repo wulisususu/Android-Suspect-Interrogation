@@ -172,14 +172,19 @@ def test_mock_supervisor_owns_deterministic_in_process_speech_pipeline(tmp_path:
     )
     try:
         opened = supervisor.open_speech_session("speech-1", sample_rate=16000)
-        events = supervisor.push_speech_pcm("speech-1", b"A")
+        events = supervisor.push_speech_pcm("speech-1", b"AB")
         final = supervisor.finalize_speech_session("speech-1")
         embedding = supervisor.extract_speaker_embedding(b"voice", sample_rate=16000)
         supervisor.close_speech_session("speech-1")
 
+        supervisor.open_speech_session("speech-empty", sample_rate=16000)
+        empty_final = supervisor.finalize_speech_session("speech-empty")
+        supervisor.close_speech_session("speech-empty")
+
         assert opened == {"session_id": "speech-1", "sample_rate": 16000}
         assert [event.type for event in events] == [SpeechEventType.VAD_START, SpeechEventType.ASR_PARTIAL]
         assert any(event.type == SpeechEventType.ASR_FINAL for event in final)
+        assert not any(event.type is SpeechEventType.ASR_FINAL for event in empty_final)
         assert embedding["embedding"] == [1.0, 0.0, 0.0]
         assert embedding["model_id"] == "mock-xvector"
     finally:

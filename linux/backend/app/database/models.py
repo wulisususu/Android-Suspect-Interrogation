@@ -273,6 +273,7 @@ class ASRCaptureSession(Base):
     sample_rate: Mapped[int] = mapped_column(Integer, nullable=False)
     audio_sample_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     asr_cursor_sample: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    asr_finalize_checkpoint_sample: Mapped[int | None] = mapped_column(Integer, nullable=True)
     asr_unfinished_start_sample: Mapped[int | None] = mapped_column(Integer, nullable=True)
     voiced_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     recording_status: Mapped[str] = mapped_column(String(32), default="PENDING", server_default="PENDING", nullable=False)

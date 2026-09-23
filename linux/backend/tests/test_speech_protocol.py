@@ -117,12 +117,43 @@ def test_client_operations_round_trip_through_deterministic_mock_worker(tmp_path
         final_events = client.finalize_session("session-1")
         assert any(event.type == SpeechEventType.ASR_FINAL for event in final_events)
 
+        client.open_session("empty-session", sample_rate=16000)
+        empty_final_events = client.finalize_session("empty-session")
+        assert not any(event.type is SpeechEventType.ASR_FINAL for event in empty_final_events)
+        client.close_session("empty-session")
+
         embedding = client.extract_embedding(pcm, sample_rate=16000)
         assert embedding["model_id"] == "mock-xvector"
         assert embedding["embedding"] == [1.0, 0.0, 0.0]
 
         client.close_session("session-1")
         assert client.health()["sessions"] == 0
+
+
+def test_mock_worker_omits_final_event_for_zero_byte_session(tmp_path: Path):
+    worker = MockSpeechWorker(tmp_path / "speech.sock")
+    opened = worker._dispatch(
+        {
+            "request_id": "open-empty",
+            "op": "open_session",
+            "session_id": "empty-session",
+            "sample_rate": 16000,
+        }
+    )
+    assert opened["ok"] is True
+
+    finalized = worker._dispatch(
+        {
+            "request_id": "finalize-empty",
+            "op": "finalize_session",
+            "session_id": "empty-session",
+        }
+    )
+    assert finalized["ok"] is True
+    assert not any(
+        event["type"] == SpeechEventType.ASR_FINAL.value
+        for event in finalized["result"]["events"]
+    )
 
 
 def test_worker_typed_errors_map_to_existing_ai_errors(tmp_path: Path):
