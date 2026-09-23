@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import logging
 import math
+import queue
 import struct
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.ai.speech.calibration import MODEL_BASELINE_THRESHOLD
 from app.ai.speech.types import SpeechEvent, SpeechEventType
 from app.database.models import (
     ASRCaptureSession,
+    ASRFragment,
     OfficerVoiceprint,
     SessionVoiceAssignment,
 )
@@ -79,6 +81,17 @@ class _CaptureRuntime:
     #: ``start()`` seeds it from the session's voice assignment; every persisted
     #: fragment refreshes it from the roles that fragment really bound.
     declared_recognition_mode: str = SUSPECT_ONLY
+    sample_rate: int = 16_000
+    speaker_backend: str = "eres2net_large"
+    durable_sample_cursor: int = 0
+    storage_error: str | None = None
+    consume_events: Callable[[list[SpeechEvent] | None], None] = lambda _events: None
+    capture_finished_sink: Callable[[], None] = lambda: None
+    capture_error_sink: Callable[[Exception], None] = lambda _exc: None
+    inference_error_sink: Callable[[Exception], None] = lambda _exc: None
+    local_inference_queue: queue.Queue[bytes | None] = field(default_factory=queue.Queue)
+    local_inference_thread: threading.Thread | None = None
+    local_inference_done: threading.Event = field(default_factory=threading.Event)
     stop_event: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     ordinal: int = 0
@@ -153,6 +166,10 @@ class AsrCaptureService:
         self._last_error: dict[str, str | None] = {}
         self._preparation: dict[str, _PreparationRuntime] = {}
         self._preparation_results: dict[str, dict[str, Any]] = {}
+        self._live_speech_coordinator: Any | None = None
+
+    def set_live_speech_coordinator(self, coordinator: Any) -> None:
+        self._live_speech_coordinator = coordinator
 
     def start(self, case_id: str) -> dict[str, Any]:
         case_id = str(case_id).strip()
@@ -173,18 +190,11 @@ class AsrCaptureService:
                 raise DomainError("SESSION_NOT_ACTIVE", "请先开始审讯再启动语音采集", 409)
             if interrogation_session.status != SessionStatus.RUNNING.value:
                 raise DomainError("SESSION_NOT_RUNNING", "当前审讯未处于进行状态", 409)
-            if voiceprint_repo.get_suspect(
-                db, case_id, model_key=self.authoritative_speaker_backend
-            ) is None:
-                if self.speaker_model_key == "xvector":
-                    raise DomainError("SUSPECT_VOICEPRINT_REQUIRED", "请先完成嫌疑人声纹注册", 409)
-                raise DomainError(
-                    "SUSPECT_VOICEPRINT_BACKEND_REQUIRED",
-                    f"请先完成 {self.authoritative_speaker_backend} 嫌疑人声纹注册",
-                    409,
-                    data={"speaker_backend": self.authoritative_speaker_backend},
-                )
-            resolved = self._resolve_calibration(db)
+            try:
+                resolved = self._resolve_calibration(db)
+            except Exception:
+                logger.exception("speaker calibration is unavailable for case %s", case_id)
+                resolved = self._unavailable_calibration()
             secondary_calibration = None
             capture = asr_repo.create_capture_session(
                 db,
@@ -230,24 +240,32 @@ class AsrCaptureService:
             secondary_speaker_backend=self.secondary_speaker_backend,
             secondary_calibration=secondary_calibration,
             declared_recognition_mode=self.declared_mode_for_roles(bound_roles),
+            sample_rate=self.sample_rate,
+            speaker_backend=self.speaker_model_key,
         )
+        runtime.consume_events = lambda events: self._consume_events(runtime, events)
+        runtime.capture_finished_sink = lambda: self._capture_finished(runtime)
+        runtime.capture_error_sink = lambda exc: self._record_runtime_error(runtime, exc)
+        runtime.inference_error_sink = lambda exc: self._record_runtime_error(runtime, exc)
 
-        speech_open = False
         audio_started = False
         try:
-            self.ai_supervisor.open_speech_session(
-                runtime.speech_session_id,
-                sample_rate=self.sample_rate,
-                speaker_backend="eres2net_large",
-            )
-            speech_open = True
+            if self._live_speech_coordinator is not None:
+                self._live_speech_coordinator.open_capture(runtime)
+            else:
+                self._start_local_inference(runtime)
             self.device_manager.start_record()
             audio_started = True
         except Exception:
             if audio_started:
                 self._safe_stop_audio()
-            if speech_open:
-                self._safe_finalize_close(runtime.speech_session_id)
+            if self._live_speech_coordinator is not None:
+                try:
+                    self._live_speech_coordinator.finish_capture(runtime)
+                except Exception:
+                    logger.exception("failed to finalize capture %s after start error", runtime.capture_session_id)
+            elif runtime.local_inference_thread is not None:
+                runtime.local_inference_queue.put(None)
             self._finish_capture_row(runtime.capture_session_id)
             raise
 
@@ -277,6 +295,8 @@ class AsrCaptureService:
             thread.join(timeout=max(1.0, self.read_timeout * 5.0))
             if thread.is_alive():
                 raise DomainError("ASR_CAPTURE_STOP_TIMEOUT", "语音采集线程未能及时停止", 504)
+        if runtime.local_inference_thread is not None:
+            runtime.local_inference_done.wait(timeout=max(1.0, self.read_timeout * 5.0))
         return self.status(case_id)
 
     def inject_officer_text(self, case_id: str, text: str, role: str = "INTERROGATOR") -> dict[str, Any]:
@@ -451,42 +471,96 @@ class AsrCaptureService:
                 pcm = self.device_manager.read_audio_frames(timeout=self.read_timeout)
                 if not pcm:
                     continue
-                events = self.ai_supervisor.push_speech_pcm(runtime.speech_session_id, bytes(pcm))
-                self._consume_events(runtime, events)
+                payload = bytes(pcm)
+                for offset in range(0, len(payload), 32_000):
+                    chunk = payload[offset : offset + 32_000]
+                    if self._live_speech_coordinator is not None:
+                        self._live_speech_coordinator.append_audio(runtime, chunk)
+                    else:
+                        runtime.local_inference_queue.put(chunk)
         except Exception as exc:
             failure = exc
         finally:
-            try:
-                final_events = self.ai_supervisor.finalize_speech_session(runtime.speech_session_id)
-                self._consume_events(runtime, final_events)
-            except Exception as exc:
-                if failure is None:
-                    failure = exc
-            try:
-                self.ai_supervisor.close_speech_session(runtime.speech_session_id)
-            except Exception as exc:
-                if failure is None:
-                    failure = exc
             try:
                 self.device_manager.stop_record()
             except Exception as exc:
                 if failure is None:
                     failure = exc
+            if self._live_speech_coordinator is not None:
+                try:
+                    self._live_speech_coordinator.finish_capture(runtime)
+                except Exception as exc:
+                    if failure is None:
+                        failure = exc
+            elif runtime.local_inference_thread is not None:
+                runtime.local_inference_queue.put(None)
             try:
                 self._finish_capture_row(runtime.capture_session_id)
             except Exception as exc:
                 if failure is None:
                     failure = exc
-            if self.capture_finished_sink is not None:
-                try:
-                    self.capture_finished_sink(runtime.case_id, runtime.interrogation_session_id)
-                except Exception:
-                    logger.exception("capture finished sink failed for case %s", runtime.case_id)
-
             with self._lock:
                 if self._active.get(runtime.case_id) is runtime:
                     self._active.pop(runtime.case_id, None)
-                self._last_error[runtime.case_id] = None if failure is None else str(failure)
+                if failure is not None:
+                    self._last_error[runtime.case_id] = str(failure)
+
+    def _start_local_inference(self, runtime: _CaptureRuntime) -> None:
+        runtime.local_inference_done.clear()
+        thread = threading.Thread(
+            target=self._local_inference_loop,
+            args=(runtime,),
+            daemon=True,
+            name=f"asr-inference-{runtime.capture_session_id[:8]}",
+        )
+        runtime.local_inference_thread = thread
+        thread.start()
+
+    def _local_inference_loop(self, runtime: _CaptureRuntime) -> None:
+        opened = False
+        try:
+            self.ai_supervisor.open_speech_session(
+                runtime.speech_session_id,
+                sample_rate=self.sample_rate,
+                speaker_backend="eres2net_large",
+            )
+            opened = True
+            while True:
+                pcm = runtime.local_inference_queue.get()
+                try:
+                    if pcm is None:
+                        break
+                    try:
+                        events = self.ai_supervisor.push_speech_pcm(runtime.speech_session_id, pcm)
+                        self._consume_events(runtime, events)
+                    except Exception as exc:
+                        runtime.inference_error_sink(exc)
+                finally:
+                    runtime.local_inference_queue.task_done()
+        except Exception as exc:
+            runtime.inference_error_sink(exc)
+        finally:
+            if opened:
+                try:
+                    runtime.consume_events(self.ai_supervisor.finalize_speech_session(runtime.speech_session_id))
+                except Exception as exc:
+                    runtime.inference_error_sink(exc)
+                try:
+                    self.ai_supervisor.close_speech_session(runtime.speech_session_id)
+                except Exception as exc:
+                    runtime.inference_error_sink(exc)
+            try:
+                runtime.capture_finished_sink()
+            finally:
+                runtime.local_inference_done.set()
+
+    def _record_runtime_error(self, runtime: _CaptureRuntime, exc: Exception) -> None:
+        with self._lock:
+            self._last_error[runtime.case_id] = str(exc)
+
+    def _capture_finished(self, runtime: _CaptureRuntime) -> None:
+        if self.capture_finished_sink is not None:
+            self.capture_finished_sink(runtime.case_id, runtime.interrogation_session_id)
 
     def _preparation_loop(self, runtime: _PreparationRuntime) -> None:
         failure: Exception | None = None
@@ -1237,6 +1311,67 @@ class AsrCaptureService:
             speaker_backend_key=self.authoritative_speaker_backend,
         )
 
+    def _unavailable_calibration(self) -> ResolvedSpeakerCalibration:
+        return ResolvedSpeakerCalibration(
+            calibration_id=None,
+            threshold=MODEL_BASELINE_THRESHOLD,
+            margin=None,
+            source="UNAVAILABLE",
+            status="UNAVAILABLE",
+            speaker_model_fingerprint=None,
+            microphone_fingerprint=None,
+            speaker_backend_key=self.authoritative_speaker_backend,
+        )
+
+    def build_recovery_runtime(self, capture: ASRCaptureSession) -> _CaptureRuntime | None:
+        if capture.interrogation_session_id is None:
+            return None
+        with self.session_factory() as db:
+            snapshot = calibration_repo.get_session_snapshot(db, capture.id)
+            roles = self._bound_roles(db, capture.interrogation_session_id)
+            ordinal = int(
+                db.scalar(
+                    select(func.count(ASRFragment.id)).where(
+                        ASRFragment.capture_session_id == capture.id
+                    )
+                )
+                or 0
+            )
+        calibration = self._unavailable_calibration() if snapshot is None else ResolvedSpeakerCalibration(
+            calibration_id=snapshot.calibration_id,
+            threshold=snapshot.threshold,
+            margin=snapshot.margin,
+            source=snapshot.threshold_source,
+            status=snapshot.calibration_status,
+            speaker_model_fingerprint=snapshot.speaker_model_fingerprint,
+            microphone_fingerprint=snapshot.microphone_fingerprint,
+            speaker_backend_key=snapshot.speaker_backend_key,
+        )
+        runtime = _CaptureRuntime(
+            case_id=capture.case_id,
+            interrogation_session_id=capture.interrogation_session_id,
+            capture_session_id=capture.id,
+            speech_session_id=capture.id,
+            speaker_threshold=float(calibration.threshold),
+            speaker_margin=calibration.margin,
+            threshold_source=calibration.source,
+            calibration_id=calibration.calibration_id,
+            calibration_status=calibration.status,
+            speaker_model_fingerprint=calibration.speaker_model_fingerprint,
+            microphone_fingerprint=calibration.microphone_fingerprint,
+            authoritative_speaker_backend=self.authoritative_speaker_backend,
+            declared_recognition_mode=self.declared_mode_for_roles(roles),
+            sample_rate=self.sample_rate,
+            speaker_backend=self.speaker_model_key,
+            durable_sample_cursor=int(capture.audio_sample_count or 0),
+            ordinal=ordinal,
+        )
+        runtime.consume_events = lambda events: self._consume_events(runtime, events)
+        runtime.capture_finished_sink = lambda: self._capture_finished(runtime)
+        runtime.capture_error_sink = lambda exc: self._record_runtime_error(runtime, exc)
+        runtime.inference_error_sink = lambda exc: self._record_runtime_error(runtime, exc)
+        return runtime
+
     def _resolve_secondary_calibration(self, db) -> ResolvedSpeakerCalibration:
         if self.secondary_speaker_backend is None:
             raise ValueError("secondary calibration requested outside compare mode")
@@ -1266,7 +1401,12 @@ class AsrCaptureService:
     def _finish_capture_row(self, capture_session_id: str) -> None:
         with self.session_factory() as db:
             capture = db.get(ASRCaptureSession, capture_session_id)
-            if capture is not None and capture.status != "STOPPED":
+            if (
+                capture is not None
+                and capture.status != "STOPPED"
+                and capture.recording_status != "INCOMPLETE"
+                and capture.status != "FAILED"
+            ):
                 asr_repo.finish_capture_session(db, capture_session_id=capture_session_id)
                 db.commit()
 

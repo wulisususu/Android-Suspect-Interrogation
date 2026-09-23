@@ -39,6 +39,7 @@ from app.request_audio_context import AudioSourceContextMiddleware
 from app.runtime_settings import RuntimeSettings
 from app.services.audio_capture_service import AudioCaptureService
 from app.services.browser_audio_input import BrowserAudioInput
+from app.services.live_speech_coordinator import LiveSpeechCoordinator
 from app.services.moss_transcription_coordinator import MossTranscriptionCoordinator
 from app.services.source_aware_asr_capture_service import SourceAwareAsrCaptureService
 from app.services.qa_routing_coordinator import QARoutingCoordinator
@@ -245,7 +246,15 @@ def create_app(
             speaker_model_key="eres2net_large",
         )
         app.state.asr_capture_service = capture_service
+        live_speech_coordinator = LiveSpeechCoordinator(
+            data_dir=settings.data_dir,
+            session_factory=app.state.session_factory,
+            capture_service=capture_service,
+            ai_supervisor=supervisor,
+        )
+        app.state.live_speech_coordinator = live_speech_coordinator
         try:
+            live_speech_coordinator.start()
             if manager is not None:
                 manager.open_all(strict=False)
                 manager.start_monitor()
@@ -254,6 +263,7 @@ def create_app(
             if moss_coordinator is not None:
                 moss_coordinator.shutdown()
             capture_service.shutdown()
+            live_speech_coordinator.shutdown()
             if routing_coordinator is not None:
                 routing_coordinator.shutdown()
             if manager is not None:
@@ -281,6 +291,7 @@ def create_app(
     app.state.hardware_manager = manager
     app.state.hardware_gateway = hardware_gateway
     app.state.asr_capture_service = None
+    app.state.live_speech_coordinator = None
     app.state.qa_routing_coordinator = None
     app.state.browser_audio_input = browser_audio_input
     app.state.speech_client = speech_client

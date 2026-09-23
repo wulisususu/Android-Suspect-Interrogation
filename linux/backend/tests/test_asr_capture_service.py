@@ -511,7 +511,7 @@ def test_degraded_fragment_audit_records_the_shared_mode_rule(tmp_path: Path):
     engine.dispose()
 
 
-def test_capture_failure_still_finalizes_worker_stops_alsa_and_marks_db_stopped(tmp_path: Path):
+def test_inference_failure_does_not_stop_capture_and_manual_stop_finalizes_worker(tmp_path: Path):
     engine, factory, case_id, _ = _seed_database(tmp_path)
     device = FakeDeviceManager([b"\x01\x00" * 1600])
     speech = FakeSpeechSupervisor(fail_on_push=True)
@@ -525,9 +525,12 @@ def test_capture_failure_still_finalizes_worker_stops_alsa_and_marks_db_stopped(
     )
 
     service.start(case_id)
-    _wait_until(lambda: service.status(case_id)["active"] is False)
+    _wait_until(lambda: service.status(case_id)["lastError"] == "simulated speech worker failure")
 
     assert device.started == 1
+    assert device.stopped == 0
+    assert service.status(case_id)["active"] is True
+    service.stop(case_id)
     assert device.stopped == 1
     assert len(speech.finalized) == 1
     assert speech.closed == speech.finalized

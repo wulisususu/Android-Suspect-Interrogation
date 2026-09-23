@@ -62,6 +62,7 @@ class SourceAwareAsrCaptureService:
         self._capture_sources: dict[str, str] = {}
         self._preparation_source: tuple[str, str] | None = None
         self._services: dict[str, AsrCaptureService] = {}
+        self._live_speech_coordinator: Any | None = None
 
         self._inputs = {
             "ALSA": device_manager,
@@ -80,6 +81,14 @@ class SourceAwareAsrCaptureService:
         if not self._services:
             raise ValueError("at least one ASR audio input must be configured")
         self._default_service = self._services.get("ALSA") or next(iter(self._services.values()))
+
+    def set_live_speech_coordinator(self, coordinator: Any) -> None:
+        self._live_speech_coordinator = coordinator
+        for service in self._services.values():
+            service.set_live_speech_coordinator(coordinator)
+
+    def build_recovery_runtime(self, capture):
+        return self._default_service.build_recovery_runtime(capture)
 
     def _build_service(
         self,
