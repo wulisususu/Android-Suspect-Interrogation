@@ -19,7 +19,7 @@ RK3588 API 监听：
 局域网 Windows/其他电脑访问：
 
 ```text
-https://192.168.0.9:18080
+https://192.168.2.109:18080
 ```
 
 RK3588 本机 Kiosk 访问：
@@ -36,7 +36,7 @@ TCP/8000 属于既有 FunASR 服务，不参与本项目 HTTPS 切换。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\windows\install-lan-ca.ps1 `
-  -Origin https://192.168.0.9:18080
+  -Origin https://192.168.2.109:18080
 ```
 
 脚本的第一步会使用一次 `curl.exe -k` 下载**公开 CA 证书**。这是唯一的临时跳过校验操作。随后脚本会：
@@ -53,7 +53,7 @@ CA 私钥和服务器私钥只保存在 RK3588 `/etc/suspect-interrogation/tls/`
 完成 CA 导入后，关闭之前使用特殊命令行参数启动的浏览器窗口，直接使用普通 Edge/Chrome 打开：
 
 ```text
-https://192.168.0.9:18080
+https://192.168.2.109:18080
 ```
 
 不再需要：
@@ -72,7 +72,7 @@ https://192.168.0.9:18080
 Windows microphone
   -> Web Audio API
   -> resample 16 kHz mono PCM16
-  -> wss://192.168.0.9:18080/ws/asr/...
+  -> wss://192.168.2.109:18080/ws/asr/...
   -> BrowserAudioInput (memory only)
   -> source-aware ASR coordinator
   -> local speech worker
@@ -83,7 +83,7 @@ Windows microphone
 声纹录入同样使用：
 
 ```text
-wss://192.168.0.9:18080/ws/voiceprints/enrollment/...
+wss://192.168.2.109:18080/ws/voiceprints/enrollment/...
 ```
 
 浏览器 PCM 缓冲只存在内存中，不由 `BrowserAudioInput` 落盘。
@@ -104,7 +104,7 @@ CA 默认有效 365 天；服务器证书默认有效 90 天，并在剩余 30 �
 服务器证书 SAN 包含：
 
 ```text
-IP:192.168.0.9
+IP:192.168.2.109
 IP:127.0.0.1
 DNS:localhost
 ```
@@ -115,7 +115,7 @@ DNS:localhost
 
 Windows 浏览器链路必须满足：
 
-1. `https://192.168.0.9:18080` 无证书错误；
+1. `https://192.168.2.109:18080` 无证书错误；
 2. `window.isSecureContext === true`；
 3. 浏览器能够正常请求麦克风权限；
 4. 正式审讯和问题准备使用 `wss://` 音频通道；

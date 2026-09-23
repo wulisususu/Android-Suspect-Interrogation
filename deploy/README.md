@@ -180,9 +180,9 @@ App readiness with MOSS enabled (`MOSS_ENABLED=1` in
 
 ```bash
 curl --cacert /etc/suspect-interrogation/tls/ca.crt \
-  https://192.168.0.9:18080/health/live
+  https://192.168.2.109:18080/health/live
 curl --cacert /etc/suspect-interrogation/tls/ca.crt \
-  https://192.168.0.9:18080/health/ready | \
+  https://192.168.2.109:18080/health/ready | \
   jq '.status, .capabilities.moss'
 ```
 

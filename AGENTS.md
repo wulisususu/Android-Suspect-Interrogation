@@ -15,7 +15,7 @@ Required completion chain:
 3. Run `RK3588 Production Redeploy` for that exact final commit.
 4. Build and install the frontend and backend on the RK3588 production host.
 5. Restart the interrogation runtime as part of the atomic deployment.
-6. Verify `https://192.168.0.9:18080` is serving the new frontend and backend with a certificate signed by the project LAN CA.
+6. Verify `https://192.168.2.109:18080` is serving the new frontend and backend with a certificate signed by the project LAN CA.
 7. Verify `/health/live` and `/health/ready` over HTTPS with certificate verification enabled; do not use `-k` for ordinary production checks.
 8. Verify browser audio endpoints derive `wss://` from the HTTPS origin.
 9. Verify the deployed release SHA matches the final GitHub commit SHA.
@@ -42,7 +42,7 @@ The deployed frontend under `/opt/suspect-interrogation/current/webapp/dist` and
 
 ## Trusted LAN TLS
 
-The canonical production URL is `https://192.168.0.9:18080`.
+The canonical production URL is `https://192.168.2.109:18080`.
 
 The project LAN CA and server private keys live under `/etc/suspect-interrogation/tls/` on the RK3588 and must never be committed to GitHub. Production checks must trust the project CA explicitly or through the operating-system trust store. Browser ASR and voiceprint audio must use WSS under the HTTPS origin.
 

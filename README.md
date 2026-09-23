@@ -427,7 +427,7 @@ TRANSFORMERS_OFFLINE=1
 典型访问地址：
 
 ```text
-https://192.168.0.9:18080
+https://192.168.2.109:18080
 ```
 
 CA 与服务端私钥由部署环境生成并保存在 `/etc/suspect-interrogation/`，不会提交进仓库。

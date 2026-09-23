@@ -16,11 +16,11 @@ concurrency:
 jobs:
   deploy:
     name: Deploy current linux-adaptation release
-    runs-on: [self-hosted, rk3588]
+    runs-on: [self-hosted, rk3588, target-192-168-2-109]
     timeout-minutes: 30
     env:
       SUSPECT_DEPLOY_PORT: '18080'
-      SUSPECT_TLS_LAN_IP: '192.168.0.9'
+      SUSPECT_TLS_LAN_IP: '192.168.2.109'
       SUSPECT_TLS_CA_FILE: '/etc/suspect-interrogation/tls/ca.crt'
       SUSPECT_TLS_CERT_FILE: '/etc/suspect-interrogation/tls/server.crt'
       SUSPECT_TLS_KEY_FILE: '/etc/suspect-interrogation/tls/server.key'

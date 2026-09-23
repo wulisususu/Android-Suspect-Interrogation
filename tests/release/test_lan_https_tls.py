@@ -112,7 +112,13 @@ def test_production_workflow_uses_https_and_verifies_certificate_identity():
     assert "openssl x509" in workflow
     assert "subjectAltName" in workflow or "Subject Alternative Name" in workflow
     assert "TCP/8000 preserved" in workflow
-    assert "0013_moss_transcription_integration (head)" in workflow
+    assert "0015_case_voice_role_draft (head)" in workflow
+
+
+def test_production_workflow_targets_the_selected_board_and_runner():
+    workflow = read(".github/workflows/rk3588-production-redeploy.yml")
+    assert "runs-on: [self-hosted, rk3588, target-192-168-2-109]" in workflow
+    assert "SUSPECT_TLS_LAN_IP: '192.168.2.109'" in workflow
 
 
 def test_service_bootstrap_allows_eres2net_cold_start_before_requiring_socket():
@@ -143,8 +149,8 @@ def test_kiosk_defaults_to_https_without_disabling_certificate_verification():
 
 def test_repository_definition_of_done_uses_https():
     rules = read("AGENTS.md")
-    assert "https://192.168.0.9:18080" in rules
-    assert "http://192.168.0.9:18080" not in rules
+    assert "https://192.168.2.109:18080" in rules
+    assert "http://192.168.2.109:18080" not in rules
 
 
 def test_windows_bootstrap_limits_insecure_tls_to_ca_download_then_verifies_strictly():
