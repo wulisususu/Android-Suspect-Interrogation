@@ -313,40 +313,45 @@ class LiveSpeechCoordinator:
         end_sample: int | None,
     ) -> list[str]:
         events = list(events or [])
-        replay_start: int | None = None
+        replay_start = self._get_unfinished_asr_start(runtime.capture_session_id)
+        vad_open = replay_start is not None
         for event in events:
-            if getattr(event, "type", None) is not SpeechEventType.VAD_START:
+            event_type = getattr(event, "type", None)
+            if event_type is SpeechEventType.VAD_END:
+                vad_open = False
+                replay_start = None
+                continue
+            if event_type is not SpeechEventType.VAD_START:
                 continue
             details = getattr(event, "details", {}) or {}
             if details.get("replay_start_sample") is not None:
-                candidate_start = int(details["replay_start_sample"])
+                replay_start = int(details["replay_start_sample"])
             elif event.start_ms is not None:
                 boundary = int(round(int(event.start_ms) * runtime.sample_rate / 1000))
-                candidate_start = max(0, boundary - int(round(1200 * runtime.sample_rate / 1000)))
+                replay_start = max(0, boundary - int(round(1200 * runtime.sample_rate / 1000)))
             else:
-                continue
-            replay_start = (
-                candidate_start
-                if replay_start is None
-                else min(replay_start, candidate_start)
-            )
-        if replay_start is not None:
+                replay_start = 0
+            vad_open = True
+        if vad_open:
+            if replay_start is None:
+                replay_start = 0
             self._set_unfinished_asr_start(runtime.capture_session_id, replay_start)
 
         fragment_ids = runtime.consume_events(events) or []
-        finished_vad = any(
-            getattr(event, "type", None) is SpeechEventType.VAD_END
-            for event in events
-        )
         if end_sample is not None:
             self._advance_asr_cursor(
                 runtime.capture_session_id,
                 end_sample,
-                clear_unfinished=finished_vad,
+                clear_unfinished=not vad_open,
             )
-        elif finished_vad:
+        elif not vad_open:
             self._clear_unfinished_asr_start(runtime.capture_session_id)
         return list(fragment_ids)
+
+    def _get_unfinished_asr_start(self, capture_id: str) -> int | None:
+        with self.session_factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            return None if capture is None else capture.asr_unfinished_start_sample
 
     def _set_unfinished_asr_start(self, capture_id: str, start_sample: int) -> None:
         with self.session_factory() as db:

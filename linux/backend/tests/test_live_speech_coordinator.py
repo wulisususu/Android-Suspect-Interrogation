@@ -136,6 +136,88 @@ class ReplaySpeechWorker:
         pass
 
 
+class VADTransitionReplaySpeechWorker:
+    def __init__(self) -> None:
+        self.push_count = 0
+        self.open_base_samples: list[int] = []
+        self.push_started = threading.Event()
+
+    def open_speech_session(self, session_id: str, **kwargs):
+        self.open_base_samples.append(int(kwargs.get("base_sample", 0)))
+        return {"session_id": session_id}
+
+    def push_speech_pcm(self, session_id: str, pcm: bytes):
+        del pcm
+        self.push_count += 1
+        self.push_started.set()
+        if self.push_count == 1:
+            return [
+                SpeechEvent(
+                    type=SpeechEventType.VAD_END,
+                    session_id=session_id,
+                    start_ms=0,
+                    end_ms=1000,
+                ),
+                SpeechEvent(
+                    type=SpeechEventType.ASR_FINAL,
+                    session_id=session_id,
+                    start_ms=0,
+                    end_ms=1000,
+                    text="前一段",
+                    confidence=0.95,
+                    model_id="paraformer",
+                    details={
+                        "stage_one_asr_only": True,
+                        "asr_start_sample": 0,
+                        "asr_end_sample": 16_000,
+                        "model_version": "test-v1",
+                    },
+                ),
+                SpeechEvent(
+                    type=SpeechEventType.VAD_START,
+                    session_id=session_id,
+                    start_ms=2000,
+                    details={"replay_start_sample": 12_800},
+                ),
+            ]
+        return [
+            SpeechEvent(
+                type=SpeechEventType.VAD_START,
+                session_id=session_id,
+                start_ms=2000,
+                details={"replay_start_sample": 12_800},
+            ),
+            SpeechEvent(
+                type=SpeechEventType.VAD_END,
+                session_id=session_id,
+                start_ms=2000,
+                end_ms=3000,
+            ),
+            SpeechEvent(
+                type=SpeechEventType.ASR_FINAL,
+                session_id=session_id,
+                start_ms=2000,
+                end_ms=3000,
+                text="后一段",
+                confidence=0.95,
+                model_id="paraformer",
+                details={
+                    "stage_one_asr_only": True,
+                    "asr_start_sample": 32_000,
+                    "asr_end_sample": 48_000,
+                    "model_version": "test-v1",
+                },
+            ),
+        ]
+
+    def finalize_speech_session(self, session_id: str):
+        del session_id
+        return []
+
+    def close_speech_session(self, session_id: str) -> None:
+        pass
+
+
 class EventCollector:
     def __init__(self) -> None:
         self.events: list[tuple[str, str, dict]] = []
@@ -375,6 +457,66 @@ def test_restart_replays_unfinished_vad_when_complete_cursor_reached_audio_end(t
         assert fragments[0].speaker == "UNKNOWN"
         assert fragments[0].speaker_source == "PENDING_ANALYSIS"
         assert fragments[0].asr_idempotency_key
+    finally:
+        replay.shutdown()
+
+
+def test_restart_keeps_later_vad_start_after_end_in_same_batch(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    data_dir = tmp_path / "data"
+    archive = DurableAudioArchive(data_dir, factory)
+    audio = b"\x0b\x00" * 48_000
+    archive.open_capture(capture_id, case_id=case_id)
+    archive.append(capture_id, audio[:32_000])
+    archive.append(capture_id, audio[32_000:64_000])
+    archive.append(capture_id, audio[64_000:])
+    archive.finalize_capture(capture_id)
+
+    first_worker = VADTransitionReplaySpeechWorker()
+    first_service = _source_service(factory, FakeDevice([]), first_worker, EventCollector())
+    first = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=first_service,
+        ai_supervisor=first_worker,
+    )
+    first_result = first.process_asr_range(capture_id, 0, 48_000)
+    assert first_worker.push_started.is_set()
+    assert len(first_result.fragment_ids) == 1
+    assert _asr_cursor(factory, capture_id) == 48_000
+    assert _unfinished_start(factory, capture_id) == 12_800
+    assert [fragment.raw_text for fragment in _fragments(factory, capture_id)] == ["前一段"]
+
+    replay_worker = VADTransitionReplaySpeechWorker()
+    replay_service = _source_service(factory, FakeDevice([]), replay_worker, EventCollector())
+    replay = LiveSpeechCoordinator(
+        data_dir=data_dir,
+        session_factory=factory,
+        capture_service=replay_service,
+        ai_supervisor=replay_worker,
+    )
+    replay.start()
+    try:
+        _wait_for(lambda: len(_fragments(factory, capture_id)) == 2)
+        _wait_for(lambda: _unfinished_start(factory, capture_id) is None)
+        assert replay_worker.push_started.wait(timeout=1)
+        assert replay_worker.open_base_samples == [12_800]
+        fragments = _fragments(factory, capture_id)
+        assert [(fragment.ordinal, fragment.raw_text) for fragment in fragments] == [
+            (0, "前一段"),
+            (1, "后一段"),
+        ]
+        assert sum(fragment.raw_text == "后一段" for fragment in fragments) == 1
     finally:
         replay.shutdown()
 
