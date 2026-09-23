@@ -2,7 +2,7 @@
 
 Date: 2026-09-23  
 Branch: `linux-adaptation`  
-Status: Architecture approved by the user; awaiting written-spec review
+Status: Initial architecture approved; turn-segmentation detail updated and awaiting review
 
 ## 1. Goal
 
@@ -67,22 +67,23 @@ At the current PCM format, audio consumes about **115 MB per hour**. The latest 
 
 ### 5.2 First workflow: transcript capture
 
-- ASR consumes ordered durable audio ranges continuously and has priority over voiceprint work. Advance its recovery cursor only after all final fragments for a range commit; after worker restart, replay from the last committed boundary with a small overlap and deduplicate by capture/time range. This recovers an utterance that was still in memory when the worker stopped.
+- Stage 1 ASR uses VAD boundaries only; it does not call speaker embedding or speaker-turn splitting. ASR consumes ordered durable audio ranges continuously and has priority over voiceprint work. Advance its recovery cursor only after all final fragments for a range commit; after worker restart, replay from the last committed boundary with a small overlap and deduplicate by capture/time range. This recovers an utterance that was still in memory when the worker stopped.
 - `ASR_FINAL` is persisted immediately as the canonical text fragment with its capture-relative start/end times. Until the second workflow resolves identity, store `speaker=UNKNOWN` and an explicit pending-analysis source/state. `ASR_PARTIAL` remains a provisional UI preview and does not replace the durable final fragment.
 - A replay result is idempotent by capture and time range. If the same range is reprocessed with the same model revision, update/reconcile that range rather than append a duplicate. A deliberate model/version change creates a transcript revision with provenance; it must not overwrite a user's edited text.
 - Starting live capture no longer depends on suspect voiceprint enrollment. Missing models, unavailable workers, and unrecognized speech are visible in session status; archived audio remains available for later processing.
 
 ### 5.3 Second workflow: voiceprint and role mapping
 
-- Store pending speaker-analysis jobs independently from ASR jobs. They consume the archived audio and finalized transcript time ranges; they never hold the recorder or ASR capture loop open.
+- Store pending speaker-analysis jobs independently from ASR jobs. They consume the archived audio and finalized transcript time ranges; they never hold the recorder or Stage 1 ASR capture loop open.
 - Start the first analysis batch when both conditions are met: **at least 10 seconds of VAD-detected voiced audio and at least 3 finalized transcript fragments**. This gives the model more than a single short utterance. If capture stops first, schedule analysis for available material at stop.
-- On first activation, analyze earlier unresolved fragments as well as current ones. Thereafter enqueue new finalized fragments continuously. Speech too short for the existing speaker policy, overlap, missing enrollment, low confidence, or ambiguous matching stays `UNKNOWN` for manual review.
+- On first activation, analyze earlier unresolved audio ranges as well as current ones. Thereafter enqueue new finalized ranges continuously. First run anonymous speaker-turn segmentation, then match each stable turn against the voiceprints enabled for the active interrogation session. Speech too short for the existing speaker policy, overlap, missing enrollment, low confidence, or ambiguous matching stays `UNKNOWN` for manual review.
+- If one Stage 1 VAD fragment contains multiple stable turns, re-run ASR on each turn range and append a transcript revision with parent/child lineage. Keep the original text and audio reference in history. Replace the active pending fragment with the child fragments only if all required turn transcripts succeed and the parent has not been manually edited or confirmed; otherwise leave the original visible as `UNKNOWN` and expose the split result for review.
 - Role results update a fragment only when its speaker source is still automatic/pending. A manual assignment is never overwritten. Persist score, threshold/calibration snapshot, model version, and decision provenance as today.
 - Voiceprint-worker failure or restart leaves the ASR text and audio intact. Its durable queue retries; a terminal or ambiguous result is visible as requiring review rather than changing transcript text.
 
 ### 5.4 Downstream projection and user-visible state
 
-The transcript timeline displays finalized text as soon as Stage 1 saves it, labeled “说话人待识别” until Stage 2 returns. The capture/session status exposes recording, ASR backlog, speaker-analysis progress, and incomplete/error states independently.
+The transcript timeline displays finalized text as soon as Stage 1 saves it, labeled “说话人待识别” until Stage 2 returns. Superseded parent fragments remain available in revision history but are not duplicated in the active dialogue timeline. The capture/session status exposes recording, ASR backlog, speaker-analysis progress, and incomplete/error states independently.
 
 When a speaker changes from `UNKNOWN` to a resolved police/suspect role, emit an idempotent role-resolution event and re-run downstream interrogation projection for that fragment if it has not been formally confirmed or manually edited. This is necessary because the existing projection treats unknown speakers as raw-only. Formal transcript confirmation continues to require an accepted speaker role. Existing manual speaker edits and confirmed records remain authoritative.
 
@@ -106,7 +107,7 @@ Long-term audio is stored with service-only access under `/var/lib/suspect-inter
 
 - A live capture can start without a suspect voiceprint and persists audio independently of AI-worker availability.
 - Restarting the ASR worker during capture resumes unprocessed audio, persists recognized fragments without duplicates, and reports any missing audio ranges explicitly.
-- Rapid turn-taking remains archived and is transcribed in time order even when inference temporarily falls behind; any input/audio gap is visible.
+- Rapid turn-taking remains archived and is transcribed in time order even when inference temporarily falls behind; any input/audio gap is visible. When Stage 2 finds multiple stable speakers inside one VAD fragment, successful per-turn ASR replaces the active pending fragment while preserving the original in revision history; uncertain splits remain reviewable without losing text.
 - Final transcript text appears before role analysis completes and remains available if voiceprint analysis fails.
 - Voiceprint analysis starts after 10 seconds of voiced audio plus 3 final fragments, backfills earlier unresolved fragments, and continues for later fragments. Short sessions schedule a final available analysis at stop.
 - Automatic results do not overwrite manual speaker edits; role resolution safely retries downstream projection for previously unknown fragments.
