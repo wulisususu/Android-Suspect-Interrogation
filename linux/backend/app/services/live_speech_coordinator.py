@@ -6,18 +6,24 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.ai.speech.types import SpeechEventType
-from app.database.models import ASRCaptureSession
+from app.ai.speech.types import SpeechEvent, SpeechEventType
+from app.database.models import ASRCaptureSession, ASRFragment, Case, LiveSpeechJob
 from app.repositories import audio_archive as archive_repo
+from app.repositories import asr_fragments as asr_repo
 from app.services.durable_audio_archive import DurableAudioArchive
+from speech_worker.session import SpeechSession
+from speech_worker.speaker_turn_splitter import SpeakerTurnSplitter
 
 
 logger = logging.getLogger(__name__)
 _MAX_INFERENCE_SAMPLES = 16_000
+_SPEAKER_MIN_VOICED_MS = 10_000
+_SPEAKER_MIN_FINAL_FRAGMENTS = 3
 # The worker caps a VAD segment at 5 seconds and SpeechSession retains
 # 1.2 seconds of pre-roll, so a 6.2-second tail covers finalization output.
 _FINALIZE_REPLAY_WINDOW_MS = 6_200
@@ -40,6 +46,11 @@ class _ProcessedAudioRange:
     fragment_ids: list[str]
 
 
+@dataclass(frozen=True)
+class _SpeakerJob:
+    job_id: str
+
+
 class LiveSpeechCoordinator:
     """Keep microphone reads independent from the slower speech worker."""
 
@@ -56,7 +67,7 @@ class LiveSpeechCoordinator:
         self.ai_supervisor = ai_supervisor
         self.archive = DurableAudioArchive(data_dir, session_factory)
         self.asr_queue: queue.Queue[_AudioRange | _FinishCapture | None] = queue.Queue()
-        self.speaker_queue: queue.Queue[Callable[[], None] | None] = queue.Queue()
+        self.speaker_queue: queue.Queue[_SpeakerJob | Callable[[], None] | None] = queue.Queue()
         self._lock = threading.RLock()
         self._started = False
         self._stopping = threading.Event()
@@ -69,6 +80,7 @@ class LiveSpeechCoordinator:
         self._open_asr_sessions: set[str] = set()
         self._process_lock = threading.RLock()
         self._asr_busy = threading.Event()
+        self._speaker_queued_ids: set[str] = set()
         self.capture_service.set_live_speech_coordinator(self)
 
     def start(self) -> None:
@@ -172,6 +184,25 @@ class LiveSpeechCoordinator:
             self._asr_thread.start()
             for job in recovery_jobs:
                 self.asr_queue.put(job)
+
+            with self.session_factory() as db:
+                speaker_candidates = list(
+                    db.scalars(
+                        select(ASRCaptureSession.id).where(
+                            ASRCaptureSession.recording_status.in_(("COMPLETE", "INCOMPLETE")),
+                            ASRCaptureSession.id.in_(
+                                select(ASRFragment.capture_session_id).where(
+                                    ASRFragment.state == "PENDING",
+                                    ASRFragment.speaker_source == "PENDING_ANALYSIS",
+                                )
+                            ),
+                        )
+                    )
+                )
+            for capture_id in speaker_candidates:
+                self.schedule_speaker_jobs(capture_id, force=True)
+            self._recover_speaker_jobs()
+
             self._speaker_thread = threading.Thread(
                 target=self._speaker_loop,
                 daemon=True,
@@ -210,6 +241,136 @@ class LiveSpeechCoordinator:
             runtime.durable_sample_cursor = end_sample
         self.asr_queue.put(_AudioRange(runtime, start_sample, end_sample))
         return end_sample
+
+    def speaker_jobs_ready(
+        self,
+        capture_id: str,
+        *,
+        voiced_ms: int | None = None,
+        final_count: int | None = None,
+    ) -> bool:
+        if voiced_ms is None or final_count is None:
+            with self.session_factory() as db:
+                capture = db.get(ASRCaptureSession, capture_id)
+                if capture is None:
+                    return False
+                if voiced_ms is None:
+                    voiced_ms = int(capture.voiced_ms or 0)
+                if final_count is None:
+                    final_count = int(
+                        db.scalar(
+                            select(func.count(ASRFragment.id)).where(
+                                ASRFragment.capture_session_id == capture_id,
+                                ASRFragment.asr_idempotency_key.is_not(None),
+                            )
+                        )
+                        or 0
+                    )
+        return (
+            int(voiced_ms) >= _SPEAKER_MIN_VOICED_MS
+            and int(final_count) >= _SPEAKER_MIN_FINAL_FRAGMENTS
+        )
+
+    def schedule_speaker_jobs(self, capture_id: str, *, force: bool = False) -> list[str]:
+        """Persist one deferred analysis job for each unresolved Stage 1 fragment."""
+        queued: list[str] = []
+        with archive_repo.archive_transaction(self.session_factory) as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            if capture is None:
+                return []
+            final_count = int(
+                db.scalar(
+                    select(func.count(ASRFragment.id)).where(
+                        ASRFragment.capture_session_id == capture_id,
+                        ASRFragment.asr_idempotency_key.is_not(None),
+                    )
+                )
+                or 0
+            )
+            if not force and not self.speaker_jobs_ready(
+                capture_id,
+                voiced_ms=int(capture.voiced_ms or 0),
+                final_count=final_count,
+            ):
+                return []
+
+            fragments = list(
+                db.scalars(
+                    select(ASRFragment)
+                    .where(
+                        ASRFragment.capture_session_id == capture_id,
+                        ASRFragment.state == "PENDING",
+                        ASRFragment.speaker_source == "PENDING_ANALYSIS",
+                        ASRFragment.confirmed_message_id.is_(None),
+                        ASRFragment.edited_text == ASRFragment.raw_text,
+                    )
+                    .order_by(ASRFragment.ordinal, ASRFragment.id)
+                )
+            )
+            for fragment in fragments:
+                start_sample = int(round(fragment.started_at_ms * capture.sample_rate / 1000))
+                end_sample = int(round(fragment.ended_at_ms * capture.sample_rate / 1000))
+                if end_sample <= start_sample:
+                    continue
+                key = f"speaker:{fragment.id}"
+                job = db.scalar(
+                    select(LiveSpeechJob).where(LiveSpeechJob.idempotency_key == key)
+                )
+                if job is None:
+                    job = LiveSpeechJob(
+                        id=str(uuid4()),
+                        idempotency_key=key,
+                        kind="SPEAKER",
+                        capture_session_id=capture_id,
+                        fragment_id=fragment.id,
+                        start_sample=start_sample,
+                        end_sample=end_sample,
+                        state="PENDING",
+                    )
+                    db.add(job)
+                    db.flush()
+                if job.state == "PENDING":
+                    queued.append(job.id)
+            if queued:
+                capture.speaker_status = "QUEUED"
+        for job_id in queued:
+            self._queue_speaker_job(job_id)
+        return queued
+
+    def _queue_speaker_job(self, job_id: str) -> None:
+        with self._lock:
+            if job_id in self._speaker_queued_ids:
+                return
+            self._speaker_queued_ids.add(job_id)
+        self.speaker_queue.put(_SpeakerJob(job_id))
+
+    def _recover_speaker_jobs(self) -> list[str]:
+        """Requeue durable work after start has queued all ASR recovery ranges."""
+        with archive_repo.archive_transaction(self.session_factory) as db:
+            interrupted = list(
+                db.scalars(
+                    select(LiveSpeechJob).where(
+                        LiveSpeechJob.kind == "SPEAKER",
+                        LiveSpeechJob.state == "RUNNING",
+                    )
+                )
+            )
+            for job in interrupted:
+                job.state = "PENDING"
+            db.flush()
+            pending_ids = list(
+                db.scalars(
+                    select(LiveSpeechJob.id)
+                    .where(
+                        LiveSpeechJob.kind == "SPEAKER",
+                        LiveSpeechJob.state == "PENDING",
+                    )
+                    .order_by(LiveSpeechJob.created_at, LiveSpeechJob.id)
+                )
+            )
+        for job_id in pending_ids:
+            self._queue_speaker_job(job_id)
+        return pending_ids
 
     def finish_capture(self, runtime: Any) -> None:
         if runtime.storage_error is None:
@@ -336,6 +497,13 @@ class LiveSpeechCoordinator:
                     finally:
                         self._open_asr_sessions.discard(session_id)
                         try:
+                            self.schedule_speaker_jobs(runtime.capture_session_id, force=True)
+                        except Exception:
+                            logger.exception(
+                                "failed to queue deferred speaker analysis for capture %s",
+                                runtime.capture_session_id,
+                            )
+                        try:
                             runtime.capture_finished_sink()
                         except Exception:
                             logger.exception(
@@ -410,6 +578,7 @@ class LiveSpeechCoordinator:
             self._rewind_asr_cursor(capture_id, start)
             events = self.ai_supervisor.push_speech_pcm(session_id, pcm)
             fragment_ids = self._consume_event_batch(runtime, events, end_sample=end)
+            self.schedule_speaker_jobs(capture_id)
             return _ProcessedAudioRange(fragment_ids)
 
     def _consume_event_batch(
@@ -565,11 +734,529 @@ class LiveSpeechCoordinator:
                 ):
                     self._stopping.wait(0.02)
                 if not self._stopping.is_set():
-                    work()
+                    if isinstance(work, _SpeakerJob):
+                        self.process_speaker_job(work.job_id)
+                    else:
+                        work()
             except Exception:
                 logger.exception("deferred speaker work failed")
             finally:
+                if isinstance(work, _SpeakerJob):
+                    with self._lock:
+                        self._speaker_queued_ids.discard(work.job_id)
                 self.speaker_queue.task_done()
+
+    def process_speaker_job(self, job_id: str) -> None:
+        """Analyze one pending Stage 1 utterance; commit replacements atomically."""
+        try:
+            with self.session_factory() as db:
+                job = db.get(LiveSpeechJob, job_id)
+                if job is None or job.kind != "SPEAKER" or job.state != "PENDING":
+                    return
+                parent = db.get(ASRFragment, job.fragment_id) if job.fragment_id else None
+                if not self._parent_is_unedited_pending(parent):
+                    job.state = "COMPLETE"
+                    self._refresh_speaker_status(db, job.capture_session_id)
+                    db.commit()
+                    return
+                capture = db.get(ASRCaptureSession, job.capture_session_id)
+                if capture is None:
+                    job.state = "NEEDS_REVIEW"
+                    job.last_error_code = "CAPTURE_MISSING"
+                    db.commit()
+                    return
+                job.state = "RUNNING"
+                job.attempts = int(job.attempts or 0) + 1
+                db.commit()
+                capture_id = capture.id
+                sample_rate = int(capture.sample_rate)
+                interrogation_session_id = capture.interrogation_session_id
+                start_sample = int(job.start_sample)
+                end_sample = int(job.end_sample)
+                parent_start_ms = int(parent.started_at_ms)
+                parent_end_ms = int(parent.ended_at_ms)
+                parent_confidence = parent.asr_confidence
+                parent_model_id = parent.model_id
+                parent_model_version = parent.model_version
+
+            if interrogation_session_id is None:
+                self._set_speaker_job_state(job_id, "NEEDS_REVIEW", "SESSION_MISSING")
+                return
+            runtime = self._runtimes.get(capture_id)
+            if runtime is None:
+                with self.session_factory() as db:
+                    capture = db.get(ASRCaptureSession, capture_id)
+                    runtime = None if capture is None else self.capture_service.build_recovery_runtime(capture)
+                if runtime is None:
+                    self._set_speaker_job_state(job_id, "NEEDS_REVIEW", "RUNTIME_UNAVAILABLE")
+                    return
+                self._runtimes[capture_id] = runtime
+
+            pcm = self.archive.read_samples(capture_id, start_sample, end_sample)
+            total_ms = int(round((end_sample - start_sample) * 1000 / sample_rate))
+            spans = SpeechSession.split_speaker_turns(
+                pcm,
+                sample_rate,
+                lambda chunk: self._extract_embedding(chunk, sample_rate)["embedding"],
+                splitter=SpeakerTurnSplitter(),
+            )
+            if not self._valid_turn_spans(spans, total_ms):
+                self._set_speaker_job_state(job_id, "NEEDS_REVIEW", "AMBIGUOUS_BOUNDARY")
+                return
+
+            if len(spans) == 1:
+                span = spans[0]
+                if span.ambiguous:
+                    self._persist_ambiguous_speaker_result(
+                        job_id,
+                        runtime,
+                        self._extract_embedding(pcm, sample_rate),
+                        duration_ms=total_ms,
+                    )
+                    return
+                embedding = self._extract_embedding(pcm, sample_rate)
+                decision = self._decide_deferred_speaker(
+                    runtime,
+                    embedding=embedding["embedding"],
+                    start_ms=parent_start_ms,
+                    end_ms=parent_end_ms,
+                    duration_ms=total_ms,
+                    overlap=False,
+                )
+                self._commit_single_speaker_decision(
+                    job_id,
+                    runtime,
+                    decision,
+                    model=embedding,
+                    duration_ms=total_ms,
+                )
+                return
+
+            child_results: list[dict[str, Any]] = []
+            for index, span in enumerate(spans):
+                if span.ambiguous:
+                    self._persist_ambiguous_speaker_result(
+                        job_id,
+                        runtime,
+                        self._extract_embedding(pcm, sample_rate),
+                        duration_ms=total_ms,
+                    )
+                    return
+                if index:
+                    self._wait_for_asr_priority()
+                child_start = start_sample + int(round(span.start_ms * sample_rate / 1000))
+                child_end = start_sample + int(round(span.end_ms * sample_rate / 1000))
+                relative_start = child_start - start_sample
+                relative_end = child_end - start_sample
+                child_pcm = pcm[relative_start * 2 : relative_end * 2]
+                if not child_pcm or child_end <= child_start:
+                    self._set_speaker_job_state(job_id, "NEEDS_REVIEW", "AMBIGUOUS_BOUNDARY")
+                    return
+                embedding = self._extract_embedding(child_pcm, sample_rate)
+                duration_ms = int(round((child_end - child_start) * 1000 / sample_rate))
+                decision = self._decide_deferred_speaker(
+                    runtime,
+                    embedding=embedding["embedding"],
+                    start_ms=int(round(child_start * 1000 / sample_rate)),
+                    end_ms=int(round(child_end * 1000 / sample_rate)),
+                    duration_ms=duration_ms,
+                    overlap=False,
+                )
+                transcript = self._transcribe_child(child_pcm, job_id, index)
+                child_results.append(
+                    {
+                        "start_sample": child_start,
+                        "end_sample": child_end,
+                        "started_at_ms": int(round(child_start * 1000 / sample_rate)),
+                        "ended_at_ms": int(round(child_end * 1000 / sample_rate)),
+                        "text": transcript["text"],
+                        "confidence": transcript["confidence"],
+                        "model_id": transcript["model_id"] or parent_model_id or "paraformer",
+                        "model_version": transcript["model_version"] or parent_model_version,
+                        "decision": decision,
+                        "speaker_model": embedding,
+                        "duration_ms": duration_ms,
+                    }
+                )
+            self._commit_split_speaker_decisions(
+                job_id,
+                runtime,
+                child_results,
+                parent_confidence=parent_confidence,
+            )
+        except Exception as exc:
+            logger.exception("deferred speaker analysis failed for job %s", job_id)
+            self._set_speaker_job_state(job_id, "NEEDS_REVIEW", self._speaker_error_code(exc))
+
+    @staticmethod
+    def _parent_is_unedited_pending(parent: ASRFragment | None) -> bool:
+        return bool(
+            parent is not None
+            and parent.state == "PENDING"
+            and parent.speaker_source == "PENDING_ANALYSIS"
+            and parent.confirmed_message_id is None
+            and parent.edited_text == parent.raw_text
+        )
+
+    @staticmethod
+    def _valid_turn_spans(spans: list[Any], total_ms: int) -> bool:
+        if not spans or total_ms <= 0 or spans[0].start_ms != 0 or spans[-1].end_ms != total_ms:
+            return False
+        cursor = 0
+        for span in spans:
+            if span.start_ms != cursor or span.end_ms <= span.start_ms:
+                return False
+            cursor = span.end_ms
+        return cursor == total_ms
+
+    def _extract_embedding(self, pcm: bytes, sample_rate: int) -> dict[str, Any]:
+        result = self.ai_supervisor.extract_speaker_embedding(pcm, sample_rate=sample_rate)
+        embedding_value = result.get("embedding") if isinstance(result, dict) else getattr(result, "embedding", None)
+        owner = self._capture_service_owner()
+        embedding = owner._normalize_vector(embedding_value)
+        if embedding is None:
+            raise ValueError("speaker worker returned an invalid embedding")
+        return {
+            "embedding": embedding,
+            "model_id": self._optional_text(
+                result.get("model_id") if isinstance(result, dict) else getattr(result, "model_id", None)
+            ),
+            "model_version": self._optional_text(
+                result.get("model_version") if isinstance(result, dict) else getattr(result, "model_version", None)
+            ),
+            "model_fingerprint": self._optional_text(
+                (result.get("model_fingerprint") or result.get("fingerprint"))
+                if isinstance(result, dict)
+                else getattr(result, "model_fingerprint", None)
+            ),
+        }
+
+    def _capture_service_owner(self):
+        return getattr(self.capture_service, "_default_service", self.capture_service)
+
+    def _decide_deferred_speaker(
+        self,
+        runtime: Any,
+        *,
+        embedding: list[float],
+        start_ms: int,
+        end_ms: int,
+        duration_ms: int,
+        overlap: bool,
+    ):
+        owner = self._capture_service_owner()
+        speaker_event = SpeechEvent(
+            type=SpeechEventType.SPEAKER_RESULT,
+            session_id=runtime.speech_session_id,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            embedding=embedding,
+            model_id="eres2net_large",
+        )
+        with self.session_factory() as db:
+            case = db.get(Case, runtime.case_id)
+            if case is None:
+                raise ValueError("speaker analysis case no longer exists")
+            candidates, enabled_roles = owner._speaker_candidates(
+                db,
+                case=case,
+                interrogation_session_id=runtime.interrogation_session_id,
+                speaker_event=speaker_event,
+                backend_key=runtime.authoritative_speaker_backend or owner.authoritative_speaker_backend,
+            )
+            return owner._decide_with_operating_point(
+                candidates=candidates,
+                enabled_roles=enabled_roles,
+                threshold=runtime.speaker_threshold,
+                margin=runtime.speaker_margin,
+                usable_duration_ms=duration_ms,
+                overlap=overlap,
+            )
+
+    def _transcribe_child(self, pcm: bytes, job_id: str, index: int) -> dict[str, Any]:
+        result = self.ai_supervisor.transcribe(
+            pcm,
+            session_id=f"speaker-{job_id[:40]}-{index}",
+        )
+        value = lambda name: result.get(name) if isinstance(result, dict) else getattr(result, name, None)
+        text = str(value("text") or "").strip()
+        if not text:
+            raise ValueError("child ASR returned an empty transcript")
+        confidence = value("confidence")
+        return {
+            "text": text,
+            "confidence": None if confidence is None else float(confidence),
+            "model_id": self._optional_text(value("model_id")),
+            "model_version": self._optional_text(value("model_version")),
+        }
+
+    @staticmethod
+    def _optional_text(value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @staticmethod
+    def _speaker_error_code(exc: Exception) -> str:
+        code = getattr(exc, "code", None)
+        return str(code or type(exc).__name__).upper()[:64]
+
+    def _wait_for_asr_priority(self) -> None:
+        while not self._stopping.is_set() and (
+            not self.asr_queue.empty() or self._asr_busy.is_set()
+        ):
+            self._stopping.wait(0.02)
+
+    def _commit_single_speaker_decision(
+        self,
+        job_id: str,
+        runtime: Any,
+        decision,
+        *,
+        model: dict[str, Any],
+        duration_ms: int,
+    ) -> None:
+        owner = self._capture_service_owner()
+        payload = None
+        with archive_repo.archive_transaction(self.session_factory) as db:
+            job = db.get(LiveSpeechJob, job_id)
+            parent = None if job is None or job.fragment_id is None else db.get(ASRFragment, job.fragment_id)
+            if job is None or job.state != "RUNNING":
+                return
+            if not self._parent_is_unedited_pending(parent):
+                job.state = "COMPLETE"
+                self._refresh_speaker_status(db, job.capture_session_id)
+                return
+
+            parent.speaker = decision.role.value
+            parent.speaker_id = decision.speaker_id
+            parent.speaker_name = decision.speaker_name
+            parent.speaker_score = decision.score
+            parent.second_best_score = decision.second_best_score
+            parent.speaker_threshold = decision.threshold
+            parent.speaker_margin = runtime.speaker_margin
+            parent.speaker_source = decision.source.value
+            parent.voiceprint_verified = decision.voiceprint_verified
+            parent.low_confidence = decision.low_confidence
+            asr_repo.create_speaker_analysis_result(
+                db,
+                analysis_job_id=job_id,
+                fragment_id=parent.id,
+                decision=decision,
+                threshold_source=runtime.threshold_source,
+                calibration_id=runtime.calibration_id,
+                calibration_status=runtime.calibration_status,
+                overlap=False,
+                usable_duration_ms=duration_ms,
+                model_id=model["model_id"],
+                model_version=model["model_version"],
+                model_fingerprint=model["model_fingerprint"] or runtime.speaker_model_fingerprint,
+                microphone_fingerprint=runtime.microphone_fingerprint,
+            )
+            job.state = "COMPLETE"
+            job.last_error_code = None
+            job.model_version = model["model_version"]
+            self._refresh_speaker_status(db, job.capture_session_id)
+            payload = owner._fragment_payload(parent)
+            payload["thresholdSource"] = runtime.threshold_source
+            payload["calibrationId"] = runtime.calibration_id
+            payload["calibrationStatus"] = runtime.calibration_status
+        if payload is not None:
+            self.capture_service.publish_event(
+                runtime.interrogation_session_id,
+                "ASR_FRAGMENT",
+                payload,
+            )
+
+    def _commit_split_speaker_decisions(
+        self,
+        job_id: str,
+        runtime: Any,
+        children: list[dict[str, Any]],
+        *,
+        parent_confidence: float | None,
+    ) -> None:
+        if len(children) < 2:
+            raise ValueError("speaker split requires at least two stable turns")
+        owner = self._capture_service_owner()
+        replacement_payload: dict[str, Any] | None = None
+        with archive_repo.archive_transaction(self.session_factory) as db:
+            job = db.get(LiveSpeechJob, job_id)
+            parent = None if job is None or job.fragment_id is None else db.get(ASRFragment, job.fragment_id)
+            if job is None or job.state != "RUNNING":
+                return
+            if not self._parent_is_unedited_pending(parent):
+                job.state = "COMPLETE"
+                self._refresh_speaker_status(db, job.capture_session_id)
+                return
+            if children[0]["started_at_ms"] != parent.started_at_ms or children[-1]["ended_at_ms"] != parent.ended_at_ms:
+                raise ValueError("speaker split boundaries do not cover the source fragment")
+            for previous, current in zip(children, children[1:]):
+                if previous["ended_at_ms"] != current["started_at_ms"]:
+                    raise ValueError("speaker split boundaries overlap or leave a gap")
+
+            max_ordinal = db.scalar(
+                select(func.max(ASRFragment.ordinal)).where(
+                    ASRFragment.capture_session_id == parent.capture_session_id
+                )
+            )
+            next_ordinal = int(max_ordinal) + 1 if max_ordinal is not None else 0
+            payloads: list[dict[str, Any]] = []
+            first_model_version = None
+            for child in children:
+                decision = child["decision"]
+                speaker_model = child["speaker_model"]
+                if first_model_version is None:
+                    first_model_version = speaker_model["model_version"]
+                fragment = asr_repo.create_fragment(
+                    db,
+                    capture_session_id=parent.capture_session_id,
+                    case_id=parent.case_id,
+                    ordinal=next_ordinal,
+                    started_at_ms=child["started_at_ms"],
+                    ended_at_ms=child["ended_at_ms"],
+                    raw_text=child["text"],
+                    asr_confidence=child["confidence"] if child["confidence"] is not None else parent_confidence,
+                    speaker=decision.role.value,
+                    speaker_id=decision.speaker_id,
+                    speaker_name=decision.speaker_name,
+                    speaker_score=decision.score,
+                    second_best_score=decision.second_best_score,
+                    speaker_threshold=decision.threshold,
+                    speaker_margin=runtime.speaker_margin,
+                    speaker_source=decision.source.value,
+                    voiceprint_verified=decision.voiceprint_verified,
+                    low_confidence=decision.low_confidence,
+                    model_id=child["model_id"],
+                    model_version=child["model_version"],
+                    speaker_threshold_source=runtime.threshold_source,
+                    speaker_model_id=speaker_model["model_id"],
+                    speaker_model_version=speaker_model["model_version"],
+                    speaker_model_fingerprint=(
+                        speaker_model["model_fingerprint"] or runtime.speaker_model_fingerprint
+                    ),
+                    microphone_fingerprint=runtime.microphone_fingerprint,
+                )
+                asr_repo.create_speaker_analysis_result(
+                    db,
+                    analysis_job_id=job_id,
+                    fragment_id=fragment.id,
+                    decision=decision,
+                    threshold_source=runtime.threshold_source,
+                    calibration_id=runtime.calibration_id,
+                    calibration_status=runtime.calibration_status,
+                    overlap=False,
+                    usable_duration_ms=child["duration_ms"],
+                    model_id=speaker_model["model_id"],
+                    model_version=speaker_model["model_version"],
+                    model_fingerprint=(
+                        speaker_model["model_fingerprint"] or runtime.speaker_model_fingerprint
+                    ),
+                    microphone_fingerprint=runtime.microphone_fingerprint,
+                )
+                asr_repo.add_fragment_lineage(
+                    db,
+                    analysis_job_id=job_id,
+                    parent_fragment_id=parent.id,
+                    child_fragment_id=fragment.id,
+                )
+                item = owner._fragment_payload(fragment)
+                item["thresholdSource"] = runtime.threshold_source
+                item["calibrationId"] = runtime.calibration_id
+                item["calibrationStatus"] = runtime.calibration_status
+                payloads.append(item)
+                next_ordinal += 1
+
+            parent.state = "SUPERSEDED"
+            job.state = "COMPLETE"
+            job.last_error_code = None
+            job.model_version = first_model_version
+            self._refresh_speaker_status(db, job.capture_session_id)
+            replacement_payload = {
+                "parentFragmentId": parent.id,
+                "fragments": payloads,
+                "jobId": job.id,
+            }
+        if replacement_payload is not None:
+            self.capture_service.publish_event(
+                runtime.interrogation_session_id,
+                "ASR_FRAGMENT_REPLACED",
+                replacement_payload,
+            )
+
+    def _set_speaker_job_state(self, job_id: str, state: str, error_code: str | None) -> None:
+        with archive_repo.archive_transaction(self.session_factory) as db:
+            job = db.get(LiveSpeechJob, job_id)
+            if job is None or job.state == "COMPLETE":
+                return
+            job.state = state
+            job.last_error_code = error_code
+            self._refresh_speaker_status(db, job.capture_session_id)
+
+    def _persist_ambiguous_speaker_result(
+        self,
+        job_id: str,
+        runtime: Any,
+        model: dict[str, Any],
+        *,
+        duration_ms: int,
+    ) -> None:
+        decision = self._decide_deferred_speaker(
+            runtime,
+            embedding=model["embedding"],
+            start_ms=0,
+            end_ms=duration_ms,
+            duration_ms=duration_ms,
+            overlap=True,
+        )
+        with archive_repo.archive_transaction(self.session_factory) as db:
+            job = db.get(LiveSpeechJob, job_id)
+            parent = None if job is None or job.fragment_id is None else db.get(ASRFragment, job.fragment_id)
+            if job is None or job.state != "RUNNING":
+                return
+            if self._parent_is_unedited_pending(parent):
+                asr_repo.create_speaker_analysis_result(
+                    db,
+                    analysis_job_id=job_id,
+                    fragment_id=parent.id,
+                    decision=decision,
+                    threshold_source=runtime.threshold_source,
+                    calibration_id=runtime.calibration_id,
+                    calibration_status=runtime.calibration_status,
+                    overlap=True,
+                    usable_duration_ms=duration_ms,
+                    model_id=model["model_id"],
+                    model_version=model["model_version"],
+                    model_fingerprint=model["model_fingerprint"] or runtime.speaker_model_fingerprint,
+                    microphone_fingerprint=runtime.microphone_fingerprint,
+                )
+            job.state = "NEEDS_REVIEW"
+            job.last_error_code = "AMBIGUOUS_BOUNDARY"
+            self._refresh_speaker_status(db, job.capture_session_id)
+
+    @staticmethod
+    def _refresh_speaker_status(db: Session, capture_id: str) -> None:
+        capture = db.get(ASRCaptureSession, capture_id)
+        if capture is None:
+            return
+        db.flush()
+        states = list(
+            db.scalars(
+                select(LiveSpeechJob.state).where(
+                    LiveSpeechJob.kind == "SPEAKER",
+                    LiveSpeechJob.capture_session_id == capture_id,
+                )
+            )
+        )
+        if "RUNNING" in states:
+            capture.speaker_status = "RUNNING"
+        elif "PENDING" in states:
+            capture.speaker_status = "QUEUED"
+        elif "NEEDS_REVIEW" in states:
+            capture.speaker_status = "NEEDS_REVIEW"
+        elif states:
+            capture.speaker_status = "COMPLETE"
 
     def shutdown(self) -> None:
         with self._lock:

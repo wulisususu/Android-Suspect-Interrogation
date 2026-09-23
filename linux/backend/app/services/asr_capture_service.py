@@ -696,7 +696,7 @@ class AsrCaptureService:
             model_version,
         )
         with self.session_factory() as db:
-            fragment, _created = asr_repo.create_or_update_asr_only_fragment(
+            fragment, created = asr_repo.create_or_update_asr_only_fragment(
                 db,
                 capture_session_id=runtime.capture_session_id,
                 case_id=runtime.case_id,
@@ -708,6 +708,12 @@ class AsrCaptureService:
                 model_version=model_version,
                 idempotency_key=idempotency_key,
             )
+            if created:
+                capture = db.get(ASRCaptureSession, runtime.capture_session_id)
+                if capture is not None:
+                    capture.voiced_ms = max(0, int(capture.voiced_ms or 0)) + int(
+                        round((end_sample - start_sample) * 1000 / runtime.sample_rate)
+                    )
             db.commit()
             fragment_id = fragment.id
             payload = self._fragment_payload(fragment)
@@ -718,6 +724,8 @@ class AsrCaptureService:
         payload["calibrationStatus"] = runtime.calibration_status
         payload.update(self.speaker_mode_capability(runtime))
         self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)
+        if self._live_speech_coordinator is not None:
+            self._live_speech_coordinator.schedule_speaker_jobs(runtime.capture_session_id)
         if self.fragment_sink is not None:
             try:
                 self.fragment_sink(runtime.case_id, fragment_id)

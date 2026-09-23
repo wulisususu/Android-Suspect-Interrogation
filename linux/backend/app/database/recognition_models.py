@@ -43,6 +43,41 @@ class ASRRecognitionEvidence(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
 
 
+class ASRSpeakerAnalysisResult(Base):
+    """Append-only speaker evidence produced after the Stage 1 transcript."""
+
+    __tablename__ = "asr_speaker_analysis_results"
+    __table_args__ = (UniqueConstraint("analysis_job_id", "fragment_id", name="uq_asr_speaker_analysis_job_fragment"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    analysis_job_id: Mapped[str] = mapped_column(
+        ForeignKey("live_speech_jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    fragment_id: Mapped[str] = mapped_column(
+        ForeignKey("asr_fragments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    speaker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    speaker_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    speaker_source: Mapped[str] = mapped_column(String(64), nullable=False)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    second_best_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    margin: Mapped[float] = mapped_column(Float, nullable=False)
+    threshold_source: Mapped[str] = mapped_column(String(64), nullable=False)
+    calibration_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    calibration_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    voiceprint_verified: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    low_confidence: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    overlap: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    usable_duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    model_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    model_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    microphone_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
+
+
 class ASRRecognitionRevision(Base):
     """Append-only human correction history; never overwrites AI evidence."""
 

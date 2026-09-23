@@ -8,11 +8,20 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.database.models import ASRCaptureSession, ASRFragment, Message, ProcessedSpeechFragment, QAUnitFragment
+from app.database.models import (
+    ASRCaptureSession,
+    ASRFragment,
+    ASRFragmentLineage,
+    Message,
+    ProcessedSpeechFragment,
+    QAUnitFragment,
+)
+from app.database.recognition_models import ASRSpeakerAnalysisResult
 from app.domain.errors import DomainError
 from app.repositories import audit as audit_repo
 from app.repositories import recognition_evidence as evidence_repo
 from app.repositories import speaker_calibrations as calibration_repo
+from app.services.speaker_policy import SpeakerDecision
 
 
 def create_capture_session(db: Session, *, case_id: str, interrogation_session_id: str | None, sample_rate: int) -> ASRCaptureSession:
@@ -343,6 +352,70 @@ def confirm_fragment(db: Session, *, fragment_id: str, message_id: str) -> ASRFr
     item.state = "CONFIRMED"
     db.flush()
     return item
+
+
+def create_speaker_analysis_result(
+    db: Session,
+    *,
+    analysis_job_id: str,
+    fragment_id: str,
+    decision: SpeakerDecision,
+    threshold_source: str,
+    calibration_id: str | None,
+    calibration_status: str | None,
+    overlap: bool,
+    usable_duration_ms: int,
+    model_id: str | None,
+    model_version: str | None,
+    model_fingerprint: str | None,
+    microphone_fingerprint: str | None,
+) -> ASRSpeakerAnalysisResult:
+    row = ASRSpeakerAnalysisResult(
+        id=str(uuid4()),
+        analysis_job_id=analysis_job_id,
+        fragment_id=fragment_id,
+        role=decision.role.value,
+        speaker_id=decision.speaker_id,
+        speaker_name=decision.speaker_name,
+        speaker_source=decision.source.value,
+        score=decision.score,
+        second_best_score=decision.second_best_score,
+        threshold=decision.threshold,
+        margin=decision.margin,
+        threshold_source=threshold_source,
+        calibration_id=calibration_id,
+        calibration_status=calibration_status,
+        voiceprint_verified=decision.voiceprint_verified,
+        low_confidence=decision.low_confidence,
+        overlap=bool(overlap),
+        usable_duration_ms=max(0, int(usable_duration_ms)),
+        model_id=model_id,
+        model_version=model_version,
+        model_fingerprint=model_fingerprint,
+        microphone_fingerprint=microphone_fingerprint,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def add_fragment_lineage(
+    db: Session,
+    *,
+    analysis_job_id: str,
+    parent_fragment_id: str,
+    child_fragment_id: str,
+) -> ASRFragmentLineage:
+    row = ASRFragmentLineage(
+        id=str(uuid4()),
+        analysis_job_id=analysis_job_id,
+        parent_fragment_id=parent_fragment_id,
+        child_fragment_id=child_fragment_id,
+        relation="SUPERSEDES",
+    )
+    db.add(row)
+    db.flush()
+    return row
 
 
 def list_unassigned_for_session(

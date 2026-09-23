@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from app.ai.errors import AIError, WorkerCrashedError
 from app.ai.speech.types import SpeechEvent, SpeechEventType
+from speech_worker.speaker_turn_splitter import SpeakerTurnSplitter, TurnSpan
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,18 @@ class SpeechSession:
 
         self._finalized = True
         return events
+
+    @staticmethod
+    def split_speaker_turns(
+        pcm: bytes,
+        sample_rate: int,
+        embed: Callable[[bytes], list[float]],
+        *,
+        splitter: Any | None = None,
+    ) -> list[TurnSpan]:
+        """Run the existing calibrated splitter against an archived utterance."""
+        engine = splitter or SpeakerTurnSplitter()
+        return engine.split(pcm, sample_rate, embed)
 
     def _consume_vad_events(self, vad_events: list[list[int]]) -> list[SpeechEvent]:
         events: list[SpeechEvent] = []

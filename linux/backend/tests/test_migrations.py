@@ -27,7 +27,7 @@ CALIBRATION_TABLES = {
 }
 RECOGNITION_EVIDENCE_TABLES = {
     "asr_recognition_evidence", "asr_recognition_revisions",
-    "speaker_backend_comparison_evidence",
+    "speaker_backend_comparison_evidence", "asr_speaker_analysis_results",
 }
 QWEN_ROUTING_TABLES = {
     "qa_units", "qa_unit_fragments",
@@ -44,7 +44,7 @@ REQUIRED_TABLES = (
     CALIBRATION_TABLES | RECOGNITION_EVIDENCE_TABLES | QWEN_ROUTING_TABLES |
     MOSS_TRANSCRIPTION_TABLES | CASE_DRAFT_TABLES | DURABLE_LIVE_SPEECH_TABLES
 )
-ALEMBIC_HEAD = "0018_asr_finalize_checkpoint"
+ALEMBIC_HEAD = "0019_deferred_speaker_analysis"
 
 
 def _run_alembic(tmp_path, target: str):
