@@ -726,6 +726,8 @@ class AsrCaptureService:
         self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)
         if self._live_speech_coordinator is not None:
             self._live_speech_coordinator.schedule_speaker_jobs(runtime.capture_session_id)
+        if payload["speaker"] == "UNKNOWN":
+            return fragment_id
         if self.fragment_sink is not None:
             try:
                 self.fragment_sink(runtime.case_id, fragment_id)
@@ -864,6 +866,8 @@ class AsrCaptureService:
 
         runtime.ordinal += 1
         self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)
+        if payload["speaker"] == "UNKNOWN":
+            return fragment_id
         if self.fragment_sink is not None:
             try:
                 self.fragment_sink(runtime.case_id, fragment_id)

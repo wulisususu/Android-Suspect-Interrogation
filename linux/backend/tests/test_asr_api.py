@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.api.asr import router as asr_router
 from app.api.errors import install_error_handlers
-from app.database.models import ASRFragment, Message
+from app.database.models import ASRFragment, LiveSpeechJob, Message
 from app.database.session import init_database, make_engine, make_session_factory
 from app.repositories import asr_fragments as asr_repo
 from app.repositories import cases as case_repo
@@ -20,6 +20,7 @@ class FakeCaptureService:
         self.started: list[str] = []
         self.stopped: list[str] = []
         self.shutdown_calls = 0
+        self.fragment_sink = None
 
     def status(self, case_id: str):
         return {"caseId": case_id, "active": case_id in self.started and case_id not in self.stopped}
@@ -309,13 +310,102 @@ def test_fragment_list_keeps_delayed_split_children_in_audio_order(tmp_path):
         )
         first_child_id = first_child.id
         second_child_id = second_child.id
+        db.add(LiveSpeechJob(
+            id="SPEAKER-JOB-LINEAGE",
+            idempotency_key="speaker:parent",
+            kind="SPEAKER",
+            capture_session_id=capture_id,
+            fragment_id=parent_id,
+            start_sample=0,
+            end_sample=20_800,
+            state="COMPLETE",
+            attempts=1,
+        ))
+        db.flush()
+        asr_repo.add_fragment_lineage(
+            db,
+            analysis_job_id="SPEAKER-JOB-LINEAGE",
+            parent_fragment_id=parent_id,
+            child_fragment_id=first_child_id,
+        )
+        asr_repo.add_fragment_lineage(
+            db,
+            analysis_job_id="SPEAKER-JOB-LINEAGE",
+            parent_fragment_id=parent_id,
+            child_fragment_id=second_child_id,
+        )
         db.commit()
 
     with TestClient(app) as client:
         rows = client.get(f"/api/v1/cases/{case_id}/asr/fragments").json()
+        history = client.get(
+            f"/api/v1/cases/{case_id}/asr/fragments?include_superseded=true"
+        ).json()
     listed_ids = [row["fragmentId"] for row in rows]
+    history_by_id = {row["fragmentId"]: row for row in history}
+    assert parent_id not in listed_ids
     assert listed_ids.index(first_child_id) < listed_ids.index(later_id)
     assert listed_ids.index(second_child_id) < listed_ids.index(later_id)
+    assert parent_id in history_by_id
+    assert history_by_id[first_child_id]["lineage"] == [{
+        "analysisJobId": "SPEAKER-JOB-LINEAGE",
+        "parentFragmentId": parent_id,
+        "childFragmentId": first_child_id,
+        "relation": "SUPERSEDES",
+    }]
+    engine.dispose()
+
+
+def test_superseded_fragment_cannot_be_confirmed(tmp_path):
+    app, engine, factory, _ = _app(tmp_path)
+    case_id, _, _, fragment_id, _ = _seed_fragment(factory)
+    with factory() as db:
+        db.get(ASRFragment, fragment_id).state = "SUPERSEDED"
+        db.commit()
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/v1/cases/{case_id}/asr/fragments/{fragment_id}/confirm")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "ASR_FRAGMENT_SUPERSEDED"
+    with factory() as db:
+        assert db.query(Message).count() == 0
+    engine.dispose()
+
+
+def test_manual_resolution_enqueues_fragment_after_commit_once(tmp_path):
+    app, engine, factory, capture = _app(tmp_path)
+    case_id, _, _, fragment_id, _ = _seed_fragment(factory)
+    with factory() as db:
+        fragment = db.get(ASRFragment, fragment_id)
+        fragment.speaker = "UNKNOWN"
+        fragment.speaker_source = "PENDING_ANALYSIS"
+        fragment.voiceprint_verified = False
+        fragment.low_confidence = False
+        db.commit()
+
+    enqueued = []
+
+    def sink(enqueued_case_id, enqueued_fragment_id):
+        with factory() as db:
+            saved = db.get(ASRFragment, enqueued_fragment_id)
+            assert saved.speaker == "INTERROGATOR"
+            assert saved.speaker_source == "MANUAL"
+        enqueued.append((enqueued_case_id, enqueued_fragment_id))
+
+    capture.fragment_sink = sink
+    with TestClient(app) as client:
+        first = client.put(
+            f"/api/v1/cases/{case_id}/asr/fragments/{fragment_id}",
+            json={"edited_text": "人工修订文本", "speaker": "INTERROGATOR"},
+        )
+        second = client.put(
+            f"/api/v1/cases/{case_id}/asr/fragments/{fragment_id}",
+            json={"edited_text": "人工修订文本", "speaker": "INTERROGATOR"},
+        )
+
+    assert first.status_code == second.status_code == 200
+    assert enqueued == [(case_id, fragment_id)]
     engine.dispose()
 
 

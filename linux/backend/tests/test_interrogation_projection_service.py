@@ -141,19 +141,54 @@ def test_operational_police_instruction_does_not_close_active_round(db, projecti
     assert rounds_repo.active_round(db, case.id, session.id).id == existing.id
 
 
-def test_unknown_speaker_never_enters_formal_record(db, projection_context):
+def test_unknown_fragment_projects_as_question_only_after_role_resolution(db, projection_context):
     case, session, fragment = projection_context
     question = add_question(db, case.id, "你何时到现场？", r"什么时候.*现场")
-    existing = add_round(db, case_id=case.id, session_id=session.id, question_id=question["id"])
     unknown = fragment("UNKNOWN", "你什么时候到现场的？")
+    service = InterrogationProjectionService(db)
 
-    result = InterrogationProjectionService(db).process_fragment(case.id, unknown.id)
+    result = service.process_fragment(case.id, unknown.id)
     db.commit()
-    db.refresh(existing)
-
     assert result["status"] == "RAW_ONLY"
-    assert existing.status == "ACTIVE"
     assert rounds_repo.active_pending(db, case.id, session.id) is None
+
+    unknown.speaker = "INTERROGATOR"
+    unknown.speaker_source = "X_VECTOR"
+    first = service.process_fragment(case.id, unknown.id)
+    db.commit()
+    second = service.process_fragment(case.id, unknown.id)
+    db.commit()
+
+    assert first["status"] == second["status"] == "MATCHED"
+    projected_rounds = rounds_repo.list_for_question(db, case.id, question["id"])
+    assert len(projected_rounds) == 1
+    assert projected_rounds[0].actual_question_text == "你什么时候到现场的？"
+    assert projected_rounds[0].officer_fragment_id == unknown.id
+
+
+def test_unknown_fragment_projects_as_answer_only_after_role_resolution(db, projection_context):
+    case, session, fragment = projection_context
+    question = add_question(db, case.id, "你何时到现场？", r"什么时候.*现场")
+    round_row = add_round(db, case_id=case.id, session_id=session.id, question_id=question["id"])
+    unknown = fragment("UNKNOWN", "我八点到的。")
+    service = InterrogationProjectionService(db)
+
+    service.process_fragment(case.id, unknown.id)
+    db.commit()
+    db.refresh(round_row)
+    assert round_row.answer_text == ""
+    assert json.loads(round_row.answer_fragment_ids_json) == []
+
+    unknown.speaker = "SUSPECT"
+    unknown.speaker_source = "X_VECTOR"
+    service.process_fragment(case.id, unknown.id)
+    db.commit()
+    service.process_fragment(case.id, unknown.id)
+    db.commit()
+    db.refresh(round_row)
+
+    assert round_row.answer_text == "我八点到的。"
+    assert json.loads(round_row.answer_fragment_ids_json) == [unknown.id]
 
 
 def test_unmatched_question_buffers_following_suspect_answer(db, projection_context):

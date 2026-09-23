@@ -290,6 +290,16 @@ def test_two_turn_retranscription_atomically_replaces_parent_and_keeps_lineage(t
     monkeypatch.setattr(live_speech_coordinator, "SpeakerTurnSplitter", lambda: _TwoTurnSplitter())
     engine, factory, capture_id, parent_id, coordinator, speech, events = _build(tmp_path)
     job_id = _job_for(factory, coordinator, capture_id)
+    routed: list[tuple[str, str]] = []
+
+    def route_after_commit(case_id: str, fragment_id: str):
+        with factory() as db:
+            assert db.get(LiveSpeechJob, job_id).state == "COMPLETE"
+            child = db.get(ASRFragment, fragment_id)
+            assert child is not None and child.speaker == "SUSPECT"
+        routed.append((case_id, fragment_id))
+
+    coordinator.capture_service.fragment_sink = route_after_commit
     priority_yields: list[bool] = []
     monkeypatch.setattr(coordinator, "_wait_for_asr_priority", lambda: priority_yields.append(True))
 
@@ -335,6 +345,42 @@ def test_two_turn_retranscription_atomically_replaces_parent_and_keeps_lineage(t
     assert replacements[0][2]["parentFragmentId"] == parent_id
     assert replacements[0][2]["jobId"] == job_id
     assert len(replacements[0][2]["fragments"]) == 2
+    assert [fragment_id for case, fragment_id in routed if case == "CASE-SPEAKER"] == [
+        fragment["fragmentId"] for fragment in replacements[0][2]["fragments"]
+    ]
+    engine.dispose()
+
+
+def test_resolved_single_speaker_routes_once_after_commit(tmp_path, monkeypatch):
+    from app.services import live_speech_coordinator
+
+    class _SingleTurnSplitter:
+        def split(self, pcm, sample_rate, embed, reference=None):
+            del reference
+            embed(pcm)
+            return [TurnSpan(0, 2000)]
+
+    monkeypatch.setattr(live_speech_coordinator, "SpeakerTurnSplitter", lambda: _SingleTurnSplitter())
+    engine, factory, capture_id, parent_id, coordinator, _speech, events = _build(tmp_path)
+    job_id = _job_for(factory, coordinator, capture_id)
+    routed: list[tuple[str, str]] = []
+
+    def route_after_commit(case_id: str, fragment_id: str):
+        with factory() as db:
+            assert db.get(LiveSpeechJob, job_id).state == "COMPLETE"
+            parent = db.get(ASRFragment, fragment_id)
+            assert parent is not None and parent.speaker == "SUSPECT"
+        routed.append((case_id, fragment_id))
+
+    coordinator.capture_service.fragment_sink = route_after_commit
+    coordinator.process_speaker_job(job_id)
+    coordinator.process_speaker_job(job_id)
+
+    with factory() as db:
+        parent = db.get(ASRFragment, parent_id)
+        assert parent is not None and parent.speaker == "SUSPECT"
+    assert routed == [("CASE-SPEAKER", parent_id)]
+    assert len([event for event in events.events if event[1] == "ASR_FRAGMENT"]) == 1
     engine.dispose()
 
 
@@ -425,6 +471,8 @@ def test_short_unambiguous_decision_stays_unknown_by_policy(tmp_path, monkeypatc
 
     monkeypatch.setattr(live_speech_coordinator, "SpeakerTurnSplitter", lambda: _ShortSplitter())
     engine, factory, capture_id, parent_id, coordinator, _speech, _events = _build(tmp_path)
+    routed: list[tuple[str, str]] = []
+    coordinator.capture_service.fragment_sink = lambda case, fragment: routed.append((case, fragment))
     with factory() as db:
         parent = db.get(ASRFragment, parent_id)
         assert parent is not None
@@ -442,4 +490,5 @@ def test_short_unambiguous_decision_stays_unknown_by_policy(tmp_path, monkeypatc
         result = db.query(ASRSpeakerAnalysisResult).filter_by(analysis_job_id=job_id).one()
         assert result.role == "UNKNOWN"
         assert result.overlap is False
+    assert routed == []
     engine.dispose()

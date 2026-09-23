@@ -1066,11 +1066,15 @@ class LiveSpeechCoordinator:
             payload["calibrationId"] = runtime.calibration_id
             payload["calibrationStatus"] = runtime.calibration_status
         if payload is not None:
-            self.capture_service.publish_event(
-                runtime.interrogation_session_id,
-                "ASR_FRAGMENT",
-                payload,
-            )
+            try:
+                self.capture_service.publish_event(
+                    runtime.interrogation_session_id,
+                    "ASR_FRAGMENT",
+                    payload,
+                )
+            finally:
+                if decision.role.value != "UNKNOWN":
+                    self._route_resolved_fragments(runtime.case_id, [payload["fragmentId"]])
 
     def _commit_split_speaker_decisions(
         self,
@@ -1182,11 +1186,61 @@ class LiveSpeechCoordinator:
                 "jobId": job.id,
             }
         if replacement_payload is not None:
-            self.capture_service.publish_event(
-                runtime.interrogation_session_id,
-                "ASR_FRAGMENT_REPLACED",
-                replacement_payload,
-            )
+            try:
+                self.capture_service.publish_event(
+                    runtime.interrogation_session_id,
+                    "ASR_FRAGMENT_REPLACED",
+                    replacement_payload,
+                )
+            finally:
+                self._route_resolved_fragments(
+                    runtime.case_id,
+                    [
+                        item["fragmentId"]
+                        for item in replacement_payload["fragments"]
+                        if item.get("speaker") != "UNKNOWN"
+                    ],
+                )
+
+    def _route_resolved_fragments(self, case_id: str, fragment_ids: list[str]) -> None:
+        unique_ids = list(dict.fromkeys(fragment_ids))
+        if not unique_ids:
+            return
+        with self.session_factory() as db:
+            eligible_ids = [
+                fragment.id
+                for fragment in db.scalars(
+                    select(ASRFragment)
+                    .where(
+                        ASRFragment.id.in_(unique_ids),
+                        ASRFragment.case_id == case_id,
+                        ASRFragment.speaker.in_(
+                            ("INTERROGATOR", "RECORDER", "OFFICER_FALLBACK", "SUSPECT")
+                        ),
+                        ASRFragment.state.in_(("PENDING", "EDITED")),
+                    )
+                    .order_by(
+                        ASRFragment.started_at_ms.asc(),
+                        ASRFragment.ended_at_ms.asc(),
+                        ASRFragment.ordinal.asc(),
+                        ASRFragment.id.asc(),
+                    )
+                )
+            ]
+        fragment_sink = getattr(self.capture_service, "fragment_sink", None)
+        if fragment_sink is not None:
+            for fragment_id in eligible_ids:
+                fragment_sink(case_id, fragment_id)
+            return
+
+        if eligible_ids:
+            from app.services.interrogation_projection_service import InterrogationProjectionService
+
+            with self.session_factory() as db:
+                projection = InterrogationProjectionService(db)
+                for fragment_id in eligible_ids:
+                    projection.process_fragment(case_id, fragment_id)
+                db.commit()
 
     def _set_speaker_job_state(self, job_id: str, state: str, error_code: str | None) -> None:
         with archive_repo.archive_transaction(self.session_factory) as db:

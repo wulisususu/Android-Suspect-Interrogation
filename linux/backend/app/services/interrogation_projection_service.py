@@ -10,6 +10,7 @@ from app.database.models import ProcessedSpeechFragment
 from app.domain.errors import DomainError
 from app.repositories import asr_fragments as asr_repo
 from app.repositories import question_rounds as rounds_repo
+from app.repositories import recognition_evidence as evidence_repo
 from app.repositories import template_questions as question_repo
 from app.services.formal_record_policy import assert_formal_record_mutable
 from app.services.question_matching import (
@@ -53,20 +54,28 @@ class InterrogationProjectionService:
         if fragment.case_id != case_id:
             raise DomainError("ASR_FRAGMENT_NOT_FOUND", "ASR 临时片段不存在", 404)
         processed = asr_repo.get_processed(self.db, fragment_id)
-        if processed is not None:
+        speaker = str(fragment.speaker or "UNKNOWN")
+        may_retry_unknown = bool(
+            processed is not None
+            and processed.action == "RAW_ONLY"
+            and speaker != "UNKNOWN"
+            and self._was_previously_unknown(fragment_id)
+        )
+        if processed is not None and not may_retry_unknown:
             return self._processed_result(processed)
         assert_formal_record_mutable(self.db, case_id)
         capture = asr_repo.get_capture_session(self.db, fragment.capture_session_id)
         session_id = capture.interrogation_session_id
         text = str(fragment.edited_text or fragment.raw_text or "").strip()
-        speaker = str(fragment.speaker or "UNKNOWN")
         if not session_id or not text:
-            return self._record_processed(fragment.id, case_id, "RAW_ONLY", None)
+            return self._record_processed(fragment.id, case_id, "RAW_ONLY", None, existing=processed)
+        if speaker == "UNKNOWN":
+            return self._record_processed(fragment.id, case_id, "RAW_ONLY", None, existing=processed)
         if speaker == "SUSPECT":
             pending = rounds_repo.active_pending(self.db, case_id, session_id)
             if pending is not None:
                 rounds_repo.append_pending_answer(self.db, pending, text, fragment.id)
-                return self._record_processed(fragment.id, case_id, "PENDING_BUFFER", pending.id)
+                return self._record_processed(fragment.id, case_id, "PENDING_BUFFER", pending.id, existing=processed)
             active = rounds_repo.active_round(self.db, case_id, session_id)
             if active is not None:
                 rounds_repo.append_round_answer(self.db, active, text, [fragment.id])
@@ -77,12 +86,12 @@ class InterrogationProjectionService:
                     answer_text=active.answer_text,
                     first_asked_at=active.started_at,
                 )
-                return self._record_processed(fragment.id, case_id, "ROUND_APPEND", active.id)
-            return self._record_processed(fragment.id, case_id, "RAW_ONLY", None)
+                return self._record_processed(fragment.id, case_id, "ROUND_APPEND", active.id, existing=processed)
+            return self._record_processed(fragment.id, case_id, "RAW_ONLY", None, existing=processed)
         if speaker not in _OFFICER_SPEAKERS:
-            return self._record_processed(fragment.id, case_id, "RAW_ONLY", None)
+            return self._record_processed(fragment.id, case_id, "RAW_ONLY", None, existing=processed)
         if not is_question_utterance(text):
-            return self._record_processed(fragment.id, case_id, "RAW_ONLY", None)
+            return self._record_processed(fragment.id, case_id, "RAW_ONLY", None, existing=processed)
 
         rounds_repo.defer_active_pending(self.db, case_id, session_id)
         rounds_repo.close_active(self.db, case_id, session_id)
@@ -100,7 +109,7 @@ class InterrogationProjectionService:
                     match_status="MATCHED_EXISTING",
                     candidate_question_ids=[question_id],
                 )
-                return self._record_processed(fragment.id, case_id, "PENDING", pending.id)
+                return self._record_processed(fragment.id, case_id, "PENDING", pending.id, existing=processed)
             round_row = rounds_repo.create_round(
                 self.db,
                 case_id=case_id,
@@ -109,7 +118,7 @@ class InterrogationProjectionService:
                 actual_question_text=text,
                 officer_fragment_id=fragment.id,
             )
-            return self._record_processed(fragment.id, case_id, "ROUND_OPEN", round_row.id)
+            return self._record_processed(fragment.id, case_id, "ROUND_OPEN", round_row.id, existing=processed)
 
         pending = rounds_repo.create_pending(
             self.db,
@@ -120,7 +129,7 @@ class InterrogationProjectionService:
             match_status="AMBIGUOUS" if matched.status is QuestionMatchStatus.AMBIGUOUS else "UNMATCHED",
             candidate_question_ids=list(matched.matched_question_ids),
         )
-        return self._record_processed(fragment.id, case_id, "PENDING", pending.id)
+        return self._record_processed(fragment.id, case_id, "PENDING", pending.id, existing=processed)
 
     def add_pending_as_question(self, pending_id: str, *, after_question_id: str | None = None) -> dict:
         pending = self._pending_for_action(pending_id, allow_deferred=True)
@@ -258,15 +267,36 @@ class InterrogationProjectionService:
             result.append(QuestionCandidate(id=row.id, text=row.text, patterns=tuple(patterns)))
         return result
 
-    def _record_processed(self, fragment_id: str, case_id: str, action: str, target_id: str | None) -> dict:
-        row = asr_repo.mark_processed(
-            self.db,
-            fragment_id=fragment_id,
-            case_id=case_id,
-            action=action,
-            target_id=target_id,
-        )
+    def _record_processed(
+        self,
+        fragment_id: str,
+        case_id: str,
+        action: str,
+        target_id: str | None,
+        *,
+        existing: ProcessedSpeechFragment | None = None,
+    ) -> dict:
+        if existing is None:
+            row = asr_repo.mark_processed(
+                self.db,
+                fragment_id=fragment_id,
+                case_id=case_id,
+                action=action,
+                target_id=target_id,
+            )
+        else:
+            existing.action = action
+            existing.target_id = target_id
+            self.db.flush()
+            row = existing
         return self._processed_result(row)
+
+    def _was_previously_unknown(self, fragment_id: str) -> bool:
+        evidence = evidence_repo.get_evidence(self.db, fragment_id)
+        if evidence is not None and evidence.ai_speaker == "UNKNOWN":
+            return True
+        revisions = evidence_repo.list_revisions(self.db, fragment_id)
+        return bool(revisions and revisions[-1].before_speaker == "UNKNOWN")
 
     def _processed_result(self, processed: ProcessedSpeechFragment) -> dict:
         if processed.action == "RAW_ONLY":

@@ -4,12 +4,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.database.session import begin_sqlite_immediate
-from app.database.models import ASRCaptureSession, ASRFragment
+from app.database.models import ASRCaptureSession, ASRFragment, ASRFragmentLineage
 from app.domain.errors import DomainError
 from app.repositories import asr_fragments as asr_repo
 from app.services.serializers import iso_utc
@@ -88,6 +88,25 @@ def _fragment_payload(fragment: ASRFragment, db: Session | None = None) -> dict[
         payload["recognitionEvidence"] = evidence_repo.evidence_payload(evidence_repo.get_evidence(db, fragment.id))
         payload["recognitionRevisions"] = [
             evidence_repo.revision_payload(row) for row in evidence_repo.list_revisions(db, fragment.id)
+        ]
+        lineage = db.scalars(
+            select(ASRFragmentLineage)
+            .where(
+                or_(
+                    ASRFragmentLineage.parent_fragment_id == fragment.id,
+                    ASRFragmentLineage.child_fragment_id == fragment.id,
+                )
+            )
+            .order_by(ASRFragmentLineage.created_at.asc(), ASRFragmentLineage.id.asc())
+        )
+        payload["lineage"] = [
+            {
+                "analysisJobId": row.analysis_job_id,
+                "parentFragmentId": row.parent_fragment_id,
+                "childFragmentId": row.child_fragment_id,
+                "relation": row.relation,
+            }
+            for row in lineage
         ]
     return payload
 
@@ -182,7 +201,12 @@ def question_preparation_stop(case_id: str, request: Request):
 
 
 @router.get("/cases/{case_id}/asr/fragments")
-def list_fragments(case_id: str, include_confirmed: bool = Query(False), db: Session = Depends(get_db)):
+def list_fragments(
+    case_id: str,
+    include_confirmed: bool = Query(False),
+    include_superseded: bool = Query(False),
+    db: Session = Depends(get_db),
+):
     case_repo.get(db, case_id)
     stmt = (
         select(ASRFragment)
@@ -191,6 +215,8 @@ def list_fragments(case_id: str, include_confirmed: bool = Query(False), db: Ses
     )
     if not include_confirmed:
         stmt = stmt.where(ASRFragment.state != "CONFIRMED")
+    if not include_superseded:
+        stmt = stmt.where(ASRFragment.state != "SUPERSEDED")
     stmt = stmt.order_by(
         ASRCaptureSession.started_at.asc(),
         ASRCaptureSession.id.asc(),
@@ -203,7 +229,13 @@ def list_fragments(case_id: str, include_confirmed: bool = Query(False), db: Ses
 
 
 @router.put("/cases/{case_id}/asr/fragments/{fragment_id}")
-def update_fragment(case_id: str, fragment_id: str, body: FragmentUpdateRequest, db: Session = Depends(get_db)):
+def update_fragment(
+    case_id: str,
+    fragment_id: str,
+    body: FragmentUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     fragment = _fragment_for_case(db, case_id, fragment_id)
     assert_formal_record_mutable(db, case_id)
     if fragment.state == "DISCARDED":
@@ -214,6 +246,7 @@ def update_fragment(case_id: str, fragment_id: str, body: FragmentUpdateRequest,
         raise DomainError("INVALID_SPEAKER_ROLE", "无效的说话人角色", 400) from exc
 
     speaker_changed = role.value != fragment.speaker
+    resolving_unknown = fragment.speaker == SpeakerRole.UNKNOWN.value and role is not SpeakerRole.UNKNOWN
     before = {
         "edited_text": fragment.edited_text,
         "speaker": fragment.speaker,
@@ -256,6 +289,16 @@ def update_fragment(case_id: str, fragment_id: str, body: FragmentUpdateRequest,
         detail={"raw_text_unchanged": True, "speaker_changed": speaker_changed, "reason": body.reason},
     )
     db.commit()
+    if resolving_unknown:
+        capture_service = getattr(request.app.state, "asr_capture_service", None)
+        fragment_sink = getattr(capture_service, "fragment_sink", None)
+        if fragment_sink is not None:
+            fragment_sink(case_id, row.id)
+        else:
+            from app.services.interrogation_projection_service import InterrogationProjectionService
+
+            InterrogationProjectionService(db).process_fragment(case_id, row.id)
+            db.commit()
     return _fragment_payload(row, db)
 
 
@@ -265,6 +308,8 @@ def _confirm_one(db: Session, *, case_id: str, fragment_id: str, actor_id: str |
     assert_formal_record_mutable(db, case_id)
     if fragment.state == "DISCARDED":
         raise DomainError("ASR_FRAGMENT_DISCARDED", "已丢弃的 ASR 片段不能确认", 409)
+    if fragment.state == "SUPERSEDED":
+        raise DomainError("ASR_FRAGMENT_SUPERSEDED", "已被替换的 ASR 片段不能确认", 409)
     if fragment.state == "CONFIRMED":
         return fragment, False
     official_speaker = _official_message_speaker(fragment.speaker)

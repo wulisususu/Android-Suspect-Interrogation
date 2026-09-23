@@ -13,6 +13,7 @@ from app.database.models import ASRCaptureSession, ASRFragment
 from app.database.session import init_database, make_engine, make_session_factory
 from app.domain.enums import SessionStatus
 from app.domain.errors import DomainError
+from app.repositories import asr_fragments as asr_repo
 from app.repositories import cases as case_repo
 from app.repositories import sessions as session_repo
 from app.repositories import voiceprints as voiceprint_repo
@@ -760,4 +761,76 @@ def test_fragment_sink_bypasses_legacy_projection_and_capture_finished_sink_flus
     assert len(fragments) == 1
     assert fragments[0][0] == case_id
     assert finished == [(case_id, session_id)]
+    engine.dispose()
+
+
+@pytest.mark.parametrize("use_sink", [True, False])
+def test_unknown_asr_final_is_published_without_projection_or_sink(tmp_path: Path, monkeypatch, use_sink: bool):
+    engine, factory, case_id, session_id = _seed_database(tmp_path)
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    events = EventCollector()
+    enqueued: list[tuple[str, str]] = []
+    service = AsrCaptureService(
+        session_factory=factory,
+        device_manager=FakeDeviceManager([]),
+        ai_supervisor=FakeSpeechSupervisor(),
+        publish_event=events,
+        fragment_sink=(lambda case, fragment: enqueued.append((case, fragment))) if use_sink else None,
+    )
+
+    class ForbiddenProjection:
+        calls = 0
+
+        def __init__(self, _db):
+            pass
+
+        def process_fragment(self, _case_id, _fragment_id):
+            type(self).calls += 1
+            raise AssertionError("UNKNOWN transcript rows must wait for speaker resolution")
+
+    monkeypatch.setattr(capture_module, "InterrogationProjectionService", ForbiddenProjection, raising=False)
+    runtime = capture_module._CaptureRuntime(
+        case_id=case_id,
+        interrogation_session_id=session_id,
+        capture_session_id=capture_id,
+        speech_session_id=capture_id,
+        speaker_threshold=0.7,
+        speaker_margin=0.1,
+        threshold_source="TEST",
+        calibration_id=None,
+        calibration_status="UNAVAILABLE",
+        speaker_model_fingerprint=None,
+        microphone_fingerprint=None,
+    )
+    fragment_id = service._persist_asr_only_fragment(
+        runtime,
+        SpeechEvent(
+            type=SpeechEventType.ASR_FINAL,
+            session_id=capture_id,
+            start_ms=0,
+            end_ms=1000,
+            text="暂不区分说话人",
+            confidence=0.9,
+            model_id="test-asr",
+            details={"model_version": "v1"},
+        ),
+    )
+
+    assert events.events[0][1] == "ASR_FRAGMENT"
+    assert events.events[0][2]["fragmentId"] == fragment_id
+    assert enqueued == []
+    assert ForbiddenProjection.calls == 0
+    with factory() as db:
+        persisted = db.get(ASRFragment, fragment_id)
+        assert persisted is not None
+        assert persisted.speaker == "UNKNOWN"
     engine.dispose()

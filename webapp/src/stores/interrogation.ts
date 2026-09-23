@@ -38,6 +38,7 @@ import {
   updateVoiceprintRoleDraft,
 } from '../api/interrogation'
 import { setBrowserAsrUnexpectedCloseListener } from '../audio/browserAsrCapture'
+import { replaceAsrFragmentGroup, upsertAsrFragmentByCaptureTime } from '../utils/asrFragments'
 import type { RuntimeSessionConnection } from '../runtime'
 import type {
   AsrCaptureStatus,
@@ -297,9 +298,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   function upsertAsrFragment(fragment: TemporaryAsrFragment, scope = currentScope()) {
     if (!isCurrentScope(scope) || fragment.caseId !== scope.caseId) return
-    const index = capture.value.fragments.findIndex((item) => item.id === fragment.id)
-    if (index >= 0) capture.value.fragments[index] = fragment
-    else capture.value.fragments = [...capture.value.fragments, fragment].sort((left, right) => left.ordinal - right.ordinal)
+    capture.value.fragments = upsertAsrFragmentByCaptureTime(capture.value.fragments, fragment)
     if (!capture.value.captureSessionId) capture.value.captureSessionId = fragment.captureSessionId
   }
 
@@ -327,6 +326,22 @@ export const useInterrogationStore = defineStore('interrogation', () => {
         // live transcript shown while the speaker was still talking.
         capture.value.partialText = ''
         upsertAsrFragment(fragment, scope)
+        return
+      }
+      if (event.event === 'ASR_FRAGMENT_REPLACED') {
+        const payload = event.payload as { parentFragmentId?: string; fragments?: unknown[] }
+        const children = Array.isArray(payload.fragments)
+          ? payload.fragments.map(normalizeTemporaryAsrFragment)
+          : []
+        if (!payload.parentFragmentId || children.some((fragment) => fragment.caseId !== scope.caseId)) return
+        capture.value.fragments = replaceAsrFragmentGroup(
+          capture.value.fragments,
+          payload.parentFragmentId,
+          children,
+        )
+        if (!capture.value.captureSessionId && children[0]) {
+          capture.value.captureSessionId = children[0].captureSessionId
+        }
         return
       }
       if (event.event === 'RECORDING_STATE' || event.event === 'asr.capture.status') {
