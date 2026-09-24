@@ -211,12 +211,19 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   const activeFragments = computed(() => capture.value.fragments.filter((fragment) => fragment.state !== 'SUPERSEDED'))
 
   function captureWorkflowNeedsSync(status = capture.value) {
+    const hasPendingSpeakerAnalysis = status.fragments.some((fragment) =>
+      fragment.state !== 'SUPERSEDED'
+      && (fragment.speaker === 'UNKNOWN' || fragment.speakerSource === 'PENDING_ANALYSIS'),
+    )
     return status.running
       || status.recordingStatus === 'CAPTURING'
       || status.asrStatus === 'PENDING'
       || status.asrStatus === 'FINALIZING'
       || status.speakerStatus === 'QUEUED'
       || status.speakerStatus === 'RUNNING'
+      || (status.speakerStatus === 'PENDING'
+        && status.asrStatus === 'COMPLETE'
+        && hasPendingSpeakerAnalysis)
   }
 
   function currentScope(): CaseScope {

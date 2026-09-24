@@ -12,46 +12,54 @@ const visible = computed(() => Boolean(
   props.capture.recordingStatus || props.capture.asrStatus || props.capture.speakerStatus || props.capture.error,
 ))
 const incomplete = computed(() => props.capture.recordingStatus === 'INCOMPLETE')
-const recordingLabel = computed(() => {
+const activeFragments = computed(() => props.capture.fragments.filter((fragment) => fragment.state !== 'SUPERSEDED'))
+const unresolvedSpeakerCount = computed(() => activeFragments.value.filter((fragment) =>
+  fragment.speaker === 'UNKNOWN' || fragment.speakerSource === 'PENDING_ANALYSIS',
+).length)
+const assignedSpeakerCount = computed(() => activeFragments.value.filter((fragment) =>
+  fragment.speaker !== 'UNKNOWN' && fragment.speakerSource !== 'PENDING_ANALYSIS',
+).length)
+const transcriptLabel = computed(() => {
+  const labels: string[] = []
   switch (props.capture.recordingStatus) {
-    case 'CAPTURING': return '原始录音持续归档中'
-    case 'COMPLETE': return '原始录音已保存'
-    case 'INCOMPLETE': return '录音不完整，存在音频缺口'
-    case 'PENDING': return '录音等待启动'
-    default: return ''
+    case 'CAPTURING': labels.push('原始录音正在归档'); break
+    case 'COMPLETE': labels.push('原始录音已保存'); break
+    case 'INCOMPLETE': labels.push('录音不完整，存在音频缺口'); break
+    case 'PENDING': labels.push('录音等待启动'); break
   }
-})
-const asrLabel = computed(() => {
   const status = props.capture.asrStatus
-  if (!status) return ''
+  if (!status) return labels.join(' · ')
   const backlog = Math.max(0, (props.capture.audioSampleCount ?? 0) - (props.capture.asrCursorSample ?? 0))
   const backlogSeconds = Math.ceil(backlog / Math.max(1, props.capture.sampleRate))
   const state = status === 'FINALIZING' || status === 'PENDING'
-    ? '文字识别处理中'
+    ? '文字转写处理中'
     : status === 'COMPLETE'
-      ? '文字识别完成'
+      ? `文字转写完成（${activeFragments.value.length} 段）`
       : status === 'ERROR'
-        ? '文字识别异常'
-        : `文字识别：${status}`
-  return backlogSeconds > 0 ? `${state}，待处理约 ${backlogSeconds} 秒音频` : state
+        ? '文字转写异常'
+        : `文字转写：${status}`
+  labels.push(backlogSeconds > 0 ? `${state}，约有 ${backlogSeconds} 秒音频待处理` : state)
+  return labels.join(' · ')
 })
 const speakerLabel = computed(() => {
   const status = props.capture.speakerStatus
   if (!status) return ''
-  if (status === 'COMPLETE') return '说话人分析完成'
-  if (status === 'NEEDS_REVIEW') return '部分说话人需要人工复核'
-  if (status === 'ERROR') return '说话人分析异常'
-  if (status === 'QUEUED') return '说话人分析排队中'
-  if (status === 'RUNNING') return '说话人分析中'
+  if (status === 'COMPLETE') return `分析已完成 · 已归属 ${assignedSpeakerCount.value} 段${unresolvedSpeakerCount.value ? `，${unresolvedSpeakerCount.value} 段身份待确认` : ''}`
+  if (status === 'NEEDS_REVIEW') return `分析完成 · 已归属 ${assignedSpeakerCount.value} 段，${unresolvedSpeakerCount.value} 段待人工复核`
+  if (status === 'ERROR') return `声纹分析异常 · ${unresolvedSpeakerCount.value} 段身份待确认`
+  if (status === 'QUEUED') return `声纹分析已排队 · ${unresolvedSpeakerCount.value} 段待分析`
+  if (status === 'RUNNING') return `声纹分析进行中 · ${unresolvedSpeakerCount.value} 段待确认`
   if (status === 'PENDING') {
     const seconds = Math.floor((props.capture.voicedMs ?? 0) / 1000)
-    const fragments = props.capture.finalFragmentCount ?? 0
+    const fragments = activeFragments.value.length
     if (props.capture.running && (seconds < 10 || fragments < 3)) {
-      return `说话人分析等待素材（有效语音 ${seconds}/10 秒，文字片段 ${fragments}/3 段）`
+      return `等待素材 · 有效语音 ${seconds}/10 秒、文字片段 ${fragments}/3 段`
     }
-    return '说话人分析等待开始'
+    if (props.capture.asrStatus !== 'COMPLETE') return `等待第 1 步转写完成 · ${unresolvedSpeakerCount.value} 段待分析`
+    if (!unresolvedSpeakerCount.value) return '没有待分析的文字片段'
+    return `等待第 2 步开始 · ${unresolvedSpeakerCount.value} 段待分析`
   }
-  return `说话人分析：${status}`
+  return `声纹分析：${status}`
 })
 
 watch(
@@ -96,9 +104,20 @@ async function recoverLocalAudio() {
 
 <template>
   <div v-if="visible" class="asr-workflow-status" :class="{ incomplete }" role="status" aria-live="polite">
-    <span v-if="recordingLabel">{{ recordingLabel }}</span>
-    <span v-if="asrLabel">{{ asrLabel }}</span>
-    <span v-if="speakerLabel">{{ speakerLabel }}</span>
+    <div class="workflow-stage">
+      <span class="workflow-stage-number">第 1 步</span>
+      <div class="workflow-stage-copy">
+        <strong>原始录音与文字转写</strong>
+        <span>{{ transcriptLabel || '等待录音' }}</span>
+      </div>
+    </div>
+    <div class="workflow-stage speaker-stage">
+      <span class="workflow-stage-number">第 2 步</span>
+      <div class="workflow-stage-copy">
+        <strong>声纹分析与说话人归属</strong>
+        <span>{{ speakerLabel || '等待第 1 步产生文字片段' }}</span>
+      </div>
+    </div>
     <span v-if="capture.error" class="workflow-error">{{ capture.error }}</span>
     <div v-if="incomplete && pendingLocalFrames" class="local-recovery">
       <span>本机保留了 {{ pendingLocalFrames }} 个尚未归档的音频分片。</span>
@@ -112,9 +131,8 @@ async function recoverLocalAudio() {
 
 <style scoped>
 .asr-workflow-status {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 14px;
+  display: grid;
+  gap: 8px;
   padding: 8px 12px;
   color: #35516d;
   background: #eff5fa;
@@ -122,10 +140,51 @@ async function recoverLocalAudio() {
   font: 12px/1.45 system-ui, sans-serif;
 }
 
+.workflow-stage {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid #d6e3ed;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.workflow-stage-number {
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #fff;
+  background: #355c82;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.workflow-stage-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.workflow-stage-copy strong {
+  color: #203d58;
+}
+
+.speaker-stage {
+  border-color: #d8dfef;
+}
+
+.speaker-stage .workflow-stage-number {
+  background: #5b5b91;
+}
+
 .asr-workflow-status.incomplete {
   color: #8d4a08;
   background: #fff5e8;
   border-bottom-color: #f1d6b4;
+}
+
+.asr-workflow-status.incomplete .workflow-stage {
+  border-color: #f1d6b4;
 }
 
 .workflow-error {

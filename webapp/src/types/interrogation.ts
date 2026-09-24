@@ -161,6 +161,7 @@ export type TemporaryAsrSpeaker =
 
 export type AsrSpeakerSource =
   | 'UNASSIGNED'
+  | 'PENDING_ANALYSIS'
   | 'X_VECTOR'
   | 'SPEAKER_EMBEDDING'
   | 'SUSPECT_EXCLUSION'
