@@ -550,7 +550,7 @@ Run: `python -m pytest tests/release/test_backup_restore.py tests/release/test_r
 
 Expected: PASS; snapshots do not duplicate audio bytes, and same-device restore preserves validated audio.
 
-- [ ] **Step 5: Commit backup behavior**
+- [x] **Step 5: Commit backup behavior**
 
 ```text
 git add scripts/backup.sh scripts/restore.sh tests/release/test_backup_restore.py tests/release/test_restore_security.py
