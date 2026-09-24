@@ -5,6 +5,7 @@ import math
 import queue
 import struct
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 from uuid import uuid4
@@ -58,6 +59,7 @@ FragmentSink = Callable[[str, str], None]
 CaptureFinishedSink = Callable[[str, str], None]
 CalibrationResolver = Callable[[Any], ResolvedSpeakerCalibration]
 _FLOAT32_BYTES = 4
+_AUDIO_LEVEL_INTERVAL_SECONDS = 0.1
 
 
 @dataclass
@@ -96,6 +98,8 @@ class _CaptureRuntime:
     thread: threading.Thread | None = None
     ordinal: int = 0
     seen_utterances: set[tuple[int, int]] = field(default_factory=set)
+    audio_level_sample_count: int = 0
+    last_audio_level_published_at: float | None = None
 
 
 @dataclass
@@ -311,6 +315,7 @@ class AsrCaptureService:
             # existed.
             bound_roles = self._bound_roles(db, interrogation_session_id)
             initial_workflow_status = {
+                "startedAt": capture.started_at.isoformat() if capture.started_at is not None else None,
                 "recordingStatus": capture.recording_status,
                 "asrStatus": capture.asr_status,
                 "speakerStatus": capture.speaker_status,
@@ -574,6 +579,7 @@ class AsrCaptureService:
                 if not pcm:
                     continue
                 payload = bytes(pcm)
+                self._publish_audio_level(runtime, payload, now=time.monotonic())
                 for offset in range(0, len(payload), 32_000):
                     chunk = payload[offset : offset + 32_000]
                     if self._live_speech_coordinator is not None:
@@ -606,6 +612,34 @@ class AsrCaptureService:
                     self._active.pop(runtime.case_id, None)
                 if failure is not None:
                     self._last_error[runtime.case_id] = str(failure)
+
+    def _publish_audio_level(self, runtime: _CaptureRuntime, pcm: bytes, *, now: float) -> None:
+        sample_count = len(pcm) // 2
+        if sample_count == 0:
+            return
+        runtime.audio_level_sample_count += sample_count
+        if (
+            runtime.last_audio_level_published_at is not None
+            and now - runtime.last_audio_level_published_at < _AUDIO_LEVEL_INTERVAL_SECONDS
+        ):
+            return
+
+        samples = [sample[0] for sample in struct.iter_unpack("<h", pcm[: sample_count * 2])]
+        peak = max(abs(sample) for sample in samples)
+        rms = math.sqrt(sum(sample * sample for sample in samples) / sample_count)
+        runtime.last_audio_level_published_at = now
+        self.publish_event(
+            runtime.interrogation_session_id,
+            "AUDIO_LEVEL",
+            {
+                "caseId": runtime.case_id,
+                "captureSessionId": runtime.capture_session_id,
+                "sampleCount": runtime.audio_level_sample_count,
+                "sampleRate": runtime.sample_rate,
+                "rms": rms,
+                "peak": peak,
+            },
+        )
 
     def _start_local_inference(self, runtime: _CaptureRuntime) -> None:
         runtime.local_inference_done.clear()
@@ -1756,6 +1790,7 @@ class AsrCaptureService:
                 )
             )
             return {
+                "startedAt": capture.started_at.isoformat() if capture.started_at is not None else None,
                 "recordingStatus": capture.recording_status,
                 "asrStatus": capture.asr_status,
                 "speakerStatus": capture.speaker_status,

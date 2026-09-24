@@ -53,6 +53,7 @@ import {
 } from '../utils/asrFragments'
 import type { RuntimeSessionConnection } from '../runtime'
 import type {
+  AudioLevelSample,
   AsrCaptureStatus,
   AsrInsertionReceipt,
   AsrInsertionTarget,
@@ -133,6 +134,8 @@ function emptyCapture(caseId = ''): AsrCaptureStatus {
     startedAt: null,
     endedAt: null,
     sampleRate: 16_000,
+    audioLevels: [],
+    audioLevelUpdatedAt: null,
     partialText: '',
     fragments: [],
     error: null,
@@ -293,8 +296,16 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   function applyCaptureStatus(status: AsrCaptureStatus, scope = currentScope()) {
     if (!isCurrentScope(scope) || status.caseId !== scope.caseId) return
+    const sameCapture = Boolean(status.captureSessionId && status.captureSessionId === capture.value.captureSessionId)
+    const audioLevels = sameCapture ? capture.value.audioLevels ?? [] : []
+    const audioLevelUpdatedAt = sameCapture ? capture.value.audioLevelUpdatedAt ?? null : null
     for (const fragment of status.fragments) rememberFragment(fragment)
-    capture.value = { ...status, fragments: status.fragments.filter((fragment) => fragment.state !== 'SUPERSEDED') }
+    capture.value = {
+      ...status,
+      audioLevels,
+      audioLevelUpdatedAt,
+      fragments: status.fragments.filter((fragment) => fragment.state !== 'SUPERSEDED'),
+    }
     if (!status.running) {
       browserResumeGate.reset()
       clearBrowserAsrCaptureLeaseRefusal(status.caseId, status.captureSessionId)
@@ -412,6 +423,22 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   function applyCaptureEvent(event: CaptureEvent, scope = currentScope()) {
     if (!isCurrentScope(scope)) return
+    if (event.event === 'AUDIO_LEVEL') {
+      const payload = event.payload as Partial<AudioLevelSample> & { caseId?: string; captureSessionId?: string }
+      if (payload.caseId !== scope.caseId || !payload.captureSessionId
+        || payload.captureSessionId !== capture.value.captureSessionId
+        || !Number.isFinite(payload.sampleCount) || !Number.isFinite(payload.sampleRate)
+        || !Number.isFinite(payload.rms) || !Number.isFinite(payload.peak)) return
+      const sample: AudioLevelSample = {
+        sampleCount: payload.sampleCount!,
+        sampleRate: payload.sampleRate!,
+        rms: payload.rms!,
+        peak: payload.peak!,
+      }
+      capture.value.audioLevels = [...(capture.value.audioLevels ?? []), sample].slice(-80)
+      capture.value.audioLevelUpdatedAt = Date.now()
+      return
+    }
     if (event.event === 'ASR_PARTIAL') {
       const payload = event.payload as { text?: string; partialText?: string }
       capture.value.partialText = payload.partialText ?? payload.text ?? capture.value.partialText
@@ -485,6 +512,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       }
       if (event.event === 'ASR_PARTIAL' || event.event === 'ASR_FINAL'
         || event.event === 'ASR_FRAGMENT' || event.event === 'ASR_FRAGMENT_REPLACED'
+        || event.event === 'AUDIO_LEVEL'
         || event.event === 'RECORDING_STATE' || event.event === 'asr.capture.status') {
         applyCaptureEvent(event, scope)
         return

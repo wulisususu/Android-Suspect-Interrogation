@@ -342,6 +342,20 @@ const elapsed = computed(() => {
   const total = Math.floor(props.captureElapsedMs / 1000)
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
 })
+const audioMeterSamples = computed(() => props.captureStatus.audioLevels?.slice(-48) ?? [])
+const audioMeterSignal = computed(() => {
+  if (!props.captureRunning) return 'STOPPED'
+  if (!audioMeterSamples.value.length) return 'WAITING'
+  const updatedAt = props.captureStatus.audioLevelUpdatedAt
+  const captureStart = props.captureStatus.startedAt
+  const now = captureStart == null ? Date.now() : captureStart + props.captureElapsedMs
+  if (updatedAt == null || now - updatedAt > 1500) return 'STALE'
+  return 'LIVE'
+})
+
+function audioMeterBarHeight(peak: number) {
+  return Math.max(2, Math.round(Math.min(32, Math.max(0, peak) / 32768 * 32)))
+}
 
 function formatTime(item: TemporaryAsrFragment) {
   if (!item.createdAt) return ''
@@ -544,15 +558,29 @@ onMounted(() => {
           :title="botActive ? '停止 BOT 民警' : 'BOT 扮演民警自动提问（测试用）'"
           @click="toggleBot"
         >{{ botActive ? (botGenerating ? 'BOT 生成中…' : botJudging ? 'BOT 判定中…' : 'BOT 提问中') : 'BOT' }}</button>
-        <button
-          class="capture-toggle"
-          :class="{ active: captureRunning }"
-          :disabled="captureBusy || !captureAvailable"
-          @click="emit('captureToggle')"
-        >
-          <span class="record-dot"></span>
-          {{ captureRunning ? `停止录音 ${elapsed}` : '开始录音' }}
-        </button>
+        <div class="capture-control">
+          <button
+            class="capture-toggle"
+            :class="{ active: captureRunning }"
+            :disabled="captureBusy || !captureAvailable"
+            @click="emit('captureToggle')"
+          >
+            <span class="record-dot"></span>
+            {{ captureRunning ? `停止录音 ${elapsed}` : '开始录音' }}
+          </button>
+          <div v-if="captureRunning" class="capture-meter" role="img" aria-label="实时麦克风输入波形">
+            <div class="capture-meter-bars">
+              <i
+                v-for="(sample, index) in audioMeterSamples"
+                :key="`${sample.sampleCount}-${index}`"
+                :style="{ height: `${audioMeterBarHeight(sample.peak)}px` }"
+              ></i>
+            </div>
+            <span class="capture-meter-state">
+              {{ audioMeterSignal === 'WAITING' ? '等待音频输入' : audioMeterSignal === 'STALE' ? '暂无新音频信号' : '实时音频' }}
+            </span>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -730,6 +758,63 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.capture-control {
+  display: grid;
+  justify-items: stretch;
+  gap: 4px;
+}
+
+.capture-control .capture-toggle {
+  width: 142px;
+  min-width: 142px;
+}
+
+.capture-meter {
+  width: 142px;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: 32px 12px;
+  gap: 2px;
+  padding: 2px 4px;
+  border: 1px solid #d4dde4;
+  border-radius: 6px;
+  background: #f8fafb;
+}
+
+.capture-meter-bars {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.capture-meter-bars::after {
+  position: absolute;
+  inset: 50% 0 auto;
+  height: 1px;
+  background: #c5cdd3;
+  content: '';
+}
+
+.capture-meter-bars i {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
+  max-width: 2px;
+  min-width: 1px;
+  border-radius: 2px;
+  background: #526b7a;
+}
+
+.capture-meter-state {
+  color: #72808a;
+  font-size: 10px;
+  line-height: 12px;
+  text-align: center;
+}
+
 .fragment-lineage {
   margin: 8px 0 0;
   padding: 7px 9px;

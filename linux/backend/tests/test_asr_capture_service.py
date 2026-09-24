@@ -290,6 +290,8 @@ def test_capture_pushes_each_pcm_chunk_once_persists_verified_fragment_and_broad
     assert started["active"] is True
     assert started["caseId"] == case_id
     assert started["interrogationSessionId"] == session_id
+    assert isinstance(started["startedAt"], str)
+    assert started["startedAt"]
 
     _wait_until(lambda: len(speech.pushed) == 2)
     _wait_until(lambda: bool(events.events))
@@ -325,8 +327,12 @@ def test_capture_pushes_each_pcm_chunk_once_persists_verified_fragment_and_broad
         assert fragment.model_id == "test-paraformer"
         assert fragment.model_version == "asr-v1"
 
-    assert len(events.events) == 1
-    event_session, event_name, payload = events.events[0]
+    audio_events = [item for item in events.events if item[1] == "AUDIO_LEVEL"]
+    fragment_events = [item for item in events.events if item[1] == "ASR_FRAGMENT"]
+    assert audio_events
+    assert audio_events[0][2]["sampleCount"] >= 1600
+    assert len(fragment_events) == 1
+    event_session, event_name, payload = fragment_events[0]
     assert event_session == session_id
     assert event_name == "ASR_FRAGMENT"
     assert payload["rawText"] == "我是嫌疑人"
@@ -393,8 +399,9 @@ def test_capture_without_margin_runs_suspect_only_and_preserves_uncalibrated_mar
         assert fragment.speaker_threshold == 0.70
         assert fragment.speaker_margin is None
 
-    assert len(events.events) == 1
-    event_session, event_name, payload = events.events[0]
+    fragment_events = [item for item in events.events if item[1] == "ASR_FRAGMENT"]
+    assert len(fragment_events) == 1
+    event_session, event_name, payload = fragment_events[0]
     assert event_session == session_id
     assert event_name == "ASR_FRAGMENT"
     assert payload["speaker"] == "SUSPECT"
@@ -680,7 +687,8 @@ def test_published_fragment_payload_carries_the_shared_mode_rule(tmp_path: Path)
         (calibrated_events, SUSPECT_PLUS_INTERROGATOR, False),
         (degraded_events, "SUSPECT_ONLY", True),
     ):
-        event_session, event_name, payload = events.events[0]
+        fragment_event = next(item for item in events.events if item[1] == "ASR_FRAGMENT")
+        event_session, event_name, payload = fragment_event
         assert event_session == session_id
         assert event_name == "ASR_FRAGMENT"
         assert payload["declaredRecognitionMode"] == SUSPECT_PLUS_INTERROGATOR
@@ -794,6 +802,62 @@ def test_fragment_sink_bypasses_legacy_projection_and_capture_finished_sink_flus
     assert len(fragments) == 1
     assert fragments[0][0] == case_id
     assert finished == [(case_id, session_id)]
+    engine.dispose()
+
+
+def _audio_meter_runtime(tmp_path: Path, capture_id: str):
+    engine, factory, case_id, session_id = _seed_database(tmp_path)
+    events = EventCollector()
+    service = AsrCaptureService(
+        session_factory=factory,
+        device_manager=FakeDeviceManager([]),
+        ai_supervisor=FakeSpeechSupervisor(),
+        publish_event=events,
+    )
+    runtime = capture_module._CaptureRuntime(
+        case_id=case_id,
+        interrogation_session_id=session_id,
+        capture_session_id=capture_id,
+        speech_session_id=f"speech-{capture_id}",
+        speaker_threshold=0.7,
+        speaker_margin=0.1,
+        threshold_source="TEST",
+        calibration_id=None,
+        calibration_status="TEST",
+        speaker_model_fingerprint=None,
+        microphone_fingerprint=None,
+    )
+    return engine, service, runtime, events, session_id, case_id
+
+
+def test_audio_level_event_reports_metrics_from_pcm16(tmp_path: Path):
+    engine, service, runtime, events, session_id, case_id = _audio_meter_runtime(tmp_path, "capture-meter")
+
+    service._publish_audio_level(runtime, struct.pack("<hhh", 0, 3000, -4000), now=1.0)
+
+    assert len(events.events) == 1
+    event_session, event_name, payload = events.events[0]
+    assert event_session == session_id
+    assert event_name == "AUDIO_LEVEL"
+    assert payload["caseId"] == case_id
+    assert payload["captureSessionId"] == "capture-meter"
+    assert payload["sampleCount"] == 3
+    assert payload["sampleRate"] == 16_000
+    assert payload["peak"] == 4000
+    assert payload["rms"] == pytest.approx(2886.75, abs=0.01)
+    engine.dispose()
+
+
+def test_audio_level_event_is_throttled_and_counts_suppressed_pcm(tmp_path: Path):
+    engine, service, runtime, events, _session_id, _case_id = _audio_meter_runtime(tmp_path, "capture-throttle")
+    pcm = struct.pack("<hh", 1000, -1000)
+
+    service._publish_audio_level(runtime, pcm, now=1.0)
+    service._publish_audio_level(runtime, pcm, now=1.05)
+    service._publish_audio_level(runtime, pcm, now=1.1)
+
+    assert len(events.events) == 2
+    assert events.events[-1][2]["sampleCount"] == 6
     engine.dispose()
 
 

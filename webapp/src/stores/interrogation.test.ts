@@ -1,10 +1,14 @@
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 describe('interrogation capture event reducer', () => {
   beforeEach(() => {
     vi.stubGlobal('location', { search: '' })
     setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('keeps final text visible before speaker resolution and replaces superseded parents once', async () => {
@@ -45,5 +49,75 @@ describe('interrogation capture event reducer', () => {
 
     expect(store.activeFragments.map((item) => item.id)).toEqual(['f2', 'f3'])
     expect(store.fragmentHistory('f1').map((item) => item.id)).toEqual(['f1', 'f2', 'f3'])
+  })
+
+  it('keeps only real levels for the active capture across status refreshes', async () => {
+    const { useInterrogationStore } = await import('./interrogation')
+    const store = useInterrogationStore()
+    store.resetCaseContext('case-1')
+    const recordingStatus = {
+      caseId: 'case-1',
+      captureSessionId: 'capture-1',
+      running: true,
+      startedAt: Date.now(),
+      sampleRate: 16000,
+      partialText: '',
+      fragments: [],
+    }
+    store.applyCaptureEvent({ event: 'RECORDING_STATE', payload: recordingStatus })
+    store.applyCaptureEvent({ event: 'AUDIO_LEVEL', payload: {
+      caseId: 'case-1', captureSessionId: 'capture-1', sampleCount: 160, sampleRate: 16000, rms: 12, peak: 40,
+    } })
+    store.applyCaptureEvent({ event: 'AUDIO_LEVEL', payload: {
+      caseId: 'case-1', captureSessionId: 'capture-1', sampleCount: 320, sampleRate: 16000, rms: 0, peak: 0,
+    } })
+    store.applyCaptureEvent({ event: 'AUDIO_LEVEL', payload: {
+      caseId: 'case-1', captureSessionId: 'capture-old', sampleCount: 480, sampleRate: 16000, rms: 100, peak: 100,
+    } })
+
+    expect(store.capture.audioLevels?.map((sample) => sample.peak)).toEqual([40, 0])
+
+    store.applyCaptureEvent({ event: 'RECORDING_STATE', payload: recordingStatus })
+
+    expect(store.capture.audioLevels?.map((sample) => sample.peak)).toEqual([40, 0])
+    store.applyCaptureEvent({ event: 'RECORDING_STATE', payload: { ...recordingStatus, captureSessionId: 'capture-2' } })
+    expect(store.capture.audioLevels).toEqual([])
+  })
+
+  it('bounds audio meter history to the latest 80 real samples', async () => {
+    const { useInterrogationStore } = await import('./interrogation')
+    const store = useInterrogationStore()
+    store.resetCaseContext('case-1')
+    store.applyCaptureEvent({ event: 'RECORDING_STATE', payload: {
+      caseId: 'case-1', captureSessionId: 'capture-1', running: true,
+      startedAt: Date.now(), sampleRate: 16000, partialText: '', fragments: [],
+    } })
+
+    for (let index = 0; index < 85; index += 1) {
+      store.applyCaptureEvent({ event: 'AUDIO_LEVEL', payload: {
+        caseId: 'case-1', captureSessionId: 'capture-1',
+        sampleCount: (index + 1) * 160, sampleRate: 16000, rms: index, peak: index,
+      } })
+    }
+
+    expect(store.capture.audioLevels).toHaveLength(80)
+    expect(store.capture.audioLevels?.[0].peak).toBe(5)
+    expect(store.capture.audioLevels?.[79].peak).toBe(84)
+  })
+
+  it('computes elapsed capture time from the active status start time', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(10_000)
+    const { useInterrogationStore } = await import('./interrogation')
+    const store = useInterrogationStore()
+    store.resetCaseContext('case-1')
+    store.applyCaptureEvent({ event: 'RECORDING_STATE', payload: {
+      caseId: 'case-1', captureSessionId: 'capture-1', running: true,
+      startedAt: 8_000, sampleRate: 16000, partialText: '', fragments: [],
+    } })
+
+    expect(store.captureElapsedMs).toBe(2_000)
+    vi.advanceTimersByTime(1_000)
+    expect(store.captureElapsedMs).toBe(3_000)
   })
 })

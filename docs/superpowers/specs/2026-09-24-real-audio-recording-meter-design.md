@@ -2,7 +2,7 @@
 
 Date: 2026-09-24  
 Branch: `linux-adaptation`  
-Status: 用户已确认方向，待审阅本规格
+Status: 用户已批准规格，实施完成
 
 ## 1. 目标
 

@@ -262,6 +262,13 @@ export interface TemporaryAsrFragment {
   updatedAt: number
 }
 
+export interface AudioLevelSample {
+  sampleCount: number
+  sampleRate: number
+  rms: number
+  peak: number
+}
+
 export interface AsrCaptureStatus {
   caseId: string
   captureSessionId?: string | null
@@ -279,6 +286,8 @@ export interface AsrCaptureStatus {
   asrCursorSample?: number
   voicedMs?: number
   finalFragmentCount?: number
+  audioLevels?: AudioLevelSample[]
+  audioLevelUpdatedAt?: number | null
   sampleRate: number
   partialText: string
   fragments: TemporaryAsrFragment[]
