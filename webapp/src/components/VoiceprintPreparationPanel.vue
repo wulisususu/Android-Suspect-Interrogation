@@ -73,7 +73,7 @@ export function temporarySpeakerPresentation(speaker: TemporaryAsrSpeaker, speak
   if (speaker === 'INTERROGATOR') return { label: `主审民警 · ${speakerName || '未命名'}`, detail: 'ERes2Net-large 声纹匹配', needsConfirmation: false }
   if (speaker === 'RECORDER') return { label: `记录民警 · ${speakerName || '未命名'}`, detail: 'ERes2Net-large 声纹匹配', needsConfirmation: false }
   if (speaker === 'OFFICER_FALLBACK') return { label: '民警', detail: '未启用/未匹配民警声纹，按非嫌疑人规则归类', needsConfirmation: false }
-  return { label: '待确认', detail: '声纹结果不足以可靠归属，请人工确认', needsConfirmation: true }
+  return { label: '说话人待识别', detail: '先保存文字，等待后续声纹分析', needsConfirmation: true }
 }
 </script>
 

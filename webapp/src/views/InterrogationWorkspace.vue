@@ -296,6 +296,7 @@ async function correctRecognitionFragment(fragmentId: string, speaker: Temporary
             :capture-elapsed-ms="store.captureElapsedMs"
             :workspace="templateStore.workspace"
             :dialogue-history="templateStore.dialogueHistory"
+            :fragment-history="store.fragmentHistory"
             :question-library="templateStore.questionLibrary"
             :template-busy="templateStore.loading || templateStore.mutating"
             :template-error="templateStore.error"

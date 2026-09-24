@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
-import type { TemporaryAsrFragment, TemporaryAsrSpeaker } from '../types/interrogation'
+import type { AsrCaptureStatus, TemporaryAsrFragment, TemporaryAsrSpeaker } from '../types/interrogation'
 import { judgeDevBotReply, devBotAsk, devBotNextQuestion } from '../api/devBot'
 import type {
   FormalQAUnit,
@@ -12,6 +12,7 @@ import type {
 } from '../types/templateInterrogation'
 import { dialoguePresentation, groupLiveDialogueFragments } from '../utils/templateInterrogation'
 import { armDrop, pendingDrop } from '../composables/pendingDrop'
+import AsrWorkflowStatus from './AsrWorkflowStatus.vue'
 
 const props = defineProps<{
   caseId: string
@@ -22,6 +23,8 @@ const props = defineProps<{
   questions: FormalQuestion[]
   suspectName?: string
   captureRunning: boolean
+  captureStatus: AsrCaptureStatus
+  fragmentHistory: (fragmentId: string) => TemporaryAsrFragment[]
   captureBusy: boolean
   captureAvailable: boolean
   captureElapsedMs: number
@@ -553,6 +556,8 @@ onMounted(() => {
       </div>
     </header>
 
+    <AsrWorkflowStatus :capture="captureStatus" />
+
     <div ref="feed" class="dialogue-feed" @scroll="onFeedScroll">
       <details v-if="qaReviewUnits.length || qaResolvedUnits.length" class="qa-review-rail" aria-label="Qwen 正式笔录路由状态">
         <summary>笔录归档处理（{{ qaReviewUnits.length }} 项待处理）</summary>
@@ -597,6 +602,16 @@ onMounted(() => {
             >{{ dialogueArmed(turn.fragments) ? '已选中 ✓ 去笔录点一下' : '选中这段' }}</button>
           </div>
           <div class="dialogue-bubble"><strong v-if="speakerPrefix(turn.primary)" class="speaker-prefix">{{ speakerPrefix(turn.primary) }}</strong>{{ turn.text }}</div>
+
+          <template v-for="item in turn.fragments" :key="`lineage-${item.id}`">
+            <details v-if="fragmentHistory(item.id).some((history) => history.id !== item.id)" class="fragment-lineage">
+              <summary>查看原始转写与说话人分析沿革</summary>
+              <div v-for="history in fragmentHistory(item.id)" :key="history.id" class="fragment-lineage-row">
+                <strong>{{ history.state === 'SUPERSEDED' ? '原始转写' : '分析后片段' }}</strong>
+                <span>{{ history.rawText }}</span>
+              </div>
+            </details>
+          </template>
 
           <template v-for="item in turn.fragments" :key="item.id">
             <details v-if="item.recognitionEvidence" class="recognition-evidence-card">
@@ -715,6 +730,26 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.fragment-lineage {
+  margin: 8px 0 0;
+  padding: 7px 9px;
+  border: 1px solid #d7e2ec;
+  border-radius: 8px;
+  color: #52677b;
+  background: #f8fbfd;
+  font-size: 12px;
+}
+
+.fragment-lineage summary {
+  cursor: pointer;
+}
+
+.fragment-lineage-row {
+  display: flex;
+  gap: 8px;
+  padding-top: 6px;
+}
+
 .recognition-evidence-card {
   margin-top: 4px;
   border: 0;

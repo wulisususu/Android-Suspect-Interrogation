@@ -26,7 +26,12 @@ function fakeAdapter() {
     async invoke<T>(operation: RuntimeOperation, payload?: Record<string, unknown>): Promise<T> {
       calls.push({ operation, payload })
       if (operation === 'asr.capture.start') return { caseId: 'case-1', running: true, sampleRate: 16000, partialText: '', fragments: [] } as T
-      if (operation === 'asr.capture.status') return { caseId: 'case-1', source: 'BROWSER', active: true, captureSessionId: 'capture-1', sampleRate: 16000, partialText: '', fragments: [] } as T
+      if (operation === 'asr.capture.status') return {
+        caseId: 'case-1', source: 'BROWSER', active: true, captureSessionId: 'capture-1', sampleRate: 16000,
+        recordingStatus: 'INCOMPLETE', asrStatus: 'FINALIZING', speakerStatus: 'QUEUED',
+        audioSampleCount: 16000, asrCursorSample: 8000, voicedMs: 5000, finalFragmentCount: 2,
+        partialText: '', fragments: [],
+      } as T
       if (operation === 'document.freeze') return { caseId: 'case-1', version: 1, documentId: 'doc-1', documentHash: 'hash', status: 'FROZEN', createdAt: 1, integrityValid: true, signatures: [] } as T
       if (operation === 'document.sign') return { caseId: 'case-1', version: 1, documentId: 'doc-1', documentHash: 'hash', status: 'LOCKED', createdAt: 1, integrityValid: true, signatures: [] } as T
       if (operation === 'voiceprint.readiness') return { suspectReady: true, interrogatorReady: false, recorderReady: false, recognitionMode: 'SUSPECT_ONLY', canStart: true } as T
@@ -69,7 +74,36 @@ describe('application API runtime delegation', () => {
       source: 'BROWSER',
       running: true,
       captureSessionId: 'capture-1',
+      recordingStatus: 'INCOMPLETE',
+      asrStatus: 'FINALIZING',
+      speakerStatus: 'QUEUED',
+      audioSampleCount: 16000,
+      asrCursorSample: 8000,
+      voicedMs: 5000,
+      finalFragmentCount: 2,
     })
+  })
+
+  it('normalizes transcript lineage for replacement history', () => {
+    const fragment = normalizeTemporaryAsrFragment({
+      fragmentId: 'child-1',
+      caseId: 'case-1',
+      captureSessionId: 'capture-1',
+      state: 'PENDING',
+      lineage: [{
+        analysisJobId: 'job-1',
+        parentFragmentId: 'parent-1',
+        childFragmentId: 'child-1',
+        relation: 'SUPERSEDES',
+      }],
+    })
+
+    expect(fragment.lineage).toEqual([{
+      analysisJobId: 'job-1',
+      parentFragmentId: 'parent-1',
+      childFragmentId: 'child-1',
+      relation: 'SUPERSEDES',
+    }])
   })
 
   it('delegates voiceprint readiness, enrollment, library and assignments through the selected runtime', async () => {

@@ -29,6 +29,28 @@ describe('LinuxHttpWsAdapter', () => {
     expect(calls[0].params).toEqual({ limit: 50 })
   })
 
+  it('requests superseded transcript fragments when loading lineage history', async () => {
+    const calls: Array<{ method?: unknown; url?: unknown; params?: Record<string, unknown> }> = []
+    const adapter = new LinuxHttpWsAdapter({
+      request: async (config) => {
+        calls.push({ method: config.method, url: config.url, params: config.params })
+        return { data: { ok: true, data: [] } }
+      },
+    })
+
+    await adapter.invoke('asr.fragment.list', {
+      caseId: 'CASE-001',
+      includeConfirmed: true,
+      includeSuperseded: true,
+    })
+
+    expect(calls).toEqual([{
+      method: 'GET',
+      url: '/api/v1/cases/CASE-001/asr/fragments',
+      params: { include_confirmed: true, include_superseded: true },
+    }])
+  })
+
   it('maps atomic case intake to the canonical endpoint', async () => {
     const calls: Array<{ method: string; url: string; data?: unknown }> = []
     const adapter = new LinuxHttpWsAdapter({

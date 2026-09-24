@@ -41,6 +41,7 @@ const props = defineProps<{
   captureElapsedMs: number
   workspace: TemplateWorkspace
   dialogueHistory: TemporaryAsrFragment[]
+  fragmentHistory: (fragmentId: string) => TemporaryAsrFragment[]
   questionLibrary: StandardQuestion[]
   templateBusy: boolean
   templateError: string
@@ -312,12 +313,14 @@ async function confirmSignature() {
           v-if="readiness.suspectReady"
           :case-id="caseId"
           :dialogue="dialogueHistory"
+          :fragment-history="fragmentHistory"
           :partial-text="capture.partialText"
           :pending-questions="workspace.pendingQuestions"
           :qa-units="workspace.qaUnits"
           :questions="workspace.questions"
           :suspect-name="summary.suspectName"
           :capture-running="capture.running"
+          :capture-status="capture"
           :capture-busy="captureBusy"
           :capture-available="nativeCaptureAvailable && canRecord && !documentFrozen"
           :capture-elapsed-ms="captureElapsedMs"

@@ -168,6 +168,12 @@ interface StoredBrowserFormalAudioFrame extends BrowserFormalAudioFrame {
   captureKey: string
 }
 
+export interface RecoverableBrowserFormalCapture {
+  captureId: string
+  pendingFrameCount: number
+  pendingBytes: number
+}
+
 let outboxDatabase: Promise<IDBDatabase> | null = null
 
 function openOutboxDatabase() {
@@ -295,6 +301,138 @@ class IndexedDbBrowserFormalAudioFrameStore implements BrowserFormalAudioFrameSt
 
 function sameBytes(left: Uint8Array, right: Uint8Array) {
   return left.byteLength === right.byteLength && left.every((value, index) => value === right[index])
+}
+
+export async function listRecoverableBrowserFormalCaptures(caseId: string): Promise<RecoverableBrowserFormalCapture[]> {
+  const database = await openOutboxDatabase()
+  const transaction = database.transaction(OUTBOX_STORE_NAME, 'readonly')
+  const rows = await requestValue(transaction.objectStore(OUTBOX_STORE_NAME).getAll()) as StoredBrowserFormalAudioFrame[]
+  const prefix = `${caseId}:`
+  const grouped = new Map<string, StoredBrowserFormalAudioFrame[]>()
+  for (const row of rows) {
+    if (!row.captureKey.startsWith(prefix)) continue
+    const pending = grouped.get(row.captureKey) ?? []
+    pending.push(row)
+    grouped.set(row.captureKey, pending)
+  }
+  return [...grouped.entries()]
+    .map(([captureKey, pending]) => ({
+      captureId: captureKey.slice(prefix.length),
+      pendingFrameCount: pending.length,
+      pendingBytes: pending.reduce((total, frame) => total + frame.pcm.byteLength, 0),
+    }))
+    .sort((left, right) => left.captureId.localeCompare(right.captureId))
+}
+
+function openRecoverySocket(url: string) {
+  return new Promise<WebSocket>((resolve, reject) => {
+    const socket = new WebSocket(url)
+    socket.binaryType = 'arraybuffer'
+    const timer = window.setTimeout(() => {
+      socket.close()
+      reject(new Error('连接录音恢复通道超时'))
+    }, 10_000)
+    socket.addEventListener('open', () => {
+      window.clearTimeout(timer)
+      resolve(socket)
+    }, { once: true })
+    socket.addEventListener('error', () => {
+      window.clearTimeout(timer)
+      reject(new Error('无法连接录音恢复通道'))
+    }, { once: true })
+  })
+}
+
+function sendRecoveryMessage(socket: WebSocket, data: ArrayBuffer | string) {
+  return new Promise<Record<string, unknown>>((resolve, reject) => {
+    const timer = window.setTimeout(() => finish(() => reject(new Error('等待服务端录音确认超时'))), 10_000)
+    const cleanup = () => {
+      window.clearTimeout(timer)
+      socket.removeEventListener('message', onMessage)
+      socket.removeEventListener('close', onClose)
+      socket.removeEventListener('error', onError)
+    }
+    const finish = (callback: () => void) => {
+      cleanup()
+      callback()
+    }
+    const onMessage = (event: MessageEvent) => {
+      if (typeof event.data !== 'string') {
+        finish(() => reject(new Error('服务端录音确认格式无效')))
+        return
+      }
+      try {
+        const payload = JSON.parse(event.data) as Record<string, unknown>
+        if (payload.type === 'capture_incomplete_ack') {
+          finish(() => reject(new Error('服务端仍将录音标记为不完整')))
+          return
+        }
+        finish(() => resolve(payload))
+      } catch {
+        finish(() => reject(new Error('服务端录音确认格式无效')))
+      }
+    }
+    const onClose = () => finish(() => reject(new Error('录音恢复通道已断开')))
+    const onError = () => finish(() => reject(new Error('录音恢复通道连接异常')))
+    socket.addEventListener('message', onMessage, { once: true })
+    socket.addEventListener('close', onClose, { once: true })
+    socket.addEventListener('error', onError, { once: true })
+    try {
+      if (socket.readyState !== WebSocket.OPEN) throw new Error('录音恢复通道未连接')
+      socket.send(data)
+    } catch (error) {
+      finish(() => reject(error))
+    }
+  })
+}
+
+export async function recoverBrowserFormalCapture(
+  caseId: string,
+  captureId: string,
+  origin = runtimeConfig.apiBaseUrl,
+) {
+  const captureKey = `${caseId}:${captureId}`
+  const lease = await acquireBrowserFormalCaptureLease(captureKey)
+  const outbox = new BoundedBrowserAsrOutbox(
+    new IndexedDbBrowserFormalAudioFrameStore(captureKey),
+    MAX_FORMAL_OUTBOX_BYTES,
+  )
+  let socket: WebSocket | null = null
+  try {
+    const pending = await outbox.list()
+    if (!pending.length) throw new Error('本机没有待补录的音频分片')
+    const cursor = reconcileBrowserFormalCursor(await outbox.loadProgress(), pending)
+    socket = await openRecoverySocket(buildBrowserAsrCaptureWebSocketUrl(caseId, captureId, origin))
+    for (const frame of pending) {
+      const ack = await sendRecoveryMessage(
+        socket,
+        encodeBrowserFormalAsrFrame(frame.sequence, frame.startSample, frame.pcm),
+      )
+      const expectedEnd = frame.startSample + BigInt(frame.pcm.byteLength / 2)
+      const acknowledgedEnd = Number(ack.durableSampleEnd)
+      if (ack.type !== undefined || Number(ack.ackSequence) !== frame.sequence
+          || !Number.isSafeInteger(acknowledgedEnd) || BigInt(acknowledgedEnd) !== expectedEnd) {
+        throw new Error('服务端录音确认与本机分片不一致')
+      }
+      await outbox.acknowledge(frame.sequence)
+    }
+    const nextSample = Number(cursor.nextStartSample)
+    if (!Number.isSafeInteger(nextSample)) throw new Error('本机录音采样位置超出可恢复范围')
+    const completion = await sendRecoveryMessage(socket, JSON.stringify({
+      type: 'capture_recovery_complete',
+      nextSequence: cursor.nextSequence,
+      nextSample,
+    }))
+    if (completion.type !== 'capture_recovery_complete_ack' || completion.captureId !== captureId) {
+      throw new Error('服务端未确认录音恢复完成')
+    }
+    await outbox.clear()
+    return completion
+  } finally {
+    socket?.close()
+    lease.release()
+    await lease.completion
+  }
 }
 
 export function encodeBrowserFormalAsrFrame(

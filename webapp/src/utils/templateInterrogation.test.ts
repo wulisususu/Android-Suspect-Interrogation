@@ -14,7 +14,7 @@ describe('dialoguePresentation', () => {
   it('keeps unknown attribution in the chronological raw transcript without surfacing confidence as a business marker', () => {
     expect(dialoguePresentation({ speaker: 'UNKNOWN', lowConfidence: true } as any)).toEqual({
       side: 'left',
-      badge: '待识别',
+      badge: '说话人待识别',
     })
   })
 })
@@ -31,6 +31,15 @@ describe('groupLiveDialogueFragments', () => {
     expect(groups[0].text).toBe('我先翻了后墙，然后从厨房进去。')
     expect(groups[0].fragments.map((item) => item.id)).toEqual(['a1', 'a2'])
     expect(groups[1].primary.id).toBe('q1')
+  })
+
+  it('keeps delayed transcript replacements in recorded audio order', () => {
+    const groups = groupLiveDialogueFragments([
+      { id: 'later-audio', rawText: '后说的话', speaker: 'INTERROGATOR', startedAtMs: 2000, endedAtMs: 2600, ordinal: 2, createdAt: 10 } as any,
+      { id: 'earlier-audio', rawText: '先说的话', speaker: 'UNKNOWN', startedAtMs: 1000, endedAtMs: 1500, ordinal: 1, createdAt: 20 } as any,
+    ])
+
+    expect(groups.map((group) => group.primary.id)).toEqual(['earlier-audio', 'later-audio'])
   })
 })
 

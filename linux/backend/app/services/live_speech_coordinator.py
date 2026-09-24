@@ -16,7 +16,12 @@ from app.ai.speech.types import SpeechEvent, SpeechEventType
 from app.database.models import ASRAudioFrame, ASRCaptureSession, ASRFragment, Case, LiveSpeechJob
 from app.repositories import audio_archive as archive_repo
 from app.repositories import asr_fragments as asr_repo
-from app.services.durable_audio_archive import BrowserAudioDiscontinuityError, DurableAudioArchive
+from app.domain.errors import DomainError
+from app.services.durable_audio_archive import (
+    AudioStorageReserveError,
+    BrowserAudioDiscontinuityError,
+    DurableAudioArchive,
+)
 from speech_worker.session import SpeechSession
 from speech_worker.speaker_turn_splitter import SpeakerTurnSplitter
 
@@ -62,11 +67,16 @@ class LiveSpeechCoordinator:
         session_factory: sessionmaker[Session],
         capture_service: Any,
         ai_supervisor: Any,
+        min_free_bytes: int = 0,
     ) -> None:
         self.session_factory = session_factory
         self.capture_service = capture_service
         self.ai_supervisor = ai_supervisor
-        self.archive = DurableAudioArchive(data_dir, session_factory)
+        self.archive = DurableAudioArchive(
+            data_dir,
+            session_factory,
+            min_free_bytes=min_free_bytes,
+        )
         self.asr_queue: queue.Queue[_AudioRange | _FinishCapture | None] = queue.Queue()
         self.speaker_queue: queue.Queue[_SpeakerJob | Callable[[], None] | None] = queue.Queue()
         self._lock = threading.RLock()
@@ -83,7 +93,20 @@ class LiveSpeechCoordinator:
         self._process_lock = threading.RLock()
         self._asr_busy = threading.Event()
         self._speaker_queued_ids: set[str] = set()
+        self._browser_recoveries_started: set[str] = set()
         self.capture_service.set_live_speech_coordinator(self)
+
+    def assert_storage_available_for_capture(self) -> None:
+        try:
+            self.archive.check_storage_reserve()
+        except AudioStorageReserveError as exc:
+            reserve_mb = self.archive.min_free_bytes // (1024 * 1024)
+            raise DomainError(
+                "ASR_AUDIO_STORAGE_RESERVE",
+                f"可用存储空间已达到 {reserve_mb} MB 预留线，无法开始正式录音",
+                507,
+                {"reason": str(exc)},
+            ) from exc
 
     def start(self) -> None:
         with self._lock:
@@ -374,18 +397,119 @@ class LiveSpeechCoordinator:
         start_sample: int,
         pcm: bytes,
     ) -> dict[str, int]:
-        """Return a durable receipt for an exact replay after process restart."""
+        """Replay an exact frame or append a missing frame to an incomplete capture."""
         with archive_repo.archive_transaction(self.session_factory, immediate=False) as db:
             capture = db.get(ASRCaptureSession, capture_id)
             if capture is None or capture.case_id != str(case_id):
                 raise ValueError("browser frame does not match a stored capture")
+            recovering = capture.recording_status == "INCOMPLETE"
+            prior = archive_repo.get_frame(db, capture_id, source_sequence)
+        first_recovery_frame = False
+        if recovering and prior is None:
+            with self._lock:
+                first_recovery_frame = capture_id not in self._browser_recoveries_started
+                self._browser_recoveries_started.add(capture_id)
+            if first_recovery_frame:
+                if self._started:
+                    self.asr_queue.join()
+                with self.session_factory() as db:
+                    capture = db.get(ASRCaptureSession, capture_id)
+                    if capture is None:
+                        raise ValueError(f"unknown capture session: {capture_id}")
+                    runtime = self.capture_service.build_recovery_runtime(capture)
+                    cursor = max(0, int(capture.asr_cursor_sample or 0))
+                if runtime is None:
+                    raise RuntimeError("capture session cannot be recovered for ASR")
+                runtime.durable_sample_cursor = int(start_sample)
+                self._runtimes[capture_id] = runtime
+                self._durable_cursors[capture_id] = int(start_sample)
+                self._asr_cursors[capture_id] = cursor
+                self._asr_blocked.discard(capture_id)
+                while cursor < int(start_sample):
+                    next_cursor = min(int(start_sample), cursor + _MAX_INFERENCE_SAMPLES)
+                    self.asr_queue.put(_AudioRange(runtime, cursor, next_cursor))
+                    cursor = next_cursor
         durable_end = self.archive.append(
             capture_id,
             bytes(pcm),
             source_sequence=source_sequence,
             expected_start_sample=start_sample,
+            allow_incomplete_recovery=recovering,
         )
+        if recovering and prior is None:
+            runtime = self._runtimes.get(capture_id)
+            if runtime is None:
+                with self.session_factory() as db:
+                    capture = db.get(ASRCaptureSession, capture_id)
+                    if capture is None:
+                        raise ValueError(f"unknown capture session: {capture_id}")
+                    runtime = self.capture_service.build_recovery_runtime(capture)
+                    asr_cursor = max(0, int(capture.asr_cursor_sample or 0))
+                if runtime is None:
+                    raise RuntimeError("capture session cannot be recovered for ASR")
+                self._runtimes[capture_id] = runtime
+                self._asr_cursors.setdefault(capture_id, asr_cursor)
+                self._asr_blocked.discard(capture_id)
+            runtime.durable_sample_cursor = durable_end
+            self._durable_cursors[capture_id] = durable_end
+            self.asr_queue.put(_AudioRange(runtime, int(start_sample), durable_end))
         return {"ackSequence": source_sequence, "durableSampleEnd": durable_end}
+
+    def complete_browser_capture_recovery(
+        self,
+        *,
+        case_id: str,
+        capture_id: str,
+        next_sequence: int,
+        next_sample: int,
+    ) -> dict[str, int | str]:
+        if not isinstance(next_sequence, int) or isinstance(next_sequence, bool) or next_sequence < 1:
+            raise ValueError("browser recovery sequence cursor is invalid")
+        if not isinstance(next_sample, int) or isinstance(next_sample, bool) or next_sample < 0:
+            raise ValueError("browser recovery sample cursor is invalid")
+        with archive_repo.archive_transaction(self.session_factory, immediate=False) as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            if capture is None or capture.case_id != str(case_id):
+                raise ValueError("browser recovery does not match a stored capture")
+            already_complete = capture.recording_status == "COMPLETE"
+            if capture.recording_status not in {"INCOMPLETE", "COMPLETE"}:
+                raise ValueError("browser capture is not awaiting recovery")
+            last_sequence = db.scalar(
+                select(func.max(ASRAudioFrame.source_sequence)).where(
+                    ASRAudioFrame.capture_session_id == capture_id
+                )
+            )
+            if int(last_sequence or 0) + 1 != next_sequence or int(capture.audio_sample_count or 0) != next_sample:
+                raise ValueError("browser recovery cursors do not match the durable archive")
+            if already_complete:
+                return {
+                    "captureId": capture_id,
+                    "recordingStatus": "COMPLETE",
+                    "nextSequence": next_sequence,
+                    "nextSample": next_sample,
+                }
+            sample_rate = int(capture.sample_rate)
+            asr_cursor = max(0, int(capture.asr_cursor_sample or 0))
+            runtime = self.capture_service.build_recovery_runtime(capture)
+        if runtime is None:
+            raise RuntimeError("capture session cannot be recovered for ASR")
+        if self._started:
+            self.asr_queue.join()
+        runtime.durable_sample_cursor = next_sample
+        self._runtimes[capture_id] = runtime
+        self._durable_cursors[capture_id] = next_sample
+        self._asr_cursors.setdefault(capture_id, asr_cursor)
+        self._asr_blocked.discard(capture_id)
+        self._begin_asr_finalization(capture_id, sample_rate)
+        self.archive.finalize_capture(capture_id, allow_incomplete_recovery=True)
+        self.asr_queue.put(_FinishCapture(runtime))
+        self._browser_recoveries_started.discard(capture_id)
+        return {
+            "captureId": capture_id,
+            "recordingStatus": "COMPLETE",
+            "nextSequence": next_sequence,
+            "nextSample": next_sample,
+        }
 
     def has_browser_frame_receipt(self, case_id: str, capture_id: str) -> bool:
         with self.session_factory() as db:
@@ -393,7 +517,7 @@ class LiveSpeechCoordinator:
             if (
                 capture is None
                 or capture.case_id != str(case_id)
-                or capture.recording_status not in {"CAPTURING", "INCOMPLETE"}
+                or capture.recording_status not in {"CAPTURING", "INCOMPLETE", "COMPLETE"}
             ):
                 return False
             return db.scalar(
@@ -558,6 +682,8 @@ class LiveSpeechCoordinator:
                     recording_status = None if capture is None else capture.recording_status
                 if recording_status == "CAPTURING":
                     self.archive.finalize_capture(runtime.capture_session_id)
+                elif recording_status not in {"INCOMPLETE", "COMPLETE"}:
+                    raise RuntimeError("capture cannot be finalized from its current state")
             except Exception as exc:
                 self._mark_storage_error(runtime, exc)
                 self._asr_blocked.add(runtime.capture_session_id)

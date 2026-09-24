@@ -4,6 +4,7 @@ import hashlib
 import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -11,7 +12,7 @@ from sqlalchemy import select
 from app.database.models import ASRAudioFrame, ASRAudioSegment, ASRCaptureSession, Case
 from app.database.session import init_database, make_engine, make_session_factory
 from app.repositories import audio_archive as archive_repo
-from app.services.durable_audio_archive import DurableAudioArchive
+from app.services.durable_audio_archive import AudioStorageReserveError, DurableAudioArchive
 
 
 @pytest.fixture
@@ -63,6 +64,45 @@ def test_capture_finalizes_wav_with_durable_metadata(archive_env):
         assert capture is not None
         assert capture.recording_status == "COMPLETE"
     engine.dispose()
+
+
+def test_new_capture_is_refused_below_the_audio_storage_reserve(archive_env, monkeypatch):
+    _archive, factory, data_dir, _engine = archive_env
+    archive = DurableAudioArchive(data_dir, factory, min_free_bytes=100)
+    monkeypatch.setattr(
+        "app.services.durable_audio_archive.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=99),
+    )
+
+    with pytest.raises(AudioStorageReserveError, match="reserve reached"):
+        archive.open_capture("capture-1", case_id="case-1")
+
+    with factory() as db:
+        assert db.get(ASRCaptureSession, "capture-1") is None
+
+
+def test_active_capture_stops_at_the_storage_reserve_but_accepts_exact_replays(archive_env, monkeypatch):
+    _archive, factory, data_dir, _engine = archive_env
+    free_bytes = [200]
+    monkeypatch.setattr(
+        "app.services.durable_audio_archive.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=free_bytes[0]),
+    )
+    archive = DurableAudioArchive(data_dir, factory, min_free_bytes=100)
+    archive.open_capture("capture-1", case_id="case-1")
+    first_pcm = b"\x11\x00" * 10
+    assert archive.append("capture-1", first_pcm, source_sequence=1, expected_start_sample=0) == 10
+
+    free_bytes[0] = 99
+    assert archive.append("capture-1", first_pcm, source_sequence=1, expected_start_sample=0) == 10
+    with pytest.raises(AudioStorageReserveError, match="reserve reached"):
+        archive.append("capture-1", b"\x12\x00" * 10, source_sequence=2, expected_start_sample=10)
+
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, "capture-1")
+        assert capture is not None
+        assert capture.recording_status == "INCOMPLETE"
+        assert capture.audio_sample_count == 10
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not meaningful on Windows")

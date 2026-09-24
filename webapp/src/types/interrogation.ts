@@ -166,8 +166,15 @@ export type AsrSpeakerSource =
   | 'SUSPECT_EXCLUSION'
   | 'MANUAL'
 
-export type TemporaryAsrFragmentState = 'PENDING' | 'EDITED' | 'CONFIRMED' | 'DISCARDED'
+export type TemporaryAsrFragmentState = 'PENDING' | 'EDITED' | 'CONFIRMED' | 'DISCARDED' | 'SUPERSEDED'
 export type AsrConfidenceSource = 'SHERPA_TOKEN_LOG_PROBS' | 'FUNASR' | 'UNAVAILABLE'
+
+export interface AsrFragmentLineage {
+  analysisJobId: string
+  parentFragmentId: string
+  childFragmentId: string
+  relation: string
+}
 
 export interface AsrAudioReference {
   captureSessionId: string
@@ -240,6 +247,7 @@ export interface TemporaryAsrFragment {
   modelVersion?: string | null
   recognitionEvidence?: AsrRecognitionEvidence | null
   recognitionRevisions: AsrRecognitionRevision[]
+  lineage?: AsrFragmentLineage[]
   /**
    * Task 17B-1: the mode the fragment was decided in, as published on ASR_FRAGMENT.
    * A narrowed operating point (no calibrated margin) reports SUSPECT_ONLY with
@@ -264,6 +272,13 @@ export interface AsrCaptureStatus {
   modelId?: string | null
   modelName?: string | null
   provider?: 'rknn' | 'cpu' | null
+  recordingStatus?: 'PENDING' | 'CAPTURING' | 'COMPLETE' | 'INCOMPLETE' | string | null
+  asrStatus?: 'PENDING' | 'FINALIZING' | 'COMPLETE' | 'ERROR' | string | null
+  speakerStatus?: 'PENDING' | 'QUEUED' | 'RUNNING' | 'COMPLETE' | 'NEEDS_REVIEW' | 'ERROR' | string | null
+  audioSampleCount?: number
+  asrCursorSample?: number
+  voicedMs?: number
+  finalFragmentCount?: number
   sampleRate: number
   partialText: string
   fragments: TemporaryAsrFragment[]

@@ -16,6 +16,7 @@ class FakeAsrCaptureService:
         self.status_by_case = status_by_case
         self.frames = []
         self.incomplete = []
+        self.completed = []
 
     def status(self, case_id: str) -> dict[str, object]:
         return dict(self.status_by_case.get(case_id, {"active": False}))
@@ -27,6 +28,15 @@ class FakeAsrCaptureService:
     def mark_browser_capture_incomplete(self, case_id, capture_id, reason):
         self.incomplete.append((case_id, capture_id, reason))
         return True
+
+    def complete_browser_capture_recovery(self, case_id, capture_id, next_sequence, next_sample):
+        self.completed.append((case_id, capture_id, next_sequence, next_sample))
+        return {
+            "captureId": capture_id,
+            "recordingStatus": "COMPLETE",
+            "nextSequence": next_sequence,
+            "nextSample": next_sample,
+        }
 
 
 def make_app(status_by_case: dict[str, dict[str, object]]) -> tuple[FastAPI, BrowserAudioInput]:
@@ -171,6 +181,52 @@ def test_formal_browser_socket_persists_client_incomplete_state():
     assert close["type"] == "websocket.close"
     assert close["code"] == 4410
     assert app.state.asr_capture_service.incomplete == [("CASE-A", "CAPTURE-A", reason)]
+
+
+def test_formal_browser_socket_confirms_recovery_only_after_server_finalization():
+    app, _browser_input = make_app({
+        "CASE-A": {"active": False, "captureSessionId": "CAPTURE-A", "source": "BROWSER"},
+    })
+    app.state.live_speech_coordinator = type(
+        "RecoveryCoordinator",
+        (),
+        {"has_browser_frame_receipt": lambda _self, _case_id, _capture_id: True},
+    )()
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.app = app
+            self.messages = [{
+                "type": "websocket.receive",
+                "text": '{"type":"capture_recovery_complete","nextSequence":3,"nextSample":160}',
+            }]
+            self.sent_json = []
+            self.closed = []
+
+        async def accept(self):
+            pass
+
+        async def receive(self):
+            return self.messages.pop(0)
+
+        async def send_json(self, payload):
+            self.sent_json.append(payload)
+
+        async def close(self, code, reason=None):
+            self.closed.append((code, reason))
+
+    socket = FakeWebSocket()
+    asyncio.run(router.routes[0].endpoint(socket, "CASE-A", "CAPTURE-A"))
+
+    assert app.state.asr_capture_service.completed == [("CASE-A", "CAPTURE-A", 3, 160)]
+    assert socket.sent_json == [{
+        "type": "capture_recovery_complete_ack",
+        "captureId": "CAPTURE-A",
+        "recordingStatus": "COMPLETE",
+        "nextSequence": 3,
+        "nextSample": 160,
+    }]
+    assert socket.closed == []
 
 
 def test_formal_browser_socket_does_not_ack_an_unpersisted_incomplete_marker():

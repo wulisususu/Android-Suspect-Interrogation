@@ -122,7 +122,11 @@ function endpoint(operation: RuntimeOperation, payload: Record<string, unknown>)
     case 'asr.capture.status': return { method: 'GET', url: `/api/v1/cases/${caseId}/asr/capture` }
     case 'asr.capture.start': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/capture/start`, data: {} }
     case 'asr.capture.stop': return { method: 'POST', url: `/api/v1/cases/${caseId}/asr/capture/stop`, data: {} }
-    case 'asr.fragment.list': return { method: 'GET', url: `/api/v1/cases/${caseId}/asr/fragments`, params: { include_confirmed: payload.includeConfirmed } }
+    case 'asr.fragment.list': return {
+      method: 'GET',
+      url: `/api/v1/cases/${caseId}/asr/fragments`,
+      params: { include_confirmed: payload.includeConfirmed, include_superseded: payload.includeSuperseded },
+    }
     case 'asr.fragment.update': return {
       method: 'PUT',
       url: `/api/v1/cases/${caseId}/asr/fragments/${fragmentId}`,

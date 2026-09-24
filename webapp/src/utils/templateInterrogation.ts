@@ -20,7 +20,7 @@ const presentationBySpeaker: Record<TemporaryAsrSpeaker, DialoguePresentation> =
   INTERROGATOR: { side: 'right', badge: '主审' },
   RECORDER: { side: 'right', badge: '记录员' },
   OFFICER_FALLBACK: { side: 'right', badge: '民警' },
-  UNKNOWN: { side: 'left', badge: '待识别' },
+  UNKNOWN: { side: 'left', badge: '说话人待识别' },
 }
 
 export function dialoguePresentation(item: Pick<TemporaryAsrFragment, 'speaker'>): DialoguePresentation {
@@ -52,7 +52,11 @@ function isContinuousSuspectTurn(previous: TemporaryAsrFragment, next: Temporary
 export function groupLiveDialogueFragments(fragments: TemporaryAsrFragment[]): LiveDialogueGroup[] {
   const ordered = [...fragments]
     .filter((fragment) => Boolean(textOf(fragment)))
-    .sort((left, right) => timestamp(left.createdAt) - timestamp(right.createdAt) || left.ordinal - right.ordinal)
+    .sort((left, right) =>
+      left.startedAtMs - right.startedAtMs
+      || left.endedAtMs - right.endedAtMs
+      || left.ordinal - right.ordinal
+      || left.id.localeCompare(right.id))
   const groups: LiveDialogueGroup[] = []
   for (const fragment of ordered) {
     const previous = groups.at(-1)

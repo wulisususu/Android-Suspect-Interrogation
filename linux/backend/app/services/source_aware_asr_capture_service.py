@@ -129,6 +129,22 @@ class SourceAwareAsrCaptureService:
             pcm=pcm,
         )
 
+    def complete_browser_capture_recovery(
+        self,
+        case_id: str,
+        capture_id: str,
+        next_sequence: int,
+        next_sample: int,
+    ) -> dict[str, int | str]:
+        if self._live_speech_coordinator is None:
+            raise RuntimeError("durable browser audio ingress is unavailable")
+        return self._live_speech_coordinator.complete_browser_capture_recovery(
+            case_id=case_id,
+            capture_id=capture_id,
+            next_sequence=next_sequence,
+            next_sample=next_sample,
+        )
+
     def mark_browser_capture_incomplete(self, case_id: str, capture_id: str, reason: str) -> bool:
         case_id = str(case_id).strip()
         with self._lock:

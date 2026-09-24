@@ -187,6 +187,7 @@ git commit -m "feat: persist live audio archive segments"
 **Files:**
 - Create: `linux/backend/app/services/live_speech_coordinator.py`
 - Modify: `linux/backend/app/services/asr_capture_service.py`
+- Modify: `linux/backend/app/repositories/audio_archive.py`
 - Modify: `linux/backend/app/services/source_aware_asr_capture_service.py`
 - Modify: `linux/backend/app/main.py`
 - Create: `linux/backend/tests/test_live_speech_coordinator.py`
@@ -343,6 +344,10 @@ git commit -m "feat: add deferred speaker analysis and transcript lineage"
 - Modify: `linux/backend/tests/test_qa_routing_coordinator.py`
 - Modify: `linux/backend/tests/test_qa_unit_builder.py`
 - Modify: `webapp/src/stores/interrogation.ts`
+- Modify: `webapp/src/stores/templateInterrogation.ts`
+- Modify: `webapp/src/runtime/linuxHttpWsAdapter.ts`
+- Modify: `webapp/src/runtime/__tests__/apiFacade.test.ts`
+- Modify: `webapp/src/runtime/__tests__/linuxHttpWsAdapter.test.ts`
 - Modify: `webapp/src/utils/asrFragments.ts`
 - Modify: `webapp/src/utils/asrFragments.test.ts`
 
@@ -426,7 +431,7 @@ Run from repository root: `npm --prefix webapp test -- src/audio/browserAsrCaptu
 
 Expected: PASS; reconnect resends only unacknowledged sequences and HTTPS origins still produce WSS URLs.
 
-- [ ] **Step 5: Commit the browser transport**
+- [x] **Step 5: Commit the browser transport**
 
 ```text
 git add docs/superpowers/plans/2026-09-23-durable-live-speech-pipeline.md linux/backend/app/repositories/audio_archive.py linux/backend/app/services/asr_capture_service.py linux/backend/app/services/durable_audio_archive.py linux/backend/app/services/live_speech_coordinator.py linux/backend/app/services/source_aware_asr_capture_service.py linux/backend/app/websocket/browser_asr.py linux/backend/tests/test_durable_audio_archive.py linux/backend/tests/test_browser_asr_transport.py linux/backend/tests/test_live_speech_coordinator.py webapp/src/api/interrogation.ts webapp/src/audio/browserAsrCapture.ts webapp/src/audio/browserAsrCapture.test.ts webapp/src/audio/browserCaptureResumeGate.ts webapp/src/audio/browserCaptureResumeGate.test.ts webapp/src/runtime/linuxHttpWsAdapter.ts webapp/src/runtime/__tests__/apiFacade.test.ts webapp/src/runtime/__tests__/linuxBrowserStop.test.ts webapp/src/stores/interrogation.ts webapp/src/types/interrogation.ts
@@ -438,14 +443,30 @@ git commit -m "feat: acknowledge and replay browser ASR audio"
 Task 8 must also provide a user-accessible way to inspect and recover retained browser outbox frames after an incomplete capture is stopped. The frames remain in IndexedDB, but there is currently no UI to list or export them; they must not be deleted silently.
 
 **Files:**
+- Modify: `linux/backend/app/services/asr_capture_service.py`
+- Modify: `linux/backend/app/services/source_aware_asr_capture_service.py`
+- Modify: `linux/backend/app/services/live_speech_coordinator.py`
+- Modify: `linux/backend/app/services/durable_audio_archive.py`
+- Modify: `linux/backend/app/websocket/browser_asr.py`
+- Modify: `linux/backend/tests/test_asr_capture_service.py`
+- Modify: `linux/backend/tests/test_live_speech_coordinator.py`
+- Modify: `linux/backend/tests/test_browser_asr_transport.py`
 - Modify: `webapp/src/types/interrogation.ts`
 - Modify: `webapp/src/api/interrogation.ts`
+- Modify: `webapp/src/audio/browserAsrCapture.ts`
 - Modify: `webapp/src/stores/interrogation.ts`
+- Create: `webapp/src/components/AsrWorkflowStatus.vue`
 - Modify: `webapp/src/components/LiveDialoguePanel.vue`
 - Modify: `webapp/src/components/TranscriptPanel.vue`
+- Modify: `webapp/src/components/TemplateDrivenInterrogationPage.vue`
+- Modify: `webapp/src/components/VoiceprintPreparationPanel.vue`
+- Modify: `webapp/src/components/VoiceprintPreparationPanel.test.ts`
+- Modify: `webapp/src/views/InterrogationWorkspace.vue`
+- Modify: `webapp/src/utils/templateInterrogation.ts`
 - Create: `webapp/src/stores/interrogation.test.ts`
+- Modify: `webapp/src/utils/templateInterrogation.test.ts`
 
-- [ ] **Step 1: Add event reducer tests**
+- [x] **Step 1: Add event reducer and browser recovery tests**
 
 ```ts
 it('keeps final text visible before speaker resolution and replaces superseded parents once', () => {
@@ -473,15 +494,15 @@ Run: `npm --prefix webapp test -- src/stores/interrogation.test.ts`
 
 Expected: FAIL because the store has no speaker-resolution/lineage reducer.
 
-- [ ] **Step 2: Add typed API and store reducers**
+- [x] **Step 2: Add typed API and store reducers**
 
 Extend the fragment state union with `SUPERSEDED`; add `recordingStatus`, `asrStatus`, `speakerStatus`, and lineage IDs to the capture/fragment types. Parse these fields in `api/interrogation.ts`. Add `applyCaptureEvent(event)`, `activeFragments`, and `fragmentHistory(parentId)` to the store. Handle the existing `ASR_FRAGMENT` event and the new `ASR_FRAGMENT_REPLACED` payload `{ parentFragmentId, fragments }` idempotently by fragment and job/revision ID; retain superseded rows in history, but exclude them from active transcript rows. Route websocket events through the same reducer.
 
-- [ ] **Step 3: Render capture and identity states**
+- [x] **Step 3: Render capture and identity states**
 
 In the two transcript panels, display finalized UNKNOWN text immediately with “说话人待识别”, then update role when resolved. Show recording, ASR backlog, voiceprint progress, and incomplete/audio-gap status independently. Keep the current manual speaker selector; disable confirmation only for UNKNOWN or SUPERSEDED fragments.
 
-- [ ] **Step 4: Verify frontend behavior**
+- [x] **Step 4: Verify frontend and durable recovery behavior**
 
 Run: `npm --prefix webapp test -- src/stores/interrogation.test.ts src/audio/browserAsrCapture.test.ts`
 
@@ -491,7 +512,7 @@ Run: `npm --prefix webapp run typecheck`
 
 Expected: exit code `0`.
 
-- [ ] **Step 5: Commit the live transcript UI**
+- [x] **Step 5: Commit the live transcript UI**
 
 ```text
 git add webapp/src/types/interrogation.ts webapp/src/api/interrogation.ts webapp/src/stores/interrogation.ts webapp/src/components/LiveDialoguePanel.vue webapp/src/components/TranscriptPanel.vue webapp/src/stores/interrogation.test.ts
@@ -505,8 +526,9 @@ git commit -m "feat: show transcript before speaker analysis"
 - Modify: `scripts/restore.sh`
 - Modify: `tests/release/test_backup_restore.py`
 - Modify: `tests/release/test_restore_security.py`
+- Create: `tests/release/shell_scripts.py`
 
-- [ ] **Step 1: Add archive exclusion and same-device restore tests**
+- [x] **Step 1: Add archive exclusion and same-device restore tests**
 
 Create a temporary data directory with SQLite, one audio file, and one unrelated mutable file. Assert a rolling archive contains the database and unrelated file but not `audio/`; after restore, assert the same audio file remains and its SHA-256 matches the database manifest. Assert a missing or mismatched audio hash is reported as incomplete. Retain existing traversal/symlink rejection assertions.
 
@@ -514,15 +536,15 @@ Run: `python -m pytest tests/release/test_backup_restore.py tests/release/test_r
 
 Expected: FAIL because backup currently archives all non-database mutable files and restore deletes `audio/`.
 
-- [ ] **Step 2: Exclude only the evidence bytes from rolling snapshots**
+- [x] **Step 2: Exclude only the evidence bytes from rolling snapshots**
 
 Update `backup.sh` to exclude exactly `./audio` from the data tar and include a sorted audio manifest of relative paths, capture IDs, committed sample counts, and SHA-256 values in the snapshot metadata. Do not exclude other mutable data. Keep the current seven-snapshot database retention.
 
-- [ ] **Step 3: Preserve and verify audio during restore**
+- [x] **Step 3: Preserve and verify audio during restore**
 
 Update `restore.sh` to preserve `/var/lib/suspect-interrogation/audio` alongside the existing `backups` directory while replacing snapshot-managed data. Validate each manifest path stays under `audio/`, verify every referenced hash, and return a nonzero incomplete-restore result if any referenced evidence is absent or corrupted. Never remove audio as part of rolling snapshot rotation.
 
-- [ ] **Step 4: Verify backup/restore security and evidence preservation**
+- [x] **Step 4: Verify backup/restore security and evidence preservation**
 
 Run: `python -m pytest tests/release/test_backup_restore.py tests/release/test_restore_security.py -q`
 
@@ -535,17 +557,25 @@ git add scripts/backup.sh scripts/restore.sh tests/release/test_backup_restore.p
 git commit -m "feat: retain live audio outside rolling snapshots"
 ```
 
-## Task 10: Document Operations and Storage Limits
+## Task 10: Enforce and Document Operations and Storage Limits
 
 **Files:**
+- Modify: `linux/backend/app/runtime_settings.py`
+- Modify: `linux/backend/app/main.py`
+- Modify: `linux/backend/app/services/live_speech_coordinator.py`
+- Modify: `linux/backend/app/services/durable_audio_archive.py`
+- Modify: `linux/backend/app/services/asr_capture_service.py`
+- Modify: `linux/backend/app/repositories/audio_archive.py`
+- Modify: `linux/backend/tests/test_durable_audio_archive.py`
+- Modify: `linux/backend/tests/test_asr_capture_service.py`
 - Modify: `docs/release/DEPLOYMENT.md`
 - Modify: `docs/security/LINUX-HARDENING.md`
 
-- [ ] **Step 1: Document archive and recovery behavior**
+- [x] **Step 1: Enforce and document archive, recovery, and storage-reserve behavior**
 
-Document `/var/lib/suspect-interrogation/audio/<case-id>/<capture-id>/`, `0750` directory/`0640` file permissions, 16 kHz mono PCM16, approximately 115 MB/hour, one-second checkpoints, ASR-before-speaker recovery order, 10 GB reserve, no automatic audio purge, and the limitation that off-device disaster recovery is not included.
+Enforce the configurable free-space reserve (default 10 GB) before formal capture and before each new durable audio append. A reserve breach refuses a new capture or stops an active capture visibly as incomplete while preserving committed samples. Document `/var/lib/suspect-interrogation/audio/<case-id>/<capture-id>/`, `0750` directory/`0640` file permissions, 16 kHz mono PCM16, approximately 115 MB/hour, one-second checkpoints, ASR-before-speaker recovery order, no automatic audio purge, browser outbox recovery, and the limitation that off-device disaster recovery is not included.
 
-- [ ] **Step 2: Verify documentation matches scripts and code**
+- [x] **Step 2: Verify documentation matches scripts and code**
 
 Run: `rg -n "audio/<case-id>/<capture-id>|115 MB|10 GB|off-device|checkpoint" docs/release/DEPLOYMENT.md docs/security/LINUX-HARDENING.md`
 

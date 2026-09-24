@@ -83,8 +83,8 @@ describe('VoiceprintPreparationPanel helpers', () => {
       needsConfirmation: false,
     })
     expect(temporarySpeakerPresentation('UNKNOWN')).toEqual({
-      label: '待确认',
-      detail: '声纹结果不足以可靠归属，请人工确认',
+      label: '说话人待识别',
+      detail: '先保存文字，等待后续声纹分析',
       needsConfirmation: true,
     })
   })

@@ -181,6 +181,19 @@ class AsrCaptureService:
     ) -> dict[str, int]:
         with self._lock:
             runtime = self._active.get(str(case_id).strip())
+        with self.session_factory() as db:
+            capture = db.get(ASRCaptureSession, str(capture_id))
+            recording_status = None if capture is None else capture.recording_status
+        if recording_status in {"INCOMPLETE", "COMPLETE"}:
+            if self._live_speech_coordinator is None:
+                raise RuntimeError("durable browser audio ingress is unavailable")
+            return self._live_speech_coordinator.replay_browser_frame(
+                case_id=case_id,
+                capture_id=capture_id,
+                source_sequence=source_sequence,
+                start_sample=start_sample,
+                pcm=bytes(pcm),
+            )
         if runtime is None or runtime.capture_session_id != str(capture_id):
             raise RuntimeError("browser audio capture is not active")
         if self._live_speech_coordinator is None:
@@ -196,7 +209,31 @@ class AsrCaptureService:
     def mark_browser_capture_incomplete(self, case_id: str, capture_id: str, reason: str) -> bool:
         if self._live_speech_coordinator is None:
             raise RuntimeError("durable browser audio ingress is unavailable")
-        return self._live_speech_coordinator.mark_browser_capture_incomplete(case_id, capture_id, reason)
+        marked = self._live_speech_coordinator.mark_browser_capture_incomplete(case_id, capture_id, reason)
+        with self._lock:
+            runtime = self._active.get(str(case_id).strip())
+        if marked and runtime is not None and runtime.capture_session_id == str(capture_id):
+            runtime.stop_event.set()
+            thread = runtime.thread
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(timeout=max(1.0, self.read_timeout * 5.0))
+        return marked
+
+    def complete_browser_capture_recovery(
+        self,
+        case_id: str,
+        capture_id: str,
+        next_sequence: int,
+        next_sample: int,
+    ) -> dict[str, int | str]:
+        if self._live_speech_coordinator is None:
+            raise RuntimeError("durable browser audio ingress is unavailable")
+        return self._live_speech_coordinator.complete_browser_capture_recovery(
+            case_id=case_id,
+            capture_id=capture_id,
+            next_sequence=next_sequence,
+            next_sample=next_sample,
+        )
 
     def resume_browser_capture(self, runtime: _CaptureRuntime) -> None:
         """Rebind an interrupted browser capture after archive recovery."""
@@ -222,6 +259,9 @@ class AsrCaptureService:
         case_id = str(case_id).strip()
         if not case_id:
             raise DomainError("CASE_ID_REQUIRED", "案件编号不能为空", 400)
+        ensure_storage = getattr(self._live_speech_coordinator, "assert_storage_available_for_capture", None)
+        if callable(ensure_storage):
+            ensure_storage()
 
         with self._lock:
             existing = self._active.get(case_id)
@@ -270,6 +310,15 @@ class AsrCaptureService:
             # previous code opened a second one just for this, before the runtime row
             # existed.
             bound_roles = self._bound_roles(db, interrogation_session_id)
+            initial_workflow_status = {
+                "recordingStatus": capture.recording_status,
+                "asrStatus": capture.asr_status,
+                "speakerStatus": capture.speaker_status,
+                "audioSampleCount": int(capture.audio_sample_count or 0),
+                "asrCursorSample": int(capture.asr_cursor_sample or 0),
+                "voicedMs": int(capture.voiced_ms or 0),
+                "finalFragmentCount": 0,
+            }
 
         runtime = _CaptureRuntime(
             case_id=case_id,
@@ -327,7 +376,12 @@ class AsrCaptureService:
             self._last_error[case_id] = None
             self._active[case_id] = runtime
         thread.start()
-        return self._runtime_status(runtime, active=True, last_error=None)
+        return self._runtime_status(
+            runtime,
+            active=True,
+            last_error=None,
+            workflow_status=initial_workflow_status,
+        )
 
     def stop(self, case_id: str) -> dict[str, Any]:
         case_id = str(case_id).strip()
@@ -425,6 +479,7 @@ class AsrCaptureService:
                 "startedAt": capture.started_at.isoformat() if capture.started_at is not None else None,
                 "endedAt": capture.ended_at.isoformat() if capture.ended_at is not None else None,
                 "lastError": last_error,
+                **self._capture_workflow_status(capture.id),
             }
 
     def start_preparation(self, case_id: str) -> dict[str, Any]:
@@ -1659,6 +1714,7 @@ class AsrCaptureService:
         *,
         active: bool,
         last_error: str | None,
+        workflow_status: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "caseId": runtime.case_id,
@@ -1681,7 +1737,33 @@ class AsrCaptureService:
             "lastError": last_error,
             # Task 17B-1: the mode the runtime really enforces, from the shared rule.
             **self.speaker_mode_capability(runtime),
+            **(
+                self._capture_workflow_status(runtime.capture_session_id)
+                if workflow_status is None
+                else workflow_status
+            ),
         }
+
+    def _capture_workflow_status(self, capture_id: str) -> dict[str, Any]:
+        with self.session_factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            if capture is None:
+                return {}
+            final_fragment_count = db.scalar(
+                select(func.count(ASRFragment.id)).where(
+                    ASRFragment.capture_session_id == capture_id,
+                    ASRFragment.asr_idempotency_key.is_not(None),
+                )
+            )
+            return {
+                "recordingStatus": capture.recording_status,
+                "asrStatus": capture.asr_status,
+                "speakerStatus": capture.speaker_status,
+                "audioSampleCount": int(capture.audio_sample_count or 0),
+                "asrCursorSample": int(capture.asr_cursor_sample or 0),
+                "voicedMs": int(capture.voiced_ms or 0),
+                "finalFragmentCount": int(final_fragment_count or 0),
+            }
 
     def _preparation_status(self, runtime: _PreparationRuntime, *, active: bool) -> dict[str, Any]:
         return {

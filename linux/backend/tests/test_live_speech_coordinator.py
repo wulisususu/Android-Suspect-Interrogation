@@ -629,7 +629,7 @@ def test_browser_capture_marker_reconnect_is_limited_to_capturing_or_incomplete(
     assert restarted.has_browser_frame_receipt(case_id, capturing_id) is True
     assert restarted.has_browser_frame_receipt(case_id, incomplete_id) is True
     assert restarted.has_browser_frame_receipt(case_id, incomplete_with_audio_id) is True
-    assert restarted.has_browser_frame_receipt(case_id, complete_id) is False
+    assert restarted.has_browser_frame_receipt(case_id, complete_id) is True
 
     restarted.mark_browser_capture_incomplete(case_id, complete_id, "stale socket")
     with factory() as db:
@@ -734,8 +734,8 @@ def test_browser_recovery_without_browser_runtime_marks_incomplete_and_replays_d
         status = capture_service.status(case_id)
         assert status["source"] == "BROWSER"
         assert status["status"] == "FAILED"
-        with pytest.raises(RuntimeError, match="not accepting audio"):
-            capture_service.ingest_browser_frame(case_id, capture_id, 2, len(audio) // 2, audio)
+        receipt = capture_service.ingest_browser_frame(case_id, capture_id, 2, len(audio) // 2, audio)
+        assert receipt == {"ackSequence": 2, "durableSampleEnd": len(audio)}
     finally:
         coordinator.shutdown()
 
@@ -834,13 +834,87 @@ def test_marking_browser_capture_incomplete_does_not_block_durable_asr_ranges(tm
             source_sequence=1,
             expected_start_sample=0,
         )
-
         assert coordinator.mark_browser_capture_incomplete(case_id, capture_id, "outbox full") is True
         coordinator.asr_queue.join()
 
         assert speech.pushed == [audio]
         assert runtime.storage_error is None
         assert capture_id not in coordinator._asr_blocked
+    finally:
+        coordinator.shutdown()
+
+
+def test_incomplete_browser_capture_can_reingest_and_finalize_local_outbox_frames(tmp_path: Path):
+    factory, case_id, session_id = _seed_database(tmp_path)
+    worker = ReplaySpeechWorker(emit_final=False)
+    service = _source_service(factory, FakeDevice([]), worker, EventCollector())
+    coordinator = LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=service,
+        ai_supervisor=worker,
+    )
+    with factory() as db:
+        capture = asr_repo.create_capture_session(
+            db,
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            sample_rate=16_000,
+        )
+        capture_id = capture.id
+        db.commit()
+
+    runtime = service.build_recovery_runtime(capture)
+    assert runtime is not None
+    coordinator.open_capture(runtime)
+    coordinator.register_browser_capture(capture_id)
+    first_pcm = b"\x01\x00" * 10
+    coordinator.append_audio(
+        runtime,
+        first_pcm,
+        source_sequence=1,
+        expected_start_sample=0,
+    )
+    coordinator.mark_browser_capture_incomplete(case_id, capture_id, "lost browser acknowledgement")
+    coordinator.start()
+    try:
+        missing_pcm = b"\x02\x00" * 10
+        receipt = coordinator.replay_browser_frame(
+            case_id=case_id,
+            capture_id=capture_id,
+            source_sequence=2,
+            start_sample=10,
+            pcm=missing_pcm,
+        )
+        assert receipt == {"ackSequence": 2, "durableSampleEnd": 20}
+        assert coordinator.replay_browser_frame(
+            case_id=case_id,
+            capture_id=capture_id,
+            source_sequence=2,
+            start_sample=10,
+            pcm=missing_pcm,
+        ) == receipt
+        with pytest.raises(ValueError, match="cursors do not match"):
+            coordinator.complete_browser_capture_recovery(
+                case_id=case_id,
+                capture_id=capture_id,
+                next_sequence=4,
+                next_sample=20,
+            )
+
+        finalized = coordinator.complete_browser_capture_recovery(
+            case_id=case_id,
+            capture_id=capture_id,
+            next_sequence=3,
+            next_sample=20,
+        )
+        assert finalized["recordingStatus"] == "COMPLETE"
+        assert coordinator.archive.read_samples(capture_id, 0, 20) == first_pcm + missing_pcm
+        with factory() as db:
+            capture = db.get(ASRCaptureSession, capture_id)
+            assert capture is not None
+            assert capture.recording_status == "COMPLETE"
+            assert capture.audio_sample_count == 20
     finally:
         coordinator.shutdown()
 

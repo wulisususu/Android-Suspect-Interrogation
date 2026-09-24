@@ -3,6 +3,7 @@ import { nextTick, ref, watch } from 'vue'
 import { AlertTriangle, Check, Mic, Square, Trash2 } from '@lucide/vue'
 import { temporarySpeakerPresentation } from './VoiceprintPreparationPanel.vue'
 import type { AsrCaptureStatus, TemporaryAsrFragment, TemporaryAsrSpeaker, TranscriptMessage } from '../types/interrogation'
+import AsrWorkflowStatus from './AsrWorkflowStatus.vue'
 
 const props = defineProps<{
   messages: TranscriptMessage[]
@@ -14,6 +15,7 @@ const props = defineProps<{
   captureElapsedMs: number
   selectedFragmentIds: string[]
   error?: string
+  fragmentHistory?: (fragmentId: string) => TemporaryAsrFragment[]
 }>()
 const emit = defineEmits<{
   send: [text: string]
@@ -96,7 +98,6 @@ function confidenceLabel(fragment: TemporaryAsrFragment) {
 }
 
 function speakerPresentation(fragment: TemporaryAsrFragment) {
-  if (fragment.lowConfidence) return temporarySpeakerPresentation('UNKNOWN')
   return temporarySpeakerPresentation(fragment.speaker, fragment.speakerName)
 }
 
@@ -159,6 +160,8 @@ function updateFragmentSpeaker(fragment: TemporaryAsrFragment, event: Event) {
     </div>
 
     <footer class="transcript-capture-footer">
+      <AsrWorkflowStatus :capture="capture" />
+
       <div v-if="capture.partialText" class="asr-live-partial" aria-live="polite">
         <span>实时转写</span>
         <strong>{{ capture.partialText }}</strong>
@@ -205,9 +208,19 @@ function updateFragmentSpeaker(fragment: TemporaryAsrFragment, event: Event) {
                 aria-label="临时转写文本"
                 @change="updateFragmentText(fragment, $event)"
               />
+              <details
+                v-if="(fragmentHistory?.(fragment.id) ?? []).some((history) => history.id !== fragment.id)"
+                class="fragment-lineage"
+              >
+                <summary>查看原始转写与分析沿革</summary>
+                <div v-for="history in (fragmentHistory?.(fragment.id) ?? [])" :key="history.id" class="fragment-lineage-row">
+                  <strong>{{ history.state === 'SUPERSEDED' ? '原始转写' : '分析后片段' }}</strong>
+                  <span>{{ history.rawText }}</span>
+                </div>
+              </details>
             </div>
             <select
-              :value="fragment.lowConfidence ? 'UNKNOWN' : fragment.speaker"
+              :value="fragment.speaker"
               aria-label="说话人"
               @change="updateFragmentSpeaker(fragment, $event)"
             >
@@ -221,7 +234,7 @@ function updateFragmentSpeaker(fragment: TemporaryAsrFragment, event: Event) {
               class="fragment-icon-button confirm"
               title="确认并正式入库"
               aria-label="确认并正式入库"
-              :disabled="!fragment.editedText.trim() || fragment.lowConfidence || fragment.speaker === 'UNKNOWN'"
+              :disabled="!fragment.editedText.trim() || fragment.speaker === 'UNKNOWN' || fragment.state === 'SUPERSEDED'"
               @click="$emit('confirmFragment', fragment.id)"
             >
               <Check :size="17" />
@@ -267,3 +280,25 @@ function updateFragmentSpeaker(fragment: TemporaryAsrFragment, event: Event) {
     </footer>
   </section>
 </template>
+
+<style scoped>
+.fragment-lineage {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid #d7e2ec;
+  border-radius: 7px;
+  color: #52677b;
+  background: #f8fbfd;
+  font-size: 12px;
+}
+
+.fragment-lineage summary {
+  cursor: pointer;
+}
+
+.fragment-lineage-row {
+  display: flex;
+  gap: 8px;
+  padding-top: 5px;
+}
+</style>

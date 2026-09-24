@@ -95,6 +95,11 @@ interface CaseScope {
   generation: number
 }
 
+interface CaptureEvent {
+  event: string
+  payload: unknown
+}
+
 function emptyCaseSummary(caseId = ''): CaseSummary {
   return {
     id: caseId,
@@ -164,6 +169,10 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   const captureClock = ref(Date.now())
   const selectedFragmentIds = ref<string[]>([])
   const capture = ref<AsrCaptureStatus>(emptyCapture(caseId.value))
+  const archivedFragments = ref<Record<string, TemporaryAsrFragment>>({})
+  const lineageGroups = ref<Record<string, string[]>>({})
+  const lineageGroupByFragment = ref<Record<string, string>>({})
+  const processedReplacementJobIds = new Set<string>()
   const formalRecordRevision = ref(0)
   const caseSummary = ref<CaseSummary>(emptyCaseSummary(caseId.value))
   const session = ref<SessionState>(emptySession(caseId.value))
@@ -196,6 +205,16 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   const captureElapsedMs = computed(() => capture.value.running && capture.value.startedAt
     ? Math.max(0, captureClock.value - capture.value.startedAt)
     : 0)
+  const activeFragments = computed(() => capture.value.fragments.filter((fragment) => fragment.state !== 'SUPERSEDED'))
+
+  function captureWorkflowNeedsSync(status = capture.value) {
+    return status.running
+      || status.recordingStatus === 'CAPTURING'
+      || status.asrStatus === 'PENDING'
+      || status.asrStatus === 'FINALIZING'
+      || status.speakerStatus === 'QUEUED'
+      || status.speakerStatus === 'RUNNING'
+  }
 
   function currentScope(): CaseScope {
     return { caseId: caseId.value, generation: caseGeneration }
@@ -236,6 +255,10 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     captureClock.value = Date.now()
     selectedFragmentIds.value = []
     capture.value = emptyCapture(nextCaseId)
+    archivedFragments.value = {}
+    lineageGroups.value = {}
+    lineageGroupByFragment.value = {}
+    processedReplacementJobIds.clear()
     formalRecordRevision.value = 0
     caseSummary.value = emptyCaseSummary(nextCaseId)
     session.value = emptySession(nextCaseId)
@@ -270,7 +293,8 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   function applyCaptureStatus(status: AsrCaptureStatus, scope = currentScope()) {
     if (!isCurrentScope(scope) || status.caseId !== scope.caseId) return
-    capture.value = status
+    for (const fragment of status.fragments) rememberFragment(fragment)
+    capture.value = { ...status, fragments: status.fragments.filter((fragment) => fragment.state !== 'SUPERSEDED') }
     if (!status.running) {
       browserResumeGate.reset()
       clearBrowserAsrCaptureLeaseRefusal(status.caseId, status.captureSessionId)
@@ -301,8 +325,8 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       clearInterval(captureTimer)
       captureTimer = undefined
     }
-    if (status.running && !captureStatusSyncTimer) startCaptureStatusSync(scope)
-    else if (!status.running) stopCaptureStatusSync()
+    if (captureWorkflowNeedsSync(status) && !captureStatusSyncTimer) startCaptureStatusSync(scope)
+    else if (!captureWorkflowNeedsSync(status)) stopCaptureStatusSync()
   }
 
   function stopCaptureStatusSync() {
@@ -312,7 +336,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   }
 
   async function syncCaptureStatus(scope: CaseScope) {
-    if (captureStatusSyncInFlight || !isCurrentScope(scope) || !capture.value.running) return
+    if (captureStatusSyncInFlight || !isCurrentScope(scope) || !captureWorkflowNeedsSync()) return
     captureStatusSyncInFlight = true
     try {
       const status = await fetchAsrCaptureStatus(scope.caseId)
@@ -333,8 +357,122 @@ export const useInterrogationStore = defineStore('interrogation', () => {
 
   function upsertAsrFragment(fragment: TemporaryAsrFragment, scope = currentScope()) {
     if (!isCurrentScope(scope) || fragment.caseId !== scope.caseId) return
-    capture.value.fragments = upsertAsrFragmentByCaptureTime(capture.value.fragments, fragment)
+    rememberFragment(fragment)
+    if (fragment.state !== 'SUPERSEDED') {
+      capture.value.fragments = upsertAsrFragmentByCaptureTime(capture.value.fragments, fragment)
+    }
     if (!capture.value.captureSessionId) capture.value.captureSessionId = fragment.captureSessionId
+  }
+
+  function rememberFragment(fragment: TemporaryAsrFragment) {
+    archivedFragments.value[fragment.id] = fragment
+  }
+
+  function connectLineage(parentFragmentId: string, childFragmentId: string) {
+    const parentRoot = lineageGroupByFragment.value[parentFragmentId] ?? parentFragmentId
+    const childRoot = lineageGroupByFragment.value[childFragmentId] ?? childFragmentId
+    const members = new Set([
+      parentFragmentId,
+      childFragmentId,
+      ...(lineageGroups.value[parentRoot] ?? []),
+      ...(lineageGroups.value[childRoot] ?? []),
+    ])
+    const root = parentRoot
+    for (const previousRoot of new Set([parentRoot, childRoot])) {
+      if (previousRoot !== root) delete lineageGroups.value[previousRoot]
+    }
+    lineageGroups.value[root] = [...members]
+    for (const id of members) lineageGroupByFragment.value[id] = root
+  }
+
+  function hydrateFragmentHistory(fragments: TemporaryAsrFragment[], scope = currentScope()) {
+    if (!isCurrentScope(scope)) return
+    archivedFragments.value = {}
+    lineageGroups.value = {}
+    lineageGroupByFragment.value = {}
+    processedReplacementJobIds.clear()
+    for (const fragment of fragments) rememberFragment(fragment)
+    for (const fragment of fragments) {
+      for (const relation of fragment.lineage ?? []) {
+        if (relation.parentFragmentId && relation.childFragmentId) {
+          connectLineage(relation.parentFragmentId, relation.childFragmentId)
+        }
+      }
+    }
+  }
+
+  function fragmentHistory(fragmentId: string) {
+    const root = lineageGroupByFragment.value[fragmentId]
+    const ids = root ? lineageGroups.value[root] ?? [] : [fragmentId]
+    return ids
+      .map((id) => archivedFragments.value[id])
+      .filter((fragment): fragment is TemporaryAsrFragment => Boolean(fragment))
+      .sort((left, right) => left.startedAtMs - right.startedAtMs || left.ordinal - right.ordinal || left.id.localeCompare(right.id))
+  }
+
+  function applyCaptureEvent(event: CaptureEvent, scope = currentScope()) {
+    if (!isCurrentScope(scope)) return
+    if (event.event === 'ASR_PARTIAL') {
+      const payload = event.payload as { text?: string; partialText?: string }
+      capture.value.partialText = payload.partialText ?? payload.text ?? capture.value.partialText
+      return
+    }
+    if (event.event === 'ASR_FINAL') {
+      const payload = event.payload as { text?: string }
+      if (payload.text) capture.value.partialText = payload.text
+      return
+    }
+    if (event.event === 'ASR_FRAGMENT') {
+      const fragment = normalizeTemporaryAsrFragment(event.payload)
+      capture.value.partialText = ''
+      upsertAsrFragment(fragment, scope)
+      return
+    }
+    if (event.event === 'ASR_FRAGMENT_REPLACED') {
+      const payload = event.payload as { parentFragmentId?: string; fragments?: unknown[]; jobId?: string }
+      const parentFragmentId = payload.parentFragmentId
+      const children = Array.isArray(payload.fragments)
+        ? payload.fragments.map(normalizeTemporaryAsrFragment)
+        : []
+      if (!parentFragmentId || children.some((fragment) => fragment.caseId !== scope.caseId)) return
+      if (payload.jobId && processedReplacementJobIds.has(payload.jobId)) return
+      const parent = archivedFragments.value[parentFragmentId]
+        ?? capture.value.fragments.find((fragment) => fragment.id === parentFragmentId)
+      if (parent) rememberFragment({ ...parent, state: 'SUPERSEDED' })
+      for (const child of children) {
+        const lineage = [
+          ...(child.lineage ?? []),
+          ...(child.lineage ?? []).some((item) => item.parentFragmentId === parentFragmentId && item.childFragmentId === child.id)
+            ? []
+            : [{
+              analysisJobId: payload.jobId ?? '',
+              parentFragmentId,
+              childFragmentId: child.id,
+              relation: 'SUPERSEDES',
+            }],
+        ]
+        rememberFragment({ ...child, lineage })
+        connectLineage(parentFragmentId, child.id)
+      }
+      capture.value.fragments = replaceAsrFragmentGroup(
+        capture.value.fragments,
+        parentFragmentId,
+        children,
+      ).filter((fragment) => fragment.state !== 'SUPERSEDED')
+      selectedFragmentIds.value = removeReplacedAsrFragmentSelection(
+        selectedFragmentIds.value,
+        parentFragmentId,
+      )
+      if (!capture.value.captureSessionId && children[0]) capture.value.captureSessionId = children[0].captureSessionId
+      if (payload.jobId) processedReplacementJobIds.add(payload.jobId)
+      return
+    }
+    if (event.event === 'RECORDING_STATE' || event.event === 'asr.capture.status') {
+      const status = event.payload as Partial<AsrCaptureStatus>
+      if (status.caseId === scope.caseId && typeof status.running === 'boolean' && Array.isArray(status.fragments)) {
+        applyCaptureStatus(status as AsrCaptureStatus, scope)
+      }
+    }
   }
 
   function initializeRuntimeEvents(scope: CaseScope) {
@@ -345,49 +483,10 @@ export const useInterrogationStore = defineStore('interrogation', () => {
         formalRecordRevision.value += 1
         return
       }
-      if (event.event === 'ASR_PARTIAL') {
-        const payload = event.payload as { text?: string; partialText?: string }
-        capture.value.partialText = payload.partialText ?? payload.text ?? capture.value.partialText
-        return
-      }
-      if (event.event === 'ASR_FINAL') {
-        const payload = event.payload as { text?: string }
-        if (payload.text) capture.value.partialText = payload.text
-        return
-      }
-      if (event.event === 'ASR_FRAGMENT') {
-        const fragment = normalizeTemporaryAsrFragment(event.payload)
-        // The persisted fragment is the finalized replacement for the transient
-        // live transcript shown while the speaker was still talking.
-        capture.value.partialText = ''
-        upsertAsrFragment(fragment, scope)
-        return
-      }
-      if (event.event === 'ASR_FRAGMENT_REPLACED') {
-        const payload = event.payload as { parentFragmentId?: string; fragments?: unknown[] }
-        const children = Array.isArray(payload.fragments)
-          ? payload.fragments.map(normalizeTemporaryAsrFragment)
-          : []
-        if (!payload.parentFragmentId || children.some((fragment) => fragment.caseId !== scope.caseId)) return
-        capture.value.fragments = replaceAsrFragmentGroup(
-          capture.value.fragments,
-          payload.parentFragmentId,
-          children,
-        )
-        selectedFragmentIds.value = removeReplacedAsrFragmentSelection(
-          selectedFragmentIds.value,
-          payload.parentFragmentId,
-        )
-        if (!capture.value.captureSessionId && children[0]) {
-          capture.value.captureSessionId = children[0].captureSessionId
-        }
-        return
-      }
-      if (event.event === 'RECORDING_STATE' || event.event === 'asr.capture.status') {
-        const status = event.payload as Partial<AsrCaptureStatus>
-        if (status.caseId === scope.caseId && typeof status.running === 'boolean' && Array.isArray(status.fragments)) {
-          applyCaptureStatus(status as AsrCaptureStatus, scope)
-        }
+      if (event.event === 'ASR_PARTIAL' || event.event === 'ASR_FINAL'
+        || event.event === 'ASR_FRAGMENT' || event.event === 'ASR_FRAGMENT_REPLACED'
+        || event.event === 'RECORDING_STATE' || event.event === 'asr.capture.status') {
+        applyCaptureEvent(event, scope)
         return
       }
       if (event.event === 'SESSION_STATE') {
@@ -981,6 +1080,10 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     revisionsOpen,
     nativeCaptureAvailable: captureAvailable,
     capture,
+    activeFragments,
+    fragmentHistory,
+    hydrateFragmentHistory,
+    applyCaptureEvent,
     formalRecordRevision,
     captureBusy,
     captureInsertionReceipt,

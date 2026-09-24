@@ -50,6 +50,7 @@ async def _stream_browser_pcm(
     accepts_pcm: Callable[[], bool] | None = None,
     frame_ingress: Callable[[int, int, bytes], dict[str, int]] | None = None,
     incomplete_sink: Callable[[str], bool] | None = None,
+    recovery_complete_sink: Callable[[int, int], dict[str, int | str]] | None = None,
 ) -> None:
     browser_input = _browser_input(websocket)
     if browser_input is None:
@@ -80,23 +81,48 @@ async def _stream_browser_pcm(
                 except (TypeError, ValueError):
                     await _close(websocket, capture_id, 1003, "invalid formal audio control message")
                     return
-                if not isinstance(control, dict) or control.get("type") != "capture_incomplete":
+                if not isinstance(control, dict):
                     await _close(websocket, capture_id, 1003, "unknown formal audio control message")
                     return
                 if accepts_pcm is not None and not accepts_pcm():
                     await _close(websocket, capture_id, 4409, "capture session is no longer active")
                     return
-                reason = str(control.get("reason") or "browser audio outbox exhausted")[:512]
-                try:
-                    marked_incomplete = await asyncio.to_thread(incomplete_sink, reason)
-                except Exception as exc:
-                    await _close(websocket, capture_id, 4410, f"unable to mark browser capture incomplete: {exc}")
+                if control.get("type") == "capture_incomplete" and incomplete_sink is not None:
+                    reason = str(control.get("reason") or "browser audio outbox exhausted")[:512]
+                    try:
+                        marked_incomplete = await asyncio.to_thread(incomplete_sink, reason)
+                    except Exception as exc:
+                        await _close(websocket, capture_id, 4410, f"unable to mark browser capture incomplete: {exc}")
+                        return
+                    if marked_incomplete is not True:
+                        await _close(websocket, capture_id, 4410, "capture is already complete")
+                        return
+                    await websocket.send_json({"type": "capture_incomplete_ack", "captureId": capture_id})
+                    await _close(websocket, capture_id, 4410, "browser reported incomplete audio capture")
                     return
-                if marked_incomplete is not True:
-                    await _close(websocket, capture_id, 4410, "capture is already complete")
+                if control.get("type") == "capture_recovery_complete" and recovery_complete_sink is not None:
+                    try:
+                        next_sequence = control.get("nextSequence")
+                        next_sample = control.get("nextSample")
+                        if type(next_sequence) is not int or type(next_sample) is not int:
+                            raise ValueError("browser recovery cursors must be integers")
+                        if next_sequence < 1 or next_sample < 0:
+                            raise ValueError("browser recovery cursors are invalid")
+                        receipt = await asyncio.to_thread(
+                            recovery_complete_sink,
+                            next_sequence,
+                            next_sample,
+                        )
+                    except Exception as exc:
+                        await _close(websocket, capture_id, 4410, f"unable to finalize browser audio recovery: {exc}")
+                        return
+                    await websocket.send_json({
+                        "type": "capture_recovery_complete_ack",
+                        "captureId": capture_id,
+                        **receipt,
+                    })
                     return
-                await websocket.send_json({"type": "capture_incomplete_ack", "captureId": capture_id})
-                await _close(websocket, capture_id, 4410, "browser reported incomplete audio capture")
+                await _close(websocket, capture_id, 1003, "unknown formal audio control message")
                 return
             payload = message.get("bytes")
             if payload is None:
@@ -178,6 +204,7 @@ async def browser_asr_capture_socket(
     service = getattr(websocket.app.state, "asr_capture_service", None)
     ingest = getattr(service, "ingest_browser_frame", None)
     mark_incomplete = getattr(service, "mark_browser_capture_incomplete", None)
+    complete_recovery = getattr(service, "complete_browser_capture_recovery", None)
     if not callable(ingest) or not callable(mark_incomplete):
         await _close(websocket, capture_id, 4403, "durable browser audio ingress unavailable")
         return
@@ -189,6 +216,16 @@ async def browser_asr_capture_socket(
             case_id, capture_id, sequence, start_sample, pcm
         ),
         incomplete_sink=lambda reason: mark_incomplete(case_id, capture_id, reason),
+        recovery_complete_sink=(
+            None
+            if not callable(complete_recovery)
+            else lambda next_sequence, next_sample: complete_recovery(
+                case_id,
+                capture_id,
+                next_sequence,
+                next_sample,
+            )
+        ),
     )
 
 

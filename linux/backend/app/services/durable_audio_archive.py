@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import struct
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -25,6 +26,10 @@ class BrowserAudioDiscontinuityError(RuntimeError):
     """A browser frame conflicts with the durable sequence/sample history."""
 
 
+class AudioStorageReserveError(RuntimeError):
+    """The evidence volume reached its configured minimum free-space reserve."""
+
+
 class DurableAudioArchive:
     """Persist raw mono PCM16 as recoverable, one-minute WAV segments."""
 
@@ -33,6 +38,7 @@ class DurableAudioArchive:
         data_dir: str | Path,
         session_factory: sessionmaker[Session],
         sample_rate: int = _SAMPLE_RATE,
+        min_free_bytes: int = 0,
     ) -> None:
         if sample_rate != _SAMPLE_RATE:
             raise ValueError("durable audio archive requires 16 kHz audio")
@@ -40,11 +46,25 @@ class DurableAudioArchive:
         self.audio_dir = self.data_dir / "audio"
         self.session_factory = session_factory
         self.sample_rate = sample_rate
+        self.min_free_bytes = max(0, int(min_free_bytes))
         self._segment_hashers: dict[str, Any] = {}
+
+    def check_storage_reserve(self) -> None:
+        if not self.min_free_bytes:
+            return
+        probe_root = self.data_dir if self.data_dir.exists() else self.data_dir.parent
+        free_bytes = shutil.disk_usage(probe_root).free
+        if free_bytes < self.min_free_bytes:
+            free_mb = free_bytes // (1024 * 1024)
+            reserve_mb = self.min_free_bytes // (1024 * 1024)
+            raise AudioStorageReserveError(
+                f"audio evidence storage reserve reached: free_mb={free_mb} below minimum={reserve_mb}"
+            )
 
     def open_capture(self, capture_id: str, *, case_id: str) -> None:
         self._validate_id(capture_id, "capture_id")
         self._validate_id(case_id, "case_id")
+        self.check_storage_reserve()
         with archive_repo.archive_transaction(self.session_factory) as db:
             capture = archive_repo.get_capture(db, capture_id)
             if capture is None:
@@ -71,6 +91,7 @@ class DurableAudioArchive:
         *,
         source_sequence: int | None = None,
         expected_start_sample: int | None = None,
+        allow_incomplete_recovery: bool = False,
     ) -> int:
         """Durably append up to one second of PCM; callers must split larger input."""
         self._validate_id(capture_id, "capture_id")
@@ -102,6 +123,7 @@ class DurableAudioArchive:
         conflict = False
         discontinuity = False
         integrity_failure = False
+        reserve_error: AudioStorageReserveError | None = None
         durable_end: int | None = None
         io_started = False
         try:
@@ -192,27 +214,39 @@ class DurableAudioArchive:
                                 discontinuity = True
 
                 if durable_end is None and not conflict and not integrity_failure:
-                    if capture.recording_status != "CAPTURING":
+                    if capture.recording_status != "CAPTURING" and not (
+                        allow_incomplete_recovery and capture.recording_status == "INCOMPLETE"
+                    ):
                         raise RuntimeError("capture is not accepting audio")
-                    io_started = True
-                    start_sample = capture.audio_sample_count
-                    self._append_to_segments(db, capture, pcm)
-                    durable_end = start_sample + sample_count
-                    if source_sequence is not None:
-                        archive_repo.record_frame(
-                            db,
-                            capture_id=capture_id,
-                            source_sequence=source_sequence,
-                            start_sample=start_sample,
-                            end_sample=durable_end,
-                            payload_sha256=payload_hash,
-                            durable_sample_end=durable_end,
-                        )
+                    try:
+                        self.check_storage_reserve()
+                    except AudioStorageReserveError as exc:
+                        reserve_error = exc
+                    else:
+                        io_started = True
+                        start_sample = capture.audio_sample_count
+                        self._append_to_segments(db, capture, pcm)
+                        durable_end = start_sample + sample_count
+                        if source_sequence is not None:
+                            archive_repo.record_frame(
+                                db,
+                                capture_id=capture_id,
+                                source_sequence=source_sequence,
+                                start_sample=start_sample,
+                                end_sample=durable_end,
+                                payload_sha256=payload_hash,
+                                durable_sample_end=durable_end,
+                            )
         except Exception:
             if io_started:
                 self._mark_incomplete(capture_id)
                 self._forget_hashers(capture_id)
             raise
+
+        if reserve_error is not None:
+            self._mark_incomplete(capture_id)
+            self._forget_hashers(capture_id)
+            raise reserve_error
 
         if integrity_failure:
             self._forget_hashers(capture_id)
@@ -328,7 +362,12 @@ class DurableAudioArchive:
                 raise ValueError(f"capture does not exist: {capture_id}")
             return archive_repo.list_capture_segments(db, capture_id)
 
-    def finalize_capture(self, capture_id: str) -> list[ASRAudioSegment]:
+    def finalize_capture(
+        self,
+        capture_id: str,
+        *,
+        allow_incomplete_recovery: bool = False,
+    ) -> list[ASRAudioSegment]:
         self._validate_id(capture_id, "capture_id")
         integrity_error: str | None = None
         try:
@@ -355,7 +394,9 @@ class DurableAudioArchive:
                         integrity_error = "capture sample count does not match its segments"
                     if integrity_error is None:
                         result = list(segments)
-                elif capture.recording_status != "CAPTURING":
+                elif capture.recording_status != "CAPTURING" and not (
+                    allow_incomplete_recovery and capture.recording_status == "INCOMPLETE"
+                ):
                     raise RuntimeError("incomplete capture cannot be finalized")
                 else:
                     cursor = 0

@@ -127,7 +127,7 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     formalRevisionBridgeStop?.()
     const interrogation = useInterrogationStore()
     captureBridgeStop = watch(
-      () => interrogation.capture.fragments,
+      () => interrogation.activeFragments,
       (fragments) => {
         if (!isCurrentScope(scope)) return
         for (const fragment of fragments) handleAsrFragment(fragment, scope)
@@ -151,9 +151,11 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
   }
 
   async function loadDialogueHistory(scope = currentScope()) {
-    const fragments = await listAsrFragments(scope.caseId, true)
+    const fragments = await listAsrFragments(scope.caseId, true, true)
     if (!isCurrentScope(scope)) return
-    dialogueHistory.value = [...fragments].sort(dialogueOrder)
+    const interrogation = useInterrogationStore()
+    interrogation.hydrateFragmentHistory(fragments)
+    dialogueHistory.value = fragments.filter((fragment) => fragment.state !== 'SUPERSEDED').sort(dialogueOrder)
   }
 
   async function initialize(nextCaseId: string) {

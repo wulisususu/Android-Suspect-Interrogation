@@ -19,6 +19,7 @@ from app.repositories import sessions as session_repo
 from app.repositories import voiceprints as voiceprint_repo
 from app.services import asr_capture_service as capture_module
 from app.services.asr_capture_service import AsrCaptureService
+from app.services.live_speech_coordinator import LiveSpeechCoordinator
 from app.services.speaker_mode import (
     DEGRADED_REASON_MARGIN_CALIBRATION_MISSING,
     SUSPECT_PLUS_INTERROGATOR,
@@ -178,6 +179,38 @@ def _seed_database(tmp_path: Path, *, bind_interrogator: bool = False):
         case_id = case.id
         session_id = session.id
     return engine, factory, case_id, session_id
+
+
+def test_start_refuses_capture_below_storage_reserve_before_creating_capture(tmp_path: Path, monkeypatch):
+    engine, factory, case_id, _session_id = _seed_database(tmp_path)
+    device = FakeDeviceManager([])
+    speech = FakeSpeechSupervisor()
+    service = AsrCaptureService(
+        session_factory=factory,
+        device_manager=device,
+        ai_supervisor=speech,
+        publish_event=lambda *_args: None,
+    )
+    LiveSpeechCoordinator(
+        data_dir=tmp_path / "data",
+        session_factory=factory,
+        capture_service=service,
+        ai_supervisor=speech,
+        min_free_bytes=100,
+    )
+    monkeypatch.setattr(
+        "app.services.durable_audio_archive.shutil.disk_usage",
+        lambda _path: type("Usage", (), {"free": 99})(),
+    )
+
+    with pytest.raises(DomainError) as error:
+        service.start(case_id)
+
+    assert error.value.code == "ASR_AUDIO_STORAGE_RESERVE"
+    assert device.started == 0
+    with factory() as db:
+        assert db.query(ASRCaptureSession).count() == 0
+    engine.dispose()
 
 
 def _wait_until(predicate, timeout: float = 1.0) -> None:
@@ -761,6 +794,35 @@ def test_fragment_sink_bypasses_legacy_projection_and_capture_finished_sink_flus
     assert len(fragments) == 1
     assert fragments[0][0] == case_id
     assert finished == [(case_id, session_id)]
+    engine.dispose()
+
+
+def test_capture_status_reports_recording_asr_and_speaker_workflow_state(tmp_path: Path):
+    engine, factory, case_id, _ = _seed_database(tmp_path)
+    service = _capture_service(factory, FakeSpeechSupervisor(), EventCollector())
+    started = service.start(case_id)
+    service.stop(case_id)
+
+    with factory() as db:
+        capture = db.get(ASRCaptureSession, started["captureSessionId"])
+        assert capture is not None
+        capture.recording_status = "INCOMPLETE"
+        capture.asr_status = "FINALIZING"
+        capture.speaker_status = "QUEUED"
+        capture.audio_sample_count = 16_000
+        capture.asr_cursor_sample = 8_000
+        capture.voiced_ms = 5_000
+        db.commit()
+
+    status = service.status(case_id)
+
+    assert status["recordingStatus"] == "INCOMPLETE"
+    assert status["asrStatus"] == "FINALIZING"
+    assert status["speakerStatus"] == "QUEUED"
+    assert status["audioSampleCount"] == 16_000
+    assert status["asrCursorSample"] == 8_000
+    assert status["voicedMs"] == 5_000
+    assert status["finalFragmentCount"] == 0
     engine.dispose()
 
 

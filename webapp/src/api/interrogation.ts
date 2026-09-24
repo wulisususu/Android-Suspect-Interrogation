@@ -297,6 +297,17 @@ export function normalizeTemporaryAsrFragment(value: unknown): TemporaryAsrFragm
     modelVersion: raw.modelVersion == null ? null : String(raw.modelVersion),
     recognitionEvidence: normalizeRecognitionEvidence(raw.recognitionEvidence),
     recognitionRevisions,
+    lineage: Array.isArray(raw.lineage)
+      ? raw.lineage.map((value) => {
+        const item = asRecord(value)
+        return {
+          analysisJobId: String(item.analysisJobId ?? ''),
+          parentFragmentId: String(item.parentFragmentId ?? ''),
+          childFragmentId: String(item.childFragmentId ?? ''),
+          relation: String(item.relation ?? ''),
+        }
+      })
+      : [],
     // Task 17B-1: the mode the fragment was decided in survives normalization, so a
     // narrowed operating point is visible in the UI instead of being dropped here.
     ...modeFields(raw),
@@ -306,8 +317,8 @@ export function normalizeTemporaryAsrFragment(value: unknown): TemporaryAsrFragm
   }
 }
 
-async function loadNormalizedFragments(caseId: string, includeConfirmed = false): Promise<TemporaryAsrFragment[]> {
-  const result = await runtime().invoke<unknown[]>('asr.fragment.list', { caseId, includeConfirmed })
+async function loadNormalizedFragments(caseId: string, includeConfirmed = false, includeSuperseded = false): Promise<TemporaryAsrFragment[]> {
+  const result = await runtime().invoke<unknown[]>('asr.fragment.list', { caseId, includeConfirmed, includeSuperseded })
   return Array.isArray(result) ? result.map(normalizeTemporaryAsrFragment) : []
 }
 
@@ -321,6 +332,13 @@ async function normalizeCaptureStatus(caseId: string, value: unknown): Promise<A
     captureSessionId: raw.captureSessionId == null ? null : String(raw.captureSessionId),
     source: sourceValue === 'BROWSER' || sourceValue === 'ALSA' ? sourceValue : null,
     running: Boolean(raw.running ?? raw.active),
+    recordingStatus: raw.recordingStatus == null ? null : String(raw.recordingStatus),
+    asrStatus: raw.asrStatus == null ? null : String(raw.asrStatus),
+    speakerStatus: raw.speakerStatus == null ? null : String(raw.speakerStatus),
+    audioSampleCount: nullableNumber(raw.audioSampleCount) ?? 0,
+    asrCursorSample: nullableNumber(raw.asrCursorSample) ?? 0,
+    voicedMs: nullableNumber(raw.voicedMs) ?? 0,
+    finalFragmentCount: nullableNumber(raw.finalFragmentCount) ?? 0,
     startedAt: toTimestamp(raw.startedAt) ?? null,
     endedAt: toTimestamp(raw.endedAt) ?? null,
     sampleRate: Number(raw.sampleRate ?? 16_000),
@@ -439,7 +457,7 @@ export async function updateVoiceprintRoleDraft(caseId: string, interrogatorOffi
 export async function fetchAsrCaptureStatus(caseId: string): Promise<AsrCaptureStatus> { return normalizeCaptureStatus(caseId, await runtime().invoke<unknown>('asr.capture.status', { caseId })) }
 export async function startAsrCapture(caseId: string): Promise<AsrCaptureStatus> { return normalizeCaptureStatus(caseId, await runtime().invoke<unknown>('asr.capture.start', { caseId }, { timeoutMs: 120_000 })) }
 export async function stopAsrCapture(caseId: string): Promise<AsrCaptureStatus> { return normalizeCaptureStatus(caseId, await runtime().invoke<unknown>('asr.capture.stop', { caseId }, { timeoutMs: 30_000 })) }
-export function listAsrFragments(caseId: string, includeConfirmed = false): Promise<TemporaryAsrFragment[]> { return loadNormalizedFragments(caseId, includeConfirmed) }
+export function listAsrFragments(caseId: string, includeConfirmed = false, includeSuperseded = false): Promise<TemporaryAsrFragment[]> { return loadNormalizedFragments(caseId, includeConfirmed, includeSuperseded) }
 export async function updateAsrFragment(
   caseId: string,
   fragmentId: string,
