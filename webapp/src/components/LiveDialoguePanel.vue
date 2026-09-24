@@ -43,6 +43,14 @@ const feed = ref<HTMLElement | null>(null)
 const pinnedToBottom = ref(true)
 const correctionSpeaker = ref<Record<string, TemporaryAsrSpeaker>>({})
 const correctionReason = ref<Record<string, string>>({})
+const livePreviewUnavailable = computed(() => ['MODEL_NOT_INSTALLED', 'ERROR'].includes(
+  String(props.captureStatus.liveTranscriptStatus ?? '').toUpperCase(),
+))
+const livePreviewUnavailableMessage = computed(() => (
+  props.captureStatus.liveTranscriptStatus === 'MODEL_NOT_INSTALLED'
+    ? '实时转写模型未安装，最终文字仍会保存'
+    : '实时转写暂不可用，最终文字仍会保存'
+))
 const qaReviewUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'NEEDS_REVIEW'))
 const qaResolvedUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'APPLIED' || unit.status === 'IGNORED' || unit.status === 'ROLLED_BACK'))
 const visibleDialogue = computed(() => groupLiveDialogueFragments([...props.dialogue, ...botTurns.value]))
@@ -744,8 +752,8 @@ onMounted(() => {
       </template>
 
       <article v-if="captureRunning" class="dialogue-turn side-left partial-turn" :class="{ idle: !partialText }">
-        <div class="dialogue-meta"><span>{{ partialText ? '正在转写' : '待输入' }}</span></div>
-        <div class="dialogue-bubble">{{ partialText || '（待输入…请说话）' }}</div>
+        <div class="dialogue-meta"><span>{{ partialText ? '实时转写中' : livePreviewUnavailable ? '实时转写不可用' : '待输入' }}</span></div>
+        <div class="dialogue-bubble">{{ partialText || (livePreviewUnavailable ? livePreviewUnavailableMessage : '（待输入…请说话）') }}</div>
       </article>
     </div>
 

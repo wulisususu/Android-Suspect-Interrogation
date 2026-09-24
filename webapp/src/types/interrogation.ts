@@ -291,6 +291,9 @@ export interface AsrCaptureStatus {
   audioLevelUpdatedAt?: number | null
   sampleRate: number
   partialText: string
+  partialStartedAtMs?: number | null
+  partialEndedAtMs?: number | null
+  liveTranscriptStatus?: 'AVAILABLE' | 'MODEL_NOT_INSTALLED' | 'ERROR' | 'UNKNOWN' | string | null
   fragments: TemporaryAsrFragment[]
   error?: string | null
 }

@@ -137,6 +137,9 @@ function emptyCapture(caseId = ''): AsrCaptureStatus {
     audioLevels: [],
     audioLevelUpdatedAt: null,
     partialText: '',
+    partialStartedAtMs: null,
+    partialEndedAtMs: null,
+    liveTranscriptStatus: 'UNKNOWN',
     fragments: [],
     error: null,
   }
@@ -313,11 +316,24 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     const sameCapture = Boolean(status.captureSessionId && status.captureSessionId === capture.value.captureSessionId)
     const audioLevels = sameCapture ? capture.value.audioLevels ?? [] : []
     const audioLevelUpdatedAt = sameCapture ? capture.value.audioLevelUpdatedAt ?? null : null
+    const partialText = sameCapture ? capture.value.partialText : status.partialText ?? ''
+    const partialStartedAtMs = sameCapture
+      ? capture.value.partialStartedAtMs ?? null
+      : status.partialStartedAtMs ?? null
+    const partialEndedAtMs = sameCapture
+      ? capture.value.partialEndedAtMs ?? null
+      : status.partialEndedAtMs ?? null
+    const liveTranscriptStatus = status.liveTranscriptStatus
+      ?? (sameCapture ? capture.value.liveTranscriptStatus : 'UNKNOWN')
     for (const fragment of status.fragments) rememberFragment(fragment)
     capture.value = {
       ...status,
       audioLevels,
       audioLevelUpdatedAt,
+      partialText,
+      partialStartedAtMs,
+      partialEndedAtMs,
+      liveTranscriptStatus,
       fragments: status.fragments.filter((fragment) => fragment.state !== 'SUPERSEDED'),
     }
     if (!status.running) {
@@ -456,19 +472,58 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       return
     }
     if (event.event === 'ASR_PARTIAL') {
-      const payload = event.payload as { text?: string; partialText?: string }
-      capture.value.partialText = payload.partialText ?? payload.text ?? capture.value.partialText
+      const payload = event.payload as {
+        caseId?: string
+        captureSessionId?: string
+        text?: string
+        partialText?: string
+        startedAtMs?: number
+        endedAtMs?: number
+      }
+      if (payload.caseId && payload.caseId !== scope.caseId) return
+      if (payload.captureSessionId && payload.captureSessionId !== capture.value.captureSessionId) return
+      const text = String(payload.partialText ?? payload.text ?? '').trim()
+      if (!text) return
+      if (Number.isFinite(payload.startedAtMs) && Number.isFinite(payload.endedAtMs)) {
+        const startedAtMs = Number(payload.startedAtMs)
+        if (capture.value.partialStartedAtMs !== null
+          && capture.value.partialStartedAtMs !== undefined
+          && startedAtMs < capture.value.partialStartedAtMs) return
+        capture.value.partialStartedAtMs = startedAtMs
+        capture.value.partialEndedAtMs = Number(payload.endedAtMs)
+      }
+      capture.value.partialText = text
       return
     }
     if (event.event === 'ASR_FINAL') {
-      const payload = event.payload as { text?: string }
-      if (payload.text) capture.value.partialText = payload.text
+      const payload = event.payload as { captureSessionId?: string; text?: string; startedAtMs?: number; endedAtMs?: number }
+      if (payload.captureSessionId && payload.captureSessionId !== capture.value.captureSessionId) return
+      if (payload.text?.trim()) {
+        capture.value.partialText = payload.text
+        capture.value.partialStartedAtMs = Number.isFinite(payload.startedAtMs) ? Number(payload.startedAtMs) : null
+        capture.value.partialEndedAtMs = Number.isFinite(payload.endedAtMs) ? Number(payload.endedAtMs) : null
+      }
       return
     }
     if (event.event === 'ASR_FRAGMENT') {
       const fragment = normalizeTemporaryAsrFragment(event.payload)
-      capture.value.partialText = ''
+      if (capture.value.partialStartedAtMs === fragment.startedAtMs) {
+        capture.value.partialText = ''
+        capture.value.partialStartedAtMs = null
+        capture.value.partialEndedAtMs = null
+      }
       upsertAsrFragment(fragment, scope)
+      return
+    }
+    if (event.event === 'ASR_PREVIEW_STATUS') {
+      const payload = event.payload as {
+        caseId?: string
+        captureSessionId?: string
+        status?: AsrCaptureStatus['liveTranscriptStatus']
+      }
+      if (payload.caseId && payload.caseId !== scope.caseId) return
+      if (payload.captureSessionId && payload.captureSessionId !== capture.value.captureSessionId) return
+      capture.value.liveTranscriptStatus = payload.status ?? 'ERROR'
       return
     }
     if (event.event === 'ASR_FRAGMENT_REPLACED') {
@@ -527,6 +582,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
         return
       }
       if (event.event === 'ASR_PARTIAL' || event.event === 'ASR_FINAL'
+        || event.event === 'ASR_PREVIEW_STATUS'
         || event.event === 'ASR_FRAGMENT' || event.event === 'ASR_FRAGMENT_REPLACED'
         || event.event === 'AUDIO_LEVEL'
         || event.event === 'RECORDING_STATE' || event.event === 'asr.capture.status') {

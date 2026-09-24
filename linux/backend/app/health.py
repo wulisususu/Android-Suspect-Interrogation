@@ -252,6 +252,7 @@ def readiness_snapshot(request: Request | None = None) -> dict[str, Any]:
         "hardware": _hardware_capability(),
         "ai": _ai_capability(settings),
         "asr": _speech_capability("asr", supervisor=supervisor, calibration=calibration),
+        "asrStreaming": _speech_capability("asrStreaming", supervisor=supervisor, calibration=calibration),
         "vad": _speech_capability("vad", supervisor=supervisor, calibration=calibration),
         "speaker": _speech_capability("speaker", supervisor=supervisor, calibration=calibration),
         "voiceprintCalibration": calibration,
@@ -290,6 +291,7 @@ def runtime_capabilities(request: Request) -> dict[str, Any]:
     health = snapshot["capabilities"]
     calibration = health["voiceprintCalibration"]
     asr = health["asr"]
+    asr_streaming = health["asrStreaming"]
     asr_state = _runtime_capability_state(asr["state"])
     microphone = health["audioCapture"]
     microphone_state = _runtime_capability_state(microphone["state"])
@@ -330,6 +332,11 @@ def runtime_capabilities(request: Request) -> dict[str, Any]:
         "signature": unavailable("signature device is not configured"),
         "recording": _runtime_capability(recording_state, recording_reason, asr=asr, calibration=calibration),
         "asr": _runtime_capability(asr_state, str(asr["detail"]), **asr),
+        "asrStreaming": _runtime_capability(
+            _runtime_capability_state(asr_streaming["state"]),
+            str(asr_streaming["detail"]),
+            **asr_streaming,
+        ),
         "ocr": model("ocr"),
         "llm": model("llm"),
         "report": _runtime_capability(_runtime_capability_state(snapshot["checks"]["database"]["state"]), str(snapshot["checks"]["database"]["detail"])),

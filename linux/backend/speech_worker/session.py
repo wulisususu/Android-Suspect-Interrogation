@@ -4,7 +4,7 @@ import logging
 import time
 from typing import Any, Callable, Protocol
 
-from app.ai.errors import AIError, WorkerCrashedError
+from app.ai.errors import WorkerCrashedError
 from app.ai.speech.types import SpeechEvent, SpeechEventType
 from speech_worker.speaker_turn_splitter import SpeakerTurnSplitter, TurnSpan
 
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 PCM_SAMPLE_WIDTH_BYTES = 2
 _PRODUCT_SPEAKER_BACKEND = "eres2net_large"
-_PARTIAL_TRANSCRIPT_MIN_MS = 1_500
+_STREAMING_CHUNK_MS = 600
 
 
 class SpeechRuntime(Protocol):
@@ -28,6 +28,15 @@ class SpeechRuntime(Protocol):
     ) -> list[list[int]]: ...
 
     def transcribe(self, pcm: bytes, sample_rate: int) -> dict[str, Any]: ...
+
+    def transcribe_stream(
+        self,
+        pcm: bytes,
+        sample_rate: int,
+        *,
+        cache: dict[str, Any],
+        is_final: bool = False,
+    ) -> str: ...
 
 class SpeechSession:
     """Session-local streaming VAD state and utterance assembly.
@@ -96,6 +105,17 @@ class SpeechSession:
         self._stream_samples = self.base_sample
         self._finalized = False
         self._last_partial_end_ms: int | None = None
+        self.streaming_cache: dict[str, Any] = {}
+        self._stream_staging = bytearray()
+        self._stream_chunk_start_sample = self.base_sample
+        self._stream_text_chunks: list[tuple[int, int, str]] = []
+        self._stream_text_floor_ms = self._base_offset_ms
+        self._last_partial_text = ""
+        self._streaming_method = getattr(runtime, "transcribe_stream", None)
+        self._streaming_enabled = callable(self._streaming_method) and bool(
+            getattr(runtime, "streaming_asr_available", True)
+        )
+        self._streaming_status_reported = False
 
     def push_pcm(self, pcm: bytes) -> list[SpeechEvent]:
         if self._finalized:
@@ -127,6 +147,7 @@ class SpeechSession:
             chunk_size_ms=self.chunk_size_ms,
         )
         events = self._consume_vad_events(vad_events)
+        events.extend(self._stream_audio(chunk))
         events.extend(self._preview_transcript())
         return events
 
@@ -275,6 +296,10 @@ class SpeechSession:
         utterance_pcm = bytes(self.current_utterance_pcm[:utterance_bytes])
         trailing_pcm = bytes(self.current_utterance_pcm[utterance_bytes:])
 
+        self._stream_text_floor_ms = max(self._stream_text_floor_ms, end_ms)
+        self._stream_text_chunks = [
+            item for item in self._stream_text_chunks if item[0] >= self._stream_text_floor_ms
+        ]
         self._reset_utterance()
         self._set_pre_roll_after_boundary(trailing_pcm, end_ms)
 
@@ -321,39 +346,82 @@ class SpeechSession:
             ),
         ]
 
+    def _stream_audio(self, pcm: bytes) -> list[SpeechEvent]:
+        if not self._streaming_enabled:
+            return []
+        self._stream_staging.extend(pcm)
+        chunk_samples = max(1, int(round(self.sample_rate * _STREAMING_CHUNK_MS / 1000)))
+        chunk_bytes = chunk_samples * PCM_SAMPLE_WIDTH_BYTES
+        events: list[SpeechEvent] = []
+        while len(self._stream_staging) >= chunk_bytes:
+            stream_chunk = bytes(self._stream_staging[:chunk_bytes])
+            del self._stream_staging[:chunk_bytes]
+            start_sample = self._stream_chunk_start_sample
+            end_sample = start_sample + chunk_samples
+            self._stream_chunk_start_sample = end_sample
+            try:
+                text = str(
+                    self._streaming_method(
+                        stream_chunk,
+                        self.sample_rate,
+                        cache=self.streaming_cache,
+                        is_final=False,
+                    )
+                    or ""
+                ).strip()
+            except Exception as exc:
+                code = str(getattr(exc, "code", "ASR_STREAMING_ERROR"))
+                logger.warning(
+                    "streaming transcript preview failed",
+                    extra={"session_id": self.session_id, "error_code": code},
+                )
+                self._streaming_enabled = False
+                self._stream_staging.clear()
+                if not self._streaming_status_reported:
+                    self._streaming_status_reported = True
+                    events.append(
+                        SpeechEvent(
+                            type=SpeechEventType.ASR_PREVIEW_STATUS,
+                            session_id=self.session_id,
+                            details={"status": "ERROR", "code": code},
+                        )
+                    )
+                break
+            if text:
+                start_ms = self._samples_to_ms(start_sample)
+                end_ms = self._samples_to_ms(end_sample)
+                self._stream_text_chunks.append((start_ms, end_ms, text))
+
+        # The VAD caps a turn at five seconds. Keep only that turn, bounded pre-roll,
+        # and one analysis chunk of timestamped preview history.
+        keep_after_ms = max(
+            self._base_offset_ms,
+            self.stream_offset_ms - self.pre_roll_ms - 5_000 - _STREAMING_CHUNK_MS,
+        )
+        self._stream_text_chunks = [
+            item for item in self._stream_text_chunks if item[1] > keep_after_ms
+        ]
+        return events
+
     def _preview_transcript(self) -> list[SpeechEvent]:
-        """Emit an unpersisted transcript while the current person is still speaking.
-
-        The final VAD-bounded result remains the only input to speaker verification and
-        formal-record routing.  This preview exists solely so the live dialogue can show
-        the original words without waiting for an end-of-utterance decision.
-        """
+        """Emit cumulative text assembled from fresh streaming-model chunks only."""
         start_ms = self.utterance_start_ms
-        capture_start_ms = self._capture_start_ms
-        end_ms = self.stream_offset_ms
-        if start_ms is None or capture_start_ms is None:
+        if start_ms is None or not self._streaming_enabled:
             return []
-        captured_duration_ms = max(0, end_ms - capture_start_ms)
-        if captured_duration_ms < _PARTIAL_TRANSCRIPT_MIN_MS:
+        current_chunks = [
+            item for item in self._stream_text_chunks
+            if item[0] >= self._stream_text_floor_ms
+            and item[1] > start_ms
+            and item[1] <= self.stream_offset_ms
+        ]
+        if not current_chunks:
             return []
-        if self._last_partial_end_ms is not None and end_ms - self._last_partial_end_ms < _PARTIAL_TRANSCRIPT_MIN_MS:
+        end_ms = current_chunks[-1][1]
+        text = "".join(item[2] for item in current_chunks).strip()
+        if not text or (text == self._last_partial_text and end_ms == self._last_partial_end_ms):
             return []
-
-        pcm = bytes(self.current_utterance_pcm[:self._ms_to_bytes(captured_duration_ms)])
-        if not pcm:
-            return []
-        try:
-            transcript = self.runtime.transcribe(pcm, self.sample_rate)
-        except AIError as exc:
-            logger.warning(
-                "live transcript preview failed",
-                extra={"session_id": self.session_id, "error_code": exc.code},
-            )
-            return []
+        self._last_partial_text = text
         self._last_partial_end_ms = end_ms
-        text = str(transcript.get("text") or "").strip()
-        if not text:
-            return []
         return [
             SpeechEvent(
                 type=SpeechEventType.ASR_PARTIAL,
@@ -361,13 +429,8 @@ class SpeechSession:
                 start_ms=start_ms,
                 end_ms=end_ms,
                 text=text,
-                confidence=(
-                    None
-                    if transcript.get("confidence") is None
-                    else float(transcript["confidence"])
-                ),
-                model_id=str(transcript.get("model_id") or "paraformer"),
-                details={"preview": True},
+                model_id="paraformer-streaming",
+                details={"preview": True, "cumulative": True},
             )
         ]
 
@@ -400,6 +463,7 @@ class SpeechSession:
         self.utterance_start_ms = None
         self._capture_start_ms = None
         self._last_partial_end_ms = None
+        self._last_partial_text = ""
 
     def _ms_to_bytes(self, milliseconds: int) -> int:
         samples = self._ms_to_samples(milliseconds)

@@ -61,6 +61,15 @@ const speakerLabel = computed(() => {
   }
   return `声纹分析：${status}`
 })
+const liveTranscriptLabel = computed(() => {
+  if (props.capture.liveTranscriptStatus === 'MODEL_NOT_INSTALLED') {
+    return '实时转写模型未安装，最终文字仍会保存'
+  }
+  if (props.capture.liveTranscriptStatus === 'ERROR') {
+    return '实时转写暂不可用，最终文字仍会保存'
+  }
+  return ''
+})
 
 watch(
   () => [props.capture.caseId, props.capture.captureSessionId, props.capture.recordingStatus] as const,
@@ -109,6 +118,7 @@ async function recoverLocalAudio() {
       <div class="workflow-stage-copy">
         <strong>原始录音与文字转写</strong>
         <span>{{ transcriptLabel || '等待录音' }}</span>
+        <span v-if="liveTranscriptLabel" class="live-transcript-warning">{{ liveTranscriptLabel }}</span>
       </div>
     </div>
     <div class="workflow-stage speaker-stage">
@@ -167,6 +177,10 @@ async function recoverLocalAudio() {
 
 .workflow-stage-copy strong {
   color: #203d58;
+}
+
+.live-transcript-warning {
+  color: #8d4a08;
 }
 
 .speaker-stage {

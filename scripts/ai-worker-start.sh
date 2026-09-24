@@ -31,6 +31,13 @@ for model_dir in paraformer fsmn-vad; do
   fi
 done
 
+streaming_model_dir="${SUSPECT_FUNASR_STREAMING_MODEL_DIR:-$SUSPECT_FUNASR_MODEL_ROOT/paraformer-streaming}"
+if [[ -d "$streaming_model_dir" ]]; then
+  echo "optional FunASR streaming ASR model found: $streaming_model_dir"
+else
+  echo "optional FunASR streaming ASR model is not installed: $streaming_model_dir (offline ASR remains enabled)" >&2
+fi
+
 if [[ ! -d "$SUSPECT_ERES2NET_MODEL_DIR" ]]; then
   echo "SUSPECT_ERES2NET_MODEL_DIR is not a directory: $SUSPECT_ERES2NET_MODEL_DIR" >&2
   exit 78

@@ -84,6 +84,7 @@ class _CaptureRuntime:
     #: fragment refreshes it from the roles that fragment really bound.
     declared_recognition_mode: str = SUSPECT_ONLY
     sample_rate: int = 16_000
+    live_transcript_status: str = "UNKNOWN"
     speaker_backend: str = "eres2net_large"
     durable_sample_cursor: int = 0
     storage_error: str | None = None
@@ -342,6 +343,7 @@ class AsrCaptureService:
             secondary_calibration=secondary_calibration,
             declared_recognition_mode=self.declared_mode_for_roles(bound_roles),
             sample_rate=self.sample_rate,
+            live_transcript_status=self._live_transcript_status(),
             speaker_backend=self.speaker_model_key,
         )
         runtime.consume_events = lambda events: self._consume_events(runtime, events)
@@ -472,6 +474,7 @@ class AsrCaptureService:
                     "captureSessionId": None,
                     "interrogationSessionId": None,
                     "status": "IDLE",
+                    "liveTranscriptStatus": self._live_transcript_status(),
                     "lastError": last_error,
                 }
             return {
@@ -481,6 +484,7 @@ class AsrCaptureService:
                 "interrogationSessionId": capture.interrogation_session_id,
                 "status": capture.status,
                 "sampleRate": capture.sample_rate,
+                "liveTranscriptStatus": self._live_transcript_status(),
                 "startedAt": capture.started_at.isoformat() if capture.started_at is not None else None,
                 "endedAt": capture.ended_at.isoformat() if capture.ended_at is not None else None,
                 "lastError": last_error,
@@ -761,21 +765,31 @@ class AsrCaptureService:
         speaker_by_range: dict[tuple[int, int], SpeechEvent] = {}
         compare_by_range: dict[tuple[int, int], SpeechEvent] = {}
         asr_only_events: list[SpeechEvent] = []
+        partial_by_start: dict[int, SpeechEvent] = {}
         for event in events:
             if event.type is SpeechEventType.ASR_PARTIAL:
                 text = str(event.text or "").strip()
-                if text:
-                    self.publish_event(
-                        runtime.interrogation_session_id,
-                        "ASR_PARTIAL",
-                        {
-                            "caseId": runtime.case_id,
-                            "captureSessionId": runtime.capture_session_id,
-                            "text": text,
-                            "startedAtMs": event.start_ms,
-                            "endedAtMs": event.end_ms,
-                        },
-                    )
+                if text and event.start_ms is not None and event.end_ms is not None:
+                    start_ms = int(event.start_ms)
+                    previous = partial_by_start.get(start_ms)
+                    if previous is None or int(previous.end_ms or 0) <= int(event.end_ms):
+                        partial_by_start[start_ms] = event
+                continue
+            if event.type is SpeechEventType.ASR_PREVIEW_STATUS:
+                details = event.details or {}
+                runtime.live_transcript_status = (
+                    "AVAILABLE" if str(details.get("status") or "").upper() == "AVAILABLE" else "ERROR"
+                )
+                self.publish_event(
+                    runtime.interrogation_session_id,
+                    "ASR_PREVIEW_STATUS",
+                    {
+                        "caseId": runtime.case_id,
+                        "captureSessionId": runtime.capture_session_id,
+                        "status": runtime.live_transcript_status,
+                        "code": self._optional_text(details.get("code")),
+                    },
+                )
                 continue
             if event.start_ms is None or event.end_ms is None:
                 continue
@@ -809,7 +823,41 @@ class AsrCaptureService:
                 compare_by_range.get(key),
             )
             runtime.seen_utterances.add(key)
+
+        finalized_starts = {start_ms for start_ms, _end_ms in runtime.seen_utterances}
+        for start_ms, event in partial_by_start.items():
+            if start_ms in finalized_starts:
+                continue
+            self.publish_event(
+                runtime.interrogation_session_id,
+                "ASR_PARTIAL",
+                {
+                    "caseId": runtime.case_id,
+                    "captureSessionId": runtime.capture_session_id,
+                    "text": str(event.text or "").strip(),
+                    "startedAtMs": start_ms,
+                    "endedAtMs": event.end_ms,
+                },
+            )
         return fragment_ids
+
+    def _live_transcript_status(self) -> str:
+        try:
+            capabilities = self.ai_supervisor.capabilities()
+        except Exception:
+            logger.exception("failed to read streaming ASR readiness")
+            return "ERROR"
+        capability = capabilities.get("asrStreaming") if isinstance(capabilities, dict) else None
+        if not isinstance(capability, dict):
+            return "UNKNOWN"
+        state = str(capability.get("state") or "").upper()
+        if state in {"AVAILABLE", "READY"}:
+            return "AVAILABLE"
+        if state in {"MODEL_NOT_INSTALLED", "NOT_INSTALLED"}:
+            return "MODEL_NOT_INSTALLED"
+        if state in {"", "UNKNOWN", "NOT_CONFIGURED"}:
+            return "UNKNOWN"
+        return "ERROR"
 
     def _persist_asr_only_fragment(self, runtime: _CaptureRuntime, asr_event: SpeechEvent) -> str:
         start_ms = int(asr_event.start_ms or 0)
@@ -1583,6 +1631,7 @@ class AsrCaptureService:
             authoritative_speaker_backend=self.authoritative_speaker_backend,
             declared_recognition_mode=self.declared_mode_for_roles(roles),
             sample_rate=self.sample_rate,
+            live_transcript_status=self._live_transcript_status(),
             speaker_backend=self.speaker_model_key,
             durable_sample_cursor=int(capture.audio_sample_count or 0),
             ordinal=ordinal,
@@ -1757,6 +1806,7 @@ class AsrCaptureService:
             "interrogationSessionId": runtime.interrogation_session_id,
             "status": "CAPTURING" if active else "STOPPED",
             "sampleRate": self.sample_rate,
+            "liveTranscriptStatus": runtime.live_transcript_status,
             "speakerModelKey": self.speaker_model_key,
             "speakerAuthoritativeBackend": runtime.authoritative_speaker_backend,
             "speakerSecondaryBackend": runtime.secondary_speaker_backend,

@@ -15,6 +15,8 @@ DEFAULT_MODEL_ROOT = Path("/opt/suspect-interrogation/models/funasr")
 _CRITICAL_MODEL_NAMES = ("paraformer", "fsmn-vad")
 _FORMAL_MAX_SINGLE_SEGMENT_MS = 5_000
 _MODEL_NAMES = _CRITICAL_MODEL_NAMES
+_STREAMING_MODEL_NAME = "paraformer-streaming"
+_STREAMING_MODEL_ID = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"
 ModelFactory = Callable[..., Any]
 
 
@@ -44,6 +46,12 @@ class FunASRSpeechRuntime:
         eres2net_model_factory: ERes2NetModelFactory | None = None,
     ) -> None:
         self.model_root = Path(model_root)
+        configured_streaming_dir = os.environ.get("SUSPECT_FUNASR_STREAMING_MODEL_DIR") or None
+        self.streaming_asr_model_dir = (
+            Path(configured_streaming_dir).expanduser()
+            if configured_streaming_dir is not None
+            else self.model_root / _STREAMING_MODEL_NAME
+        )
         self._model_factory = model_factory
         del legacy_speaker_factory
         self._eres2net_model_factory = eres2net_model_factory
@@ -54,6 +62,8 @@ class FunASRSpeechRuntime:
             Path(configured_eres_dir).expanduser() if configured_eres_dir is not None else None
         )
         self.asr_model: Any | None = None
+        self.streaming_asr_model: Any | None = None
+        self.streaming_asr_error: dict[str, str] | None = None
         self.vad_model: Any | None = None
         self.speaker_model: Any | None = None
         self._speaker_embedding_backend: SpeakerEmbeddingBackend | None = None
@@ -72,6 +82,10 @@ class FunASRSpeechRuntime:
     @property
     def core_loaded(self) -> bool:
         return self.asr_model is not None and self.vad_model is not None
+
+    @property
+    def streaming_asr_available(self) -> bool:
+        return self.streaming_asr_model is not None
 
     def load(self) -> None:
         self._clear_models()
@@ -112,7 +126,26 @@ class FunASRSpeechRuntime:
 
         self.asr_model = loaded["paraformer"]
         self.vad_model = loaded["fsmn-vad"]
+        self._load_streaming_asr(factory)
         self._load_eres2net()
+
+    def _load_streaming_asr(self, factory: ModelFactory) -> None:
+        self.streaming_asr_model = None
+        self.streaming_asr_error = None
+        model_path = self.streaming_asr_model_dir
+        if not model_path.is_dir():
+            self.streaming_asr_error = {
+                "code": "MODEL_NOT_INSTALLED",
+                "error_type": "MissingModelDirectory",
+            }
+            return
+        try:
+            self.streaming_asr_model = self._load_model(factory, model_path)
+        except Exception as exc:
+            self.streaming_asr_error = {
+                "code": "MODEL_LOAD_FAILED",
+                "error_type": type(exc).__name__,
+            }
 
     def _load_eres2net(self) -> None:
         key = SpeakerBackendKey.ERES2NET_LARGE
@@ -183,8 +216,19 @@ class FunASRSpeechRuntime:
             "model_root": str(self.model_root),
             "models": {
                 "asr": self.asr_model is not None,
+                "asr_streaming": self.streaming_asr_model is not None,
                 "vad": self.vad_model is not None,
                 "speaker": self._speaker_embedding_backend is not None,
+            },
+            "asr_streaming": {
+                "state": (
+                    "AVAILABLE"
+                    if self.streaming_asr_model is not None
+                    else str((self.streaming_asr_error or {}).get("code") or "ERROR")
+                ),
+                "model_id": _STREAMING_MODEL_ID,
+                "model_path": str(self.streaming_asr_model_dir),
+                "error": dict(self.streaming_asr_error) if self.streaming_asr_error else None,
             },
             "speaker_backend": self.speaker_backend,
             "speaker_backend_key": self.speaker_backend_key.value,
@@ -238,6 +282,37 @@ class FunASRSpeechRuntime:
             confidence_value = record.get("score")
         confidence = None if confidence_value is None else float(confidence_value)
         return {"text": text, "confidence": confidence}
+
+    def transcribe_stream(
+        self,
+        pcm: bytes,
+        sample_rate: int,
+        *,
+        cache: dict[str, Any],
+        is_final: bool = False,
+    ) -> str:
+        model = self._require_model(self.streaming_asr_model, _STREAMING_MODEL_NAME)
+        try:
+            result = self._generate(
+                model,
+                _STREAMING_MODEL_NAME,
+                input=pcm16_bytes_to_float32(pcm),
+                fs=int(sample_rate),
+                cache=cache,
+                is_final=bool(is_final),
+                chunk_size=[0, 10, 5],
+                encoder_chunk_look_back=4,
+                decoder_chunk_look_back=1,
+            )
+        except (BackendUnavailableError, WorkerCrashedError) as exc:
+            self.streaming_asr_error = {
+                "code": "INFERENCE_FAILED",
+                "error_type": str((exc.details or {}).get("error_type") or type(exc).__name__),
+            }
+            self.streaming_asr_model = None
+            raise
+        record = _first_record(result)
+        return str(record.get("text") or "") if record else ""
 
     def speaker_embedding(
         self,
@@ -324,6 +399,8 @@ class FunASRSpeechRuntime:
 
     def _clear_models(self) -> None:
         self.asr_model = None
+        self.streaming_asr_model = None
+        self.streaming_asr_error = None
         self.vad_model = None
         self.speaker_model = None
         self._speaker_embedding_backend = None

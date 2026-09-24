@@ -125,7 +125,12 @@ def _asr_status(request: Request) -> dict[str, Any]:
     return {
         "state": "AVAILABLE" if ready else "ERROR",
         "speech": speech,
-        "capabilities": {"asr": capabilities.get("asr"), "vad": capabilities.get("vad"), "speaker": capabilities.get("speaker")},
+        "capabilities": {
+            "asr": capabilities.get("asr"),
+            "asrStreaming": capabilities.get("asrStreaming"),
+            "vad": capabilities.get("vad"),
+            "speaker": capabilities.get("speaker"),
+        },
         "calibration": {
             # The margin is the only channel the runtime narrows on, so it is the only
             # one that makes the device "configured"; the threshold is informational.

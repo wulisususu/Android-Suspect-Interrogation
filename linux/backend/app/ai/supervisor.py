@@ -469,6 +469,21 @@ class AISupervisor:
             "threshold_configured": self.speaker_accept_threshold is not None,
             "margin_configured": self.speaker_margin is not None,
         }
+        speech_detail = speech.get("detail")
+        streaming = speech_detail.get("asr_streaming") if isinstance(speech_detail, dict) else None
+        stream_state = str(streaming.get("state") or "UNKNOWN").upper() if isinstance(streaming, dict) else "UNKNOWN"
+        if speech.get("state") != "READY":
+            stream_state = "ERROR"
+        elif stream_state not in {"AVAILABLE", "MODEL_NOT_INSTALLED"}:
+            stream_state = "ERROR" if stream_state not in {"UNKNOWN", "NOT_CONFIGURED"} else "UNKNOWN"
+        by_kind["asrStreaming"] = {
+            "state": stream_state,
+            "speech_worker": True,
+            "backend": self._speech_backend,
+            "model_id": streaming.get("model_id") if isinstance(streaming, dict) else None,
+            "model_path": streaming.get("model_path") if isinstance(streaming, dict) else None,
+            "error": streaming.get("error") if isinstance(streaming, dict) else None,
+        }
         return by_kind
 
     def shutdown(self) -> None:

@@ -15,8 +15,8 @@ ALSA microphone
   -> AF_UNIX /run/suspect-interrogation/speech.sock
   -> FSMN-VAD streaming state
   -> utterance boundary
-  -> Paraformer ASR + selected speaker embedding backend
-     (XVector or ERes2Net-large)
+  -> Paraformer Streaming provisional text (when the optional checkpoint is installed)
+  -> offline Paraformer final text + deferred ERes2Net-large speaker analysis
   -> FastAPI speaker policy
   -> temporary ASR fragment
   -> operator review/correction
@@ -31,10 +31,18 @@ Speech model/runtime assets are intentionally outside Git releases:
 
 - FunASR model root: `/opt/suspect-interrogation/models/funasr`
   - `paraformer/`
+  - optional `paraformer-streaming/` (`iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online`)
   - `fsmn-vad/`
   - `xvector/`
 - isolated FunASR Python runtime: `/opt/suspect-interrogation/runtime/funasr-env`
 - speech socket: `/run/suspect-interrogation/speech.sock`
+
+The streaming Paraformer is loaded only for live provisional captions. It receives fresh 600 ms
+PCM chunks with a session-local cache; the offline `paraformer/` model remains authoritative for
+saved fragments. Install or validate the optional checkpoint outside the Git release tree, for
+example under `/opt/suspect-interrogation/staging-models/paraformer-streaming`, then place it in
+the stable model root or set `SUSPECT_FUNASR_STREAMING_MODEL_DIR` to its installed path. Missing
+or failed streaming assets disable live previews without disabling audio archival or offline ASR.
 
 The RK3588 bootstrap exposes preinstalled model directories through stable read-only paths and reuses validated isolated runtimes. Model weights are never downloaded by ordinary hosted CI and are not committed to Git. ERes2Net-large package layout is locked from the actual board package probe rather than guessed from documentation.
 
