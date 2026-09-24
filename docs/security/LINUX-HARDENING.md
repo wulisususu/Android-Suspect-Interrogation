@@ -39,7 +39,14 @@ The kiosk unit is similarly restricted and treats the current release tree as re
 | `/etc/suspect-interrogation` | runtime/operator configuration | root + service group, directory 0750 |
 | `/etc/suspect-interrogation/runtime.env` | environment configuration | installed as 0640 |
 | `/var/lib/suspect-interrogation` | DB, reports, signatures, attachments | service user/group, directory 0750 |
+| `/var/lib/suspect-interrogation/audio/<case-id>/<capture-id>` | long-term raw interrogation evidence, 16 kHz mono PCM16 WAV segments | service user/group, directories 0750, files 0640 |
 | `/var/log/suspect-interrogation` | optional file logs | service user/group, directory 0750 |
+
+## Audio evidence retention and storage reserve
+
+Raw audio is case evidence and remains under the service-owned data directory. The service does not automatically purge audio. At 16 kHz mono PCM16, storage use is about **115 MB per recording hour**. The configured free-space reserve defaults to `SUSPECT_MIN_FREE_MB=10240` (10 GB). Formal capture is refused below the reserve; an active capture checks before each append and stops visibly as incomplete if it reaches the reserve. Successfully committed audio remains available for recovery.
+
+Rolling database backups exclude the `audio/` bytes and include an audio manifest with committed sample counts and hashes. Same-device restore verifies every referenced audio prefix before replacing snapshot-managed files and preserves the existing audio tree. A missing or invalid audio reference makes restore fail as incomplete. This protects against worker restarts and same-device restore mistakes; it is not off-device disaster recovery. Any separate evidence export or retention policy requires an operator-controlled process with its own access controls and audit trail.
 
 ## PII logging policy
 

@@ -581,7 +581,7 @@ Run: `rg -n "audio/<case-id>/<capture-id>|115 MB|10 GB|off-device|checkpoint" do
 
 Expected: each operational value appears in both the deployment instructions and security storage policy, with no conflicting backup retention statement.
 
-- [ ] **Step 3: Commit operations documentation**
+- [x] **Step 3: Commit operations documentation**
 
 ```text
 git add docs/release/DEPLOYMENT.md docs/security/LINUX-HARDENING.md

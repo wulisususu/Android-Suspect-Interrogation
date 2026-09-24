@@ -34,7 +34,7 @@ class RuntimeSettings(BaseSettings):
     db_path: Path = Path("/var/lib/suspect-interrogation/interrogation.db")
     model_path: Path | None = None
     web_dist_dir: Path = Path("/opt/suspect-interrogation/current/webapp/dist")
-    min_free_mb: int = 256
+    min_free_mb: int = 10_240
 
     @field_validator("audio_input_mode")
     @classmethod
@@ -67,6 +67,14 @@ class RuntimeSettings(BaseSettings):
         if seconds <= 0:
             raise ValueError("qa_idle_close_seconds must be positive")
         return seconds
+
+    @field_validator("min_free_mb")
+    @classmethod
+    def validate_min_free_mb(cls, value: int) -> int:
+        megabytes = int(value)
+        if megabytes <= 0:
+            raise ValueError("min_free_mb must be positive")
+        return megabytes
 
     @property
     def cors_origins_list(self) -> list[str]:

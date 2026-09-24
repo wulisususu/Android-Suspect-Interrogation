@@ -251,6 +251,7 @@ def create_app(
             session_factory=app.state.session_factory,
             capture_service=capture_service,
             ai_supervisor=supervisor,
+            min_free_bytes=settings.min_free_mb * 1024 * 1024,
         )
         app.state.live_speech_coordinator = live_speech_coordinator
         try:

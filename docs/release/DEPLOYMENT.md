@@ -13,6 +13,7 @@
   kiosk.env                  # optional
 /var/lib/suspect-interrogation/
   interrogation.db
+  audio/<case-id>/<capture-id>/segment-*.wav
   reports/signatures/attachments as implemented by backend
   backups/
 /var/log/suspect-interrogation/
@@ -44,6 +45,14 @@ If post-switch health fails, the prior symlink is restored and services are rest
 
 For a fully disconnected production board, set `SUSPECT_WHEELHOUSE` to a pre-populated local Python wheel directory. Model weights are never downloaded by this workflow.
 
+## Durable interrogation audio
+
+Formal capture audio is kept under `/var/lib/suspect-interrogation/audio/<case-id>/<capture-id>/` as one-minute WAV segments containing 16 kHz, mono, PCM16. The service owns the directories with mode `0750` and audio files with mode `0640`. Each active segment is durably checkpointed at least once per second before its audio range is sent to ASR. The format uses about **115 MB per hour** of recording.
+
+The service checks available space before formal capture and before each new audio append. `SUSPECT_MIN_FREE_MB` defaults to `10240` (10 GB reserve). Below that reserve, it refuses a new capture; if an active capture reaches the reserve, it stops and marks the capture incomplete while keeping all committed audio. Audio is not automatically purged. Operators must arrange separate retention or capacity expansion before the reserve is reached.
+
+On service recovery, durable audio is checked and ASR resumes before lower-priority speaker analysis. A browser capture stopped as incomplete can offer a local “补录本机音频” action when unacknowledged frames remain in that browser's IndexedDB. The service validates each frame and the final sample/sequence cursors before completing the archive.
+
 ## Health / status
 
 ```bash
@@ -70,7 +79,7 @@ Without an argument, the newest release other than `current` is selected. The sy
 sudo ./deploy/control.sh backup
 ```
 
-The SQLite database is copied using the SQLite online backup API, not filesystem `cp` of an actively written database. Other mutable files are staged, SHA-256 checksums are written, the snapshot is archived with a UTC timestamp, and retention is applied.
+The SQLite database is copied using the SQLite online backup API, not filesystem `cp` of an actively written database. Other mutable files are staged, SHA-256 checksums are written, the snapshot is archived with a UTC timestamp, and retention is applied. The `audio/` directory is excluded from every rolling snapshot; a sorted `audio_manifest.json` records committed paths, sample counts, and hashes without copying the audio bytes. Snapshot rotation never deletes long-term audio.
 
 Configure retention with `SUSPECT_BACKUP_RETENTION` (default `7`).
 
@@ -80,9 +89,11 @@ Configure retention with `SUSPECT_BACKUP_RETENTION` (default `7`).
 sudo ./deploy/control.sh restore /var/lib/suspect-interrogation/backups/<archive>.tar.gz
 ```
 
-Restore verifies archive checksums and `PRAGMA integrity_check` before replacing live mutable data, then runs a second integrity check after restoration. A pre-restore filesystem copy is kept alongside the data directory for emergency recovery.
+Restore verifies archive checksums, SQLite integrity, and each manifest-referenced committed audio prefix before replacing live mutable data. It preserves the existing `audio/` and `backups/` directories and returns a nonzero incomplete-restore result if any referenced evidence file is missing, malformed, or has a hash mismatch. A pre-restore filesystem copy is kept alongside the data directory for emergency recovery. Legacy snapshots without an audio manifest preserve the current audio archive and emit a warning.
 
 Stop/coordinate active business writes before a production restore. The script validates snapshot consistency but does not attempt distributed transaction coordination with future backend workers.
+
+This same-device backup/restore process is not off-device disaster recovery. A board or storage-device failure still requires an independently managed evidence backup process.
 
 ## Rebuilding an ERes2Net-large reference from retained enrollment audio
 
