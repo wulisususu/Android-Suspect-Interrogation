@@ -111,6 +111,7 @@ class SpeechSession:
         self._stream_text_chunks: list[tuple[int, int, str]] = []
         self._stream_text_floor_ms = self._base_offset_ms
         self._last_partial_text = ""
+        self._stream_prime_pending = False
         self._streaming_method = getattr(runtime, "transcribe_stream", None)
         self._streaming_enabled = callable(self._streaming_method) and bool(
             getattr(runtime, "streaming_asr_available", True)
@@ -243,6 +244,7 @@ class SpeechSession:
         self.current_utterance_pcm = bytearray(self.pre_roll_pcm[offset_bytes:])
         self.utterance_start_ms = start_ms
         self._capture_start_ms = capture_start_ms
+        self._stream_prime_pending = self._streaming_enabled
         self.pre_roll_pcm = b""
         self._pre_roll_start_ms = self.stream_offset_ms
 
@@ -347,8 +349,21 @@ class SpeechSession:
         ]
 
     def _stream_audio(self, pcm: bytes) -> list[SpeechEvent]:
-        if not self._streaming_enabled:
+        if not self._streaming_enabled or self.utterance_start_ms is None:
             return []
+
+        if self._stream_prime_pending:
+            # VAD reports speech start after buffering some audio. Seed this
+            # utterance's online cache from its retained pre-roll (which already
+            # includes the current input chunk) instead of running the large
+            # streaming model on the silence that preceded it.
+            pcm = bytes(self.current_utterance_pcm)
+            self._stream_staging.clear()
+            self.streaming_cache.clear()
+            if self._capture_start_ms is not None:
+                self._stream_chunk_start_sample = self._ms_to_samples(self._capture_start_ms)
+            self._stream_prime_pending = False
+
         self._stream_staging.extend(pcm)
         chunk_samples = max(1, int(round(self.sample_rate * _STREAMING_CHUNK_MS / 1000)))
         chunk_bytes = chunk_samples * PCM_SAMPLE_WIDTH_BYTES
@@ -464,6 +479,10 @@ class SpeechSession:
         self._capture_start_ms = None
         self._last_partial_end_ms = None
         self._last_partial_text = ""
+        self._stream_staging.clear()
+        self.streaming_cache.clear()
+        self._stream_prime_pending = False
+        self._stream_chunk_start_sample = self._stream_samples
 
     def _ms_to_bytes(self, milliseconds: int) -> int:
         samples = self._ms_to_samples(milliseconds)
