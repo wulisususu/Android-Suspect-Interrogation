@@ -37,7 +37,7 @@ async function renderMeter(options: {
 }
 
 describe('live dialogue audio meter', () => {
-  it('renders bar heights from received PCM peaks, including a true zero level', async () => {
+  it('renders the Canvas waveform for live PCM data and keeps the real capture duration', async () => {
     const html = await renderMeter({
       running: true,
       samples: [
@@ -49,8 +49,7 @@ describe('live dialogue audio meter', () => {
 
     expect(html).toContain('aria-label="实时麦克风输入波形"')
     expect(html.indexOf('capture-meter')).toBeGreaterThan(html.indexOf('class="dialogue-feed"'))
-    expect(html).toContain('height:2px')
-    expect(html).toContain('height:34px')
+    expect(html).toContain('class="recorder-waveform-canvas"')
     expect(html).toContain('实时音频')
     expect(html).toContain('停止录音 00:02')
   })
@@ -59,6 +58,7 @@ describe('live dialogue audio meter', () => {
     const waiting = await renderMeter({ running: true })
     expect(waiting).toContain('等待音频输入')
     expect(waiting).not.toContain('<i')
+    expect(waiting).toContain('class="recorder-waveform-canvas"')
 
     const stale = await renderMeter({
       running: true,
@@ -66,7 +66,6 @@ describe('live dialogue audio meter', () => {
       updatedAt: Date.now() - 2000,
     })
     expect(stale).toContain('暂无新音频信号')
-    expect(stale).toContain('height:8px')
   })
 
   it('hides the waveform after recording stops', async () => {

@@ -227,6 +227,13 @@ export const useInterrogationStore = defineStore('interrogation', () => {
     return scope.generation === caseGeneration && scope.caseId === caseId.value
   }
 
+  function appendAudioLevel(sample: AudioLevelSample, scope: CaseScope, captureSessionId: string) {
+    if (!isCurrentScope(scope) || !capture.value.running
+      || capture.value.captureSessionId !== captureSessionId) return
+    capture.value.audioLevels = [...(capture.value.audioLevels ?? []), sample].slice(-240)
+    capture.value.audioLevelUpdatedAt = Date.now()
+  }
+
   function disposeCaptureEvents() {
     sessionConnection?.close()
     sessionConnection = undefined
@@ -317,7 +324,9 @@ export const useInterrogationStore = defineStore('interrogation', () => {
       const captureKey = `${status.caseId}:${status.captureSessionId}`
       if (browserResumeGate.shouldAttempt(captureKey)) {
         browserResumeGate.markAttempted(captureKey)
-        void startBrowserAsrCapture(status.caseId, status.captureSessionId).catch((err) => {
+        void startBrowserAsrCapture(status.caseId, status.captureSessionId, undefined, (sample) => {
+          appendAudioLevel(sample, scope, status.captureSessionId!)
+        }).catch((err) => {
           if (err instanceof BrowserFormalCaptureLeaseError && err.reason === 'CONFLICT') {
             if (browserResumeGate.leaseConflict(captureKey)) {
               feedbackIfCurrent(scope, '此录音正在另一个标签页中采集；将等待该标签页释放录音后自动恢复', true)
@@ -424,6 +433,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
   function applyCaptureEvent(event: CaptureEvent, scope = currentScope()) {
     if (!isCurrentScope(scope)) return
     if (event.event === 'AUDIO_LEVEL') {
+      if (capture.value.source === 'BROWSER') return
       const payload = event.payload as Partial<AudioLevelSample> & { caseId?: string; captureSessionId?: string }
       if (payload.caseId !== scope.caseId || !payload.captureSessionId
         || payload.captureSessionId !== capture.value.captureSessionId
@@ -435,8 +445,7 @@ export const useInterrogationStore = defineStore('interrogation', () => {
         rms: payload.rms!,
         peak: payload.peak!,
       }
-      capture.value.audioLevels = [...(capture.value.audioLevels ?? []), sample].slice(-80)
-      capture.value.audioLevelUpdatedAt = Date.now()
+      appendAudioLevel(sample, scope, payload.captureSessionId)
       return
     }
     if (event.event === 'ASR_PARTIAL') {

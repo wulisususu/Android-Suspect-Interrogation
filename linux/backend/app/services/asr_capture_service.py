@@ -59,7 +59,7 @@ FragmentSink = Callable[[str, str], None]
 CaptureFinishedSink = Callable[[str, str], None]
 CalibrationResolver = Callable[[Any], ResolvedSpeakerCalibration]
 _FLOAT32_BYTES = 4
-_AUDIO_LEVEL_INTERVAL_SECONDS = 0.1
+_AUDIO_LEVEL_INTERVAL_SECONDS = 0.04
 
 
 @dataclass

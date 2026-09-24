@@ -7,6 +7,7 @@ import {
 const TARGET_SAMPLE_RATE = 16_000
 
 type CaptureKind = 'FORMAL' | 'QUESTION_PREP'
+type BrowserAudioLevelSample = { sampleCount: number; sampleRate: number; rms: number; peak: number }
 
 export interface BrowserFormalAudioFrame {
   sequence: number
@@ -577,8 +578,10 @@ class BrowserPcmStreamer {
   private stream: MediaStream | null = null
   private context: AudioContext | null = null
   private source: MediaStreamAudioSourceNode | null = null
+  private analyser: AnalyserNode | null = null
   private processor: ScriptProcessorNode | null = null
   private mute: GainNode | null = null
+  private waveformTimer: number | undefined
   private socket: WebSocket | null = null
   private pendingSocket: WebSocket | null = null
   private stopped = false
@@ -602,6 +605,7 @@ class BrowserPcmStreamer {
   private incompleteMarker = new BrowserFormalIncompleteMarker()
   private incompleteMarkerMayBypassOutbox = false
   private captureLease: BrowserFormalCaptureLease | null = null
+  onAudioLevel: ((sample: BrowserAudioLevelSample) => void) | null = null
   onUnexpectedClose: (() => void) | null = null
   onIncomplete: ((message: string) => void) | null = null
 
@@ -665,10 +669,16 @@ class BrowserPcmStreamer {
       if (context.state === 'suspended') await context.resume()
       if (this.stopRequested || this.stopped) throw new Error('浏览器麦克风采集已取消')
       const source = context.createMediaStreamSource(media)
+      const analyser = context.createAnalyser()
+      analyser.fftSize = 1024
+      analyser.smoothingTimeConstant = 0
       const processor = context.createScriptProcessor(4096, 1, 1)
       const mute = context.createGain()
       mute.gain.value = 0
       const resampler = new Pcm16Resampler(context.sampleRate, TARGET_SAMPLE_RATE)
+      const waveformPcm = new Float32Array(analyser.fftSize)
+      let waveformSampleCount = 0
+      const waveformStartedAt = performance.now()
 
       processor.onaudioprocess = (event) => {
         if (this.stopped || this.failed) return
@@ -682,12 +692,32 @@ class BrowserPcmStreamer {
         }
       }
 
-      source.connect(processor)
+      source.connect(analyser)
+      analyser.connect(processor)
       processor.connect(mute)
       mute.connect(context.destination)
       this.source = source
+      this.analyser = analyser
       this.processor = processor
       this.mute = mute
+      this.waveformTimer = window.setInterval(() => {
+        if (this.stopped || this.failed || !this.analyser || context.state !== 'running') return
+        this.analyser.getFloatTimeDomainData(waveformPcm)
+        let sumSquares = 0
+        let peak = 0
+        for (const value of waveformPcm) {
+          const magnitude = Math.min(1, Math.abs(value))
+          sumSquares += magnitude * magnitude
+          if (magnitude > peak) peak = magnitude
+        }
+        waveformSampleCount = Math.round((performance.now() - waveformStartedAt) * context.sampleRate / 1000)
+        this.onAudioLevel?.({
+          sampleCount: waveformSampleCount,
+          sampleRate: context.sampleRate,
+          rms: Math.sqrt(sumSquares / waveformPcm.length) * 32768,
+          peak: peak * 32768,
+        })
+      }, 40)
     } catch (error) {
       if (this.kind === 'FORMAL' && !this.stopRequested) {
         const detail = error instanceof Error ? error.message : String(error)
@@ -896,8 +926,11 @@ class BrowserPcmStreamer {
   }
 
   private stopAudioGraph() {
+    if (this.waveformTimer !== undefined) window.clearInterval(this.waveformTimer)
+    this.waveformTimer = undefined
     if (this.processor) this.processor.onaudioprocess = null
     try { this.source?.disconnect() } catch { /* noop */ }
+    try { this.analyser?.disconnect() } catch { /* noop */ }
     try { this.processor?.disconnect() } catch { /* noop */ }
     try { this.mute?.disconnect() } catch { /* noop */ }
     for (const track of this.stream?.getTracks() ?? []) track.stop()
@@ -977,6 +1010,7 @@ class BrowserPcmStreamer {
       this.stream = null
       this.context = null
       this.source = null
+      this.analyser = null
       this.processor = null
       this.mute = null
       this.socket = null
@@ -994,6 +1028,7 @@ interface ActiveBrowserCapture {
   url: string
   captureKey?: string
   streamer: BrowserPcmStreamer | null
+  onAudioLevel: ((sample: BrowserAudioLevelSample) => void) | null
   cancelRequested: boolean
   startPromise: Promise<void>
 }
@@ -1035,6 +1070,7 @@ async function startCapture(
   kind: CaptureKind,
   url: string,
   captureKey?: string,
+  onAudioLevel?: (sample: BrowserAudioLevelSample) => void,
 ) {
   const current = activeCapture
   const sameCapture = current?.kind === kind && (
@@ -1043,6 +1079,8 @@ async function startCapture(
       : current.url === url
   )
   if (current && sameCapture) {
+    current.onAudioLevel = onAudioLevel ?? null
+    if (current.streamer) current.streamer.onAudioLevel = current.onAudioLevel
     return current.startPromise
   }
   if (current) await stopBrowserAudioCapture()
@@ -1056,6 +1094,7 @@ async function startCapture(
     url,
     captureKey,
     streamer: null,
+    onAudioLevel: onAudioLevel ?? null,
     cancelRequested: false,
     startPromise: Promise.resolve(),
   }
@@ -1078,6 +1117,7 @@ async function startCapture(
         throw new BrowserCaptureStartupCancelledError()
       }
       streamer = new BrowserPcmStreamer()
+      streamer.onAudioLevel = entry.onAudioLevel
       entry.streamer = streamer
       if (kind === 'FORMAL') {
         streamer.onUnexpectedClose = () => {
@@ -1118,11 +1158,17 @@ async function startCapture(
   return entry.startPromise
 }
 
-export async function startBrowserAsrCapture(caseId: string, captureId: string, origin = runtimeConfig.apiBaseUrl) {
+export async function startBrowserAsrCapture(
+  caseId: string,
+  captureId: string,
+  origin = runtimeConfig.apiBaseUrl,
+  onAudioLevel?: (sample: BrowserAudioLevelSample) => void,
+) {
   return startCapture(
     'FORMAL',
     buildBrowserAsrCaptureWebSocketUrl(caseId, captureId, origin),
     `${caseId}:${captureId}`,
+    onAudioLevel,
   )
 }
 

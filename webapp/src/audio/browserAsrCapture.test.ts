@@ -267,6 +267,15 @@ describe('question preparation capture replacement', () => {
       async resume() {}
       async close() { this.state = 'closed' }
       createMediaStreamSource() { return { connect() {}, disconnect() {} } }
+      createAnalyser() {
+        return {
+          fftSize: 0,
+          smoothingTimeConstant: 0,
+          connect() {},
+          disconnect() {},
+          getFloatTimeDomainData(samples: Float32Array) { samples.fill(0) },
+        }
+      }
       createScriptProcessor() { return { onaudioprocess: null, connect() {}, disconnect() {} } }
       createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} } }
     }
@@ -275,6 +284,8 @@ describe('question preparation capture replacement', () => {
       isSecureContext: true,
       setTimeout: (handler: TimerHandler, timeout?: number) => setTimeout(handler, timeout) as unknown as number,
       clearTimeout: (timer: number) => clearTimeout(timer),
+      setInterval: (handler: TimerHandler, timeout?: number) => setInterval(handler, timeout) as unknown as number,
+      clearInterval: (timer: number) => clearInterval(timer),
     })
     vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
     vi.stubGlobal('WebSocket', FakeWebSocket)

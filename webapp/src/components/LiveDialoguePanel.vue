@@ -13,6 +13,7 @@ import type {
 import { dialoguePresentation, groupLiveDialogueFragments } from '../utils/templateInterrogation'
 import { armDrop, pendingDrop } from '../composables/pendingDrop'
 import AsrWorkflowStatus from './AsrWorkflowStatus.vue'
+import RecorderWaveformCanvas from './RecorderWaveformCanvas.vue'
 
 const props = defineProps<{
   caseId: string
@@ -342,7 +343,7 @@ const elapsed = computed(() => {
   const total = Math.floor(props.captureElapsedMs / 1000)
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
 })
-const audioMeterSamples = computed(() => props.captureStatus.audioLevels?.slice(-48) ?? [])
+const audioMeterSamples = computed(() => props.captureStatus.audioLevels?.slice(-240) ?? [])
 const audioMeterSignal = computed(() => {
   if (!props.captureRunning) return 'STOPPED'
   if (!audioMeterSamples.value.length) return 'WAITING'
@@ -352,11 +353,6 @@ const audioMeterSignal = computed(() => {
   if (updatedAt == null || now - updatedAt > 1500) return 'STALE'
   return 'LIVE'
 })
-
-function audioMeterBarHeight(peak: number) {
-  const normalizedPeak = Math.min(1, Math.max(0, peak) / 32768)
-  return Math.max(2, Math.round(Math.sqrt(normalizedPeak) * 48))
-}
 
 function formatTime(item: TemporaryAsrFragment) {
   if (!item.createdAt) return ''
@@ -577,12 +573,11 @@ onMounted(() => {
 
     <div ref="feed" class="dialogue-feed" @scroll="onFeedScroll">
       <div v-if="captureRunning" class="capture-meter" role="img" aria-label="实时麦克风输入波形">
-        <div class="capture-meter-bars">
-          <i
-            v-for="(sample, index) in audioMeterSamples"
-            :key="`${sample.sampleCount}-${index}`"
-            :style="{ height: `${audioMeterBarHeight(sample.peak)}px` }"
-          ></i>
+        <div class="capture-meter-waveform">
+          <RecorderWaveformCanvas
+            :key="captureStatus.captureSessionId ?? 'active-capture'"
+            :samples="audioMeterSamples"
+          />
         </div>
         <span class="capture-meter-state">
           {{ audioMeterSignal === 'WAITING' ? '等待音频输入' : audioMeterSignal === 'STALE' ? '暂无新音频信号' : '实时音频' }}
@@ -779,30 +774,9 @@ onMounted(() => {
   background: #eef3f6;
 }
 
-.capture-meter-bars {
+.capture-meter-waveform {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   overflow: hidden;
-}
-
-.capture-meter-bars::after {
-  position: absolute;
-  inset: 50% 0 auto;
-  height: 1px;
-  background: #c5cdd3;
-  content: '';
-}
-
-.capture-meter-bars i {
-  position: relative;
-  z-index: 1;
-  flex: 1 1 0;
-  max-width: 2px;
-  min-width: 1px;
-  border-radius: 2px;
-  background: #526b7a;
 }
 
 .capture-meter-state {
