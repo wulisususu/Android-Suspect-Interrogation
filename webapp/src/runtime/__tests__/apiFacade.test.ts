@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   fetchOfficerVoiceprints,
   fetchAsrCaptureStatus,
@@ -19,7 +19,7 @@ import { freezeDocument, signDocument } from '../../api/documentSigning'
 import { resetRuntimeAdapterForTests } from '../index'
 import type { RuntimeAdapter, RuntimeCapabilities, RuntimeEventListener, RuntimeOperation } from '../types'
 
-function fakeAdapter() {
+function fakeAdapter(options: { captureStartedAt?: string } = {}) {
   const calls: Array<{ operation: string; payload?: Record<string, unknown> }> = []
   const adapter: RuntimeAdapter = {
     kind: 'linux-http-ws',
@@ -30,6 +30,7 @@ function fakeAdapter() {
         caseId: 'case-1', source: 'BROWSER', active: true, captureSessionId: 'capture-1', sampleRate: 16000,
         recordingStatus: 'INCOMPLETE', asrStatus: 'FINALIZING', speakerStatus: 'QUEUED',
         audioSampleCount: 16000, asrCursorSample: 8000, voicedMs: 5000, finalFragmentCount: 2,
+        ...(options.captureStartedAt === undefined ? {} : { startedAt: options.captureStartedAt }),
         partialText: '', fragments: [],
       } as T
       if (operation === 'document.freeze') return { caseId: 'case-1', version: 1, documentId: 'doc-1', documentHash: 'hash', status: 'FROZEN', createdAt: 1, integrityValid: true, signatures: [] } as T
@@ -49,7 +50,10 @@ function fakeAdapter() {
   return { adapter, calls }
 }
 
-afterEach(() => resetRuntimeAdapterForTests())
+afterEach(() => {
+  resetRuntimeAdapterForTests()
+  vi.unstubAllEnvs()
+})
 
 describe('application API runtime delegation', () => {
   it('delegates continuous ASR through the selected runtime', async () => {
@@ -82,6 +86,16 @@ describe('application API runtime delegation', () => {
       voicedMs: 5000,
       finalFragmentCount: 2,
     })
+  })
+
+  it('treats timezone-less capture timestamps from SQLite as UTC', async () => {
+    vi.stubEnv('TZ', 'Asia/Shanghai')
+    const { adapter } = fakeAdapter({ captureStartedAt: '2026-09-24T03:00:00' })
+    resetRuntimeAdapterForTests(adapter)
+
+    const status = await fetchAsrCaptureStatus('case-1')
+
+    expect(status.startedAt).toBe(Date.UTC(2026, 8, 24, 3))
   })
 
   it('normalizes transcript lineage for replacement history', () => {

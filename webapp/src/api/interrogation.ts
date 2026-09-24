@@ -49,7 +49,9 @@ function asRecord(value: unknown): Record<string, unknown> {
 function toTimestamp(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string') {
-    const parsed = Date.parse(value)
+    const isIsoDateTime = /^\d{4}-\d{2}-\d{2}T/.test(value)
+    const hasTimezone = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(value)
+    const parsed = Date.parse(isIsoDateTime && !hasTimezone ? `${value}Z` : value)
     if (Number.isFinite(parsed)) return parsed
   }
   return undefined

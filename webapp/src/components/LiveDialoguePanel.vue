@@ -354,7 +354,8 @@ const audioMeterSignal = computed(() => {
 })
 
 function audioMeterBarHeight(peak: number) {
-  return Math.max(2, Math.round(Math.min(32, Math.max(0, peak) / 32768 * 32)))
+  const normalizedPeak = Math.min(1, Math.max(0, peak) / 32768)
+  return Math.max(2, Math.round(Math.sqrt(normalizedPeak) * 48))
 }
 
 function formatTime(item: TemporaryAsrFragment) {
@@ -771,7 +772,7 @@ onMounted(() => {
   margin: -14px -12px 12px;
   box-sizing: border-box;
   display: grid;
-  grid-template-rows: 40px 12px;
+  grid-template-rows: 48px 12px;
   gap: 2px;
   padding: 6px 12px;
   border-bottom: 1px solid #d4dde4;
@@ -782,8 +783,7 @@ onMounted(() => {
   position: relative;
   display: flex;
   align-items: center;
-  justify-content: flex-start;
-  gap: 2px;
+  justify-content: space-between;
   overflow: hidden;
 }
 

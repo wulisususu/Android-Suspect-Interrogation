@@ -4,7 +4,7 @@
 
 **Goal:** Show a waveform measured from actual PCM for both browser and ALSA capture, and make the recording button display the real active capture duration.
 
-**Architecture:** Measure PCM in the shared backend capture loop and publish throttled `AUDIO_LEVEL` events containing only audio metrics and capture identity. Preserve a bounded set of matching samples in the frontend capture state; render them under the capture button. Return the persisted capture start time in active status so the existing wall-clock timer can advance.
+**Architecture:** Measure PCM in the shared backend capture loop and publish throttled `AUDIO_LEVEL` events containing only audio metrics and capture identity. Preserve a bounded set of matching samples in the frontend capture state; render them across the top of the dialogue feed. Return the persisted capture start time in active status, normalize timezone-less database timestamps as UTC, and let the existing wall-clock timer advance.
 
 **Tech Stack:** Python, FastAPI service layer, SQLAlchemy, Vue 3, Pinia, TypeScript, pytest, Vitest.
 
@@ -15,8 +15,10 @@
 - `linux/backend/app/services/asr_capture_service.py`: active status timestamp, PCM metric calculation, and throttled event emission from the shared ALSA/browser ingress loop.
 - `linux/backend/tests/test_asr_capture_service.py`: real PCM metric payload, event throttling, and active start-time regression coverage using existing fake device/database fixtures.
 - `webapp/src/types/interrogation.ts`: frontend audio-meter sample and client capture-state fields.
+- `webapp/src/api/interrogation.ts`: parse timezone-less ISO date-times from the UTC database as UTC.
 - `webapp/src/stores/interrogation.ts`: session-scoped event reduction, bounded history, new-session reset, and elapsed timer state.
 - `webapp/src/stores/interrogation.test.ts`: event filtering, silence, bounded history, and actual timer progression coverage.
+- `webapp/src/runtime/__tests__/apiFacade.test.ts`: timezone-less capture-start regression coverage.
 - `webapp/src/components/LiveDialoguePanel.vue`: full-width, non-animated waveform pinned to the top of the dialogue feed, with waiting/stale states.
 - `webapp/src/components/LiveDialoguePanel.audioMeter.test.ts`: server-rendered checks for measured bar heights, waiting/stale states, stop visibility, and the displayed duration.
 
@@ -164,13 +166,17 @@ Expected: PASS and active and stopped responses both contain the persisted start
 ## Task 3: Reduce audio events into bounded, session-scoped frontend state
 
 **Files:**
+- Modify: `webapp/src/api/interrogation.ts`
 - Modify: `webapp/src/types/interrogation.ts`
 - Modify: `webapp/src/stores/interrogation.ts`
+- Test: `webapp/src/runtime/__tests__/apiFacade.test.ts`
 - Test: `webapp/src/stores/interrogation.test.ts`
 
 - [x] **Step 1: Add failing reducer, bounded-history, and elapsed-time tests**
 
 Set the store to `case-1`, send a running `RECORDING_STATE` for `capture-1`, then send one nonzero `AUDIO_LEVEL`, one zero-level `AUDIO_LEVEL`, and one event for `capture-old`. Assert the first two values are retained in order, zero is retained as true silence, and the mismatched event is ignored. Also add tests that send 85 matching events and expect exactly 80 samples, and set fake system time to `10000` before applying a running capture status with `startedAt: 8000`; elapsed time must be at least 2000 ms and advance after another 1000 ms. Give the status `caseId`, `captureSessionId`, `running`, `startedAt`, `sampleRate`, `partialText`, and `fragments: []` so the existing reducer accepts it.
+
+In the API facade tests, set `TZ` to `Asia/Shanghai`, return a capture status with timezone-less `startedAt: '2026-09-24T03:00:00'`, and assert normalization returns `Date.UTC(2026, 8, 24, 3)`.
 
 ```typescript
 store.applyCaptureEvent({ event: 'RECORDING_STATE', payload: {
@@ -192,7 +198,7 @@ Expected: FAIL because `AUDIO_LEVEL` is not reduced into capture state and elaps
 
 - [x] **Step 3: Add the meter sample type and reducer behavior**
 
-Add a typed sample with `sampleCount`, `sampleRate`, `rms`, and `peak`; add an optional bounded `audioLevels` array and `audioLevelUpdatedAt` timestamp to `AsrCaptureStatus`. In `applyCaptureEvent`, accept `AUDIO_LEVEL` only when both `caseId` and `captureSessionId` match current capture state. Append a copy of the measured values, keep only the latest 80, and record `Date.now()` for signal freshness. In `applyCaptureStatus`, preserve those client-only fields only for the same capture ID and clear them when a new capture starts. Include `AUDIO_LEVEL` in the runtime event dispatch list.
+Add UTC handling for timezone-less ISO timestamps in `toTimestamp`; add a typed sample with `sampleCount`, `sampleRate`, `rms`, and `peak`; add an optional bounded `audioLevels` array and `audioLevelUpdatedAt` timestamp to `AsrCaptureStatus`. In `applyCaptureEvent`, accept `AUDIO_LEVEL` only when both `caseId` and `captureSessionId` match current capture state. Append a copy of the measured values, keep only the latest 80, and record `Date.now()` for signal freshness. In `applyCaptureStatus`, preserve those client-only fields only for the same capture ID and clear them when a new capture starts. Include `AUDIO_LEVEL` in the runtime event dispatch list.
 
 - [x] **Step 4: Run frontend reducer tests**
 
@@ -219,7 +225,7 @@ Keep the current BOT and recording behavior. Keep the elapsed time on the record
 
 - [x] **Step 2: Render only received sample amplitudes and signal state**
 
-Map the last 48 measured samples to bar heights using their normalized `peak` (full-scale PCM16 is 32768). Render zero values at a 2 px baseline. Before the first sample show “等待音频输入”; when the most recent sample is older than 1500 ms, compute staleness from `Date.now() - audioLevelUpdatedAt` and read `props.captureElapsedMs` in the computed expression so the existing 500 ms capture-clock updates re-evaluate it; then show “暂无新音频信号” and freeze the bars. Hide the meter when capture is stopped. Do not add CSS animation, random values, timers that alter bars, or prerecorded data.
+Spread the last 48 measured samples across the full dialogue-feed width. Map the normalized `peak` (full-scale PCM16 is 32768) through a square-root visual scale up to 48 px; render zero values at a 2 px baseline. Before the first sample show “等待音频输入”; when the most recent sample is older than 1500 ms, compute staleness from `Date.now() - audioLevelUpdatedAt` and read `props.captureElapsedMs` in the computed expression so the existing 500 ms capture-clock updates re-evaluate it; then show “暂无新音频信号” and freeze the bars. Hide the meter when capture is stopped. Do not add CSS animation, random values, timers that alter bars, or prerecorded data.
 
 - [x] **Step 3: Run frontend checks**
 
