@@ -17,7 +17,7 @@
 - `webapp/src/types/interrogation.ts`: frontend audio-meter sample and client capture-state fields.
 - `webapp/src/stores/interrogation.ts`: session-scoped event reduction, bounded history, new-session reset, and elapsed timer state.
 - `webapp/src/stores/interrogation.test.ts`: event filtering, silence, bounded history, and actual timer progression coverage.
-- `webapp/src/components/LiveDialoguePanel.vue`: compact, non-animated waveform below the recording button, with waiting/stale states.
+- `webapp/src/components/LiveDialoguePanel.vue`: full-width, non-animated waveform pinned to the top of the dialogue feed, with waiting/stale states.
 - `webapp/src/components/LiveDialoguePanel.audioMeter.test.ts`: server-rendered checks for measured bar heights, waiting/stale states, stop visibility, and the displayed duration.
 
 Run backend pytest commands with `linux/backend` as the working directory so its `app` package resolves. Run frontend commands from `webapp`.
@@ -199,22 +199,18 @@ Add a typed sample with `sampleCount`, `sampleRate`, `rms`, and `peak`; add an o
 Run from `webapp`: `npm test -- src/stores/interrogation.test.ts`  
 Expected: PASS for scope filtering, silence, bounded history, reset, and elapsed time.
 
-## Task 4: Render a real waveform below the recording button
+## Task 4: Render a real waveform in the chat history area
 
 **Files:**
 - Modify: `webapp/src/components/LiveDialoguePanel.vue`
 - Test: `webapp/src/components/LiveDialoguePanel.audioMeter.test.ts`
 
-- [x] **Step 1: Group the recording control and meter in the header**
+- [x] **Step 1: Keep the timer in the header and place the meter in the dialogue feed**
 
-Keep the current BOT and recording behavior. Place the button and a compact waveform in a dedicated wrapper so the waveform sits directly below the button without changing the dialogue-feed layout.
+Keep the current BOT and recording behavior. Keep the elapsed time on the recording button, and put the waveform as a full-width sticky row at the top of the dialogue feed so it remains visible while the chat history scrolls.
 
 ```vue
-<div class="capture-control">
-  <button class="capture-toggle" ...>
-    <span class="record-dot"></span>
-    {{ captureRunning ? `停止录音 ${elapsed}` : '开始录音' }}
-  </button>
+<div ref="feed" class="dialogue-feed">
   <div v-if="captureRunning" class="capture-meter" role="img" aria-label="实时麦克风输入波形">
     <!-- One bar per received AUDIO_LEVEL sample; no animation or generated values. -->
   </div>

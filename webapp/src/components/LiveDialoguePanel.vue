@@ -564,22 +564,10 @@ onMounted(() => {
             :class="{ active: captureRunning }"
             :disabled="captureBusy || !captureAvailable"
             @click="emit('captureToggle')"
-          >
-            <span class="record-dot"></span>
-            {{ captureRunning ? `停止录音 ${elapsed}` : '开始录音' }}
-          </button>
-          <div v-if="captureRunning" class="capture-meter" role="img" aria-label="实时麦克风输入波形">
-            <div class="capture-meter-bars">
-              <i
-                v-for="(sample, index) in audioMeterSamples"
-                :key="`${sample.sampleCount}-${index}`"
-                :style="{ height: `${audioMeterBarHeight(sample.peak)}px` }"
-              ></i>
-            </div>
-            <span class="capture-meter-state">
-              {{ audioMeterSignal === 'WAITING' ? '等待音频输入' : audioMeterSignal === 'STALE' ? '暂无新音频信号' : '实时音频' }}
-            </span>
-          </div>
+        >
+          <span class="record-dot"></span>
+          {{ captureRunning ? `停止录音 ${elapsed}` : '开始录音' }}
+        </button>
         </div>
       </div>
     </header>
@@ -587,6 +575,18 @@ onMounted(() => {
     <AsrWorkflowStatus :capture="captureStatus" />
 
     <div ref="feed" class="dialogue-feed" @scroll="onFeedScroll">
+      <div v-if="captureRunning" class="capture-meter" role="img" aria-label="实时麦克风输入波形">
+        <div class="capture-meter-bars">
+          <i
+            v-for="(sample, index) in audioMeterSamples"
+            :key="`${sample.sampleCount}-${index}`"
+            :style="{ height: `${audioMeterBarHeight(sample.peak)}px` }"
+          ></i>
+        </div>
+        <span class="capture-meter-state">
+          {{ audioMeterSignal === 'WAITING' ? '等待音频输入' : audioMeterSignal === 'STALE' ? '暂无新音频信号' : '实时音频' }}
+        </span>
+      </div>
       <details v-if="qaReviewUnits.length || qaResolvedUnits.length" class="qa-review-rail" aria-label="Qwen 正式笔录路由状态">
         <summary>笔录归档处理（{{ qaReviewUnits.length }} 项待处理）</summary>
         <article v-for="unit in qaReviewUnits" :key="unit.id" class="qa-review-card">
@@ -758,34 +758,31 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.capture-control {
-  display: grid;
-  justify-items: stretch;
-  gap: 4px;
-}
-
 .capture-control .capture-toggle {
   width: 142px;
   min-width: 142px;
 }
 
 .capture-meter {
-  width: 142px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  width: calc(100% + 24px);
+  margin: -14px -12px 12px;
   box-sizing: border-box;
   display: grid;
-  grid-template-rows: 32px 12px;
+  grid-template-rows: 40px 12px;
   gap: 2px;
-  padding: 2px 4px;
-  border: 1px solid #d4dde4;
-  border-radius: 6px;
-  background: #f8fafb;
+  padding: 6px 12px;
+  border-bottom: 1px solid #d4dde4;
+  background: #eef3f6;
 }
 
 .capture-meter-bars {
   position: relative;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 2px;
   overflow: hidden;
 }

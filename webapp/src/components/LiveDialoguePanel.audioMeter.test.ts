@@ -48,6 +48,7 @@ describe('live dialogue audio meter', () => {
     })
 
     expect(html).toContain('aria-label="实时麦克风输入波形"')
+    expect(html.indexOf('capture-meter')).toBeGreaterThan(html.indexOf('class="dialogue-feed"'))
     expect(html).toContain('height:2px')
     expect(html).toContain('height:16px')
     expect(html).toContain('实时音频')
