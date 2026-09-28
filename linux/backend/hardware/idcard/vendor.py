@@ -4,7 +4,7 @@ import base64
 import ctypes
 import os
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from hardware.base import DeviceInfo, DeviceState, HardwareError, HealthReport
 from hardware.idcard.interface import IdentityReader
@@ -17,6 +17,20 @@ _COMMON_LIBRARY_NAMES = (
     "libidcardsdk.so",
     "libreader.so",
 )
+
+
+class _TXUSBDevice(ctypes.Structure):
+    """Packed TXUSBDevice layout from the ZKID Linux SDK header."""
+
+    _pack_ = 1
+    _fields_ = [
+        ("vid", ctypes.c_ushort),
+        ("pid", ctypes.c_ushort),
+        ("serial_number", ctypes.c_char * 64),
+        ("bus_number", ctypes.c_uint),
+        ("device_address", ctypes.c_uint),
+        ("extra_ptr", ctypes.c_void_p),
+    ]
 
 
 class SDKLibraryDiscovery:
@@ -70,6 +84,9 @@ class CtypesVendorAdapter:
         self.library_path: Optional[Path] = None
         self.library = None
         self.opened = False
+        self._api_mode: Optional[str] = None
+        self._handle: Optional[int] = None
+        self._device: Optional[_TXUSBDevice] = None
 
     def open(self) -> None:
         path = self.discovery.discover()
@@ -81,19 +98,78 @@ class CtypesVendorAdapter:
             raise HardwareError("SDK_LOAD_FAILED", f"failed to load identity SDK: {exc}", details={"path": str(path)}) from exc
         self.library_path = path
         if hasattr(self.library, "SDT_OpenPort"):
-            rc = int(self.library.SDT_OpenPort(self.port))
-            if rc != 0x90:
-                self.library = None
-                raise HardwareError("DEVICE_NOT_CONNECTED", "identity reader SDK loaded but reader could not be opened", details={"port": self.port, "return_code": rc})
+            self._open_port_api()
+        elif all(hasattr(self.library, name) for name in ("SDT_EnumDevice", "SDT_OpenDevice", "SDT_CloseDevice")):
+            self._open_handle_api()
+        else:
+            available = [name for name in ("SDT_OpenPort", "SDT_EnumDevice", "SDT_OpenDevice") if hasattr(self.library, name)]
+            self.library = None
+            raise HardwareError(
+                "SDK_PROTOCOL_UNSUPPORTED",
+                "identity reader SDK does not expose a supported SDT device API",
+                details={"path": str(path), "available_open_symbols": available},
+            )
         self.opened = True
 
+    def _set_prototype(self, name: str, argtypes: list[Any], restype: Any) -> None:
+        function = getattr(self.library, name)
+        try:
+            function.argtypes = argtypes
+            function.restype = restype
+        except AttributeError:
+            # Python callables are used by the adapter's lightweight unit fakes.
+            pass
+
+    def _open_port_api(self) -> None:
+        self._set_prototype("SDT_OpenPort", [ctypes.c_int], ctypes.c_int)
+        rc = int(self.library.SDT_OpenPort(self.port))
+        if rc != 0x90:
+            self.library = None
+            raise HardwareError("DEVICE_NOT_CONNECTED", "identity reader SDK loaded but reader could not be opened", details={"port": self.port, "return_code": rc})
+        self._api_mode = "port"
+
+    def _open_handle_api(self) -> None:
+        self._set_prototype("SDT_EnumDevice", [ctypes.POINTER(_TXUSBDevice), ctypes.c_int], ctypes.c_int)
+        self._set_prototype("SDT_OpenDevice", [ctypes.POINTER(_TXUSBDevice)], ctypes.c_void_p)
+        self._set_prototype("SDT_CloseDevice", [ctypes.c_void_p], ctypes.c_int)
+
+        devices = (_TXUSBDevice * 16)()
+        count = int(self.library.SDT_EnumDevice(devices, len(devices)))
+        if count <= 0:
+            self.library = None
+            raise HardwareError(
+                "DEVICE_NOT_CONNECTED",
+                "identity reader SDK loaded but no USB reader was found",
+                details={"path": str(self.library_path), "enumerated": count},
+            )
+
+        self._device = devices[0]
+        handle = self.library.SDT_OpenDevice(ctypes.byref(self._device))
+        if not handle:
+            self.library = None
+            self._device = None
+            raise HardwareError(
+                "DEVICE_NOT_CONNECTED",
+                "identity reader SDK found the USB reader but could not open it",
+                details={"path": str(self.library_path), "vid": f"{devices[0].vid:04x}", "pid": f"{devices[0].pid:04x}"},
+            )
+        self._handle = int(handle)
+        self._api_mode = "handle"
+
     def close(self) -> None:
-        if self.library is not None and self.opened and hasattr(self.library, "SDT_ClosePort"):
+        if self.library is not None and self.opened:
             try:
-                self.library.SDT_ClosePort(self.port)
+                if self._api_mode == "handle" and self._handle is not None:
+                    self._set_prototype("SDT_CloseDevice", [ctypes.c_void_p], ctypes.c_int)
+                    self.library.SDT_CloseDevice(ctypes.c_void_p(self._handle))
+                elif self._api_mode == "port" and hasattr(self.library, "SDT_ClosePort"):
+                    self.library.SDT_ClosePort(self.port)
             except Exception:
                 pass
         self.opened = False
+        self._api_mode = None
+        self._handle = None
+        self._device = None
         self.library = None
 
     def read_raw(self) -> Dict[str, object]:
@@ -103,6 +179,11 @@ class CtypesVendorAdapter:
         missing = [name for name in required if not hasattr(self.library, name)]
         if missing:
             raise HardwareError("SDK_PROTOCOL_UNSUPPORTED", "loaded SDK does not expose the supported SDT identity API", details={"missing_symbols": missing, "path": str(self.library_path)})
+
+        if self._api_mode == "handle":
+            return self._read_handle_api()
+        if self._api_mode != "port":
+            raise HardwareError("SDK_PROTOCOL_UNSUPPORTED", "identity reader SDK was opened with an unknown API", details={"path": str(self.library_path)})
 
         iin = (ctypes.c_ubyte * 4)()
         find_rc = int(self.library.SDT_StartFindIDCard(self.port, iin, 0))
@@ -132,10 +213,64 @@ class CtypesVendorAdapter:
         parsed["portrait"] = base64.b64encode(raw_portrait).decode("ascii") if raw_portrait else None
         return parsed
 
+    def _read_handle_api(self) -> Dict[str, object]:
+        assert self.library is not None and self._handle is not None
+        handle = ctypes.c_void_p(self._handle)
+        byte_pointer = ctypes.POINTER(ctypes.c_ubyte)
+        self._set_prototype("SDT_StartFindIDCard", [ctypes.c_void_p, byte_pointer], ctypes.c_int)
+        self._set_prototype("SDT_SelectIDCard", [ctypes.c_void_p, byte_pointer], ctypes.c_int)
+        self._set_prototype(
+            "SDT_ReadBaseMsg",
+            [
+                ctypes.c_void_p,
+                byte_pointer,
+                ctypes.POINTER(ctypes.c_uint),
+                byte_pointer,
+                ctypes.POINTER(ctypes.c_uint),
+            ],
+            ctypes.c_int,
+        )
+
+        card_info = (ctypes.c_ubyte * 256)()
+        find_rc = int(self.library.SDT_StartFindIDCard(handle, card_info))
+        if find_rc != 0x9F:
+            raise HardwareError("DEVICE_NOT_CONNECTED", "no identity card detected", details={"return_code": find_rc})
+        select_rc = int(self.library.SDT_SelectIDCard(handle, card_info))
+        if select_rc != 0x90:
+            raise HardwareError("DEVICE_ERROR", "identity card selection failed", details={"return_code": select_rc})
+
+        text_buffer = (ctypes.c_ubyte * 256)()
+        portrait_buffer = (ctypes.c_ubyte * 2048)()
+        text_length = ctypes.c_uint(0)
+        portrait_length = ctypes.c_uint(0)
+        rc = int(self.library.SDT_ReadBaseMsg(
+            handle,
+            text_buffer,
+            ctypes.byref(text_length),
+            portrait_buffer,
+            ctypes.byref(portrait_length),
+        ))
+        if rc != 0x90:
+            raise HardwareError("DEVICE_ERROR", "identity SDK read failed", details={"return_code": rc})
+
+        raw_text = bytes(text_buffer[: min(text_length.value, len(text_buffer))])
+        raw_portrait = bytes(portrait_buffer[: min(portrait_length.value, len(portrait_buffer))])
+        parsed = _parse_sdt_text(raw_text)
+        parsed["portrait"] = base64.b64encode(raw_portrait).decode("ascii") if raw_portrait else None
+        return parsed
+
     @property
     def device_id(self) -> str:
         path = self.library_path.name if self.library_path else "sdk-unresolved"
+        if self._api_mode == "handle" and self._device is not None:
+            return f"{path}:usb-{self._device.vid:04x}:{self._device.pid:04x}"
         return f"{path}:port-{self.port}"
+
+    @property
+    def connection_metadata(self) -> Dict[str, object]:
+        if self._api_mode == "handle" and self._device is not None:
+            return {"transport": "USB", "vid": f"{self._device.vid:04x}", "pid": f"{self._device.pid:04x}"}
+        return {"transport": "port", "port": self.port}
 
 
 def _clean(value: str) -> str:
@@ -199,7 +334,7 @@ class VendorIdentityReader(IdentityReader):
         return HealthReport(self._state == DeviceState.READY, self._state, "identity reader ready" if self._state == DeviceState.READY else "identity reader closed")
 
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo("identity", self.adapter.device_id, "Vendor Identity Reader", source="real", path=str(self.adapter.library_path) if self.adapter.library_path else None, metadata={"port": self.adapter.port})
+        return DeviceInfo("identity", self.adapter.device_id, "Vendor Identity Reader", source="real", path=str(self.adapter.library_path) if self.adapter.library_path else None, metadata=self.adapter.connection_metadata)
 
     def read(self) -> IdentityResult:
         if self._state == DeviceState.CLOSED:

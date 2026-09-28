@@ -22,6 +22,8 @@ The example rules file is `linux/backend/hardware/udev/99-interrogation-hardware
 
 The real identity adapter searches for a vendor `.so` through `IDCARD_SDK_LIB`, `LD_LIBRARY_PATH`, and common system/vendor library directories. The common SDT ABI is supported when `SDT_OpenPort`, `SDT_StartFindIDCard`, `SDT_SelectIDCard`, and `SDT_ReadBaseMsg` are exported. The USB port parameter defaults to `1001` and can be changed with `IDCARD_SDK_PORT`.
 
+The ZKID Linux SDK's handle-based USB ABI is also supported through `SDT_EnumDevice`, `SDT_OpenDevice`, `SDT_CloseDevice`, and the handle-based `SDT_*` read functions. Install its architecture-matched `libsdtapi.so` at `/opt/idcard/lib/libsdtapi.so` or set `IDCARD_SDK_LIB` to its path. If the reader's udev rule grants access to group `zkid`, add the API service account to that group (on this target: `sudo usermod -aG zkid suspect-interrogation`).
+
 If the SDK is absent, diagnostics reports `SDK_NOT_FOUND`. If the library loads but no device is reachable, it reports `DEVICE_NOT_CONNECTED`. Neither state is treated as a successful read.
 
 ## ALSA

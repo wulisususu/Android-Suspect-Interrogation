@@ -284,6 +284,23 @@ def _runtime_capability(capability_state: str, reason: str, **metadata: Any) -> 
     return {"state": capability_state, "reason": reason, "metadata": metadata}
 
 
+def _device_runtime_capability(device: Any, unavailable_reason: str) -> dict[str, Any]:
+    if device is None:
+        return _runtime_capability("NOT_CONFIGURED", unavailable_reason)
+    try:
+        report = device.health().to_dict()
+    except Exception as exc:
+        return _runtime_capability("ERROR", f"hardware state check failed: {exc.__class__.__name__}")
+    state = _runtime_capability_state(report.get("status"))
+    reason = str(report.get("message") or unavailable_reason)
+    return _runtime_capability(
+        state,
+        reason,
+        healthy=bool(report.get("healthy")),
+        details=dict(report.get("details") or {}),
+    )
+
+
 @capabilities_router.get("/capabilities")
 def runtime_capabilities(request: Request) -> dict[str, Any]:
     """Expose the canonical UI capability contract from the production health state."""
@@ -324,8 +341,12 @@ def runtime_capabilities(request: Request) -> dict[str, Any]:
         return _runtime_capability(state, str(detail.get("detail") or f"{name} runtime capability"), **detail)
 
     unavailable = lambda reason: _runtime_capability("NOT_CONFIGURED", reason)
+    hardware_manager = getattr(request.app.state, "hardware_manager", None)
     return {
-        "identity": unavailable("identity reader is not configured"),
+        "identity": _device_runtime_capability(
+            getattr(hardware_manager, "identity_reader", None),
+            "identity reader is not configured",
+        ),
         "camera": unavailable("camera is not configured"),
         "microphone": _runtime_capability(microphone_state, str(microphone["detail"]), **microphone),
         "fingerprint": unavailable("fingerprint device is not configured"),
