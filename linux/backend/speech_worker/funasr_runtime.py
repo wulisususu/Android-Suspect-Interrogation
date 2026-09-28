@@ -52,6 +52,9 @@ class FunASRSpeechRuntime:
             if configured_streaming_dir is not None
             else self.model_root / _STREAMING_MODEL_NAME
         )
+        self.streaming_asr_model_id = (
+            os.environ.get("SUSPECT_FUNASR_STREAMING_MODEL_ID") or _STREAMING_MODEL_ID
+        )
         self._model_factory = model_factory
         del legacy_speaker_factory
         self._eres2net_model_factory = eres2net_model_factory
@@ -226,7 +229,7 @@ class FunASRSpeechRuntime:
                     if self.streaming_asr_model is not None
                     else str((self.streaming_asr_error or {}).get("code") or "ERROR")
                 ),
-                "model_id": _STREAMING_MODEL_ID,
+                "model_id": self.streaming_asr_model_id,
                 "model_path": str(self.streaming_asr_model_dir),
                 "error": dict(self.streaming_asr_error) if self.streaming_asr_error else None,
             },

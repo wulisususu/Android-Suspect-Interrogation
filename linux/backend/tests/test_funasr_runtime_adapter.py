@@ -96,6 +96,14 @@ def test_default_model_paths_are_stable_opt_layout(monkeypatch):
     assert vad_call["max_single_segment_time"] == 5000
 
 
+def test_streaming_model_id_health_uses_configured_model(monkeypatch):
+    model_id = "damo/speech_paraformer_asr_nat-zh-cn-16k-common-vocab8404-online"
+    monkeypatch.setenv("SUSPECT_FUNASR_STREAMING_MODEL_ID", model_id)
+    runtime = FunASRSpeechRuntime(model_factory=FakeAutoModel)
+
+    assert runtime.health()["asr_streaming"]["model_id"] == model_id
+
+
 def test_vad_and_asr_outputs_are_normalized_without_fabricated_partials(tmp_path: Path):
     runtime = _loaded_runtime(tmp_path)
     pcm = b"\x00\x00" * 1600
