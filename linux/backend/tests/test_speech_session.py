@@ -156,27 +156,27 @@ def test_stage_one_does_not_require_a_speaker_runtime():
     assert runtime.speaker_calls == []
 
 
-def test_streaming_preview_uses_a_300ms_audio_window():
+def test_streaming_preview_uses_a_600ms_audio_window():
     runtime = StreamingRuntime(vad_outputs=[[[0, -1]], []])
     session = SpeechSession("session-fast-preview", 16000, runtime, chunk_size_ms=200)
 
-    assert not any(event.type is SpeechEventType.ASR_PARTIAL for event in session.push_pcm(_pcm(200)))
-    events = session.push_pcm(_pcm(100))
+    assert not any(event.type is SpeechEventType.ASR_PARTIAL for event in session.push_pcm(_pcm(400)))
+    events = session.push_pcm(_pcm(200))
 
     partials = [event for event in events if event.type is SpeechEventType.ASR_PARTIAL]
     assert len(partials) == 1
     assert partials[0].text == "实时字幕"
-    assert partials[0].end_ms == 300
-    assert runtime.stream_calls == [_pcm(300)]
+    assert partials[0].end_ms == 600
+    assert runtime.stream_calls == [_pcm(600)]
 
 
 def test_streaming_result_is_finalized_without_blocking_offline_asr():
-    runtime = StreamingFinalRuntime(vad_outputs=[[[0, -1]], [], [[-1, 500]]])
+    runtime = StreamingFinalRuntime(vad_outputs=[[[0, -1]], [], [[-1, 800]]])
     session = SpeechSession("session-streaming-final", 16000, runtime, chunk_size_ms=200)
 
-    session.push_pcm(_pcm(200))
+    session.push_pcm(_pcm(400))
     partial_events = session.push_pcm(_pcm(200))
-    final_events = session.push_pcm(_pcm(100))
+    final_events = session.push_pcm(_pcm(200))
 
     partials = [event for event in partial_events if event.type is SpeechEventType.ASR_PARTIAL]
     finals = [event for event in final_events if event.type is SpeechEventType.ASR_FINAL]
@@ -186,7 +186,7 @@ def test_streaming_result_is_finalized_without_blocking_offline_asr():
     assert finals[0].model_id == "paraformer-streaming"
     assert finals[0].details["stage_one_asr_only"] is True
     assert runtime.transcribe_calls == []
-    assert runtime.stream_calls == [_pcm(300), _pcm(200)]
+    assert runtime.stream_calls == [_pcm(600), _pcm(200)]
     assert runtime.stream_final_flags == [False, True]
 
 

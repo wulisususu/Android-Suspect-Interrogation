@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 PCM_SAMPLE_WIDTH_BYTES = 2
 _PRODUCT_SPEAKER_BACKEND = "eres2net_large"
-_STREAMING_CHUNK_MS = 300  # Align with Paraformer's five 60 ms output frames.
+_STREAMING_CHUNK_MS = 600  # Align with Paraformer's ten 60 ms output frames.
 
 
 class SpeechRuntime(Protocol):
