@@ -50,6 +50,7 @@ from app.services.speaker_mode import (
     mode_decision_detail,
     narrow_decision_roles,
 )
+from app.services.serializers import iso_utc
 from app.services.speaker_policy import SpeakerRole, SpeakerSource, decide_speaker
 
 
@@ -84,6 +85,7 @@ class _CaptureRuntime:
     #: fragment refreshes it from the roles that fragment really bound.
     declared_recognition_mode: str = SUSPECT_ONLY
     sample_rate: int = 16_000
+    capture_started_at: str | None = None
     live_transcript_status: str = "UNKNOWN"
     speaker_backend: str = "eres2net_large"
     durable_sample_cursor: int = 0
@@ -311,6 +313,9 @@ class AsrCaptureService:
             db.commit()
             capture_session_id = capture.id
             interrogation_session_id = interrogation_session.id
+            capture_started_at = (
+                iso_utc(capture.started_at)
+            )
             # Seed the declared mode inside the session start() already owns: the
             # previous code opened a second one just for this, before the runtime row
             # existed.
@@ -343,6 +348,7 @@ class AsrCaptureService:
             secondary_calibration=secondary_calibration,
             declared_recognition_mode=self.declared_mode_for_roles(bound_roles),
             sample_rate=self.sample_rate,
+            capture_started_at=capture_started_at,
             live_transcript_status=self._live_transcript_status(),
             speaker_backend=self.speaker_model_key,
         )
@@ -445,6 +451,7 @@ class AsrCaptureService:
             )
             db.commit()
         payload = self._fragment_payload(fragment)
+        payload["captureStartedAt"] = runtime.capture_started_at
         with self._lock:
             runtime.ordinal += 1
         self.publish_event(runtime.interrogation_session_id, "ASR_FRAGMENT", payload)
@@ -901,6 +908,7 @@ class AsrCaptureService:
             db.commit()
             fragment_id = fragment.id
             payload = self._fragment_payload(fragment)
+            payload["captureStartedAt"] = runtime.capture_started_at
 
         runtime.ordinal = max(runtime.ordinal, int(fragment.ordinal) + 1)
         payload["thresholdSource"] = "PENDING_ANALYSIS"
@@ -1041,6 +1049,7 @@ class AsrCaptureService:
             db.commit()
             fragment_id = fragment.id
             payload = self._fragment_payload(fragment)
+            payload["captureStartedAt"] = runtime.capture_started_at
             payload["thresholdSource"] = threshold_source
             payload["calibrationId"] = runtime.calibration_id
             payload["calibrationStatus"] = runtime.calibration_status
@@ -1631,6 +1640,9 @@ class AsrCaptureService:
             authoritative_speaker_backend=self.authoritative_speaker_backend,
             declared_recognition_mode=self.declared_mode_for_roles(roles),
             sample_rate=self.sample_rate,
+            capture_started_at=(
+                iso_utc(capture.started_at)
+            ),
             live_transcript_status=self._live_transcript_status(),
             speaker_backend=self.speaker_model_key,
             durable_sample_cursor=int(capture.audio_sample_count or 0),

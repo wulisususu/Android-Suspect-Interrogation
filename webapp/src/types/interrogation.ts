@@ -225,6 +225,7 @@ export interface TemporaryAsrFragment {
   captureSessionId: string
   caseId: string
   ordinal: number
+  captureStartedAt?: number | null
   startedAtMs: number
   endedAtMs: number
   rawText: string

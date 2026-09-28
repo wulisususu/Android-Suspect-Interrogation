@@ -158,6 +158,19 @@ def test_streaming_vad_passes_only_new_pcm_and_session_cache(tmp_path: Path):
     assert call["chunk_size"] == 200
 
 
+def test_streaming_asr_uses_300ms_output_chunks(tmp_path: Path):
+    runtime = _loaded_runtime(tmp_path)
+    streaming_model = FakeAutoModel(model="paraformer-streaming")
+    streaming_model.outputs_override = [{"text": "实时字幕"}]
+    runtime.streaming_asr_model = streaming_model
+
+    result = runtime.transcribe_stream(b"\x01\x00" * 4800, 16000, cache={}, is_final=False)
+
+    assert result == "实时字幕"
+    assert streaming_model.generate_calls[-1]["chunk_size"] == [0, 5, 2]
+    assert streaming_model.generate_calls[-1]["encoder_chunk_look_back"] == 2
+
+
 def test_speaker_embedding_is_flat_normalized_float_list(tmp_path: Path):
     runtime = _loaded_runtime(tmp_path)
     result = runtime.speaker_embedding(b"\x00\x00" * 1600, 16000)

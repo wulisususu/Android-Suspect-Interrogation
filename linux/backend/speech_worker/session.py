@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 PCM_SAMPLE_WIDTH_BYTES = 2
 _PRODUCT_SPEAKER_BACKEND = "eres2net_large"
-_STREAMING_CHUNK_MS = 600
+_STREAMING_CHUNK_MS = 300  # Align with Paraformer's five 60 ms output frames.
 
 
 class SpeechRuntime(Protocol):
@@ -298,6 +298,49 @@ class SpeechSession:
         utterance_pcm = bytes(self.current_utterance_pcm[:utterance_bytes])
         trailing_pcm = bytes(self.current_utterance_pcm[utterance_bytes:])
 
+        streaming_text: str | None = None
+        if utterance_pcm and self._streaming_enabled:
+            capture_start_sample = self._ms_to_samples(capture_start_ms)
+            consumed_samples = max(0, self._stream_chunk_start_sample - capture_start_sample)
+            consumed_bytes = min(len(utterance_pcm), consumed_samples * PCM_SAMPLE_WIDTH_BYTES)
+            pending_pcm = utterance_pcm[consumed_bytes:]
+            if pending_pcm:
+                try:
+                    text = str(
+                        self._streaming_method(
+                            pending_pcm,
+                            self.sample_rate,
+                            cache=self.streaming_cache,
+                            is_final=True,
+                        )
+                        or ""
+                    ).strip()
+                except Exception as exc:
+                    code = str(getattr(exc, "code", "ASR_STREAMING_ERROR"))
+                    logger.warning(
+                        "streaming transcript finalization failed",
+                        extra={"session_id": self.session_id, "error_code": code},
+                    )
+                    self._streaming_enabled = False
+                else:
+                    if text:
+                        start_sample = capture_start_sample + consumed_bytes // PCM_SAMPLE_WIDTH_BYTES
+                        end_sample = start_sample + len(pending_pcm) // PCM_SAMPLE_WIDTH_BYTES
+                        self._stream_text_chunks.append(
+                            (self._samples_to_ms(start_sample), self._samples_to_ms(end_sample), text)
+                        )
+
+            if self._streaming_enabled:
+                current_chunks = [
+                    item for item in self._stream_text_chunks
+                    if item[0] >= self._stream_text_floor_ms
+                    and item[1] > start_ms
+                    and item[1] <= end_ms
+                ]
+                assembled_text = "".join(item[2] for item in current_chunks).strip()
+                if assembled_text:
+                    streaming_text = assembled_text
+
         self._stream_text_floor_ms = max(self._stream_text_floor_ms, end_ms)
         self._stream_text_chunks = [
             item for item in self._stream_text_chunks if item[0] >= self._stream_text_floor_ms
@@ -316,7 +359,11 @@ class SpeechSession:
                 )
             ]
 
-        asr = self.runtime.transcribe(utterance_pcm, self.sample_rate)
+        asr = (
+            {"text": streaming_text, "confidence": None, "model_id": "paraformer-streaming"}
+            if streaming_text is not None
+            else self.runtime.transcribe(utterance_pcm, self.sample_rate)
+        )
         start_sample = self._ms_to_samples(start_ms)
         end_sample = self._ms_to_samples(end_ms)
         details: dict[str, Any] = {

@@ -1366,6 +1366,7 @@ class LiveSpeechCoordinator:
             job.model_version = model["model_version"]
             self._refresh_speaker_status(db, job.capture_session_id)
             payload = owner._fragment_payload(parent)
+            payload["captureStartedAt"] = runtime.capture_started_at
             payload["thresholdSource"] = runtime.threshold_source
             payload["calibrationId"] = runtime.calibration_id
             payload["calibrationStatus"] = runtime.calibration_status
@@ -1473,6 +1474,7 @@ class LiveSpeechCoordinator:
                     child_fragment_id=fragment.id,
                 )
                 item = owner._fragment_payload(fragment)
+                item["captureStartedAt"] = runtime.capture_started_at
                 item["thresholdSource"] = runtime.threshold_source
                 item["calibrationId"] = runtime.calibration_id
                 item["calibrationStatus"] = runtime.calibration_status

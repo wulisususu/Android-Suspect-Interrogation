@@ -265,6 +265,7 @@ export function normalizeTemporaryAsrFragment(value: unknown): TemporaryAsrFragm
   const startedAtMs = Number(raw.startedAtMs ?? 0)
   const endedAtMs = Number(raw.endedAtMs ?? startedAtMs)
   const captureSessionId = String(raw.captureSessionId ?? '')
+  const captureStartedAt = toTimestamp(raw.captureStartedAt ?? raw.capture_started_at)
   const createdAt = toTimestamp(raw.createdAt ?? raw.created_at) ?? Date.now()
   const updatedAt = toTimestamp(raw.updatedAt ?? raw.updated_at) ?? createdAt
   const confidence = nullableNumber(raw.asrConfidence ?? raw.confidence)
@@ -276,6 +277,7 @@ export function normalizeTemporaryAsrFragment(value: unknown): TemporaryAsrFragm
     captureSessionId,
     caseId: String(raw.caseId ?? ''),
     ordinal: Number(raw.ordinal ?? 0),
+    captureStartedAt: captureStartedAt ?? null,
     startedAtMs,
     endedAtMs,
     rawText: String(raw.rawText ?? ''),

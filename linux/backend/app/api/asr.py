@@ -56,12 +56,22 @@ def _fragment_for_case(db: Session, case_id: str, fragment_id: str) -> ASRFragme
     return fragment
 
 
-def _fragment_payload(fragment: ASRFragment, db: Session | None = None) -> dict[str, Any]:
+def _fragment_payload(
+    fragment: ASRFragment,
+    db: Session | None = None,
+    *,
+    capture_started_at=None,
+) -> dict[str, Any]:
     payload = {
         "fragmentId": fragment.id,
         "captureSessionId": fragment.capture_session_id,
         "caseId": fragment.case_id,
         "ordinal": fragment.ordinal,
+        "captureStartedAt": (
+            iso_utc(capture_started_at)
+            if capture_started_at is not None
+            else None
+        ),
         "startedAtMs": fragment.started_at_ms,
         "endedAtMs": fragment.ended_at_ms,
         "rawText": fragment.raw_text,
@@ -85,6 +95,10 @@ def _fragment_payload(fragment: ASRFragment, db: Session | None = None) -> dict[
         "updatedAt": iso_utc(fragment.updated_at),
     }
     if db is not None:
+        if capture_started_at is None:
+            capture = db.get(ASRCaptureSession, fragment.capture_session_id)
+            if capture is not None:
+                payload["captureStartedAt"] = iso_utc(capture.started_at)
         payload["recognitionEvidence"] = evidence_repo.evidence_payload(evidence_repo.get_evidence(db, fragment.id))
         payload["recognitionRevisions"] = [
             evidence_repo.revision_payload(row) for row in evidence_repo.list_revisions(db, fragment.id)
@@ -214,7 +228,7 @@ def list_fragments(
 ):
     case_repo.get(db, case_id)
     stmt = (
-        select(ASRFragment)
+        select(ASRFragment, ASRCaptureSession.started_at)
         .join(ASRCaptureSession, ASRCaptureSession.id == ASRFragment.capture_session_id)
         .where(ASRFragment.case_id == case_id, ASRFragment.state != "DISCARDED")
     )
@@ -230,7 +244,10 @@ def list_fragments(
         ASRFragment.ordinal.asc(),
         ASRFragment.id.asc(),
     )
-    return [_fragment_payload(row, db) for row in db.scalars(stmt)]
+    return [
+        _fragment_payload(fragment, db, capture_started_at=capture_started_at)
+        for fragment, capture_started_at in db.execute(stmt)
+    ]
 
 
 @router.put("/cases/{case_id}/asr/fragments/{fragment_id}")

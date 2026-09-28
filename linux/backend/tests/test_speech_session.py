@@ -54,6 +54,29 @@ class MissingSpeakerMetadataRuntime(FakeRuntime):
         return {"embedding": [0.6, 0.8]}
 
 
+class StreamingRuntime(FakeRuntime):
+    streaming_asr_available = True
+
+    def __init__(self, vad_outputs: list[list[list[int]]]):
+        super().__init__(vad_outputs)
+        self.stream_calls: list[bytes] = []
+
+    def transcribe_stream(self, pcm: bytes, sample_rate: int, *, cache: dict, is_final: bool = False) -> str:
+        self.stream_calls.append(bytes(pcm))
+        return "实时字幕"
+
+
+class StreamingFinalRuntime(StreamingRuntime):
+    def __init__(self, vad_outputs: list[list[list[int]]]):
+        super().__init__(vad_outputs)
+        self.stream_final_flags: list[bool] = []
+
+    def transcribe_stream(self, pcm: bytes, sample_rate: int, *, cache: dict, is_final: bool = False) -> str:
+        self.stream_calls.append(bytes(pcm))
+        self.stream_final_flags.append(is_final)
+        return "流" if not is_final else "尾"
+
+
 def _pcm(ms: int, sample_rate: int = 16000, value: int = 1) -> bytes:
     samples = sample_rate * ms // 1000
     frame = int(value).to_bytes(2, byteorder="little", signed=True)
@@ -131,6 +154,40 @@ def test_stage_one_does_not_require_a_speaker_runtime():
     assert any(event.type is SpeechEventType.ASR_FINAL for event in events)
     assert not any(event.type is SpeechEventType.SPEAKER_RESULT for event in events)
     assert runtime.speaker_calls == []
+
+
+def test_streaming_preview_uses_a_300ms_audio_window():
+    runtime = StreamingRuntime(vad_outputs=[[[0, -1]], []])
+    session = SpeechSession("session-fast-preview", 16000, runtime, chunk_size_ms=200)
+
+    assert not any(event.type is SpeechEventType.ASR_PARTIAL for event in session.push_pcm(_pcm(200)))
+    events = session.push_pcm(_pcm(100))
+
+    partials = [event for event in events if event.type is SpeechEventType.ASR_PARTIAL]
+    assert len(partials) == 1
+    assert partials[0].text == "实时字幕"
+    assert partials[0].end_ms == 300
+    assert runtime.stream_calls == [_pcm(300)]
+
+
+def test_streaming_result_is_finalized_without_blocking_offline_asr():
+    runtime = StreamingFinalRuntime(vad_outputs=[[[0, -1]], [], [[-1, 500]]])
+    session = SpeechSession("session-streaming-final", 16000, runtime, chunk_size_ms=200)
+
+    session.push_pcm(_pcm(200))
+    partial_events = session.push_pcm(_pcm(200))
+    final_events = session.push_pcm(_pcm(100))
+
+    partials = [event for event in partial_events if event.type is SpeechEventType.ASR_PARTIAL]
+    finals = [event for event in final_events if event.type is SpeechEventType.ASR_FINAL]
+    assert len(partials) == 1
+    assert len(finals) == 1
+    assert finals[0].text == "流尾"
+    assert finals[0].model_id == "paraformer-streaming"
+    assert finals[0].details["stage_one_asr_only"] is True
+    assert runtime.transcribe_calls == []
+    assert runtime.stream_calls == [_pcm(300), _pcm(200)]
+    assert runtime.stream_final_flags == [False, True]
 
 
 def test_delayed_start_recovers_audio_from_preroll_using_absolute_vad_time():

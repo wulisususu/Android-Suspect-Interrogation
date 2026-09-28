@@ -300,8 +300,8 @@ class FunASRSpeechRuntime:
                 fs=int(sample_rate),
                 cache=cache,
                 is_final=bool(is_final),
-                chunk_size=[0, 10, 5],
-                encoder_chunk_look_back=4,
+                chunk_size=[0, 5, 2],  # 300 ms output window with 120 ms lookahead.
+                encoder_chunk_look_back=2,
                 decoder_chunk_look_back=1,
             )
         except (BackendUnavailableError, WorkerCrashedError) as exc:

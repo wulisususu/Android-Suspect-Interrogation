@@ -31,6 +31,22 @@ function textOf(fragment: TemporaryAsrFragment): string {
   return (fragment.editedText || fragment.rawText || '').trim()
 }
 
+export function compareDialogueFragments(left: TemporaryAsrFragment, right: TemporaryAsrFragment): number {
+  if (left.captureSessionId === right.captureSessionId) {
+    return left.startedAtMs - right.startedAtMs
+      || left.endedAtMs - right.endedAtMs
+      || left.ordinal - right.ordinal
+      || left.id.localeCompare(right.id)
+  }
+  const leftCaptureStart = left.captureStartedAt ?? left.createdAt
+  const rightCaptureStart = right.captureStartedAt ?? right.createdAt
+  return leftCaptureStart - rightCaptureStart
+    || left.createdAt - right.createdAt
+    || left.startedAtMs - right.startedAtMs
+    || left.ordinal - right.ordinal
+    || left.id.localeCompare(right.id)
+}
+
 function timestamp(value: string | number | null | undefined): number {
   if (typeof value === 'number') return value
   const parsed = value ? Date.parse(value) : Number.NaN
@@ -38,6 +54,7 @@ function timestamp(value: string | number | null | undefined): number {
 }
 
 function isContinuousSuspectTurn(previous: TemporaryAsrFragment, next: TemporaryAsrFragment): boolean {
+  if (previous.captureSessionId !== next.captureSessionId) return false
   if (previous.speaker !== 'SUSPECT' || next.speaker !== 'SUSPECT') return false
   if (previous.speakerId && next.speakerId && previous.speakerId !== next.speakerId) return false
   const gapMs = next.startedAtMs - previous.endedAtMs
@@ -52,11 +69,7 @@ function isContinuousSuspectTurn(previous: TemporaryAsrFragment, next: Temporary
 export function groupLiveDialogueFragments(fragments: TemporaryAsrFragment[]): LiveDialogueGroup[] {
   const ordered = [...fragments]
     .filter((fragment) => Boolean(textOf(fragment)))
-    .sort((left, right) =>
-      left.startedAtMs - right.startedAtMs
-      || left.endedAtMs - right.endedAtMs
-      || left.ordinal - right.ordinal
-      || left.id.localeCompare(right.id))
+    .sort(compareDialogueFragments)
   const groups: LiveDialogueGroup[] = []
   for (const fragment of ordered) {
     const previous = groups.at(-1)

@@ -90,7 +90,7 @@ function formatElapsed(milliseconds: number) {
 }
 
 function formatTimestamp(value: number) {
-  return new Date(value).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return formatElapsed(value)
 }
 
 function confidenceLabel(fragment: TemporaryAsrFragment) {

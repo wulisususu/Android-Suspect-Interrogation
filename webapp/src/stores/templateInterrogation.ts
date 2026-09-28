@@ -32,15 +32,11 @@ import type {
   StandardQuestion,
   TemplateWorkspace,
 } from '../types/templateInterrogation'
-import { roundGroups } from '../utils/templateInterrogation'
+import { compareDialogueFragments, roundGroups } from '../utils/templateInterrogation'
 import { useInterrogationStore } from './interrogation'
 
 function emptyWorkspace(caseId = ''): TemplateWorkspace {
   return { caseId, questions: [], rounds: [], pendingQuestions: [], qaUnits: [] }
-}
-
-function dialogueOrder(left: TemporaryAsrFragment, right: TemporaryAsrFragment): number {
-  return left.startedAtMs - right.startedAtMs || left.ordinal - right.ordinal || left.id.localeCompare(right.id)
 }
 
 interface StoreScope {
@@ -99,10 +95,10 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     const index = dialogueHistory.value.findIndex((item) => item.id === fragment.id)
     if (index >= 0) {
       dialogueHistory.value[index] = fragment
-      dialogueHistory.value = [...dialogueHistory.value].sort(dialogueOrder)
+      dialogueHistory.value = [...dialogueHistory.value].sort(compareDialogueFragments)
       return
     }
-    dialogueHistory.value = [...dialogueHistory.value, fragment].sort(dialogueOrder)
+    dialogueHistory.value = [...dialogueHistory.value, fragment].sort(compareDialogueFragments)
   }
 
   function scheduleWorkspaceRefresh(scope = currentScope(), delayMs = 90) {
@@ -155,7 +151,9 @@ export const useTemplateInterrogationStore = defineStore('template-interrogation
     if (!isCurrentScope(scope)) return
     const interrogation = useInterrogationStore()
     interrogation.hydrateFragmentHistory(fragments)
-    dialogueHistory.value = fragments.filter((fragment) => fragment.state !== 'SUPERSEDED').sort(dialogueOrder)
+    dialogueHistory.value = fragments
+      .filter((fragment) => fragment.state !== 'SUPERSEDED')
+      .sort(compareDialogueFragments)
   }
 
   async function initialize(nextCaseId: string) {
