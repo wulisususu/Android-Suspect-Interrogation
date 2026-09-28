@@ -6,7 +6,8 @@ import struct
 from typing import Any
 
 
-MAX_MESSAGE_BYTES = 8 * 1024 * 1024
+# Five minutes of 16 kHz mono PCM16 is 9.6 MB raw and about 12.8 MB base64-encoded.
+MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 _HEADER = struct.Struct("!I")
 
 
