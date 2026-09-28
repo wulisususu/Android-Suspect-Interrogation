@@ -163,6 +163,7 @@ const OUTBOX_CURSOR_STORE_NAME = 'formal-audio-cursors'
 const MAX_FORMAL_OUTBOX_BYTES = 16 * 1024 * 1024
 const FORMAL_HEADER_BYTES = 12
 const MAX_FORMAL_FRAME_BYTES = 32_000
+const FORMAL_ACK_TIMEOUT_MS = 5_000
 
 interface StoredBrowserFormalAudioFrame extends BrowserFormalAudioFrame {
   key: string
@@ -601,6 +602,7 @@ class BrowserPcmStreamer {
   private pumping: Promise<void> | null = null
   private inFlightSequence: number | null = null
   private reconnectTimer: number | undefined
+  private formalAckTimer: number | undefined
   private failureReason: string | null = null
   private incompleteMarker = new BrowserFormalIncompleteMarker()
   private incompleteMarkerMayBypassOutbox = false
@@ -764,11 +766,13 @@ class BrowserPcmStreamer {
     this.socket = socket
     socket.binaryType = 'arraybuffer'
     socket.onmessage = (event) => {
-      if (this.kind === 'FORMAL') void this.handleFormalAck(event.data)
+      if (this.socket === socket && this.kind === 'FORMAL') void this.handleFormalAck(event.data)
     }
     socket.onclose = (event) => {
-      if (this.socket === socket) this.socket = null
+      if (this.socket !== socket) return
+      this.socket = null
       this.inFlightSequence = null
+      this.clearFormalAckTimer()
       this.incompleteMarker.onSocketClosed()
       if (this.stopped) return
       if (event.code === 4410) {
@@ -827,6 +831,7 @@ class BrowserPcmStreamer {
       }
       const expectedEnd = frame.startSample + BigInt(frame.pcm.byteLength / 2)
       if (BigInt(durableEnd) !== expectedEnd) throw new Error('durable audio acknowledgement sample range mismatched')
+      if (this.inFlightSequence === sequence) this.clearFormalAckTimer()
       const outbox = this.outbox
       if (!outbox) throw new Error('durable audio outbox is unavailable')
       const removed = await removeBrowserFormalFrameAfterDurableAck(
@@ -880,9 +885,25 @@ class BrowserPcmStreamer {
         return
       }
       const frame = await sendNextBrowserFormalFrame(this.socket, { list: async () => pending })
-      if (frame) this.inFlightSequence = frame.sequence
+      if (frame) {
+        this.inFlightSequence = frame.sequence
+        const socket = this.socket
+        if (socket?.readyState === WebSocket.OPEN) {
+          this.formalAckTimer = window.setTimeout(() => {
+            this.formalAckTimer = undefined
+            if (this.socket === socket && this.inFlightSequence === frame.sequence) {
+              socket.close(4000, 'durable audio acknowledgement timed out')
+            }
+          }, FORMAL_ACK_TIMEOUT_MS)
+        }
+      }
     })().finally(() => { this.pumping = null })
     return this.pumping
+  }
+
+  private clearFormalAckTimer() {
+    if (this.formalAckTimer !== undefined) window.clearTimeout(this.formalAckTimer)
+    this.formalAckTimer = undefined
   }
 
   private scheduleReconnect() {
