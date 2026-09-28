@@ -3,7 +3,11 @@ import { computed, ref, watch } from 'vue'
 import type { AsrCaptureStatus } from '../types/interrogation'
 import { listRecoverableBrowserFormalCaptures, recoverBrowserFormalCapture } from '../audio/browserAsrCapture'
 
-const props = defineProps<{ capture: AsrCaptureStatus }>()
+const props = defineProps<{
+  capture: AsrCaptureStatus
+  stage?: 'all' | 'transcription' | 'speaker'
+}>()
+const stage = computed(() => props.stage ?? 'all')
 const pendingLocalFrames = ref(0)
 const recoveryBusy = ref(false)
 const recoveryMessage = ref('')
@@ -76,7 +80,7 @@ watch(
   async ([caseId, captureId, recordingStatus]) => {
     pendingLocalFrames.value = 0
     recoveryMessage.value = ''
-    if (!caseId || !captureId || recordingStatus !== 'INCOMPLETE') return
+    if (stage.value === 'speaker' || !caseId || !captureId || recordingStatus !== 'INCOMPLETE') return
     try {
       const captures = await listRecoverableBrowserFormalCaptures(caseId)
       pendingLocalFrames.value = captures.find((capture) => capture.captureId === captureId)?.pendingFrameCount ?? 0
@@ -112,24 +116,30 @@ async function recoverLocalAudio() {
 </script>
 
 <template>
-  <div v-if="visible" class="asr-workflow-status" :class="{ incomplete }" role="status" aria-live="polite">
-    <div class="workflow-stage">
-      <span class="workflow-stage-number">第 1 步</span>
-      <div class="workflow-stage-copy">
-        <strong>原始录音与文字转写</strong>
-        <span>{{ transcriptLabel || '等待录音' }}</span>
-        <span v-if="liveTranscriptLabel" class="live-transcript-warning">{{ liveTranscriptLabel }}</span>
+  <div v-if="visible" class="asr-workflow-status" :class="{ incomplete, compact: stage !== 'all' }" role="status" aria-live="polite">
+    <template v-if="stage === 'all'">
+      <div class="workflow-stage">
+        <span class="workflow-stage-number">第 1 步</span>
+        <div class="workflow-stage-copy">
+          <strong>原始录音与文字转写</strong>
+          <span>{{ transcriptLabel || '等待录音' }}</span>
+          <span v-if="liveTranscriptLabel" class="live-transcript-warning">{{ liveTranscriptLabel }}</span>
+        </div>
       </div>
-    </div>
-    <div class="workflow-stage speaker-stage">
-      <span class="workflow-stage-number">第 2 步</span>
-      <div class="workflow-stage-copy">
-        <strong>声纹分析与说话人归属</strong>
-        <span>{{ speakerLabel || '等待第 1 步产生文字片段' }}</span>
+      <div class="workflow-stage speaker-stage">
+        <span class="workflow-stage-number">第 2 步</span>
+        <div class="workflow-stage-copy">
+          <strong>声纹分析与说话人归属</strong>
+          <span>{{ speakerLabel || '等待第 1 步产生文字片段' }}</span>
+        </div>
       </div>
-    </div>
+    </template>
+    <span v-else class="workflow-compact-copy">
+      {{ stage === 'transcription' ? transcriptLabel || '等待录音' : speakerLabel || '等待第 1 步产生文字片段' }}
+      <span v-if="stage === 'transcription' && liveTranscriptLabel" class="live-transcript-warning">{{ liveTranscriptLabel }}</span>
+    </span>
     <span v-if="capture.error" class="workflow-error">{{ capture.error }}</span>
-    <div v-if="incomplete && pendingLocalFrames" class="local-recovery">
+    <div v-if="incomplete && stage !== 'speaker' && pendingLocalFrames" class="local-recovery">
       <span>本机保留了 {{ pendingLocalFrames }} 个尚未归档的音频分片。</span>
       <button type="button" :disabled="recoveryBusy" @click="recoverLocalAudio">
         {{ recoveryBusy ? '正在补录…' : '补录本机音频' }}
@@ -148,6 +158,21 @@ async function recoverLocalAudio() {
   background: #eff5fa;
   border-bottom: 1px solid #dbe6ef;
   font: 12px/1.45 system-ui, sans-serif;
+}
+
+.asr-workflow-status.compact {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+}
+
+.workflow-compact-copy {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .workflow-stage {

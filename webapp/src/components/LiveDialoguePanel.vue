@@ -39,7 +39,7 @@ const emit = defineEmits<{
   correctFragment: [fragmentId: string, speaker: TemporaryAsrSpeaker, reason: string]
 }>()
 
-const feed = ref<HTMLElement | null>(null)
+const transcriptFeed = ref<HTMLElement | null>(null)
 const pinnedToBottom = ref(true)
 const correctionSpeaker = ref<Record<string, TemporaryAsrSpeaker>>({})
 const correctionReason = ref<Record<string, string>>({})
@@ -54,6 +54,9 @@ const livePreviewUnavailableMessage = computed(() => (
 const qaReviewUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'NEEDS_REVIEW'))
 const qaResolvedUnits = computed(() => props.qaUnits.filter((unit) => unit.status === 'APPLIED' || unit.status === 'IGNORED' || unit.status === 'ROLLED_BACK'))
 const visibleDialogue = computed(() => groupLiveDialogueFragments([...props.dialogue, ...botTurns.value]))
+const recognitionFragments = computed(() => [...props.dialogue]
+  .filter((item) => item.state !== 'DISCARDED' && item.state !== 'SUPERSEDED' && (item.editedText || item.rawText).trim())
+  .sort((left, right) => left.startedAtMs - right.startedAtMs || left.ordinal - right.ordinal || left.id.localeCompare(right.id)))
 
 // ---------------------------------------------------------------------------
 // Dev-only BOT interrogator: one person plays both roles. The bot asks the
@@ -384,6 +387,19 @@ function speakerLabel(role?: TemporaryAsrSpeaker | null) {
   return '未知人员'
 }
 
+function recognitionNeedsReview(item: TemporaryAsrFragment) {
+  return item.speaker === 'UNKNOWN'
+    || item.speaker === 'OFFICER_FALLBACK'
+    || item.speakerSource === 'PENDING_ANALYSIS'
+    || item.lowConfidence
+}
+
+function recognitionStatusLabel(item: TemporaryAsrFragment) {
+  if (item.speakerSource === 'PENDING_ANALYSIS') return '声纹分析中'
+  if (recognitionNeedsReview(item)) return '待人工复核'
+  return item.voiceprintVerified ? '声纹已匹配' : '已归属'
+}
+
 function thresholdSourceLabel(source?: string | null) {
   if (source === 'DEVICE_CALIBRATED') return '设备实测'
   if (source === 'MODEL_BASELINE') return '模型基线'
@@ -404,10 +420,6 @@ function speakerName(item: TemporaryAsrFragment) {
   const presentation = dialoguePresentation(item)
   if (item.speaker === 'SUSPECT') return props.suspectName || item.speakerName || presentation.badge
   return item.speakerName || presentation.badge
-}
-
-function speakerPrefix(item: TemporaryAsrFragment) {
-  return item.speaker === 'UNKNOWN' ? '' : `${speakerName(item)}：`
 }
 
 function pendingFor(fragmentId: string) {
@@ -517,14 +529,14 @@ function submitCorrection(item: TemporaryAsrFragment) {
 }
 
 function onFeedScroll() {
-  const element = feed.value
+  const element = transcriptFeed.value
   if (!element) return
   pinnedToBottom.value = element.scrollHeight - element.scrollTop - element.clientHeight <= 80
 }
 
 async function scrollToLatest(force = false) {
   await nextTick()
-  const element = feed.value
+  const element = transcriptFeed.value
   if (!element || (!force && !pinnedToBottom.value)) return
   element.scrollTop = element.scrollHeight
   pinnedToBottom.value = true
@@ -577,65 +589,142 @@ onMounted(() => {
       </div>
     </header>
 
-    <AsrWorkflowStatus :capture="captureStatus" />
-
-    <div ref="feed" class="dialogue-feed" @scroll="onFeedScroll">
-      <div v-if="captureRunning" class="capture-meter" role="img" aria-label="实时麦克风输入波形">
-        <div class="capture-meter-waveform">
-          <RecorderWaveformCanvas
-            :key="captureStatus.captureSessionId ?? 'active-capture'"
-            :samples="audioMeterSamples"
-          />
-        </div>
-        <span class="capture-meter-state">
-          {{ audioMeterSignal === 'WAITING' ? '等待音频输入' : audioMeterSignal === 'STALE' ? '暂无新音频信号' : '实时音频' }}
-        </span>
-      </div>
-      <details v-if="qaReviewUnits.length || qaResolvedUnits.length" class="qa-review-rail" aria-label="Qwen 正式笔录路由状态">
-        <summary>笔录归档处理（{{ qaReviewUnits.length }} 项待处理）</summary>
-        <article v-for="unit in qaReviewUnits" :key="unit.id" class="qa-review-card">
-          <header><span class="qa-status-chip">待处理</span><small>{{ unit.reasonCode || 'NEEDS_REVIEW' }}</small></header>
-          <p v-if="unit.rawQuestionText"><b>原始问：</b>{{ unit.rawQuestionText }}</p>
-          <p v-if="unit.rawAnswerText"><b>原始答：</b>{{ unit.rawAnswerText }}</p>
-          <p v-if="unit.aiSuggestedQuestionText" class="qa-suggestion"><b>AI 建议问：</b>{{ unit.aiSuggestedQuestionText }}</p>
-          <p v-if="unit.aiSuggestedAnswerText" class="qa-suggestion"><b>AI 建议答：</b>{{ unit.aiSuggestedAnswerText }}</p>
-          <div class="qa-review-actions">
-            <button draggable="true" @dragstart="startWholeQaDrag($event, unit)" @click="armDrop(wholeQaDropEntries(unit), '整组问答')">拖动整组问答</button>
-            <button v-if="unit.answerFragmentIds.length" draggable="true" @dragstart="startAnswerDrag($event, unit)" @click="armDrop(answerQaDropEntries(unit), '仅答案')">仅拖动答案</button>
-            <button class="qa-ignore" @click="resolveQa(unit, { action: 'IGNORE' })">忽略</button>
+    <div class="dialogue-zones">
+      <div class="dialogue-upper-zones">
+        <section class="dialogue-region waveform-region" aria-label="实时录音波形">
+          <div class="region-heading">
+            <strong>录音波形</strong>
+            <span class="capture-meter-state">
+              {{ audioMeterSignal === 'LIVE' ? '实时音频' : audioMeterSignal === 'STALE' ? '暂无新音频信号' : audioMeterSignal === 'WAITING' ? '等待音频输入' : '录音未进行' }}
+            </span>
           </div>
-        </article>
-        <div v-for="unit in qaResolvedUnits" :key="`status-${unit.id}`" class="qa-routing-status" :class="{ 'qa-status-muted': unit.status === 'IGNORED' || unit.status === 'ROLLED_BACK' || unit.classification === 'IGNORE' }">
-           <span>{{ qaStatusLabel(unit) }}</span>
-           <small v-if="unit.rawQuestionText">{{ unit.rawQuestionText }}</small>
-           <button v-if="unit.status === 'APPLIED'" class="qa-rollback" @click="rollbackQa(unit)">回退本次匹配</button>
-        </div>
-      </details>
-      <div v-if="!visibleDialogue.length && !partialText" class="dialogue-empty">
-        <strong>等待现场对话</strong>
-        <p>原始转写会先显示在这里；说话人归属完成后自动补上姓名。</p>
+          <div class="capture-meter-waveform" role="img" aria-label="实时麦克风输入振幅波形">
+            <RecorderWaveformCanvas
+              v-if="audioMeterSamples.length"
+              :key="captureStatus.captureSessionId ?? 'active-capture'"
+              :samples="audioMeterSamples"
+            />
+            <span v-else class="waveform-placeholder">{{ captureRunning ? '等待音频输入' : '开始录音后显示实时波形' }}</span>
+          </div>
+        </section>
+
+        <section class="dialogue-region transcript-region" aria-label="实时转写文本">
+          <header class="region-heading transcript-heading">
+            <div>
+              <strong>转写文本 · 第 1 步</strong>
+              <AsrWorkflowStatus :capture="captureStatus" stage="transcription" />
+            </div>
+            <button v-if="!pinnedToBottom" class="latest-inline-button" @click="scrollToLatest(true)">↓ 最新消息</button>
+          </header>
+          <div ref="transcriptFeed" class="transcript-content" @scroll="onFeedScroll">
+            <details v-if="qaReviewUnits.length || qaResolvedUnits.length" class="qa-review-rail" aria-label="Qwen 正式笔录路由状态">
+              <summary>笔录归档处理（{{ qaReviewUnits.length }} 项待处理）</summary>
+              <article v-for="unit in qaReviewUnits" :key="unit.id" class="qa-review-card">
+                <header><span class="qa-status-chip">待处理</span><small>{{ unit.reasonCode || 'NEEDS_REVIEW' }}</small></header>
+                <p v-if="unit.rawQuestionText"><b>原始问：</b>{{ unit.rawQuestionText }}</p>
+                <p v-if="unit.rawAnswerText"><b>原始答：</b>{{ unit.rawAnswerText }}</p>
+                <p v-if="unit.aiSuggestedQuestionText" class="qa-suggestion"><b>AI 建议问：</b>{{ unit.aiSuggestedQuestionText }}</p>
+                <p v-if="unit.aiSuggestedAnswerText" class="qa-suggestion"><b>AI 建议答：</b>{{ unit.aiSuggestedAnswerText }}</p>
+                <div class="qa-review-actions">
+                  <button draggable="true" @dragstart="startWholeQaDrag($event, unit)" @click="armDrop(wholeQaDropEntries(unit), '整组问答')">拖动整组问答</button>
+                  <button v-if="unit.answerFragmentIds.length" draggable="true" @dragstart="startAnswerDrag($event, unit)" @click="armDrop(answerQaDropEntries(unit), '仅答案')">仅拖动答案</button>
+                  <button class="qa-ignore" @click="resolveQa(unit, { action: 'IGNORE' })">忽略</button>
+                </div>
+              </article>
+              <div v-for="unit in qaResolvedUnits" :key="`status-${unit.id}`" class="qa-routing-status" :class="{ 'qa-status-muted': unit.status === 'IGNORED' || unit.status === 'ROLLED_BACK' || unit.classification === 'IGNORE' }">
+                <span>{{ qaStatusLabel(unit) }}</span>
+                <small v-if="unit.rawQuestionText">{{ unit.rawQuestionText }}</small>
+                <button v-if="unit.status === 'APPLIED'" class="qa-rollback" @click="rollbackQa(unit)">回退本次匹配</button>
+              </div>
+            </details>
+            <div v-if="!visibleDialogue.length && !partialText && !captureRunning" class="dialogue-empty">
+              <strong>等待现场对话</strong>
+              <p>原始转写会在这里连续显示。</p>
+            </div>
+
+            <template v-for="turn in visibleDialogue" :key="turn.key">
+              <article
+                class="transcript-entry"
+                :class="{ 'pending-draggable': !!pendingFor(turn.primary.id), 'answer-draggable': turn.fragments.some((item) => !isBotFragment(item)) }"
+                :data-fragment-id="turn.primary.id"
+                :draggable="turn.fragments.some((item) => !isBotFragment(item))"
+                @dragstart="startDialogueDrag($event, turn.fragments)"
+              >
+                <p class="transcript-paragraph">{{ turn.text }}</p>
+                <button
+                  v-if="turn.fragments.some((item) => !isBotFragment(item))"
+                  type="button"
+                  class="transcript-select"
+                  @click.stop="armDialogue(turn.fragments)"
+                >{{ dialogueArmed(turn.fragments) ? '已选中 ✓ 去笔录点一下' : '选中这段' }}</button>
+
+                <section v-if="pendingFor(turn.primary.id)" class="pending-resolution-card">
+                  <template v-if="pendingFor(turn.primary.id)?.matchStatus === 'UNMATCHED'">
+                    <p>未匹配正式笔录问题 · 可直接拖到左侧正式笔录指定位置</p>
+                    <div class="pending-actions">
+                      <button class="primary" @click="resolve(pendingFor(turn.primary.id)!, { action: 'ADD' })">加入本案笔录</button>
+                      <button @click="resolve(pendingFor(turn.primary.id)!, { action: 'IGNORE' })">忽略</button>
+                    </div>
+                  </template>
+                  <template v-else-if="pendingFor(turn.primary.id)?.matchStatus === 'AMBIGUOUS'">
+                    <p>可能对应多个正式问题，请人工确认</p>
+                    <div class="candidate-list">
+                      <button
+                        v-for="candidate in candidateQuestions(pendingFor(turn.primary.id)!)"
+                        :key="candidate.id"
+                        @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: candidate.id, roundMode: 'NEW_ROUND' })"
+                      >对应：{{ candidate.text }}</button>
+                    </div>
+                    <div class="pending-actions">
+                      <button class="primary" @click="resolve(pendingFor(turn.primary.id)!, { action: 'ADD' })">新建本案问题</button>
+                      <button @click="resolve(pendingFor(turn.primary.id)!, { action: 'IGNORE' })">忽略</button>
+                    </div>
+                  </template>
+                  <template v-else-if="pendingFor(turn.primary.id)?.matchStatus === 'MATCHED_EXISTING'">
+                    <p>该问题已在本案笔录中出现，请选择本次问答如何记录</p>
+                    <div class="pending-actions">
+                      <button
+                        v-if="pendingFor(turn.primary.id)!.candidateQuestionIds[0]"
+                        class="primary"
+                        @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: pendingFor(turn.primary.id)!.candidateQuestionIds[0], roundMode: 'APPEND_EXISTING' })"
+                      >追加到原回答</button>
+                      <button
+                        v-if="pendingFor(turn.primary.id)!.candidateQuestionIds[0]"
+                        @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: pendingFor(turn.primary.id)!.candidateQuestionIds[0], roundMode: 'NEW_ROUND' })"
+                      >新增一轮问答</button>
+                    </div>
+                  </template>
+                </section>
+              </article>
+            </template>
+
+            <p v-if="captureRunning" class="transcript-partial" :class="{ idle: !partialText }" aria-live="polite">
+              {{ partialText || (livePreviewUnavailable ? livePreviewUnavailableMessage : '等待识别文字…请说话') }}
+            </p>
+          </div>
+        </section>
       </div>
 
-      <template v-for="turn in visibleDialogue" :key="turn.key">
-        <article
-          class="dialogue-turn"
-          :class="[`side-${dialoguePresentation(turn.primary).side}`, { 'pending-draggable': !!pendingFor(turn.primary.id), 'answer-draggable': turn.fragments.some((item) => !isBotFragment(item)) }]"
-          :data-fragment-id="turn.primary.id"
-          :draggable="turn.fragments.some((item) => !isBotFragment(item))"
-          @dragstart="startDialogueDrag($event, turn.fragments)"
-        >
-          <div class="dialogue-meta">
-            <span>{{ dialoguePresentation(turn.primary).badge }}</span>
-            <time>{{ formatTime(turn.primary) }}</time>
-            <button
-              type="button"
-              style="margin-left:auto;border:1px solid #173b68;background:#fff;color:#173b68;border-radius:6px;padding:2px 8px;font:12px system-ui,sans-serif"
-              @click.stop="armDialogue(turn.fragments)"
-            >{{ dialogueArmed(turn.fragments) ? '已选中 ✓ 去笔录点一下' : '选中这段' }}</button>
+      <section class="dialogue-region recognition-region" aria-label="说话人识别结果">
+        <header class="region-heading recognition-heading">
+          <div>
+            <strong>说话人识别 · 第 2 步</strong>
+            <AsrWorkflowStatus :capture="captureStatus" stage="speaker" />
           </div>
-          <div class="dialogue-bubble"><strong v-if="speakerPrefix(turn.primary)" class="speaker-prefix">{{ speakerPrefix(turn.primary) }}</strong>{{ turn.text }}</div>
+          <span class="recognition-count">{{ recognitionFragments.length }} 段</span>
+        </header>
+        <div class="recognition-list">
+          <p v-if="!recognitionFragments.length" class="recognition-empty">
+            {{ captureRunning ? '等待第 1 步产生文字片段' : '识别结果会显示在这里' }}
+          </p>
+          <article v-for="item in recognitionFragments" :key="item.id" class="recognition-entry">
+            <div class="recognition-row">
+              <time class="recognition-time">{{ formatTime(item) }}</time>
+              <p class="recognition-excerpt">{{ (item.editedText || item.rawText).trim() }}</p>
+              <span class="speaker-result-chip" :class="{ review: recognitionNeedsReview(item) }">{{ speakerName(item) }}</span>
+              <span class="recognition-result-state" :class="{ review: recognitionNeedsReview(item) }">{{ recognitionStatusLabel(item) }}</span>
+            </div>
 
-          <template v-for="item in turn.fragments" :key="`lineage-${item.id}`">
             <details v-if="fragmentHistory(item.id).some((history) => history.id !== item.id)" class="fragment-lineage">
               <summary>查看原始转写与说话人分析沿革</summary>
               <div v-for="history in fragmentHistory(item.id)" :key="history.id" class="fragment-lineage-row">
@@ -643,121 +732,60 @@ onMounted(() => {
                 <span>{{ history.rawText }}</span>
               </div>
             </details>
-          </template>
 
-          <template v-for="item in turn.fragments" :key="item.id">
             <details v-if="item.recognitionEvidence" class="recognition-evidence-card">
-              <summary>查看识别依据<span v-if="turn.fragments.length > 1">（第 {{ turn.fragments.indexOf(item) + 1 }} 段）</span></summary>
-
-            <div class="evidence-grid">
-              <div><small>AI 原判</small><strong>{{ speakerLabel(item.recognitionEvidence.aiSpeaker) }}</strong></div>
-              <div><small>Score</small><strong>{{ scoreText(item.recognitionEvidence.score) }}</strong></div>
-              <div><small>第二候选</small><strong>{{ scoreText(item.recognitionEvidence.secondBestScore) }}</strong></div>
-              <div><small>Threshold</small><strong>{{ scoreText(item.recognitionEvidence.threshold) }}</strong></div>
-              <div><small>Margin</small><strong>{{ scoreText(item.recognitionEvidence.margin) }}</strong></div>
-              <div><small>阈值来源</small><strong>{{ thresholdSourceLabel(item.recognitionEvidence.thresholdSource) }}</strong></div>
-              <div><small>声纹模型</small><strong>{{ item.recognitionEvidence.speakerModelId || 'eres2net_large' }} {{ item.recognitionEvidence.speakerModelVersion || '—' }}</strong></div>
-              <div><small>ASR 模型</small><strong>{{ item.recognitionEvidence.asrModelId || '—' }} {{ item.recognitionEvidence.asrModelVersion || '' }}</strong></div>
-              <div><small>校准状态</small><strong>{{ item.recognitionEvidence.calibrationStatus || '—' }}</strong></div>
-              <div><small>模型指纹</small><strong>{{ shortFingerprint(item.recognitionEvidence.speakerModelFingerprint) }}</strong></div>
-              <div><small>麦克风指纹</small><strong>{{ shortFingerprint(item.recognitionEvidence.microphoneFingerprint) }}</strong></div>
-              <div><small>证据时间</small><strong>{{ formatDate(item.recognitionEvidence.createdAt) }}</strong></div>
-            </div>
-
-            <div v-if="item.recognitionRevisions.length" class="revision-history">
-              <h4>人工修正历史</h4>
-              <div v-for="revision in item.recognitionRevisions" :key="revision.revisionId" class="revision-row">
-                <strong>#{{ revision.revisionNo }}</strong>
-                <span>{{ speakerLabel(revision.beforeSpeaker) }} → {{ speakerLabel(revision.afterSpeaker) }}</span>
-                <span>{{ revision.reason || '未填写原因' }}</span>
-                <span>{{ revision.actorId || '未记录人员' }}</span>
-                <time>{{ formatDate(revision.createdAt) }}</time>
+              <summary>查看识别依据</summary>
+              <div class="evidence-grid">
+                <div><small>AI 原判</small><strong>{{ speakerLabel(item.recognitionEvidence.aiSpeaker) }}</strong></div>
+                <div><small>Score</small><strong>{{ scoreText(item.recognitionEvidence.score) }}</strong></div>
+                <div><small>第二候选</small><strong>{{ scoreText(item.recognitionEvidence.secondBestScore) }}</strong></div>
+                <div><small>Threshold</small><strong>{{ scoreText(item.recognitionEvidence.threshold) }}</strong></div>
+                <div><small>Margin</small><strong>{{ scoreText(item.recognitionEvidence.margin) }}</strong></div>
+                <div><small>阈值来源</small><strong>{{ thresholdSourceLabel(item.recognitionEvidence.thresholdSource) }}</strong></div>
+                <div><small>声纹模型</small><strong>{{ item.recognitionEvidence.speakerModelId || 'eres2net_large' }} {{ item.recognitionEvidence.speakerModelVersion || '—' }}</strong></div>
+                <div><small>ASR 模型</small><strong>{{ item.recognitionEvidence.asrModelId || '—' }} {{ item.recognitionEvidence.asrModelVersion || '' }}</strong></div>
+                <div><small>校准状态</small><strong>{{ item.recognitionEvidence.calibrationStatus || '—' }}</strong></div>
+                <div><small>模型指纹</small><strong>{{ shortFingerprint(item.recognitionEvidence.speakerModelFingerprint) }}</strong></div>
+                <div><small>麦克风指纹</small><strong>{{ shortFingerprint(item.recognitionEvidence.microphoneFingerprint) }}</strong></div>
+                <div><small>证据时间</small><strong>{{ formatDate(item.recognitionEvidence.createdAt) }}</strong></div>
               </div>
-            </div>
 
-            <div v-if="item.state !== 'CONFIRMED'" class="recognition-correction">
-              <h4>人工修正</h4>
-              <p>修正只改变当前工作结果；上方 AI 原判、分数和模型证据永久保留。</p>
-              <div class="correction-controls">
-                <select
-                  :value="correctionRole(item)"
-                  @change="correctionSpeaker[item.id] = ($event.target as HTMLSelectElement).value as TemporaryAsrSpeaker"
-                >
-                  <option value="SUSPECT">嫌疑人</option>
-                  <option value="INTERROGATOR">主审民警</option>
-                  <option value="RECORDER">记录民警</option>
-                  <option value="UNKNOWN">未知人员</option>
-                </select>
-                <input
-                  v-model="correctionReason[item.id]"
-                  placeholder="填写人工修正原因（必填）"
-                  maxlength="512"
-                />
-                <button
-                  class="correction-submit"
-                  :disabled="!(correctionReason[item.id] || '').trim()"
-                  @click="submitCorrection(item)"
-                >保存修正</button>
+              <div v-if="item.recognitionRevisions.length" class="revision-history">
+                <h4>人工修正历史</h4>
+                <div v-for="revision in item.recognitionRevisions" :key="revision.revisionId" class="revision-row">
+                  <strong>#{{ revision.revisionNo }}</strong>
+                  <span>{{ speakerLabel(revision.beforeSpeaker) }} → {{ speakerLabel(revision.afterSpeaker) }}</span>
+                  <span>{{ revision.reason || '未填写原因' }}</span>
+                  <span>{{ revision.actorId || '未记录人员' }}</span>
+                  <time>{{ formatDate(revision.createdAt) }}</time>
+                </div>
               </div>
-            </div>
+
+              <div v-if="item.state !== 'CONFIRMED'" class="recognition-correction">
+                <h4>人工修正</h4>
+                <p>修正只改变当前工作结果；上方 AI 原判、分数和模型证据永久保留。</p>
+                <div class="correction-controls">
+                  <select
+                    :value="correctionRole(item)"
+                    @change="correctionSpeaker[item.id] = ($event.target as HTMLSelectElement).value as TemporaryAsrSpeaker"
+                  >
+                    <option value="SUSPECT">嫌疑人</option>
+                    <option value="INTERROGATOR">主审民警</option>
+                    <option value="RECORDER">记录民警</option>
+                    <option value="UNKNOWN">未知人员</option>
+                  </select>
+                  <input v-model="correctionReason[item.id]" placeholder="填写人工修正原因（必填）" maxlength="512" />
+                  <button class="correction-submit" :disabled="!(correctionReason[item.id] || '').trim()" @click="submitCorrection(item)">保存修正</button>
+                </div>
+              </div>
             </details>
-
-            <div v-else-if="!isBotFragment(item)" class="recognition-evidence-missing">
+            <div v-else-if="item.state === 'CONFIRMED'" class="recognition-evidence-missing">
               识别证据尚未独立入库（历史数据迁移后将自动补齐）
             </div>
-          </template>
-
-          <section v-if="pendingFor(turn.primary.id)" class="pending-resolution-card">
-            <template v-if="pendingFor(turn.primary.id)?.matchStatus === 'UNMATCHED'">
-              <p>未匹配正式笔录问题 · 可直接拖到左侧正式笔录指定位置</p>
-              <div class="pending-actions">
-                <button class="primary" @click="resolve(pendingFor(turn.primary.id)!, { action: 'ADD' })">加入本案笔录</button>
-                <button @click="resolve(pendingFor(turn.primary.id)!, { action: 'IGNORE' })">忽略</button>
-              </div>
-            </template>
-
-            <template v-else-if="pendingFor(turn.primary.id)?.matchStatus === 'AMBIGUOUS'">
-              <p>可能对应多个正式问题，请人工确认</p>
-              <div class="candidate-list">
-                <button
-                  v-for="candidate in candidateQuestions(pendingFor(turn.primary.id)!)"
-                  :key="candidate.id"
-                  @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: candidate.id, roundMode: 'NEW_ROUND' })"
-                >
-                  对应：{{ candidate.text }}
-                </button>
-              </div>
-              <div class="pending-actions">
-                <button class="primary" @click="resolve(pendingFor(turn.primary.id)!, { action: 'ADD' })">新建本案问题</button>
-                <button @click="resolve(pendingFor(turn.primary.id)!, { action: 'IGNORE' })">忽略</button>
-              </div>
-            </template>
-
-            <template v-else-if="pendingFor(turn.primary.id)?.matchStatus === 'MATCHED_EXISTING'">
-              <p>该问题已在本案笔录中出现，请选择本次问答如何记录</p>
-              <div class="pending-actions">
-                <button
-                  v-if="pendingFor(turn.primary.id)!.candidateQuestionIds[0]"
-                  class="primary"
-                  @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: pendingFor(turn.primary.id)!.candidateQuestionIds[0], roundMode: 'APPEND_EXISTING' })"
-                >追加到原回答</button>
-                <button
-                  v-if="pendingFor(turn.primary.id)!.candidateQuestionIds[0]"
-                  @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: pendingFor(turn.primary.id)!.candidateQuestionIds[0], roundMode: 'NEW_ROUND' })"
-                >新增一轮问答</button>
-              </div>
-            </template>
-          </section>
-        </article>
-      </template>
-
-      <article v-if="captureRunning" class="dialogue-turn side-left partial-turn" :class="{ idle: !partialText }">
-        <div class="dialogue-meta"><span>{{ partialText ? '实时转写中' : livePreviewUnavailable ? '实时转写不可用' : '待输入' }}</span></div>
-        <div class="dialogue-bubble">{{ partialText || (livePreviewUnavailable ? livePreviewUnavailableMessage : '（待输入…请说话）') }}</div>
-      </article>
+          </article>
+        </div>
+      </section>
     </div>
-
-    <button v-if="!pinnedToBottom" class="latest-button" @click="scrollToLatest(true)">↓ 最新消息</button>
   </aside>
 </template>
 
@@ -767,31 +795,229 @@ onMounted(() => {
   min-width: 142px;
 }
 
-.capture-meter {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  width: calc(100% + 24px);
-  margin: -14px -12px 12px;
-  box-sizing: border-box;
+.dialogue-zones {
+  min-height: 0;
   display: grid;
-  grid-template-rows: 48px 12px;
-  gap: 2px;
-  padding: 6px 12px;
-  border-bottom: 1px solid #d4dde4;
-  background: #eef3f6;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px 12px 14px;
+  overflow: hidden;
 }
 
-.capture-meter-waveform {
-  position: relative;
+.dialogue-upper-zones {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, .7fr) minmax(0, 1.3fr);
+  gap: 10px;
+}
+
+.dialogue-region {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+  border: 1px solid #d8e3eb;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.region-heading {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px 7px;
+  color: #253f58;
+  font: 12px/1.45 system-ui, sans-serif;
+}
+
+.region-heading strong {
+  color: #1f3d5c;
+  font-size: 13px;
 }
 
 .capture-meter-state {
   color: #72808a;
   font-size: 10px;
-  line-height: 12px;
-  text-align: center;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.capture-meter-waveform {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: stretch;
+  margin: 0 12px 10px;
+}
+
+.waveform-placeholder {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  color: #8291a0;
+  font-size: 11px;
+}
+
+.transcript-heading > div,
+.recognition-heading > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.transcript-content,
+.recognition-list {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.transcript-content {
+  padding: 0 14px 12px;
+  scroll-behavior: smooth;
+}
+
+.transcript-entry {
+  margin-bottom: 10px;
+  padding: 3px 0 9px;
+  border-bottom: 1px solid #edf1f5;
+}
+
+.transcript-paragraph {
+  margin: 0;
+  color: #1f2731;
+  font-size: 13px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.transcript-select {
+  margin: 4px 0 0;
+  border: 1px solid #c9d6e1;
+  border-radius: 5px;
+  padding: 3px 7px;
+  color: #355776;
+  background: #fff;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.transcript-partial {
+  margin: 3px 0 10px;
+  padding-left: 8px;
+  border-left: 2px solid #4380ee;
+  color: #2874e5;
+  font-size: 13px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.transcript-partial.idle {
+  color: #8291a0;
+  border-left-color: #c5d2df;
+}
+
+.latest-inline-button {
+  flex: 0 0 auto;
+  border: 1px solid #91a9ba;
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: #355776;
+  background: #fff;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.recognition-count {
+  flex: 0 0 auto;
+  color: #73869a;
+  font-size: 10px;
+}
+
+.recognition-list {
+  padding: 0 12px 10px;
+}
+
+.recognition-entry {
+  padding: 5px 0;
+  border-top: 1px solid #edf1f5;
+}
+
+.recognition-row {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+}
+
+.recognition-time {
+  color: #728194;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.recognition-excerpt {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #34465a;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.speaker-result-chip {
+  max-width: 130px;
+  overflow: hidden;
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: #285dba;
+  background: #e8f1ff;
+  font-size: 10px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.speaker-result-chip.review {
+  color: #a36611;
+  background: #fff3dd;
+}
+
+.recognition-result-state {
+  color: #278154;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.recognition-result-state.review {
+  color: #a36611;
+}
+
+.recognition-empty {
+  margin: 12px 2px;
+  color: #8291a0;
+  font-size: 11px;
+}
+
+@media (max-width: 1100px) {
+  .recognition-row {
+    grid-template-columns: 54px minmax(0, 1fr) auto;
+  }
+  .recognition-result-state {
+    grid-column: 2 / -1;
+    margin-top: -4px;
+  }
 }
 
 .fragment-lineage {
