@@ -543,7 +543,7 @@ async function scrollToLatest(force = false) {
 }
 
 watch(
-  () => [visibleDialogue.value.length, props.partialText, props.qaUnits.map((unit) => `${unit.id}:${unit.updatedAt}`).join('|'), props.pendingQuestions.map((item) => `${item.id}:${item.status}`).join('|')],
+  () => [visibleDialogue.value.map((turn) => turn.text).join(''), props.partialText, props.qaUnits.map((unit) => `${unit.id}:${unit.updatedAt}`).join('|'), props.pendingQuestions.map((item) => `${item.id}:${item.status}`).join('|')],
   () => { void scrollToLatest() },
 )
 
@@ -642,65 +642,64 @@ onMounted(() => {
               <p>原始转写会在这里连续显示。</p>
             </div>
 
-            <template v-for="turn in visibleDialogue" :key="turn.key">
-              <article
-                class="transcript-entry"
-                :class="{ 'pending-draggable': !!pendingFor(turn.primary.id), 'answer-draggable': turn.fragments.some((item) => !isBotFragment(item)) }"
+            <p v-if="visibleDialogue.length || partialText || captureRunning" class="transcript-paragraph">
+              <span
+                v-for="turn in visibleDialogue"
+                :key="turn.key"
+                class="transcript-fragment"
+                :class="{ selected: dialogueArmed(turn.fragments) }"
+                :role="turn.fragments.some((item) => !isBotFragment(item)) ? 'button' : undefined"
+                :tabindex="turn.fragments.some((item) => !isBotFragment(item)) ? 0 : undefined"
+                :aria-label="turn.fragments.some((item) => !isBotFragment(item)) ? '选择这段转写并放入笔录' : undefined"
+                :aria-pressed="turn.fragments.some((item) => !isBotFragment(item)) ? dialogueArmed(turn.fragments) : undefined"
                 :data-fragment-id="turn.primary.id"
                 :draggable="turn.fragments.some((item) => !isBotFragment(item))"
                 @dragstart="startDialogueDrag($event, turn.fragments)"
-              >
-                <p class="transcript-paragraph">{{ turn.text }}</p>
-                <button
-                  v-if="turn.fragments.some((item) => !isBotFragment(item))"
-                  type="button"
-                  class="transcript-select"
-                  @click.stop="armDialogue(turn.fragments)"
-                >{{ dialogueArmed(turn.fragments) ? '已选中 ✓ 去笔录点一下' : '选中这段' }}</button>
-
-                <section v-if="pendingFor(turn.primary.id)" class="pending-resolution-card">
-                  <template v-if="pendingFor(turn.primary.id)?.matchStatus === 'UNMATCHED'">
-                    <p>未匹配正式笔录问题 · 可直接拖到左侧正式笔录指定位置</p>
-                    <div class="pending-actions">
-                      <button class="primary" @click="resolve(pendingFor(turn.primary.id)!, { action: 'ADD' })">加入本案笔录</button>
-                      <button @click="resolve(pendingFor(turn.primary.id)!, { action: 'IGNORE' })">忽略</button>
-                    </div>
-                  </template>
-                  <template v-else-if="pendingFor(turn.primary.id)?.matchStatus === 'AMBIGUOUS'">
-                    <p>可能对应多个正式问题，请人工确认</p>
-                    <div class="candidate-list">
-                      <button
-                        v-for="candidate in candidateQuestions(pendingFor(turn.primary.id)!)"
-                        :key="candidate.id"
-                        @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: candidate.id, roundMode: 'NEW_ROUND' })"
-                      >对应：{{ candidate.text }}</button>
-                    </div>
-                    <div class="pending-actions">
-                      <button class="primary" @click="resolve(pendingFor(turn.primary.id)!, { action: 'ADD' })">新建本案问题</button>
-                      <button @click="resolve(pendingFor(turn.primary.id)!, { action: 'IGNORE' })">忽略</button>
-                    </div>
-                  </template>
-                  <template v-else-if="pendingFor(turn.primary.id)?.matchStatus === 'MATCHED_EXISTING'">
-                    <p>该问题已在本案笔录中出现，请选择本次问答如何记录</p>
-                    <div class="pending-actions">
-                      <button
-                        v-if="pendingFor(turn.primary.id)!.candidateQuestionIds[0]"
-                        class="primary"
-                        @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: pendingFor(turn.primary.id)!.candidateQuestionIds[0], roundMode: 'APPEND_EXISTING' })"
-                      >追加到原回答</button>
-                      <button
-                        v-if="pendingFor(turn.primary.id)!.candidateQuestionIds[0]"
-                        @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: pendingFor(turn.primary.id)!.candidateQuestionIds[0], roundMode: 'NEW_ROUND' })"
-                      >新增一轮问答</button>
-                    </div>
-                  </template>
-                </section>
-              </article>
-            </template>
-
-            <p v-if="captureRunning" class="transcript-partial" :class="{ idle: !partialText }" aria-live="polite">
-              {{ partialText || (livePreviewUnavailable ? livePreviewUnavailableMessage : '等待识别文字…请说话') }}
+                @click.stop="armDialogue(turn.fragments)"
+                @keydown.enter.prevent="armDialogue(turn.fragments)"
+                @keydown.space.prevent="armDialogue(turn.fragments)"
+              >{{ turn.text }}</span><span v-if="captureRunning" class="transcript-live-partial" :class="{ idle: !partialText }" aria-live="polite">{{ partialText || (livePreviewUnavailable ? livePreviewUnavailableMessage : '等待识别文字…请说话') }}</span>
             </p>
+
+            <template v-for="turn in visibleDialogue" :key="`pending-${turn.key}`">
+              <section v-if="pendingFor(turn.primary.id)" class="pending-resolution-card">
+                <template v-if="pendingFor(turn.primary.id)?.matchStatus === 'UNMATCHED'">
+                  <p>未匹配正式笔录问题 · 可直接拖到左侧正式笔录指定位置</p>
+                  <div class="pending-actions">
+                    <button class="primary" @click="resolve(pendingFor(turn.primary.id)!, { action: 'ADD' })">加入本案笔录</button>
+                    <button @click="resolve(pendingFor(turn.primary.id)!, { action: 'IGNORE' })">忽略</button>
+                  </div>
+                </template>
+                <template v-else-if="pendingFor(turn.primary.id)?.matchStatus === 'AMBIGUOUS'">
+                  <p>可能对应多个正式问题，请人工确认</p>
+                  <div class="candidate-list">
+                    <button
+                      v-for="candidate in candidateQuestions(pendingFor(turn.primary.id)!)"
+                      :key="candidate.id"
+                      @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: candidate.id, roundMode: 'NEW_ROUND' })"
+                    >对应：{{ candidate.text }}</button>
+                  </div>
+                  <div class="pending-actions">
+                    <button class="primary" @click="resolve(pendingFor(turn.primary.id)!, { action: 'ADD' })">新建本案问题</button>
+                    <button @click="resolve(pendingFor(turn.primary.id)!, { action: 'IGNORE' })">忽略</button>
+                  </div>
+                </template>
+                <template v-else-if="pendingFor(turn.primary.id)?.matchStatus === 'MATCHED_EXISTING'">
+                  <p>该问题已在本案笔录中出现，请选择本次问答如何记录</p>
+                  <div class="pending-actions">
+                    <button
+                      v-if="pendingFor(turn.primary.id)!.candidateQuestionIds[0]"
+                      class="primary"
+                      @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: pendingFor(turn.primary.id)!.candidateQuestionIds[0], roundMode: 'APPEND_EXISTING' })"
+                    >追加到原回答</button>
+                    <button
+                      v-if="pendingFor(turn.primary.id)!.candidateQuestionIds[0]"
+                      @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: pendingFor(turn.primary.id)!.candidateQuestionIds[0], roundMode: 'NEW_ROUND' })"
+                    >新增一轮问答</button>
+                  </div>
+                </template>
+              </section>
+            </template>
           </div>
         </section>
       </div>
@@ -884,46 +883,29 @@ onMounted(() => {
   scroll-behavior: smooth;
 }
 
-.transcript-entry {
-  margin-bottom: 10px;
-  padding: 3px 0 9px;
-  border-bottom: 1px solid #edf1f5;
-}
-
 .transcript-paragraph {
   margin: 0;
   color: #1f2731;
   font-size: 13px;
   line-height: 1.75;
-  white-space: pre-wrap;
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 
-.transcript-select {
-  margin: 4px 0 0;
-  border: 1px solid #c9d6e1;
-  border-radius: 5px;
-  padding: 3px 7px;
-  color: #355776;
-  background: #fff;
-  font-size: 10px;
-  cursor: pointer;
+.transcript-fragment {
+  cursor: text;
 }
 
-.transcript-partial {
-  margin: 3px 0 10px;
-  padding-left: 8px;
-  border-left: 2px solid #4380ee;
+.transcript-fragment.selected {
+  background: #e7f0ff;
+}
+
+.transcript-live-partial {
   color: #2874e5;
-  font-size: 13px;
-  line-height: 1.75;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
-.transcript-partial.idle {
+.transcript-live-partial.idle {
   color: #8291a0;
-  border-left-color: #c5d2df;
 }
 
 .latest-inline-button {
