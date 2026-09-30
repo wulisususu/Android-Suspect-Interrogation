@@ -400,22 +400,6 @@ function recognitionStatusLabel(item: TemporaryAsrFragment) {
   return item.voiceprintVerified ? '声纹已匹配' : '已归属'
 }
 
-function thresholdSourceLabel(source?: string | null) {
-  if (source === 'DEVICE_CALIBRATED') return '设备实测'
-  if (source === 'MODEL_BASELINE') return '模型基线'
-  if (source === 'LEGACY_ENV') return '旧版配置'
-  return source || '未记录'
-}
-
-function scoreText(value?: number | null) {
-  return value == null ? '—' : value.toFixed(4)
-}
-
-function shortFingerprint(value?: string | null) {
-  if (!value) return '—'
-  return value.length <= 16 ? value : `${value.slice(0, 8)}…${value.slice(-8)}`
-}
-
 function speakerName(item: TemporaryAsrFragment) {
   const presentation = dialoguePresentation(item)
   if (item.speaker === 'SUSPECT') return props.suspectName || item.speakerName || presentation.badge
@@ -543,7 +527,7 @@ async function scrollToLatest(force = false) {
 }
 
 watch(
-  () => [visibleDialogue.value.map((turn) => turn.text).join(''), props.partialText, props.qaUnits.map((unit) => `${unit.id}:${unit.updatedAt}`).join('|'), props.pendingQuestions.map((item) => `${item.id}:${item.status}`).join('|')],
+  () => [visibleDialogue.value.map((turn) => turn.text).join(''), props.partialText],
   () => { void scrollToLatest() },
 )
 
@@ -617,26 +601,6 @@ onMounted(() => {
             <button v-if="!pinnedToBottom" class="latest-inline-button" @click="scrollToLatest(true)">↓ 最新消息</button>
           </header>
           <div ref="transcriptFeed" class="transcript-content" @scroll="onFeedScroll">
-            <details v-if="qaReviewUnits.length || qaResolvedUnits.length" class="qa-review-rail" aria-label="Qwen 正式笔录路由状态">
-              <summary>笔录归档处理（{{ qaReviewUnits.length }} 项待处理）</summary>
-              <article v-for="unit in qaReviewUnits" :key="unit.id" class="qa-review-card">
-                <header><span class="qa-status-chip">待处理</span><small>{{ unit.reasonCode || 'NEEDS_REVIEW' }}</small></header>
-                <p v-if="unit.rawQuestionText"><b>原始问：</b>{{ unit.rawQuestionText }}</p>
-                <p v-if="unit.rawAnswerText"><b>原始答：</b>{{ unit.rawAnswerText }}</p>
-                <p v-if="unit.aiSuggestedQuestionText" class="qa-suggestion"><b>AI 建议问：</b>{{ unit.aiSuggestedQuestionText }}</p>
-                <p v-if="unit.aiSuggestedAnswerText" class="qa-suggestion"><b>AI 建议答：</b>{{ unit.aiSuggestedAnswerText }}</p>
-                <div class="qa-review-actions">
-                  <button draggable="true" @dragstart="startWholeQaDrag($event, unit)" @click="armDrop(wholeQaDropEntries(unit), '整组问答')">拖动整组问答</button>
-                  <button v-if="unit.answerFragmentIds.length" draggable="true" @dragstart="startAnswerDrag($event, unit)" @click="armDrop(answerQaDropEntries(unit), '仅答案')">仅拖动答案</button>
-                  <button class="qa-ignore" @click="resolveQa(unit, { action: 'IGNORE' })">忽略</button>
-                </div>
-              </article>
-              <div v-for="unit in qaResolvedUnits" :key="`status-${unit.id}`" class="qa-routing-status" :class="{ 'qa-status-muted': unit.status === 'IGNORED' || unit.status === 'ROLLED_BACK' || unit.classification === 'IGNORE' }">
-                <span>{{ qaStatusLabel(unit) }}</span>
-                <small v-if="unit.rawQuestionText">{{ unit.rawQuestionText }}</small>
-                <button v-if="unit.status === 'APPLIED'" class="qa-rollback" @click="rollbackQa(unit)">回退本次匹配</button>
-              </div>
-            </details>
             <div v-if="!visibleDialogue.length && !partialText && !captureRunning" class="dialogue-empty">
               <strong>等待现场对话</strong>
               <p>原始转写会在这里连续显示。</p>
@@ -661,45 +625,6 @@ onMounted(() => {
               >{{ turn.text }}</span><span v-if="captureRunning" class="transcript-live-partial" :class="{ idle: !partialText }" aria-live="polite">{{ partialText || (livePreviewUnavailable ? livePreviewUnavailableMessage : '等待识别文字…请说话') }}</span>
             </p>
 
-            <template v-for="turn in visibleDialogue" :key="`pending-${turn.key}`">
-              <section v-if="pendingFor(turn.primary.id)" class="pending-resolution-card">
-                <template v-if="pendingFor(turn.primary.id)?.matchStatus === 'UNMATCHED'">
-                  <p>未匹配正式笔录问题 · 可直接拖到左侧正式笔录指定位置</p>
-                  <div class="pending-actions">
-                    <button class="primary" @click="resolve(pendingFor(turn.primary.id)!, { action: 'ADD' })">加入本案笔录</button>
-                    <button @click="resolve(pendingFor(turn.primary.id)!, { action: 'IGNORE' })">忽略</button>
-                  </div>
-                </template>
-                <template v-else-if="pendingFor(turn.primary.id)?.matchStatus === 'AMBIGUOUS'">
-                  <p>可能对应多个正式问题，请人工确认</p>
-                  <div class="candidate-list">
-                    <button
-                      v-for="candidate in candidateQuestions(pendingFor(turn.primary.id)!)"
-                      :key="candidate.id"
-                      @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: candidate.id, roundMode: 'NEW_ROUND' })"
-                    >对应：{{ candidate.text }}</button>
-                  </div>
-                  <div class="pending-actions">
-                    <button class="primary" @click="resolve(pendingFor(turn.primary.id)!, { action: 'ADD' })">新建本案问题</button>
-                    <button @click="resolve(pendingFor(turn.primary.id)!, { action: 'IGNORE' })">忽略</button>
-                  </div>
-                </template>
-                <template v-else-if="pendingFor(turn.primary.id)?.matchStatus === 'MATCHED_EXISTING'">
-                  <p>该问题已在本案笔录中出现，请选择本次问答如何记录</p>
-                  <div class="pending-actions">
-                    <button
-                      v-if="pendingFor(turn.primary.id)!.candidateQuestionIds[0]"
-                      class="primary"
-                      @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: pendingFor(turn.primary.id)!.candidateQuestionIds[0], roundMode: 'APPEND_EXISTING' })"
-                    >追加到原回答</button>
-                    <button
-                      v-if="pendingFor(turn.primary.id)!.candidateQuestionIds[0]"
-                      @click="resolve(pendingFor(turn.primary.id)!, { action: 'LINK', caseQuestionId: pendingFor(turn.primary.id)!.candidateQuestionIds[0], roundMode: 'NEW_ROUND' })"
-                    >新增一轮问答</button>
-                  </div>
-                </template>
-              </section>
-            </template>
           </div>
         </section>
       </div>
@@ -713,6 +638,26 @@ onMounted(() => {
           <span class="recognition-count">{{ recognitionFragments.length }} 段</span>
         </header>
         <div class="recognition-list">
+          <details v-if="qaReviewUnits.length || qaResolvedUnits.length" class="qa-review-rail" aria-label="正式笔录归档处理">
+            <summary>正式笔录归档处理（{{ qaReviewUnits.length }} 项待处理）</summary>
+            <article v-for="unit in qaReviewUnits" :key="unit.id" class="qa-review-card">
+              <header><span class="qa-status-chip">待处理</span><small>{{ unit.reasonCode || 'NEEDS_REVIEW' }}</small></header>
+              <p v-if="unit.rawQuestionText"><b>原始问：</b>{{ unit.rawQuestionText }}</p>
+              <p v-if="unit.rawAnswerText"><b>原始答：</b>{{ unit.rawAnswerText }}</p>
+              <p v-if="unit.aiSuggestedQuestionText" class="qa-suggestion"><b>AI 建议问：</b>{{ unit.aiSuggestedQuestionText }}</p>
+              <p v-if="unit.aiSuggestedAnswerText" class="qa-suggestion"><b>AI 建议答：</b>{{ unit.aiSuggestedAnswerText }}</p>
+              <div class="qa-review-actions">
+                <button draggable="true" @dragstart="startWholeQaDrag($event, unit)" @click="armDrop(wholeQaDropEntries(unit), '整组问答')">拖动整组问答</button>
+                <button v-if="unit.answerFragmentIds.length" draggable="true" @dragstart="startAnswerDrag($event, unit)" @click="armDrop(answerQaDropEntries(unit), '仅答案')">仅拖动答案</button>
+                <button class="qa-ignore" @click="resolveQa(unit, { action: 'IGNORE' })">忽略</button>
+              </div>
+            </article>
+            <div v-for="unit in qaResolvedUnits" :key="`status-${unit.id}`" class="qa-routing-status" :class="{ 'qa-status-muted': unit.status === 'IGNORED' || unit.status === 'ROLLED_BACK' || unit.classification === 'IGNORE' }">
+              <span>{{ qaStatusLabel(unit) }}</span>
+              <small v-if="unit.rawQuestionText">{{ unit.rawQuestionText }}</small>
+              <button v-if="unit.status === 'APPLIED'" class="qa-rollback" @click="rollbackQa(unit)">回退本次匹配</button>
+            </div>
+          </details>
           <p v-if="!recognitionFragments.length" class="recognition-empty">
             {{ captureRunning ? '等待第 1 步产生文字片段' : '识别结果会显示在这里' }}
           </p>
@@ -732,23 +677,46 @@ onMounted(() => {
               </div>
             </details>
 
-            <details v-if="item.recognitionEvidence" class="recognition-evidence-card">
-              <summary>查看识别依据</summary>
-              <div class="evidence-grid">
-                <div><small>AI 原判</small><strong>{{ speakerLabel(item.recognitionEvidence.aiSpeaker) }}</strong></div>
-                <div><small>Score</small><strong>{{ scoreText(item.recognitionEvidence.score) }}</strong></div>
-                <div><small>第二候选</small><strong>{{ scoreText(item.recognitionEvidence.secondBestScore) }}</strong></div>
-                <div><small>Threshold</small><strong>{{ scoreText(item.recognitionEvidence.threshold) }}</strong></div>
-                <div><small>Margin</small><strong>{{ scoreText(item.recognitionEvidence.margin) }}</strong></div>
-                <div><small>阈值来源</small><strong>{{ thresholdSourceLabel(item.recognitionEvidence.thresholdSource) }}</strong></div>
-                <div><small>声纹模型</small><strong>{{ item.recognitionEvidence.speakerModelId || 'eres2net_large' }} {{ item.recognitionEvidence.speakerModelVersion || '—' }}</strong></div>
-                <div><small>ASR 模型</small><strong>{{ item.recognitionEvidence.asrModelId || '—' }} {{ item.recognitionEvidence.asrModelVersion || '' }}</strong></div>
-                <div><small>校准状态</small><strong>{{ item.recognitionEvidence.calibrationStatus || '—' }}</strong></div>
-                <div><small>模型指纹</small><strong>{{ shortFingerprint(item.recognitionEvidence.speakerModelFingerprint) }}</strong></div>
-                <div><small>麦克风指纹</small><strong>{{ shortFingerprint(item.recognitionEvidence.microphoneFingerprint) }}</strong></div>
-                <div><small>证据时间</small><strong>{{ formatDate(item.recognitionEvidence.createdAt) }}</strong></div>
-              </div>
+            <section v-if="pendingFor(item.id)" class="pending-resolution-card">
+              <template v-if="pendingFor(item.id)?.matchStatus === 'UNMATCHED'">
+                <p>未匹配正式笔录问题 · 可直接拖到左侧正式笔录指定位置</p>
+                <div class="pending-actions">
+                  <button class="primary" @click="resolve(pendingFor(item.id)!, { action: 'ADD' })">加入本案笔录</button>
+                  <button @click="resolve(pendingFor(item.id)!, { action: 'IGNORE' })">忽略</button>
+                </div>
+              </template>
+              <template v-else-if="pendingFor(item.id)?.matchStatus === 'AMBIGUOUS'">
+                <p>可能对应多个正式问题，请人工确认</p>
+                <div class="candidate-list">
+                  <button
+                    v-for="candidate in candidateQuestions(pendingFor(item.id)!)"
+                    :key="candidate.id"
+                    @click="resolve(pendingFor(item.id)!, { action: 'LINK', caseQuestionId: candidate.id, roundMode: 'NEW_ROUND' })"
+                  >对应：{{ candidate.text }}</button>
+                </div>
+                <div class="pending-actions">
+                  <button class="primary" @click="resolve(pendingFor(item.id)!, { action: 'ADD' })">新建本案问题</button>
+                  <button @click="resolve(pendingFor(item.id)!, { action: 'IGNORE' })">忽略</button>
+                </div>
+              </template>
+              <template v-else-if="pendingFor(item.id)?.matchStatus === 'MATCHED_EXISTING'">
+                <p>该问题已在本案笔录中出现，请选择本次问答如何记录</p>
+                <div class="pending-actions">
+                  <button
+                    v-if="pendingFor(item.id)!.candidateQuestionIds[0]"
+                    class="primary"
+                    @click="resolve(pendingFor(item.id)!, { action: 'LINK', caseQuestionId: pendingFor(item.id)!.candidateQuestionIds[0], roundMode: 'APPEND_EXISTING' })"
+                  >追加到原回答</button>
+                  <button
+                    v-if="pendingFor(item.id)!.candidateQuestionIds[0]"
+                    @click="resolve(pendingFor(item.id)!, { action: 'LINK', caseQuestionId: pendingFor(item.id)!.candidateQuestionIds[0], roundMode: 'NEW_ROUND' })"
+                  >新增一轮问答</button>
+                </div>
+              </template>
+            </section>
 
+            <details v-if="item.recognitionRevisions.length || item.state !== 'CONFIRMED'" class="recognition-tools">
+              <summary>人工修正{{ item.recognitionRevisions.length ? `（${item.recognitionRevisions.length} 条）` : '' }}</summary>
               <div v-if="item.recognitionRevisions.length" class="revision-history">
                 <h4>人工修正历史</h4>
                 <div v-for="revision in item.recognitionRevisions" :key="revision.revisionId" class="revision-row">
@@ -762,7 +730,7 @@ onMounted(() => {
 
               <div v-if="item.state !== 'CONFIRMED'" class="recognition-correction">
                 <h4>人工修正</h4>
-                <p>修正只改变当前工作结果；上方 AI 原判、分数和模型证据永久保留。</p>
+                <p>请确认说话人并填写修正原因。</p>
                 <div class="correction-controls">
                   <select
                     :value="correctionRole(item)"
@@ -778,9 +746,6 @@ onMounted(() => {
                 </div>
               </div>
             </details>
-            <div v-else-if="item.state === 'CONFIRMED'" class="recognition-evidence-missing">
-              识别证据尚未独立入库（历史数据迁移后将自动补齐）
-            </div>
           </article>
         </div>
       </section>
@@ -1022,17 +987,6 @@ onMounted(() => {
   padding-top: 6px;
 }
 
-.recognition-evidence-card {
-  margin-top: 4px;
-  border: 0;
-  background: transparent;
-  font-size: 11px;
-}
-.recognition-evidence-card summary {
-  cursor: pointer;
-  padding: 2px 4px;
-  color: #728194;
-}
 .speaker-prefix { color: #173f69; }
 .evidence-title { font-weight: 700; color: #23384d; }
 .evidence-store-badge {
@@ -1042,18 +996,8 @@ onMounted(() => {
   color: #246a45;
   font-weight: 700;
 }
-.evidence-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
-  padding: 9px 10px;
-  border-top: 1px solid rgba(76, 112, 156, .16);
-}
 .partial-turn .dialogue-bubble { border-style: solid; }
 .partial-turn.idle .dialogue-bubble { opacity: .4; }
-.evidence-grid div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.evidence-grid small { color: #728194; }
-.evidence-grid strong { color: #27394b; overflow-wrap: anywhere; }
 .revision-history,
 .recognition-correction {
   margin: 0 10px 10px;
@@ -1088,19 +1032,12 @@ onMounted(() => {
   cursor: pointer;
 }
 .correction-submit:disabled { opacity: .45; cursor: not-allowed; }
-.recognition-evidence-missing {
-  margin-top: 7px;
-  padding: 6px 8px;
-  border-radius: 7px;
-  background: #fff4dd;
-  color: #8a6219;
-  font-size: 11px;
-}
 @media (max-width: 900px) {
-  .evidence-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .revision-row { grid-template-columns: auto 1fr; }
   .correction-controls { grid-template-columns: 1fr; }
 }
+.recognition-tools { margin-top: 6px; color: #52677b; font-size: 11px; }
+.recognition-tools summary { cursor: pointer; padding: 4px; }
 .qa-review-rail { margin-bottom: 10px; color: #647587; font-size: 12px; }
 .qa-review-rail summary { cursor: pointer; padding: 4px 2px; }
 .qa-review-rail[open] { display: grid; gap: 8px; }

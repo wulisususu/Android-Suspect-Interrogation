@@ -13,12 +13,18 @@ describe('recognition evidence workbench contract', () => {
     expect(dialogueSource).not.toContain('liveDialogueTurns')
   })
 
-  it('shows independent AI recognition evidence on every dialogue turn', () => {
-    expect(dialogueSource).toContain('查看识别依据')
-    expect(dialogueSource).toContain('recognitionEvidence')
-    expect(dialogueSource).toContain('thresholdSource')
-    expect(dialogueSource).toContain('speakerModelVersion')
-    expect(dialogueSource).toContain('AI 原判')
+  it('keeps record routing controls out of the transcript and hides recognition evidence', () => {
+    const transcriptStart = dialogueSource.indexOf('class="dialogue-region transcript-region"')
+    const recognitionStart = dialogueSource.indexOf('class="dialogue-region recognition-region"')
+    const transcriptRegion = dialogueSource.slice(transcriptStart, recognitionStart)
+    const recognitionRegion = dialogueSource.slice(recognitionStart)
+
+    expect(transcriptRegion).not.toContain('pending-resolution-card')
+    expect(transcriptRegion).not.toContain('qa-review-rail')
+    expect(recognitionRegion).toContain('pending-resolution-card')
+    expect(dialogueSource).not.toContain('查看识别依据')
+    expect(dialogueSource).not.toContain('thresholdSource')
+    expect(dialogueSource).not.toContain('AI 原判')
   })
 
   it('allows a human correction without hiding the original AI decision', () => {
