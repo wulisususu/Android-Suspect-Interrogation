@@ -27,8 +27,8 @@ defineEmits<{
       <button v-else-if="session.status === 'RUNNING'" @click="$emit('togglePause')">⏸ 暂停</button>
       <button v-else-if="session.status === 'PAUSED'" class="session-primary" @click="$emit('togglePause')">▶ 恢复</button>
       <button :disabled="!['RUNNING', 'PAUSED'].includes(session.status) || session.stage === 'SIGNING'" @click="$emit('nextStage')">下一阶段</button>
-      <button class="danger-button" :disabled="!['RUNNING', 'PAUSED'].includes(session.status)" @click="$emit('finish')">结束审讯</button>
-      <span v-if="session.status === 'COMPLETED'" class="completed-chip">本次审讯已结束</span>
+      <button class="danger-button" :disabled="!['RUNNING', 'PAUSED'].includes(session.status)" title="结束采集并进入复核；正式笔录需复核后单独冻结" @click="$emit('finish')">结束审讯</button>
+      <span v-if="session.status === 'COMPLETED'" class="completed-chip">已结束 · 待复核并冻结笔录</span>
     </div>
   </div>
 </template>

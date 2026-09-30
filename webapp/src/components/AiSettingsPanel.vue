@@ -10,7 +10,14 @@ const capabilities = ref<RuntimeCapabilities | null>(null)
 const entries = computed(() => capabilities.value
   ? Object.values(capabilities.value).filter((item) => ['asr', 'ocr', 'llm', 'recording'].includes(item.name))
   : [])
-const triggerText = computed(() => capabilities.value?.llm.state === 'AVAILABLE' ? 'AI：本地 Runtime 可用' : 'AI：本地模型')
+const llmCapability = computed(() => capabilities.value?.llm)
+const triggerText = computed(() => {
+  if (!llmCapability.value) return 'AI：状态未读取'
+  if (llmCapability.value.state === 'AVAILABLE') return 'AI：本地 Runtime 可用'
+  if (llmCapability.value.state === 'MODEL_NOT_INSTALLED') return 'AI：模型未安装'
+  return 'AI：本地 Runtime 未就绪'
+})
+const triggerTitle = computed(() => llmCapability.value?.reason || `本地 AI Runtime 状态：${llmCapability.value?.state || '尚未读取'}`)
 
 function stateText(item: RuntimeCapability) { return item.state === 'AVAILABLE' ? '可用' : item.reason || item.state }
 async function load(force = false) {
@@ -23,7 +30,7 @@ async function show() { open.value = true; await load() }
 </script>
 
 <template>
-  <button class="ai-settings-trigger" title="本地 AI Runtime 状态" @click="show">{{ triggerText }}</button>
+  <button class="ai-settings-trigger" :title="triggerTitle" @click="show">{{ triggerText }}</button>
   <div v-if="open" class="runtime-mask" @click.self="open = false">
     <section class="runtime-panel">
       <header><div><h2>本地 AI Runtime</h2><p>仅显示 RK3588 当前已部署的离线能力。</p></div><button @click="open = false">关闭</button></header>

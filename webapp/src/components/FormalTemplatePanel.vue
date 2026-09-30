@@ -242,7 +242,7 @@ function dropPending(event: DragEvent, afterQuestionId: string | null) {
             {{ documentFrozen ? '打印正式笔录' : '打印预览' }}
           </button>
           <button class="primary" :disabled="documentFrozen || signingBusy !== '' || captureRunning" @click="emit('freeze')">
-            {{ signingBusy === 'freeze' ? '正在冻结…' : documentFrozen ? '笔录已冻结' : '结束并冻结笔录' }}
+            {{ signingBusy === 'freeze' ? '正在完成语音处理…' : documentFrozen ? '笔录已冻结' : '结束并冻结笔录' }}
           </button>
           <button :disabled="!signingState || !!signatureFor('SUSPECT') || signingBusy !== '' || documentLocked" @click="emit('sign', 'SUSPECT')">
             {{ signatureFor('SUSPECT') ? `被询问人已签 ${formatSignedAt(signatureFor('SUSPECT')?.signedAt)}` : '被询问人签名' }}

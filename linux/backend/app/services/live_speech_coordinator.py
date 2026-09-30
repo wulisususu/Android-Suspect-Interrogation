@@ -4,6 +4,7 @@ import logging
 import hashlib
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -55,6 +56,7 @@ class _ProcessedAudioRange:
 @dataclass(frozen=True)
 class _SpeakerJob:
     job_id: str
+    capture_session_id: str
 
 
 class LiveSpeechCoordinator:
@@ -80,6 +82,7 @@ class LiveSpeechCoordinator:
         self.asr_queue: queue.Queue[_AudioRange | _FinishCapture | None] = queue.Queue()
         self.speaker_queue: queue.Queue[_SpeakerJob | Callable[[], None] | None] = queue.Queue()
         self._lock = threading.RLock()
+        self._speaker_work_condition = threading.Condition(self._lock)
         self._started = False
         self._stopping = threading.Event()
         self._asr_thread: threading.Thread | None = None
@@ -93,6 +96,8 @@ class LiveSpeechCoordinator:
         self._process_lock = threading.RLock()
         self._asr_busy = threading.Event()
         self._speaker_queued_ids: set[str] = set()
+        self._speaker_pending_counts: dict[str, int] = {}
+        self._capture_finish_events: dict[str, threading.Event] = {}
         self._browser_recoveries_started: set[str] = set()
         self.capture_service.set_live_speech_coordinator(self)
 
@@ -246,6 +251,8 @@ class LiveSpeechCoordinator:
                     recovery_jobs.append(_FinishCapture(runtime))
 
             for job in recovery_jobs:
+                if isinstance(job, _FinishCapture):
+                    self._capture_finish_event(job.runtime.capture_session_id)
                 self.asr_queue.put(job)
             resume_browser_capture = getattr(self.capture_service, "resume_browser_capture", None)
             for runtime in resumable_browser_runtimes:
@@ -279,7 +286,7 @@ class LiveSpeechCoordinator:
                             "failed to begin ASR finalization for browser capture %s",
                             runtime.capture_session_id,
                         )
-                    self.asr_queue.put(_FinishCapture(runtime))
+                    self._enqueue_finish_capture(runtime)
 
             self._asr_thread = threading.Thread(
                 target=self._asr_loop,
@@ -502,7 +509,7 @@ class LiveSpeechCoordinator:
         self._asr_blocked.discard(capture_id)
         self._begin_asr_finalization(capture_id, sample_rate)
         self.archive.finalize_capture(capture_id, allow_incomplete_recovery=True)
-        self.asr_queue.put(_FinishCapture(runtime))
+        self._enqueue_finish_capture(runtime)
         self._browser_recoveries_started.discard(capture_id)
         return {
             "captureId": capture_id,
@@ -636,11 +643,17 @@ class LiveSpeechCoordinator:
         return queued
 
     def _queue_speaker_job(self, job_id: str) -> None:
+        with self.session_factory() as db:
+            job = db.get(LiveSpeechJob, job_id)
+            if job is None:
+                return
+            capture_id = job.capture_session_id
         with self._lock:
             if job_id in self._speaker_queued_ids:
                 return
             self._speaker_queued_ids.add(job_id)
-        self.speaker_queue.put(_SpeakerJob(job_id))
+            self._speaker_pending_counts[capture_id] = self._speaker_pending_counts.get(capture_id, 0) + 1
+        self.speaker_queue.put(_SpeakerJob(job_id, capture_id))
 
     def _recover_speaker_jobs(self) -> list[str]:
         """Requeue durable work after start has queued all ASR recovery ranges."""
@@ -689,6 +702,107 @@ class LiveSpeechCoordinator:
                 self._asr_blocked.add(runtime.capture_session_id)
         else:
             self._asr_blocked.add(runtime.capture_session_id)
+        self._enqueue_finish_capture(runtime)
+
+    def wait_for_session_processing(self, session_id: str, *, timeout: float) -> None:
+        """Wait until final ASR and queued speaker analysis for a session have settled."""
+        wait_seconds = max(0.01, float(timeout))
+        deadline = time.monotonic() + wait_seconds
+        target_session_id = str(session_id)
+
+        while True:
+            with self.session_factory() as db:
+                captures = list(
+                    db.scalars(
+                        select(ASRCaptureSession)
+                        .where(ASRCaptureSession.interrogation_session_id == target_session_id)
+                        .order_by(ASRCaptureSession.started_at, ASRCaptureSession.id)
+                    )
+                )
+                capture_ids = [capture.id for capture in captures]
+                failed = [
+                    capture.id
+                    for capture in captures
+                    if str(capture.asr_status or "").upper() in {"ERROR", "FAILED"}
+                ]
+                pending_asr = [
+                    capture.id
+                    for capture in captures
+                    if str(capture.asr_status or "").upper() != "COMPLETE"
+                ]
+                pending_speaker_jobs = (
+                    int(
+                        db.scalar(
+                            select(func.count(LiveSpeechJob.id)).where(
+                                LiveSpeechJob.kind == "SPEAKER",
+                                LiveSpeechJob.capture_session_id.in_(capture_ids),
+                                LiveSpeechJob.state.in_(("PENDING", "RUNNING")),
+                            )
+                        )
+                        or 0
+                    )
+                    if capture_ids
+                    else 0
+                )
+
+            if failed:
+                raise RuntimeError(f"ASR finalization failed for capture {failed[0]}")
+
+            if pending_asr:
+                capture_id = pending_asr[0]
+                event = self._capture_finish_event(capture_id)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not event.wait(remaining):
+                    raise TimeoutError("ASR finalization did not finish before the deadline")
+                with self.session_factory() as db:
+                    capture = db.get(ASRCaptureSession, capture_id)
+                    status = "MISSING" if capture is None else str(capture.asr_status or "").upper()
+                if status != "COMPLETE":
+                    raise RuntimeError(f"ASR finalization ended in {status} for capture {capture_id}")
+                continue
+
+            with self._lock:
+                pending_finish_events = [
+                    self._capture_finish_events[capture_id]
+                    for capture_id in capture_ids
+                    if capture_id in self._capture_finish_events
+                    and not self._capture_finish_events[capture_id].is_set()
+                ]
+                pending_speaker_count = sum(
+                    self._speaker_pending_counts.get(capture_id, 0)
+                    for capture_id in capture_ids
+                )
+
+            if pending_finish_events:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("ASR finalization callbacks did not finish before the deadline")
+                pending_finish_events[0].wait(min(0.05, remaining))
+                continue
+
+            if pending_speaker_jobs or pending_speaker_count:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("speaker analysis did not finish before the deadline")
+                with self._speaker_work_condition:
+                    self._speaker_work_condition.wait(min(0.05, remaining))
+                continue
+
+            return
+
+    def _capture_finish_event(self, capture_id: str) -> threading.Event:
+        normalized_id = str(capture_id)
+        with self._lock:
+            return self._capture_finish_events.setdefault(normalized_id, threading.Event())
+
+    def _signal_capture_finished(self, capture_id: str) -> None:
+        with self._lock:
+            event = self._capture_finish_events.pop(str(capture_id), None)
+        if event is not None:
+            event.set()
+
+    def _enqueue_finish_capture(self, runtime: Any) -> None:
+        self._capture_finish_event(runtime.capture_session_id)
         self.asr_queue.put(_FinishCapture(runtime))
 
     def _mark_storage_error(self, runtime: Any, exc: Exception) -> None:
@@ -815,6 +929,7 @@ class LiveSpeechCoordinator:
                                 runtime.capture_session_id,
                             )
                         finally:
+                            self._signal_capture_finished(runtime.capture_session_id)
                             self.asr_queue.task_done()
                 continue
             try:
@@ -1046,8 +1161,14 @@ class LiveSpeechCoordinator:
                 logger.exception("deferred speaker work failed")
             finally:
                 if isinstance(work, _SpeakerJob):
-                    with self._lock:
+                    with self._speaker_work_condition:
                         self._speaker_queued_ids.discard(work.job_id)
+                        pending = self._speaker_pending_counts.get(work.capture_session_id, 0)
+                        if pending <= 1:
+                            self._speaker_pending_counts.pop(work.capture_session_id, None)
+                        else:
+                            self._speaker_pending_counts[work.capture_session_id] = pending - 1
+                        self._speaker_work_condition.notify_all()
                 self.speaker_queue.task_done()
 
     def process_speaker_job(self, job_id: str) -> None:

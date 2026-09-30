@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from sqlalchemy import select
@@ -27,11 +28,13 @@ class DocumentFinalizationService:
         *,
         capture_service: Any,
         routing_coordinator: Any | None,
+        speech_coordinator: Any | None = None,
         drain_timeout: float = 60.0,
     ) -> None:
         self.db = db
         self.capture_service = capture_service
         self.routing_coordinator = routing_coordinator
+        self.speech_coordinator = speech_coordinator
         self.drain_timeout = max(1.0, float(drain_timeout))
 
     def finalize(self, case_id: str, actor_id: str | None = None) -> dict:
@@ -54,16 +57,36 @@ class DocumentFinalizationService:
         session_id = None if session is None else session.id
         self.db.rollback()
 
+        deadline = time.monotonic() + self.drain_timeout
         status = self.capture_service.status(case_id)
         if status.get("active"):
             self.capture_service.stop(case_id)
+
+        if self.speech_coordinator is not None and session_id is not None:
+            try:
+                self.speech_coordinator.wait_for_session_processing(
+                    session_id,
+                    timeout=max(0.01, deadline - time.monotonic()),
+                )
+            except TimeoutError as exc:
+                raise DomainError(
+                    "SPEECH_PROCESSING_TIMEOUT",
+                    "最终转写或说话人识别仍在处理，笔录尚未冻结；请稍后重试",
+                    504,
+                ) from exc
+            except RuntimeError as exc:
+                raise DomainError(
+                    "SPEECH_PROCESSING_FAILED",
+                    "最终转写未完成，笔录尚未冻结；请处理语音服务问题后重试",
+                    503,
+                ) from exc
 
         if self.routing_coordinator is not None and session_id is not None:
             try:
                 self.routing_coordinator.drain_capture(
                     case_id,
                     session_id,
-                    timeout=self.drain_timeout,
+                    timeout=max(0.01, deadline - time.monotonic()),
                 )
             except TimeoutError as exc:
                 raise DomainError(
