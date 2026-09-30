@@ -668,6 +668,15 @@ onMounted(() => {
               <span class="speaker-result-chip" :class="{ review: recognitionNeedsReview(item) }">{{ speakerName(item) }}</span>
               <span class="recognition-result-state" :class="{ review: recognitionNeedsReview(item) }">{{ recognitionStatusLabel(item) }}</span>
             </div>
+            <div class="recognition-entry-actions">
+              <button
+                type="button"
+                class="recognition-transfer-button"
+                :class="{ selected: dialogueArmed([item]) }"
+                :aria-pressed="dialogueArmed([item])"
+                @click.stop="armDialogue([item])"
+              >{{ dialogueArmed([item]) ? '已选中' : '选择此段' }}</button>
+            </div>
 
             <details v-if="fragmentHistory(item.id).some((history) => history.id !== item.id)" class="fragment-lineage">
               <summary>查看原始转写与说话人分析沿革</summary>
@@ -905,6 +914,28 @@ onMounted(() => {
   align-items: center;
   gap: 7px;
   min-height: 30px;
+}
+
+.recognition-entry-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 2px 3px;
+}
+
+.recognition-transfer-button {
+  border: 1px solid #9bb4cc;
+  border-radius: 999px;
+  padding: 3px 9px;
+  color: #285dba;
+  background: #fff;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.recognition-transfer-button.selected {
+  border-color: #2874e5;
+  color: #fff;
+  background: #2874e5;
 }
 
 .recognition-time {
