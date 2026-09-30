@@ -11,7 +11,7 @@ import type {
   QAUnitResolution,
 } from '../types/templateInterrogation'
 import { dialoguePresentation, groupLiveDialogueFragments } from '../utils/templateInterrogation'
-import { armDrop, pendingDrop } from '../composables/pendingDrop'
+import { armDrop, clearDrop, pendingDrop } from '../composables/pendingDrop'
 import AsrWorkflowStatus from './AsrWorkflowStatus.vue'
 import RecorderWaveformCanvas from './RecorderWaveformCanvas.vue'
 
@@ -455,6 +455,14 @@ function armDialogue(fragments: TemporaryAsrFragment[]) {
   if (entries.length) armDrop(entries, '对话片段')
 }
 
+function toggleDialogueSelection(fragments: TemporaryAsrFragment[]) {
+  if (dialogueArmed(fragments)) {
+    clearDrop()
+    return
+  }
+  armDialogue(fragments)
+}
+
 function dialogueArmed(fragments: TemporaryAsrFragment[]) {
   const ids = fragments.filter((item) => !isBotFragment(item)).map((item) => item.id)
   const payload = pendingDrop.value
@@ -678,7 +686,7 @@ onMounted(() => {
                 class="recognition-transfer-button"
                 :class="{ selected: dialogueArmed([item]) }"
                 :aria-pressed="dialogueArmed([item])"
-                @click.stop="armDialogue([item])"
+                @click.stop="toggleDialogueSelection([item])"
               >{{ dialogueArmed([item]) ? '已选中' : '选择此段' }}</button>
             </div>
 
