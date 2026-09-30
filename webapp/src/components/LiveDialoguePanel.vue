@@ -424,8 +424,12 @@ const FORMAL_ANSWER_FRAGMENT_MIME = 'application/x-formal-answer-fragments'
 function dialogueDropEntries(fragments: TemporaryAsrFragment[]) {
   const fragmentIds = fragments.filter((item) => !isBotFragment(item)).map((item) => item.id)
   if (!fragmentIds.length) return []
+  const text = fragments
+    .filter((item) => !isBotFragment(item))
+    .map((item) => (item.editedText || item.rawText || '').trim())
+    .join('')
   const entries = [
-    { mime: FORMAL_ANSWER_FRAGMENT_MIME, data: JSON.stringify({ fragmentIds }) },
+    { mime: FORMAL_ANSWER_FRAGMENT_MIME, data: JSON.stringify({ fragmentIds, text }) },
   ]
   const pending = pendingFor(fragmentIds[0])
   if (pending) {
