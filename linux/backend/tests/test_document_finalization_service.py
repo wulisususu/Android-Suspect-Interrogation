@@ -2,7 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from app.database.models import Case, DocumentSnapshot, InterrogationSession, QAUnit
+from app.database.models import (
+    ASRCaptureSession,
+    ASRFragment,
+    Case,
+    DocumentSnapshot,
+    InterrogationSession,
+    Message,
+    QAUnit,
+)
 from app.database.session import init_database, make_engine, make_session_factory
 from app.domain.enums import SessionStatus, WorkflowState
 from app.domain.errors import DomainError
@@ -100,4 +108,139 @@ def test_finalize_refuses_to_freeze_unresolved_routing_work(tmp_path: Path):
         assert db.get(Case, case_id).workflow_state == WorkflowState.QUESTIONING.value
         assert db.get(InterrogationSession, session_id).status == SessionStatus.RUNNING.value
         assert db.query(DocumentSnapshot).filter_by(case_id=case_id).count() == 0
+    engine.dispose()
+
+
+def test_finalize_refuses_to_freeze_incomplete_audio_archive(tmp_path: Path):
+    engine, factory, case_id, session_id = seed(tmp_path)
+    events: list[str] = []
+    with factory() as db:
+        db.add(ASRCaptureSession(
+            id="CAPTURE-INCOMPLETE",
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            status="FAILED",
+            sample_rate=16000,
+            recording_status="INCOMPLETE",
+            asr_status="COMPLETE",
+            speaker_status="COMPLETE",
+        ))
+        db.commit()
+
+        with pytest.raises(DomainError) as exc:
+            DocumentFinalizationService(
+                db,
+                capture_service=FakeCaptureService(events),
+                routing_coordinator=FakeRoutingCoordinator(events),
+            ).finalize(case_id)
+
+        assert exc.value.code == "AUDIO_ARCHIVE_INCOMPLETE"
+        assert "录音" in exc.value.message
+        assert db.get(Case, case_id).workflow_state == WorkflowState.QUESTIONING.value
+        assert db.get(InterrogationSession, session_id).status == SessionStatus.RUNNING.value
+        assert db.query(DocumentSnapshot).filter_by(case_id=case_id).count() == 0
+    engine.dispose()
+
+
+def test_finalize_refuses_to_freeze_unresolved_transcript_fragment(tmp_path: Path):
+    engine, factory, case_id, session_id = seed(tmp_path)
+    events: list[str] = []
+    with factory() as db:
+        db.add(ASRCaptureSession(
+            id="CAPTURE-COMPLETE",
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            status="COMPLETE",
+            sample_rate=16000,
+            recording_status="COMPLETE",
+            asr_status="COMPLETE",
+            speaker_status="NEEDS_REVIEW",
+        ))
+        db.add(ASRFragment(
+            id="FRAGMENT-REVIEW",
+            capture_session_id="CAPTURE-COMPLETE",
+            case_id=case_id,
+            ordinal=0,
+            started_at_ms=0,
+            ended_at_ms=1000,
+            raw_text="待确认内容",
+            edited_text="待确认内容",
+            speaker="UNKNOWN",
+            speaker_source="PENDING_ANALYSIS",
+            voiceprint_verified=False,
+            low_confidence=False,
+            state="PENDING",
+            model_id="test-model",
+        ))
+        db.commit()
+
+        with pytest.raises(DomainError) as exc:
+            DocumentFinalizationService(
+                db,
+                capture_service=FakeCaptureService(events),
+                routing_coordinator=FakeRoutingCoordinator(events),
+            ).finalize(case_id)
+
+        assert exc.value.code == "ASR_FRAGMENT_REVIEW_REQUIRED"
+        assert "确认" in exc.value.message and "丢弃" in exc.value.message
+        assert db.get(Case, case_id).workflow_state == WorkflowState.QUESTIONING.value
+        assert db.get(InterrogationSession, session_id).status == SessionStatus.RUNNING.value
+        assert db.query(DocumentSnapshot).filter_by(case_id=case_id).count() == 0
+    engine.dispose()
+
+
+@pytest.mark.parametrize("fragment_state", ["DISCARDED", "SUPERSEDED", "CONFIRMED"])
+def test_finalize_accepts_explicitly_resolved_transcript_fragments(tmp_path: Path, fragment_state: str):
+    engine, factory, case_id, session_id = seed(tmp_path)
+    events: list[str] = []
+    with factory() as db:
+        db.add(ASRCaptureSession(
+            id="CAPTURE-RESOLVED",
+            case_id=case_id,
+            interrogation_session_id=session_id,
+            status="COMPLETE",
+            sample_rate=16000,
+            recording_status="COMPLETE",
+            asr_status="COMPLETE",
+            speaker_status="COMPLETE",
+        ))
+        confirmed_message_id = None
+        if fragment_state == "CONFIRMED":
+            confirmed_message_id = "MESSAGE-CONFIRMED"
+            db.add(Message(
+                id=confirmed_message_id,
+                case_id=case_id,
+                session_id=session_id,
+                seq=1,
+                speaker="SUSPECT",
+                text="已确认内容",
+            ))
+            db.flush()
+        db.add(ASRFragment(
+            id="FRAGMENT-RESOLVED",
+            capture_session_id="CAPTURE-RESOLVED",
+            case_id=case_id,
+            ordinal=0,
+            started_at_ms=0,
+            ended_at_ms=1000,
+            raw_text="已处置内容",
+            edited_text="已处置内容",
+            speaker="SUSPECT",
+            speaker_source="MANUAL",
+            voiceprint_verified=False,
+            low_confidence=False,
+            state=fragment_state,
+            model_id="test-model",
+            confirmed_message_id=confirmed_message_id,
+        ))
+        db.commit()
+
+        result = DocumentFinalizationService(
+            db,
+            capture_service=FakeCaptureService(events),
+            routing_coordinator=FakeRoutingCoordinator(events),
+        ).finalize(case_id)
+
+        assert result["status"] == "FROZEN"
+        assert db.query(DocumentSnapshot).filter_by(case_id=case_id).count() == 1
     engine.dispose()

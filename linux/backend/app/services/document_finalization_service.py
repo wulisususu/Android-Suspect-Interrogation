@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.database.models import QAUnit
+from app.database.models import ASRCaptureSession, ASRFragment, QAUnit
 from app.database.session import begin_sqlite_immediate
 from app.domain.enums import WorkflowState
 from app.domain.errors import DomainError
@@ -110,6 +110,37 @@ class DocumentFinalizationService:
             target_session = active or latest
             if target_session is None:
                 raise DomainError("SESSION_NOT_ACTIVE", "当前没有可结束的审讯", 409)
+
+            captures = list(self.db.scalars(
+                select(ASRCaptureSession).where(
+                    ASRCaptureSession.interrogation_session_id == target_session.id,
+                )
+            ))
+            incomplete_captures = [row for row in captures if row.recording_status != "COMPLETE"]
+            if incomplete_captures:
+                raise DomainError(
+                    "AUDIO_ARCHIVE_INCOMPLETE",
+                    "原始录音尚未完整归档，不能冻结笔录；请先恢复或处理未完成录音",
+                    409,
+                    data={"capture_session_ids": [row.id for row in incomplete_captures]},
+                )
+
+            capture_ids = [row.id for row in captures]
+            if capture_ids:
+                unresolved_fragments = list(self.db.scalars(
+                    select(ASRFragment).where(
+                        ASRFragment.capture_session_id.in_(capture_ids),
+                        ASRFragment.state.not_in(("DISCARDED", "SUPERSEDED")),
+                        (ASRFragment.state != "CONFIRMED") | ASRFragment.confirmed_message_id.is_(None),
+                    )
+                ))
+                if unresolved_fragments:
+                    raise DomainError(
+                        "ASR_FRAGMENT_REVIEW_REQUIRED",
+                        "仍有未处理的转写片段，请确认并正式入库，或明确丢弃后再冻结笔录",
+                        409,
+                        data={"fragment_ids": [row.id for row in unresolved_fragments]},
+                    )
 
             unresolved = list(self.db.scalars(
                 select(QAUnit).where(
